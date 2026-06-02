@@ -1,0 +1,39 @@
+[package]
+name = "krabitls"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = []
+# Optional RSA cert + CertificateVerify support (rsa_pss_rsae_sha256).
+# Pulls in rsa_heapless 0.2 (verify-only on the heapless path) plus sha2 0.11
+# under a renamed package — rsa_heapless's digest 0.11 trait line is one major
+# ahead of the digest 0.10 we use for HKDF / transcript hashing, so the two
+# sha2 versions sit side-by-side in an rsa-enabled build. ~1-2 KiB duplicate
+# SHA-256 code is accepted here; the default (rsa-disabled) M3 binary stays
+# untouched. Supports both 1024-bit and 2048-bit RSA moduli via runtime
+# dispatch.
+rsa = ["dep:rsa_heapless", "dep:sha2_v11"]
+# Cert notBefore / notAfter validity-window check + TimeSource trait. The
+# library itself is sans-io / no-clock; this feature adds the (optional)
+# contract a caller can use IF they have a clock. Embedded targets without
+# an RTC build with the feature OFF (default) and the check + the
+# TimeSource trait simply don't exist.
+validity = []
+
+[dependencies]
+embedded-io = { version = "0.7.1", default-features = false }
+rsa_heapless = { version = "0.2.1", default-features = false, features = ["modmath"], optional = true }
+sha2_v11 = { package = "sha2", version = "0.11", default-features = false, features = ["oid"], optional = true }
+
+# RustCrypto stable line — all share generic-array 0.14 / crypto-common 0.1.
+aes-gcm = { version = "0.10", default-features = false, features = ["aes"] }
+sha2 = { version = "0.10", default-features = false, features = ["force-soft-compact"] }
+hmac = { version = "0.12", default-features = false }
+hkdf = { version = "0.12", default-features = false }
+ed25519_heapless = { version = "0.0.3", default-features = false, features = ["fixed-bigint", "sha512-sha2"] }
+fixed-bigint = { version = "0.3", default-features = false, features = ["use-unsafe", "zeroize"] }
+der = { version = "0.8.0", default-features = false, features = ["oid"] }
+hmac-sha256 = { version = "1.1.14", default-features = false }
+zeroize = { version = "1.8", default-features = false }
+heapless = { version = "0.9", default-features = false }

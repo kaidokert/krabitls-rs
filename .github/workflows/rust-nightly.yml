@@ -1,0 +1,47 @@
+name: Rust nightly
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * 1'  # Weekly on Monday at 06:00 UTC
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  nightly:
+    runs-on: ubuntu-latest
+    # Nightly drifts; don't block PRs on it.
+    continue-on-error: true
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@nightly
+    - uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          krabitls/target
+          krabitls_cli/target
+        key: nightly-${{ hashFiles('krabitls/Cargo.toml', 'krabitls_cli/Cargo.toml') }}
+        restore-keys: nightly-
+
+    - name: Build (default features)
+      run: cargo build --manifest-path=krabitls/Cargo.toml --verbose
+    - name: Build (feature = rsa)
+      run: cargo build --manifest-path=krabitls/Cargo.toml --features rsa --verbose
+    - name: Build (feature = validity)
+      run: cargo build --manifest-path=krabitls/Cargo.toml --features validity --verbose
+
+    - name: Test (default features)
+      run: cargo test --manifest-path=krabitls/Cargo.toml --verbose
+    - name: Test (feature = rsa)
+      run: cargo test --manifest-path=krabitls/Cargo.toml --features rsa --verbose
+    - name: Test (feature = validity)
+      run: cargo test --manifest-path=krabitls/Cargo.toml --features validity --verbose
+
+    - name: Build krabitls_cli
+      run: cargo build --manifest-path=krabitls_cli/Cargo.toml --verbose

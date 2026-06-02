@@ -1,0 +1,27 @@
+[package]
+name = "krabitls_cli"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+# The CLI always has std::time::SystemTime so validity-checking is a free
+# default — turn krabitls's `validity` feature on unconditionally.
+default = ["krabitls/validity"]
+rsa = ["krabitls/rsa"]
+
+[dependencies]
+clap = { version = "4.6.1", features = ["derive"] }
+ed25519_heapless = { version = "0.0.3", default-features = false, features = ["fixed-bigint", "sha512-sha2"] }
+fixed-bigint = { version = "0.3", default-features = false, features = ["use-unsafe"] }
+krabitls = { version = "0.1.0", path = "../krabitls" }
+sha2 = { version = "0.10", default-features = false }
+zeroize = { version = "1.8", default-features = false }
+log = "0.4"
+env_logger = { version = "0.11", default-features = false, features = ["auto-color", "humantime"] }
+
+# The `krabitls_connect` binary needs RSA verify support to talk to most
+# public-internet servers (Cloudflare / general CDN fronts serve RSA leaf
+# certs). Build with `cargo run --bin krabitls_connect --features rsa`.
+[[bin]]
+name = "krabitls_connect"
+required-features = ["rsa"]

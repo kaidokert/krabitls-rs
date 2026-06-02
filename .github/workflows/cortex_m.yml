@@ -1,0 +1,43 @@
+name: Cortex-M
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * 1'  # Weekly on Monday at 06:00 UTC
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  cortex-m:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: thumbv7m-none-eabi
+
+    - uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          cortex_m_demo/target
+        key: cortex-m-${{ hashFiles('cortex_m_demo/Cargo.toml', 'krabitls/Cargo.toml') }}
+        restore-keys: cortex-m-
+
+    - name: Build krabitls example (M3)
+      working-directory: cortex_m_demo
+      run: cargo build --release --example krabitls
+
+    - name: Build krabitls_jedisct example (M3)
+      working-directory: cortex_m_demo
+      run: cargo build --release --example krabitls_jedisct
+
+    - name: Build krabitls_rsa example (M3, feature = rsa)
+      working-directory: cortex_m_demo
+      run: cargo build --release --example krabitls_rsa --features rsa

@@ -1,0 +1,68 @@
+repos:
+-   repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+    -   id: trailing-whitespace
+    -   id: end-of-file-fixer
+    -   id: check-added-large-files
+    -   id: check-merge-conflict
+    -   id: check-yaml
+    -   id: check-toml
+    -   id: mixed-line-ending
+        args: ["--fix=lf"]
+
+-   repo: https://github.com/doublify/pre-commit-rust
+    rev: v1.0
+    hooks:
+    -   id: fmt
+        name: Fmt for krabitls
+        args: ['--manifest-path=krabitls/Cargo.toml', '--']
+    -   id: fmt
+        name: Fmt for krabitls_cli
+        args: ['--manifest-path=krabitls_cli/Cargo.toml', '--']
+    -   id: fmt
+        name: Fmt for cortex_m_demo
+        args: ['--manifest-path=cortex_m_demo/Cargo.toml', '--']
+
+# Local hooks: actually build and test the three crates. Test fixtures live
+# in `testdata/packets/` + `testdata/packets_rsa/` (vendored from
+# tls_fixture/demo.sh seed-0 output); the library `include_bytes!`s them
+# for byte-identical cross-checks.
+-   repo: local
+    hooks:
+    -   id: krabitls-clippy
+        name: cargo clippy krabitls
+        entry: cargo clippy --manifest-path=krabitls/Cargo.toml --tests --all-targets -- -D warnings
+        language: system
+        pass_filenames: false
+        files: ^krabitls/.*\.(rs|toml)$
+    -   id: krabitls-test
+        name: cargo test krabitls (host)
+        entry: cargo test --manifest-path=krabitls/Cargo.toml
+        language: system
+        pass_filenames: false
+        files: ^krabitls/.*\.(rs|toml)$
+    -   id: krabitls-cli-clippy
+        name: cargo clippy krabitls_cli
+        entry: cargo clippy --manifest-path=krabitls_cli/Cargo.toml -- -D warnings
+        language: system
+        pass_filenames: false
+        files: ^(krabitls_cli|krabitls)/.*\.(rs|toml)$
+    -   id: krabitls-cli-build
+        name: cargo build krabitls_cli
+        entry: cargo build --manifest-path=krabitls_cli/Cargo.toml
+        language: system
+        pass_filenames: false
+        files: ^(krabitls_cli|krabitls)/.*\.(rs|toml)$
+    -   id: cortex-m-clippy
+        name: cargo clippy cortex_m_demo (thumbv7m)
+        entry: cargo clippy --manifest-path=cortex_m_demo/Cargo.toml --release --example krabitls --target thumbv7m-none-eabi -- -D warnings
+        language: system
+        pass_filenames: false
+        files: ^(cortex_m_demo|krabitls)/.*\.(rs|toml|x)$
+    -   id: cortex-m-build
+        name: cargo build cortex_m_demo (thumbv7m)
+        entry: cargo build --manifest-path=cortex_m_demo/Cargo.toml --release --example krabitls --target thumbv7m-none-eabi
+        language: system
+        pass_filenames: false
+        files: ^(cortex_m_demo|krabitls)/.*\.(rs|toml|x)$

@@ -1,0 +1,53 @@
+//! Build the client's response after the server flight verifies.
+//!
+//! In our locked profile that response is one encrypted record carrying a
+//! single `Finished` handshake message. Application traffic secrets are
+//! derived separately via [`crate::application_traffic_secrets`] using the
+//! `master_secret` and the transcript hash through the *server's* Finished.
+
+use crate::aead::{EncryptError, encrypt_record};
+use crate::consts::CT_HANDSHAKE;
+use crate::hkdf::{finished_mac, traffic_keys};
+use crate::newtype::{Secret, TranscriptDigest};
+use crate::traits::{Aes128GcmAead, HkdfSha256};
+
+const HS_FINISHED: u8 = 20;
+
+/// Build the client `Finished` record.
+///
+/// Returns the bytes of the full TLS record (header + ciphertext + tag) ready
+/// to put on the wire.
+///
+/// * `c_hs_traffic_secret` — the client handshake traffic secret derived
+///   right after ServerHello.
+/// * `transcript_hash_through_server_finished` — `SHA-256(CH || SH || EE ||
+///   Cert || CertVerify || ServerFinished)`. This is what
+///   [`crate::ServerFlightVerified::transcript_hash_through_finished`]
+///   returns.
+/// * `seq` — record sequence number under `c_hs_traffic_secret` (= 0 for the
+///   first client record, which is the typical case).
+/// * `out_buf` — caller-provided scratch. Must hold at least 58 bytes
+///   (`5 record header + 4 Finished header + 32 verify_data + 1 content_type + 16 tag`).
+pub fn build_client_finished<'a, H: HkdfSha256, A: Aes128GcmAead>(
+    c_hs_traffic_secret: &Secret,
+    transcript_hash_through_server_finished: &TranscriptDigest,
+    seq: u64,
+    out_buf: &'a mut [u8],
+) -> Result<&'a [u8], EncryptError> {
+    // verify_data = HMAC-SHA256(finished_key, transcript_hash)
+    let verify_data =
+        finished_mac::<H>(c_hs_traffic_secret, transcript_hash_through_server_finished);
+
+    // Finished handshake message = u8(20) || u24(32) || verify_data
+    let mut finished_msg = [0u8; 4 + 32];
+    finished_msg[0] = HS_FINISHED;
+    finished_msg[1..4].copy_from_slice(&[0x00, 0x00, 0x20]); // length = 32 (big-endian u24)
+    finished_msg[4..].copy_from_slice(&verify_data);
+
+    let (key, iv) = traffic_keys::<H>(c_hs_traffic_secret);
+    encrypt_record::<A>(&finished_msg, CT_HANDSHAKE, &key, &iv, seq, out_buf)
+}
+
+/// Exact serialized size of `build_client_finished`'s output:
+/// 5 (record hdr) + 4 (hs hdr) + 32 (verify_data) + 1 (content_type) + 16 (tag).
+pub const CLIENT_FINISHED_LEN: usize = 58;
