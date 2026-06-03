@@ -1,0 +1,35 @@
+repos:
+-   repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+    -   id: trailing-whitespace
+    -   id: end-of-file-fixer
+    -   id: check-added-large-files
+    -   id: check-merge-conflict
+    -   id: check-yaml
+    -   id: check-toml
+    -   id: mixed-line-ending
+        args: ["--fix=lf"]
+
+-   repo: https://github.com/doublify/pre-commit-rust
+    rev: v1.0
+    hooks:
+    -   id: fmt
+        name: Fmt for krabitls
+        args: ['--manifest-path=krabitls/Cargo.toml', '--']
+
+# Local hooks: actually build and test the library.
+-   repo: local
+    hooks:
+    -   id: krabitls-clippy
+        name: cargo clippy krabitls
+        entry: cargo clippy --manifest-path=krabitls/Cargo.toml --tests --all-targets -- -D warnings
+        language: system
+        pass_filenames: false
+        files: ^krabitls/.*\.(rs|toml)$
+    -   id: krabitls-test
+        name: cargo test krabitls (host)
+        entry: cargo test --manifest-path=krabitls/Cargo.toml
+        language: system
+        pass_filenames: false
+        files: ^krabitls/.*\.(rs|toml)$
