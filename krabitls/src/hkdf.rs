@@ -94,16 +94,6 @@ pub fn hkdf_expand_label<H: HkdfSha256>(
     Ok(())
 }
 
-fn hkdf_expand_label_tls<H: HkdfSha256>(
-    secret: &[u8; 32],
-    label: &[u8],
-    context: &[u8],
-    out: &mut [u8],
-) {
-    hkdf_expand_label::<H>(secret, label, context, out)
-        .expect("krabitls's fixed TLS 1.3 HKDF labels fit HKDF_LABEL_MAX")
-}
-
 /// `Derive-Secret(secret, label, transcript_hash)` per RFC 8446 §7.1.
 ///
 /// This is `HKDF-Expand-Label` specialized to a 32-byte transcript-hash
@@ -122,15 +112,6 @@ pub fn derive_secret<H: HkdfSha256>(
         &mut out,
     )?;
     Ok(Secret::new(out))
-}
-
-fn derive_secret_tls<H: HkdfSha256>(
-    secret: &Secret,
-    label: &[u8],
-    transcript_hash: &TranscriptDigest,
-) -> Secret {
-    derive_secret::<H>(secret, label, transcript_hash)
-        .expect("krabitls's fixed TLS 1.3 HKDF labels fit HKDF_LABEL_MAX")
 }
 
 // =====================================================================
@@ -239,9 +220,15 @@ pub fn early_secret<H: HkdfSha256>() -> Secret {
 ///
 /// `dhe` is the X25519 shared secret (output of `ed25519_heapless::x25519` or
 /// any other (EC)DHE algorithm — krabitls doesn't care, it's 32 bytes).
-pub fn handshake_secret<H: HkdfSha256>(dhe: &[u8; 32]) -> Secret {
-    let salt = derive_secret_tls::<H>(&early_secret::<H>(), b"derived", &EMPTY_TRANSCRIPT_HASH);
-    Secret::new(H::extract(salt.as_bytes(), dhe))
+///
+/// Returns `Err(HkdfLabelError)` only if the underlying
+/// [`hkdf_expand_label`] rejects the inputs, which is statically
+/// unreachable for the fixed TLS 1.3 labels this function uses — but
+/// the error is propagated rather than `expect`-ed so the public API
+/// stays uniformly fallible.
+pub fn handshake_secret<H: HkdfSha256>(dhe: &[u8; 32]) -> Result<Secret, HkdfLabelError> {
+    let salt = derive_secret::<H>(&early_secret::<H>(), b"derived", &EMPTY_TRANSCRIPT_HASH)?;
+    Ok(Secret::new(H::extract(salt.as_bytes(), dhe)))
 }
 
 /// `(client_handshake_traffic_secret, server_handshake_traffic_secret)` from
@@ -249,28 +236,30 @@ pub fn handshake_secret<H: HkdfSha256>(dhe: &[u8; 32]) -> Secret {
 pub fn handshake_traffic_secrets<H: HkdfSha256>(
     hs: &Secret,
     transcript_hash_ch_sh: &TranscriptDigest,
-) -> (Secret, Secret) {
-    (
-        derive_secret_tls::<H>(hs, b"c hs traffic", transcript_hash_ch_sh),
-        derive_secret_tls::<H>(hs, b"s hs traffic", transcript_hash_ch_sh),
-    )
+) -> Result<(Secret, Secret), HkdfLabelError> {
+    Ok((
+        derive_secret::<H>(hs, b"c hs traffic", transcript_hash_ch_sh)?,
+        derive_secret::<H>(hs, b"s hs traffic", transcript_hash_ch_sh)?,
+    ))
 }
 
 /// Derive the `(key, iv)` pair for AES-128-GCM from a traffic secret per
 /// RFC 8446 §7.3. Key is 16 bytes, IV is 12 bytes (the AEAD nonce size).
-pub fn traffic_keys<H: HkdfSha256>(traffic_secret: &Secret) -> (AeadKey, AeadIv) {
+pub fn traffic_keys<H: HkdfSha256>(
+    traffic_secret: &Secret,
+) -> Result<(AeadKey, AeadIv), HkdfLabelError> {
     let mut key = [0u8; 16];
     let mut iv = [0u8; 12];
-    hkdf_expand_label_tls::<H>(traffic_secret.as_bytes(), b"key", &[], &mut key);
-    hkdf_expand_label_tls::<H>(traffic_secret.as_bytes(), b"iv", &[], &mut iv);
-    (AeadKey::new(key), AeadIv::new(iv))
+    hkdf_expand_label::<H>(traffic_secret.as_bytes(), b"key", &[], &mut key)?;
+    hkdf_expand_label::<H>(traffic_secret.as_bytes(), b"iv", &[], &mut iv)?;
+    Ok((AeadKey::new(key), AeadIv::new(iv)))
 }
 
 /// `master_secret = HKDF-Extract(Derive-Secret(handshake_secret, "derived", H("")), 0_hash)`
 /// per RFC 8446 §7.1.
-pub fn master_secret<H: HkdfSha256>(handshake_secret: &Secret) -> Secret {
-    let salt = derive_secret_tls::<H>(handshake_secret, b"derived", &EMPTY_TRANSCRIPT_HASH);
-    Secret::new(H::extract(salt.as_bytes(), &[0u8; 32]))
+pub fn master_secret<H: HkdfSha256>(handshake_secret: &Secret) -> Result<Secret, HkdfLabelError> {
+    let salt = derive_secret::<H>(handshake_secret, b"derived", &EMPTY_TRANSCRIPT_HASH)?;
+    Ok(Secret::new(H::extract(salt.as_bytes(), &[0u8; 32])))
 }
 
 /// `(client_application_traffic_secret_0, server_application_traffic_secret_0)`
@@ -281,19 +270,19 @@ pub fn master_secret<H: HkdfSha256>(handshake_secret: &Secret) -> Secret {
 pub fn application_traffic_secrets<H: HkdfSha256>(
     master_secret: &Secret,
     transcript_hash_through_server_finished: &TranscriptDigest,
-) -> (Secret, Secret) {
-    (
-        derive_secret_tls::<H>(
+) -> Result<(Secret, Secret), HkdfLabelError> {
+    Ok((
+        derive_secret::<H>(
             master_secret,
             b"c ap traffic",
             transcript_hash_through_server_finished,
-        ),
-        derive_secret_tls::<H>(
+        )?,
+        derive_secret::<H>(
             master_secret,
             b"s ap traffic",
             transcript_hash_through_server_finished,
-        ),
-    )
+        )?,
+    ))
 }
 
 /// Finished MAC: HMAC-SHA256 keyed by `finished_key` over the running
@@ -306,14 +295,14 @@ pub fn application_traffic_secrets<H: HkdfSha256>(
 pub fn finished_mac<H: HkdfSha256>(
     traffic_secret: &Secret,
     transcript_hash: &TranscriptDigest,
-) -> [u8; 32] {
+) -> Result<[u8; 32], HkdfLabelError> {
     let mut finished_key = [0u8; 32];
-    hkdf_expand_label_tls::<H>(
+    hkdf_expand_label::<H>(
         traffic_secret.as_bytes(),
         b"finished",
         &[],
         &mut finished_key,
-    );
+    )?;
     // HKDF-Extract(salt, IKM) == HMAC(salt, IKM) under SHA-256.
-    H::extract(&finished_key, transcript_hash.as_bytes())
+    Ok(H::extract(&finished_key, transcript_hash.as_bytes()))
 }

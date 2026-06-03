@@ -37,7 +37,7 @@ pub use aead::{
     DecryptError, EncryptError, aead_nonce, decrypt_record, encrypt_record, split_inner_plaintext,
 };
 pub use backends::{DerCert, RustCrypto};
-pub use client_flight::{CLIENT_FINISHED_LEN, build_client_finished};
+pub use client_flight::{CLIENT_FINISHED_LEN, ClientFinishedError, build_client_finished};
 pub use hkdf::{
     EMPTY_TRANSCRIPT_HASH, HkdfLabelError, TranscriptError, TranscriptHash,
     application_traffic_secrets, derive_secret, early_secret, finished_mac, handshake_secret,
@@ -1106,7 +1106,7 @@ mod tests {
             &FIXTURE_SERVER_X25519_PUB_2,
         );
         // 2. handshake_secret = HKDF chain rooted at the no-PSK early_secret
-        let hs = handshake_secret::<RustCrypto>(&dhe);
+        let hs = handshake_secret::<RustCrypto>(&dhe).unwrap();
         assert_eq!(hs, FIXTURE_HANDSHAKE_SECRET);
         // 3. traffic secrets keyed on SHA-256(CH || SH)
         let th = {
@@ -1115,7 +1115,7 @@ mod tests {
             t.update_record(&FIXTURE_SERVER_HELLO).unwrap();
             t.snapshot()
         };
-        let (c_ts, s_ts) = handshake_traffic_secrets::<RustCrypto>(&hs, &th);
+        let (c_ts, s_ts) = handshake_traffic_secrets::<RustCrypto>(&hs, &th).unwrap();
         assert_eq!(c_ts, FIXTURE_C_HS_TRAFFIC_SECRET);
         assert_eq!(s_ts, FIXTURE_S_HS_TRAFFIC_SECRET);
     }
@@ -1132,7 +1132,7 @@ mod tests {
 
     #[test]
     fn fixture_traffic_keys_match() {
-        let (key, iv) = traffic_keys::<RustCrypto>(&FIXTURE_S_HS_TRAFFIC_SECRET);
+        let (key, iv) = traffic_keys::<RustCrypto>(&FIXTURE_S_HS_TRAFFIC_SECRET).unwrap();
         assert_eq!(key, FIXTURE_S_HS_KEY);
         assert_eq!(iv, FIXTURE_S_HS_IV);
     }
