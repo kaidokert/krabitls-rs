@@ -12,35 +12,42 @@
 //! type system in to catch a few obvious confusions at compile time:
 //!
 //! - [`Secret`] for any 32-byte HKDF output (early / handshake / master /
-//!   traffic secrets). Implements [`zeroize::Zeroize`] so callers can wipe
-//!   on drop via [`zeroize::Zeroizing`] without rewrapping.
+//!   traffic secrets). Secret-bearing — **not `Copy`**, zeroes on drop.
 //! - [`TranscriptDigest`] for the public 32-byte hash returned from
-//!   [`crate::TranscriptHash::snapshot`]. Distinct from `Secret` because
-//!   one is a secret, the other is a digest of public protocol bytes —
-//!   passing one where the other was expected is a real foot-gun.
+//!   [`crate::TranscriptHash::snapshot`]. Public protocol material, so
+//!   it stays `Copy` and is printable.
 //! - [`AeadKey`] / [`AeadIv`] for the 16-byte AEAD key and 12-byte AEAD
-//!   IV produced by [`crate::traffic_keys`]. Same reasoning.
+//!   IV produced by [`crate::traffic_keys`]. Same secret-bearing
+//!   treatment as `Secret`.
+//!
+//! Secret-bearing types are deliberately **not `Copy`** so that every
+//! move shows up in the source — implicit bitwise copies leave
+//! sensitive bytes scattered across stack frames you can't audit.
+//! `Clone` is kept so callers who genuinely need a fresh copy can ask
+//! for one explicitly; the absence of `Copy` forces them to.
 //!
 //! What we deliberately did *not* newtype here:
 //!
-//! - Public keys (Ed25519 32-byte, RSA modulus). They're named struct
-//!   fields on `CertView` already, so wrong-site confusion is structural,
-//!   not type-based.
-//! - The Finished MAC output and HKDF-Expand-Label output buffers. Those
-//!   are short-lived locals at call sites; no observed confusion problem.
-//! - The DHE share fed into `handshake_secret`. It's a one-shot input
-//!   from X25519 and used immediately; same logic.
+//! - Public keys (Ed25519 32-byte). They're named struct fields on
+//!   `CertView` already, so wrong-site confusion is structural, not
+//!   type-based.
+//! - The Finished MAC output and HKDF-Expand-Label output buffers. The
+//!   former is a one-shot verify_data that lives inside its handler;
+//!   the latter is a short-lived scratch that wraps into one of the
+//!   newtypes above.
 
 use zeroize::Zeroize;
 
-macro_rules! byte_array_newtype {
+/// Generates a secret-bearing byte newtype. Not `Copy` (every move is
+/// explicit and traceable), zeroes on drop.
+macro_rules! secret_newtype {
     (
         $(#[$attr:meta])*
         $name:ident($n:literal)
     ) => {
         $(#[$attr])*
         #[repr(transparent)]
-        #[derive(Clone, Copy, PartialEq, Eq)]
+        #[derive(Clone, PartialEq, Eq)]
         pub struct $name(pub [u8; $n]);
 
         impl $name {
@@ -64,10 +71,25 @@ macro_rules! byte_array_newtype {
                 Self(bytes)
             }
         }
+
+        impl Zeroize for $name {
+            fn zeroize(&mut self) {
+                self.0.zeroize();
+            }
+        }
+
+        // Auto-zero on drop. Combined with the absence of `Copy`, this
+        // means the bytes get wiped at exactly the point the binding
+        // goes out of scope — no scattered duplicates left behind.
+        impl Drop for $name {
+            fn drop(&mut self) {
+                self.0.zeroize();
+            }
+        }
     };
 }
 
-byte_array_newtype! {
+secret_newtype! {
     /// 32-byte HKDF secret material. Covers early_secret, handshake_secret,
     /// master_secret, and the four traffic secrets (client/server × hs/ap).
     ///
@@ -76,15 +98,8 @@ byte_array_newtype! {
     /// does prevent confusion with [`TranscriptDigest`] (the other common
     /// 32-byte goo), with raw OS-random output, and with cert pubkey bytes.
     ///
-    /// Implements [`Zeroize`] for hygiene; wrap in [`zeroize::Zeroizing`]
-    /// when you want auto-clear on drop.
+    /// Not `Copy`; zeroes on drop.
     Secret(32)
-}
-
-impl Zeroize for Secret {
-    fn zeroize(&mut self) {
-        self.0.zeroize();
-    }
 }
 
 // Redacted Debug — printing raw secret bytes via `{:?}` (panic messages,
@@ -96,14 +111,37 @@ impl core::fmt::Debug for Secret {
     }
 }
 
-byte_array_newtype! {
-    /// 32-byte SHA-256 transcript hash. Output of
-    /// [`crate::TranscriptHash::snapshot`]; input to HKDF-Expand-Label for
-    /// `*_traffic_secret` derivations and the Finished MAC.
-    ///
-    /// Public protocol material — not secret — but byte-shape collides with
-    /// [`Secret`], so they're separated at the type level.
-    TranscriptDigest(32)
+/// 32-byte SHA-256 transcript hash. Output of
+/// [`crate::TranscriptHash::snapshot`]; input to HKDF-Expand-Label for
+/// `*_traffic_secret` derivations and the Finished MAC.
+///
+/// Public protocol material — not secret — so it stays `Copy` and is
+/// printable. Distinct from [`Secret`] at the type level even though
+/// the byte shape matches.
+#[repr(transparent)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct TranscriptDigest(pub [u8; 32]);
+
+impl TranscriptDigest {
+    pub const fn new(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+impl AsRef<[u8; 32]> for TranscriptDigest {
+    fn as_ref(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+impl From<[u8; 32]> for TranscriptDigest {
+    fn from(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
 }
 
 // `TranscriptDigest` is public protocol material; print the raw bytes.
@@ -113,15 +151,10 @@ impl core::fmt::Debug for TranscriptDigest {
     }
 }
 
-byte_array_newtype! {
+secret_newtype! {
     /// 16-byte AES-128-GCM key. Output of [`crate::traffic_keys`].
+    /// Not `Copy`; zeroes on drop.
     AeadKey(16)
-}
-
-impl Zeroize for AeadKey {
-    fn zeroize(&mut self) {
-        self.0.zeroize();
-    }
 }
 
 impl core::fmt::Debug for AeadKey {
@@ -130,17 +163,11 @@ impl core::fmt::Debug for AeadKey {
     }
 }
 
-byte_array_newtype! {
+secret_newtype! {
     /// 12-byte AEAD IV. Output of [`crate::traffic_keys`]; XOR'd with the
     /// big-endian record sequence number to produce the per-record nonce
-    /// in [`crate::aead_nonce`].
+    /// in [`crate::aead_nonce`]. Not `Copy`; zeroes on drop.
     AeadIv(12)
-}
-
-impl Zeroize for AeadIv {
-    fn zeroize(&mut self) {
-        self.0.zeroize();
-    }
 }
 
 // The IV isn't a long-term secret on its own, but combined with the key
@@ -213,4 +240,10 @@ mod tests {
         let dbg = format!("{td:?}");
         assert!(dbg.contains("17") || dbg.contains("0x11"));
     }
+
+    // (The `Drop` impl just delegates to `self.0.zeroize()`, which is
+    // exercised directly by `secret_zeroizes` above. A post-drop pointer
+    // peek to "verify" Drop fired is UB in general — Rust may move the
+    // stack slot or the optimizer may elide writes whose effects aren't
+    // observed. Trust the implementation + the Zeroize test.)
 }
