@@ -50,10 +50,35 @@ impl<const N: usize> ServerFlightReassembler<N> {
             .map_err(|_| ReassemblyError::Overflow)
     }
 
-    /// Walk the accumulated buffer message-by-message. Returns `true` once
-    /// the buffer ends exactly at a complete `Finished` message — i.e. the
-    /// server flight has fully arrived.
+    /// Walk the accumulated buffer message-by-message. Returns `true` once a
+    /// complete `Finished` message has arrived — even if there are bytes
+    /// after it. RFC 8446 permits a server to pack post-handshake messages
+    /// (e.g. NewSessionTicket) into the same encrypted record as the server
+    /// `Finished`; without this tolerance the reassembler would wait
+    /// indefinitely for more data that never comes.
+    ///
+    /// Callers feeding the bytes into [`crate::parse_server_flight`] (which
+    /// is strict about trailing bytes) should use [`Self::flight_bytes`] to
+    /// get the slice up to and including `Finished`, rather than
+    /// [`Self::as_slice`].
     pub fn is_complete(&self) -> bool {
+        self.flight_end_offset().is_some()
+    }
+
+    /// If the buffer contains a complete server flight (a well-framed
+    /// `Finished` message), return the inner-handshake bytes through the
+    /// end of that `Finished`. Returns `None` while the flight is still
+    /// being reassembled. Bytes after `Finished` (post-handshake messages
+    /// like NewSessionTicket that the server may pack into the same
+    /// record, or fragmentation slop) are *not* included; reach them via
+    /// `as_slice()[flight_bytes().len()..]` if you need them.
+    pub fn flight_bytes(&self) -> Option<&[u8]> {
+        let end = self.flight_end_offset()?;
+        Some(&self.buf[..end])
+    }
+
+    /// Internal: byte offset just past the first well-framed `Finished`.
+    fn flight_end_offset(&self) -> Option<usize> {
         let buf: &[u8] = &self.buf;
         let mut i = 0;
         while i + 4 <= buf.len() {
@@ -61,21 +86,19 @@ impl<const N: usize> ServerFlightReassembler<N> {
             // 24-bit handshake-message length. Decode as `u32` (24 bits don't
             // fit a 16-bit `usize`) and bail out on conversion failure rather
             // than silently truncating on 16-bit targets.
-            let len = match usize::try_from(
+            let len = usize::try_from(
                 ((buf[i + 1] as u32) << 16) | ((buf[i + 2] as u32) << 8) | (buf[i + 3] as u32),
-            ) {
-                Ok(l) => l,
-                Err(_) => return false,
-            };
+            )
+            .ok()?;
             if i + 4 + len > buf.len() {
-                return false;
+                return None;
             }
             i += 4 + len;
             if msg_type == HS_FINISHED {
-                return i == buf.len();
+                return Some(i);
             }
         }
-        false
+        None
     }
 
     pub fn as_slice(&self) -> &[u8] {
@@ -187,6 +210,49 @@ mod tests {
         // Record 3: Finished
         r.push_content(fin(32).as_slice()).unwrap();
         assert!(r.is_complete());
+    }
+
+    #[test]
+    fn trailing_bytes_after_finished_still_complete() {
+        // RFC 8446 lets a server pack post-handshake messages (e.g.
+        // NewSessionTicket, msg_type=4) into the same encrypted record as
+        // the server `Finished`. The reassembler must treat the first
+        // well-framed `Finished` as end-of-flight; `flight_bytes()` slices
+        // the buffer up to and including `Finished` so the strict
+        // `parse_server_flight` doesn't choke on the trailing payload.
+        let mut r: ServerFlightReassembler<512> = ServerFlightReassembler::new();
+        let mut combined = heapless::Vec::<u8, 512>::new();
+        combined.extend_from_slice(ee(2).as_slice()).unwrap();
+        combined.extend_from_slice(cert(40).as_slice()).unwrap();
+        combined.extend_from_slice(cv(70).as_slice()).unwrap();
+        combined.extend_from_slice(fin(32).as_slice()).unwrap();
+        let flight_only_len = combined.len();
+        // Synthesize a NewSessionTicket-shaped trailing message.
+        let nst = alloc_helper::msg(4, 8);
+        combined.extend_from_slice(nst.as_slice()).unwrap();
+
+        r.push_content(&combined).unwrap();
+        assert!(
+            r.is_complete(),
+            "is_complete must tolerate trailing post-handshake bytes"
+        );
+        let flight = r.flight_bytes().expect("flight_bytes after Finished");
+        assert_eq!(flight.len(), flight_only_len);
+        // Trailing bytes still visible via the full buffer.
+        assert!(r.as_slice().len() > flight.len());
+        assert_eq!(&r.as_slice()[flight.len()..], nst.as_slice());
+    }
+
+    #[test]
+    fn flight_bytes_returns_none_until_finished() {
+        let mut r: ServerFlightReassembler<512> = ServerFlightReassembler::new();
+        r.push_content(ee(2).as_slice()).unwrap();
+        r.push_content(cert(40).as_slice()).unwrap();
+        assert!(r.flight_bytes().is_none());
+        r.push_content(cv(70).as_slice()).unwrap();
+        assert!(r.flight_bytes().is_none());
+        r.push_content(fin(32).as_slice()).unwrap();
+        assert!(r.flight_bytes().is_some());
     }
 
     #[test]
