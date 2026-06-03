@@ -190,11 +190,15 @@ impl<'a> HsReader<'a> {
         ])
         .try_into()
         .map_err(|_| FlightError::Truncated)?;
-        let body_start = self.pos + 4;
-        let body_end = body_start + len;
-        if self.buf.len() < body_end {
+        // Rewrite `body_start + len > self.buf.len()` to avoid overflow
+        // on 16-bit `usize`: the `self.buf.len() < self.pos + 4` guard
+        // above guarantees `self.buf.len() >= self.pos + 4`, so
+        // `self.buf.len() - self.pos - 4` can't underflow.
+        if len > self.buf.len() - self.pos - 4 {
             return Err(FlightError::Truncated);
         }
+        let body_start = self.pos + 4;
+        let body_end = body_start + len;
         let body = &self.buf[body_start..body_end];
         let full = &self.buf[self.pos..body_end];
         self.pos = body_end;
@@ -228,10 +232,14 @@ pub fn extract_cert_der(cert_body: &[u8]) -> Result<&[u8], FlightError> {
     let list_len = usize::try_from(read_u24(&cert_body[after_ctx..after_ctx + 3]))
         .map_err(|_| FlightError::Truncated)?;
     let list_start = after_ctx + 3;
-    let list_end = list_start + list_len;
-    if cert_body.len() < list_end {
+    // `list_start + list_len > cert_body.len()` reformulated to avoid
+    // overflow on 16-bit `usize`: the `cert_body.len() < after_ctx + 3`
+    // check above guarantees `cert_body.len() >= list_start`, so the
+    // subtraction is safe.
+    if list_len > cert_body.len() - list_start {
         return Err(FlightError::Truncated);
     }
+    let list_end = list_start + list_len;
     let list = &cert_body[list_start..list_end];
 
     // First entry: u24(cert_data_len) || cert_data || u16(exts_len) || exts.
@@ -249,14 +257,20 @@ pub fn extract_cert_der(cert_body: &[u8]) -> Result<&[u8], FlightError> {
     }
     let cert_data_len =
         usize::try_from(read_u24(&list[0..3])).map_err(|_| FlightError::Truncated)?;
-    let cert_end = 3 + cert_data_len;
-    if list.len() < cert_end + 2 {
+    // `cert_end + 2 = 3 + cert_data_len + 2 = 5 + cert_data_len > list.len()`
+    // reformulated to avoid overflow on 16-bit `usize`: bail if the list
+    // is too short for the 3+2 framing bytes or if cert_data_len doesn't
+    // fit the remaining window.
+    if list.len() < 5 || cert_data_len > list.len() - 5 {
         return Err(FlightError::Truncated);
     }
+    let cert_end = 3 + cert_data_len;
     // Verify the exts length is internally consistent (so we can't get past
     // the cert by miscounting), but don't inspect its content.
     let exts_len = u16::from_be_bytes([list[cert_end], list[cert_end + 1]]) as usize;
-    if list.len() < cert_end + 2 + exts_len {
+    // `cert_end + 2 + exts_len > list.len()` reformulated against
+    // overflow: the previous guard ensures `list.len() >= cert_end + 2`.
+    if exts_len > list.len() - cert_end - 2 {
         return Err(FlightError::Truncated);
     }
     Ok(&list[3..cert_end])

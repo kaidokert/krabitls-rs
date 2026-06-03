@@ -90,7 +90,10 @@ impl<const N: usize> ServerFlightReassembler<N> {
                 ((buf[i + 1] as u32) << 16) | ((buf[i + 2] as u32) << 8) | (buf[i + 3] as u32),
             )
             .ok()?;
-            if i + 4 + len > buf.len() {
+            // Rewrite of `i + 4 + len > buf.len()` to avoid overflow on
+            // 16-bit `usize`: the loop guarantees `i + 4 <= buf.len()`,
+            // so `buf.len() - i - 4` can't underflow.
+            if len > buf.len() - i - 4 {
                 return None;
             }
             i += 4 + len;

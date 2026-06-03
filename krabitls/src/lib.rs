@@ -426,10 +426,11 @@ pub fn parse_server_hello(input: &[u8]) -> Result<ServerHelloView<'_>, ParseErro
     }
     // Downgrade sentinels live in the last 8 bytes of random. A real TLS 1.3-only
     // server would never emit these; an MITM forcing TLS 1.2 would.
-    let suffix: &[u8; 8] = random[24..]
-        .try_into()
-        .expect("random is 32 bytes, slice [24..] is 8");
-    if suffix == &DOWNGRADE_TLS12 || suffix == &DOWNGRADE_TLS11_OR_BELOW {
+    // Slice equality avoids the `try_into().expect(...)` path (the
+    // sentinels are `&[u8; 8]`, comparing them against `&[u8]` works
+    // via `PartialEq<[u8; 8]> for [u8]`).
+    let suffix = &random[24..];
+    if suffix == DOWNGRADE_TLS12 || suffix == DOWNGRADE_TLS11_OR_BELOW {
         return Err(ParseError::DowngradeDetected);
     }
 
