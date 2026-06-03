@@ -543,8 +543,11 @@ impl<'a> Reader<'a> {
 
     fn take_array<const N: usize>(&mut self) -> Result<&'a [u8; N], ParseError> {
         let slice = self.take(N)?;
-        // Safe: `take` just gave us exactly N bytes.
-        Ok(slice.try_into().expect("slice length checked above"))
+        // `take(N)` guarantees `slice.len() == N`, so the `try_from` here
+        // is statically infallible — but we map the error rather than
+        // `expect(...)`-ing to keep the panic-machinery path out of the
+        // binary. The dead `Err` arm is dropped by codegen.
+        <&[u8; N]>::try_from(slice).map_err(|_| ParseError::Truncated)
     }
 
     fn u8(&mut self) -> Result<u8, ParseError> {

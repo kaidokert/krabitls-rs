@@ -176,10 +176,19 @@ pub fn encrypt_record<'a, A: Aes128GcmAead>(
     // ---- record header ----
     // The cipher_body_len <= TLS_CIPHERTEXT_MAX (= 2^14 + 256 = 16640) cap
     // above means the `as u16` cast here is provably non-truncating.
-    out_buf[0] = crate::consts::CT_APPLICATION_DATA;
-    out_buf[1..3].copy_from_slice(&crate::consts::LEGACY_VERSION.to_be_bytes());
-    out_buf[3..5].copy_from_slice(&(cipher_body_len as u16).to_be_bytes());
-    let aad: [u8; 5] = out_buf[..5].try_into().expect("header slice is 5 bytes");
+    // Build the AAD directly (no `try_into().expect(...)`), then copy it
+    // into the buffer. The header IS the AAD by definition; constructing
+    // it once eliminates a panic path.
+    let legacy = crate::consts::LEGACY_VERSION.to_be_bytes();
+    let body_len_be = (cipher_body_len as u16).to_be_bytes();
+    let aad: [u8; 5] = [
+        crate::consts::CT_APPLICATION_DATA,
+        legacy[0],
+        legacy[1],
+        body_len_be[0],
+        body_len_be[1],
+    ];
+    out_buf[..5].copy_from_slice(&aad);
 
     // ---- inner plaintext ----
     out_buf[5..5 + content.len()].copy_from_slice(content);
