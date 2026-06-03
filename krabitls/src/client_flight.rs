@@ -8,9 +8,8 @@
 use crate::aead::{EncryptError, encrypt_record};
 use crate::consts::CT_HANDSHAKE;
 use crate::hkdf::{HkdfLabelError, finished_mac, traffic_keys};
-use crate::newtype::{Secret, TranscriptDigest};
+use crate::newtype::{Secret, TranscriptDigest, ZeroizingBuffer};
 use crate::traits::{Aes128GcmAead, HkdfSha256};
-use zeroize::Zeroizing;
 
 const HS_FINISHED: u8 = 20;
 
@@ -63,23 +62,33 @@ pub fn build_client_finished<'a, H: HkdfSha256, A: Aes128GcmAead>(
     seq: u64,
     out_buf: &'a mut [u8],
 ) -> Result<&'a [u8], ClientFinishedError> {
-    // verify_data = HMAC-SHA256(finished_key, transcript_hash). Wrap in
-    // `Zeroizing` so the MAC bytes go away when this function returns
-    // (including via `?` early-return through encrypt_record below).
-    let verify_data: Zeroizing<[u8; 32]> = Zeroizing::new(finished_mac::<H>(
+    // verify_data = HMAC-SHA256(finished_key, transcript_hash). Wrap so
+    // the MAC bytes get wiped when this function returns (including via
+    // `?` early-return through encrypt_record below).
+    let verify_data = ZeroizingBuffer::<32>::from(finished_mac::<H>(
         c_hs_traffic_secret,
         transcript_hash_through_server_finished,
     )?);
 
     // Finished handshake message = u8(20) || u24(32) || verify_data.
     // Holds the verify_data inline, so the buffer itself is sensitive.
-    let mut finished_msg: Zeroizing<[u8; 4 + 32]> = Zeroizing::new([0u8; 4 + 32]);
-    finished_msg[0] = HS_FINISHED;
-    finished_msg[1..4].copy_from_slice(&[0x00, 0x00, 0x20]); // length = 32 (big-endian u24)
-    finished_msg[4..].copy_from_slice(&*verify_data);
+    let mut finished_msg = ZeroizingBuffer::<{ 4 + 32 }>::zero();
+    {
+        let msg = finished_msg.as_slice_mut();
+        msg[0] = HS_FINISHED;
+        msg[1..4].copy_from_slice(&[0x00, 0x00, 0x20]); // length = 32 (big-endian u24)
+        msg[4..].copy_from_slice(verify_data.as_slice());
+    }
 
     let (key, iv) = traffic_keys::<H>(c_hs_traffic_secret)?;
-    let record = encrypt_record::<A>(&*finished_msg, CT_HANDSHAKE, &key, &iv, seq, out_buf)?;
+    let record = encrypt_record::<A>(
+        finished_msg.as_slice(),
+        CT_HANDSHAKE,
+        &key,
+        &iv,
+        seq,
+        out_buf,
+    )?;
     Ok(record)
 }
 

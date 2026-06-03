@@ -8,9 +8,8 @@
 //! `TranscriptHash` running-hash wrapper, the `hkdf_expand_label`
 //! encoder, and the `HkdfLabelError` enum.
 
-use crate::newtype::{AeadIv, AeadKey, Secret, TranscriptDigest};
+use crate::newtype::{AeadIv, AeadKey, Secret, TranscriptDigest, ZeroizingBuffer};
 use crate::traits::{HkdfExpandError, HkdfSha256, Sha256Hasher};
-use zeroize::Zeroizing;
 
 // =====================================================================
 // TLS 1.3 derivation helpers built on top of the HKDF trait.
@@ -105,18 +104,18 @@ pub fn derive_secret<H: HkdfSha256>(
     label: &[u8],
     transcript_hash: &TranscriptDigest,
 ) -> Result<Secret, HkdfLabelError> {
-    // `Zeroizing<[u8; 32]>` wipes the stack buffer when the binding
-    // goes out of scope (including any early-return error path). The
-    // `Secret::new(*out)` copy below produces a long-lived `Secret`
-    // whose own `Drop` will zero its own copy too — defense in depth.
-    let mut out: Zeroizing<[u8; 32]> = Zeroizing::new([0u8; 32]);
+    // `ZeroizingBuffer` wipes the stack buffer when the binding goes
+    // out of scope (covers the `?` early-return path too). The
+    // `Secret::new(out.into_array())` copy below produces a long-lived
+    // `Secret` whose own `Drop` zeroes its own copy — defense in depth.
+    let mut out = ZeroizingBuffer::<32>::zero();
     hkdf_expand_label::<H>(
         secret.as_bytes(),
         label,
         transcript_hash.as_bytes(),
-        &mut *out,
+        out.as_slice_mut(),
     )?;
-    Ok(Secret::new(*out))
+    Ok(Secret::new(out.into_array()))
 }
 
 // =====================================================================
@@ -255,11 +254,11 @@ pub fn traffic_keys<H: HkdfSha256>(
 ) -> Result<(AeadKey, AeadIv), HkdfLabelError> {
     // Wrap the temp stack buffers so they auto-zero when the bindings
     // go out of scope (covers the `?` error-return paths too).
-    let mut key: Zeroizing<[u8; 16]> = Zeroizing::new([0u8; 16]);
-    let mut iv: Zeroizing<[u8; 12]> = Zeroizing::new([0u8; 12]);
-    hkdf_expand_label::<H>(traffic_secret.as_bytes(), b"key", &[], &mut *key)?;
-    hkdf_expand_label::<H>(traffic_secret.as_bytes(), b"iv", &[], &mut *iv)?;
-    Ok((AeadKey::new(*key), AeadIv::new(*iv)))
+    let mut key = ZeroizingBuffer::<16>::zero();
+    let mut iv = ZeroizingBuffer::<12>::zero();
+    hkdf_expand_label::<H>(traffic_secret.as_bytes(), b"key", &[], key.as_slice_mut())?;
+    hkdf_expand_label::<H>(traffic_secret.as_bytes(), b"iv", &[], iv.as_slice_mut())?;
+    Ok((AeadKey::new(key.into_array()), AeadIv::new(iv.into_array())))
 }
 
 /// `master_secret = HKDF-Extract(Derive-Secret(handshake_secret, "derived", H("")), 0_hash)`
@@ -303,13 +302,16 @@ pub fn finished_mac<H: HkdfSha256>(
     traffic_secret: &Secret,
     transcript_hash: &TranscriptDigest,
 ) -> Result<[u8; 32], HkdfLabelError> {
-    let mut finished_key: Zeroizing<[u8; 32]> = Zeroizing::new([0u8; 32]);
+    let mut finished_key = ZeroizingBuffer::<32>::zero();
     hkdf_expand_label::<H>(
         traffic_secret.as_bytes(),
         b"finished",
         &[],
-        &mut *finished_key,
+        finished_key.as_slice_mut(),
     )?;
     // HKDF-Extract(salt, IKM) == HMAC(salt, IKM) under SHA-256.
-    Ok(H::extract(&*finished_key, transcript_hash.as_bytes()))
+    Ok(H::extract(
+        finished_key.as_slice(),
+        transcript_hash.as_bytes(),
+    ))
 }

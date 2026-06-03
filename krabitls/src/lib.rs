@@ -43,7 +43,7 @@ pub use hkdf::{
     application_traffic_secrets, derive_secret, early_secret, finished_mac, handshake_secret,
     handshake_traffic_secrets, hkdf_expand_label, master_secret, traffic_keys,
 };
-pub use newtype::{AeadIv, AeadKey, Secret, TranscriptDigest};
+pub use newtype::{AeadIv, AeadKey, Secret, TranscriptDigest, ZeroizingBuffer};
 pub use server_flight::{
     FlightError, ServerFlightVerified, ServerFlightView, ServerPubkey, extract_cert_der,
     parse_server_flight, verify_certificate_verify, verify_self_signed_cert,
