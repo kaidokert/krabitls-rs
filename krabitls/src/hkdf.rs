@@ -177,12 +177,27 @@ impl<H: HkdfSha256> TranscriptHash<H> {
     /// body). The transcript hash covers only the handshake-message bytes per
     /// RFC 8446 §4.4.1, so the 5-byte header is stripped internally.
     ///
-    /// Returns `Err(TranscriptError::RecordTooShort)` if `record.len() < 5`.
+    /// Uses the record header's declared `length` to decide how many body
+    /// bytes to hash. A caller-supplied buffer holding a complete record
+    /// followed by trailing bytes (e.g. the start of the next record on a
+    /// buffered socket read) will hash only the declared `length` bytes;
+    /// silently absorbing the trailing tail would diverge the transcript
+    /// from the peer's.
+    ///
+    /// Returns `Err(TranscriptError::RecordTooShort)` if `record.len() < 5`
+    /// or if `record.len() < 5 + declared_length`.
     pub fn update_record(&mut self, record: &[u8]) -> Result<(), TranscriptError> {
         if record.len() < 5 {
             return Err(TranscriptError::RecordTooShort);
         }
-        self.hasher.update(&record[5..]);
+        let body_len = u16::from_be_bytes([record[3], record[4]]) as usize;
+        let end = 5usize
+            .checked_add(body_len)
+            .ok_or(TranscriptError::RecordTooShort)?;
+        if record.len() < end {
+            return Err(TranscriptError::RecordTooShort);
+        }
+        self.hasher.update(&record[5..end]);
         Ok(())
     }
 

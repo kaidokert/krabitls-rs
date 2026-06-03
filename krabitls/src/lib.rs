@@ -1027,6 +1027,50 @@ mod tests {
     }
 
     #[test]
+    fn transcript_update_record_honors_declared_length() {
+        // A buffered-read scenario: caller's slice holds the full record
+        // followed by an extra trailing byte (start of the next record).
+        // The transcript must hash ONLY the declared `length` bytes,
+        // otherwise it silently diverges from the peer's transcript and
+        // every downstream MAC/derivation fails.
+        //
+        // Build a record whose body is 4 bytes "abcd", append a 5th
+        // trailing 0xFF that does NOT belong.
+        let mut record_plus_tail = [0u8; 5 + 4 + 1];
+        record_plus_tail[0] = consts::CT_HANDSHAKE;
+        record_plus_tail[1..3].copy_from_slice(&consts::LEGACY_VERSION.to_be_bytes());
+        record_plus_tail[3..5].copy_from_slice(&4u16.to_be_bytes());
+        record_plus_tail[5..9].copy_from_slice(b"abcd");
+        record_plus_tail[9] = 0xFF;
+
+        let mut a = TranscriptHash::<RustCrypto>::new();
+        a.update_record(&record_plus_tail).unwrap();
+
+        let mut b = TranscriptHash::<RustCrypto>::new();
+        b.update(b"abcd");
+
+        assert_eq!(
+            a.snapshot(),
+            b.snapshot(),
+            "trailing 0xFF must NOT be hashed"
+        );
+    }
+
+    #[test]
+    fn transcript_update_record_rejects_short_body() {
+        // Header declares 100 bytes of body but only 10 are present.
+        let mut record = [0u8; 5 + 10];
+        record[0] = consts::CT_HANDSHAKE;
+        record[1..3].copy_from_slice(&consts::LEGACY_VERSION.to_be_bytes());
+        record[3..5].copy_from_slice(&100u16.to_be_bytes());
+        let mut t = TranscriptHash::<RustCrypto>::new();
+        assert_eq!(
+            t.update_record(&record),
+            Err(TranscriptError::RecordTooShort)
+        );
+    }
+
+    #[test]
     fn fixture_transcript_hash_ch_sh() {
         // TranscriptHash strips the 5-byte TLS record header internally and
         // hashes the handshake-message body — RFC 8446 §4.4.1.
