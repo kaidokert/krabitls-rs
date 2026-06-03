@@ -21,9 +21,10 @@ const HS_FINISHED: u8 = 20;
 /// * `c_hs_traffic_secret` — the client handshake traffic secret derived
 ///   right after ServerHello.
 /// * `transcript_hash_through_server_finished` — `SHA-256(CH || SH || EE ||
-///   Cert || CertVerify || ServerFinished)`. This is what
-///   [`crate::ServerFlightVerified::transcript_hash_through_finished`]
-///   returns.
+///   Cert || CertVerify || ServerFinished)`. Obtained by calling
+///   `transcript.snapshot()` on the caller-owned [`crate::TranscriptHash`]
+///   after [`crate::verify_server_flight`] returns (the verifier hashes
+///   the inner-handshake messages forward through `ServerFinished`).
 /// * `seq` — record sequence number under `c_hs_traffic_secret` (= 0 for the
 ///   first client record, which is the typical case).
 /// * `out_buf` — caller-provided scratch. Must hold at least 58 bytes
