@@ -1,0 +1,43 @@
+name: Rust nightly
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * 1'  # Weekly on Monday at 06:00 UTC
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-nightly-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  nightly:
+    runs-on: ubuntu-latest
+    # Nightly drifts; don't block PRs on it.
+    continue-on-error: true
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+    - uses: dtolnay/rust-toolchain@nightly
+    - uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          krabitls/target
+        key: nightly-${{ hashFiles('krabitls/Cargo.toml') }}
+        restore-keys: nightly-
+
+    - name: Build
+      run: cargo build --manifest-path=krabitls/Cargo.toml --verbose
+    - name: Test
+      run: cargo test --manifest-path=krabitls/Cargo.toml --verbose
