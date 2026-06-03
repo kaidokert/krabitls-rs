@@ -19,6 +19,7 @@ use crate::consts::SIG_SCHEME_ED25519;
 use crate::hkdf::{HkdfLabelError, TranscriptHash, hkdf_expand_label};
 use crate::newtype::{Secret, TranscriptDigest};
 use crate::traits::{CertParseError, CertParser, CertView, Ed25519Verify, HkdfSha256};
+use zeroize::Zeroizing;
 
 // =====================================================================
 // Inner-handshake message types we expect inside packet 003.
@@ -416,17 +417,17 @@ pub fn verify_server_finished<H: HkdfSha256>(
     if finished_body.len() != 32 {
         return Err(FlightError::FinishedWrongLength);
     }
-    let mut finished_key = [0u8; 32];
+    let mut finished_key: Zeroizing<[u8; 32]> = Zeroizing::new([0u8; 32]);
     hkdf_expand_label::<H>(
         s_hs_traffic_secret.as_bytes(),
         b"finished",
         &[],
-        &mut finished_key,
+        &mut *finished_key,
     )
     .map_err(FlightError::HkdfLabel)?;
     // `HKDF-Extract(salt, IKM)` is literally `HMAC(salt, IKM)`, so this gives
     // us HMAC-SHA256(finished_key, transcript_hash).
-    let expected = H::extract(&finished_key, transcript_hash_ch_through_cv.as_bytes());
+    let expected = H::extract(&*finished_key, transcript_hash_ch_through_cv.as_bytes());
     // Constant-time-ish compare. Both inputs are public after the fact but
     // it's still good hygiene to avoid early-exit on the first mismatching byte.
     let mut diff = 0u8;
