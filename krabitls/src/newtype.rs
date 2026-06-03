@@ -36,68 +36,27 @@
 //!   the latter is a short-lived scratch that wraps into one of the
 //!   newtypes above.
 
-use zeroize::{Zeroize, Zeroizing};
-
 /// Fixed-size byte buffer that wipes its contents on drop.
 ///
-/// Convenience wrapper around `Zeroizing<[u8; N]>`. Call sites don't
-/// need to import `zeroize::Zeroizing` or annotate the array type:
+/// Type alias for [`zeroize::Zeroizing<[u8; N]>`] — picks up the
+/// crate's auto-zero-on-drop, `Deref<Target = [u8; N]>` (so `*buf`
+/// gives the array, `&buf[..]` gives the slice, `buf[i]` indexes), and
+/// `DerefMut` for the same on the write side.
 ///
-/// ```ignore
-/// // Before
-/// let mut key: Zeroizing<[u8; 16]> = Zeroizing::new([0u8; 16]);
-/// hkdf_expand_label::<H>(..., &mut *key)?;
-/// let aead_key = AeadKey::new(*key);
-///
-/// // After
-/// let mut key = ZeroizingBuffer::<16>::zero();
-/// hkdf_expand_label::<H>(..., key.as_slice_mut())?;
-/// let aead_key = AeadKey::new(key.into_array());
-/// ```
-///
-/// Use this for short-lived stack scratch that holds secret bytes en
-/// route to one of the long-lived [`Secret`] / [`AeadKey`] / [`AeadIv`]
+/// Use for short-lived stack scratch that holds secret bytes en route
+/// to one of the long-lived [`Secret`] / [`AeadKey`] / [`AeadIv`]
 /// newtypes (which themselves auto-zero on drop). On every code path —
 /// including `?` early-returns — the bytes are wiped when the binding
 /// goes out of scope.
-#[repr(transparent)]
-pub struct ZeroizingBuffer<const N: usize>(Zeroizing<[u8; N]>);
+///
+/// ```ignore
+/// let mut key = ZeroBuf::<16>::new([0; 16]);
+/// hkdf_expand_label::<H>(..., &mut key[..])?;
+/// let aead_key = AeadKey::new(*key);
+/// ```
+pub type ZeroBuf<const N: usize> = zeroize::Zeroizing<[u8; N]>;
 
-impl<const N: usize> ZeroizingBuffer<N> {
-    /// Allocate a zero-filled N-byte buffer. The bytes are wiped again
-    /// when this value is dropped.
-    pub fn zero() -> Self {
-        Self(Zeroizing::new([0u8; N]))
-    }
-
-    /// Borrow the buffer for read.
-    pub fn as_slice(&self) -> &[u8] {
-        &*self.0
-    }
-
-    /// Borrow the buffer for write — hand to APIs that take `&mut [u8]`
-    /// (e.g. `hkdf_expand_label`).
-    pub fn as_slice_mut(&mut self) -> &mut [u8] {
-        &mut *self.0
-    }
-
-    /// Consume the buffer and return the bytes by value. Typically used
-    /// at the boundary into a long-lived newtype constructor; the
-    /// `ZeroizingBuffer` is dropped (and the stack copy zeroed)
-    /// immediately after the call.
-    pub fn into_array(self) -> [u8; N] {
-        *self.0
-    }
-}
-
-impl<const N: usize> From<[u8; N]> for ZeroizingBuffer<N> {
-    /// Wrap an existing byte array. Useful at the boundary into the
-    /// auto-zeroing world from a function that returns a bare `[u8; N]`:
-    /// `let mac = ZeroizingBuffer::from(finished_mac::<H>(...)?);`
-    fn from(bytes: [u8; N]) -> Self {
-        Self(Zeroizing::new(bytes))
-    }
-}
+use zeroize::Zeroize;
 
 /// Generates a secret-bearing byte newtype. Not `Copy` (every move is
 /// explicit and traceable), zeroes on drop.
@@ -309,11 +268,15 @@ mod tests {
     // observed. Trust the implementation + the Zeroize test.)
 
     #[test]
-    fn zeroizing_buffer_round_trip() {
-        let mut buf = ZeroizingBuffer::<16>::zero();
-        assert_eq!(buf.as_slice(), &[0u8; 16]);
-        buf.as_slice_mut().copy_from_slice(&[0x42; 16]);
-        assert_eq!(buf.as_slice(), &[0x42u8; 16]);
-        assert_eq!(buf.into_array(), [0x42u8; 16]);
+    fn zero_buf_round_trip() {
+        // ZeroBuf is `Zeroizing<[u8; N]>`. Deref to the array gives us
+        // indexing and `*buf` copy-out for the boundary into other
+        // newtype constructors.
+        let mut buf = ZeroBuf::<16>::new([0u8; 16]);
+        assert_eq!(*buf, [0u8; 16]);
+        buf.copy_from_slice(&[0x42; 16]);
+        assert_eq!(*buf, [0x42u8; 16]);
+        let arr: [u8; 16] = *buf;
+        assert_eq!(arr, [0x42u8; 16]);
     }
 }
