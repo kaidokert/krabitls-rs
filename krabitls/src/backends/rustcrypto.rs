@@ -12,6 +12,8 @@ use aes_gcm::aead::generic_array::GenericArray;
 use aes_gcm::{Aes128Gcm, KeyInit};
 use sha2::{Digest, Sha256};
 
+use zeroize::Zeroizing;
+
 use crate::traits::ed25519_verify::Ed25519Verify;
 use crate::traits::{AeadError, Aes128GcmAead};
 use crate::traits::{HkdfExpandError, HkdfSha256, Sha256Hasher};
@@ -37,9 +39,9 @@ impl HkdfSha256 for RustCrypto {
         Sha256::new()
     }
 
-    fn extract(salt: &[u8], ikm: &[u8]) -> [u8; 32] {
+    fn extract(salt: &[u8], ikm: &[u8]) -> Zeroizing<[u8; 32]> {
         let (prk, _) = Hkdf::<Sha256>::extract(Some(salt), ikm);
-        prk.into()
+        Zeroizing::new(prk.into())
     }
 
     fn expand(prk: &[u8; 32], info: &[u8], out: &mut [u8]) -> Result<(), HkdfExpandError> {
@@ -51,25 +53,30 @@ impl HkdfSha256 for RustCrypto {
 
 impl Aes128GcmAead for RustCrypto {
     fn decrypt(
-        key: &[u8; 16],
-        nonce: &[u8; 12],
+        key: &Zeroizing<[u8; 16]>,
+        nonce: &Zeroizing<[u8; 12]>,
         aad: &[u8],
         buffer: &mut [u8],
         tag: &[u8; 16],
     ) -> Result<(), AeadError> {
         let cipher =
-            Aes128Gcm::new_from_slice(key).expect("16-byte key is always valid for AES-128-GCM");
-        let nonce = GenericArray::from_slice(nonce);
+            Aes128Gcm::new_from_slice(&**key).expect("16-byte key is always valid for AES-128-GCM");
+        let nonce = GenericArray::from_slice(&**nonce);
         let tag = GenericArray::from_slice(tag);
         cipher
             .decrypt_in_place_detached(nonce, aad, buffer, tag)
             .map_err(|_| AeadError)
     }
 
-    fn encrypt(key: &[u8; 16], nonce: &[u8; 12], aad: &[u8], buffer: &mut [u8]) -> [u8; 16] {
+    fn encrypt(
+        key: &Zeroizing<[u8; 16]>,
+        nonce: &Zeroizing<[u8; 12]>,
+        aad: &[u8],
+        buffer: &mut [u8],
+    ) -> [u8; 16] {
         let cipher =
-            Aes128Gcm::new_from_slice(key).expect("16-byte key is always valid for AES-128-GCM");
-        let nonce = GenericArray::from_slice(nonce);
+            Aes128Gcm::new_from_slice(&**key).expect("16-byte key is always valid for AES-128-GCM");
+        let nonce = GenericArray::from_slice(&**nonce);
         let tag = cipher
             .encrypt_in_place_detached(nonce, aad, buffer)
             .expect("AES-128-GCM encrypt cannot fail on well-sized inputs");

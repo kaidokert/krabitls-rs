@@ -115,7 +115,7 @@ pub fn derive_secret<H: HkdfSha256>(
         transcript_hash.as_bytes(),
         &mut out[..],
     )?;
-    Ok(Secret::new(*out))
+    Ok(Secret::new(out))
 }
 
 // =====================================================================
@@ -258,7 +258,7 @@ pub fn traffic_keys<H: HkdfSha256>(
     let mut iv = ZeroBuf::<12>::new([0; 12]);
     hkdf_expand_label::<H>(traffic_secret.as_bytes(), b"key", &[], &mut key[..])?;
     hkdf_expand_label::<H>(traffic_secret.as_bytes(), b"iv", &[], &mut iv[..])?;
-    Ok((AeadKey::new(*key), AeadIv::new(*iv)))
+    Ok((AeadKey::new(key), AeadIv::new(iv)))
 }
 
 /// `master_secret = HKDF-Extract(Derive-Secret(handshake_secret, "derived", H("")), 0_hash)`
@@ -296,12 +296,13 @@ pub fn application_traffic_secrets<H: HkdfSha256>(
 /// the only thing that changes is which traffic secret you derive
 /// `finished_key` from.
 ///
-/// Returns the raw 32-byte MAC (not wrapped in `Secret` — it's verify_data,
-/// not key material, and gets compared against the wire bytes immediately).
+/// Returns the 32-byte MAC wrapped in `ZeroBuf` (= `Zeroizing<[u8; 32]>`).
+/// The MAC isn't a long-term secret but it's derived from the
+/// `finished_key` and shouldn't linger on the stack after consumption.
 pub fn finished_mac<H: HkdfSha256>(
     traffic_secret: &Secret,
     transcript_hash: &TranscriptDigest,
-) -> Result<[u8; 32], HkdfLabelError> {
+) -> Result<ZeroBuf<32>, HkdfLabelError> {
     let mut finished_key = ZeroBuf::<32>::new([0; 32]);
     hkdf_expand_label::<H>(
         traffic_secret.as_bytes(),

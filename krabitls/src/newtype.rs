@@ -56,10 +56,12 @@
 /// ```
 pub type ZeroBuf<const N: usize> = zeroize::Zeroizing<[u8; N]>;
 
-use zeroize::Zeroize;
-
-/// Generates a secret-bearing byte newtype. Not `Copy` (every move is
-/// explicit and traceable), zeroes on drop.
+/// Generates a secret-bearing byte newtype.
+///
+/// Holds `Zeroizing<[u8; N]>` internally — Drop-zero comes from the
+/// inner wrapper, no manual impl needed. Constructor takes the
+/// wrapped value by move, so handing bytes through ZeroBuf → newtype
+/// is a single move with no implicit `*key` deref-copy of the array.
 macro_rules! secret_newtype {
     (
         $(#[$attr:meta])*
@@ -68,42 +70,33 @@ macro_rules! secret_newtype {
         $(#[$attr])*
         #[repr(transparent)]
         #[derive(Clone, PartialEq, Eq)]
-        pub struct $name(pub [u8; $n]);
+        pub struct $name(ZeroBuf<$n>);
 
         impl $name {
-            pub const fn new(bytes: [u8; $n]) -> Self {
+            /// Wrap an existing `ZeroBuf<N>` (= `Zeroizing<[u8; N]>`).
+            /// Takes the wrapper by move — no copy of the bytes.
+            pub fn new(bytes: ZeroBuf<$n>) -> Self {
                 Self(bytes)
             }
 
-            pub const fn as_bytes(&self) -> &[u8; $n] {
+            /// Borrow the underlying bytes as `&[u8; N]`. The returned
+            /// reference is short-lived; the secret bytes stay owned by
+            /// the inner `Zeroizing<>`.
+            pub fn as_bytes(&self) -> &[u8; $n] {
+                &*self.0
+            }
+
+            /// Borrow the underlying `Zeroizing<[u8; N]>` directly —
+            /// for handing to APIs that expect that contract at the
+            /// type level (e.g. [`crate::traits::Aes128GcmAead`]).
+            pub fn as_zeroizing(&self) -> &ZeroBuf<$n> {
                 &self.0
             }
         }
 
         impl AsRef<[u8; $n]> for $name {
             fn as_ref(&self) -> &[u8; $n] {
-                &self.0
-            }
-        }
-
-        impl From<[u8; $n]> for $name {
-            fn from(bytes: [u8; $n]) -> Self {
-                Self(bytes)
-            }
-        }
-
-        impl Zeroize for $name {
-            fn zeroize(&mut self) {
-                self.0.zeroize();
-            }
-        }
-
-        // Auto-zero on drop. Combined with the absence of `Copy`, this
-        // means the bytes get wiped at exactly the point the binding
-        // goes out of scope — no scattered duplicates left behind.
-        impl Drop for $name {
-            fn drop(&mut self) {
-                self.0.zeroize();
+                &*self.0
             }
         }
     };
@@ -205,21 +198,14 @@ mod tests {
 
     #[test]
     fn newtype_round_trip() {
-        let s = Secret::new([0x42; 32]);
+        let s = Secret::new(ZeroBuf::<32>::new([0x42; 32]));
         assert_eq!(s.as_bytes(), &[0x42; 32]);
-        let key = AeadKey::from([0x11; 16]);
+        let key = AeadKey::new(ZeroBuf::<16>::new([0x11; 16]));
         assert_eq!(key.as_bytes(), &[0x11; 16]);
-        let iv = AeadIv::from([0x22; 12]);
+        let iv = AeadIv::new(ZeroBuf::<12>::new([0x22; 12]));
         assert_eq!(iv.as_bytes(), &[0x22; 12]);
         let td = TranscriptDigest::new([0x33; 32]);
         assert_eq!(td.as_bytes(), &[0x33; 32]);
-    }
-
-    #[test]
-    fn secret_zeroizes() {
-        let mut s = Secret::new([0x42; 32]);
-        s.zeroize();
-        assert_eq!(s.as_bytes(), &[0u8; 32]);
     }
 
     extern crate alloc;
@@ -227,7 +213,7 @@ mod tests {
 
     #[test]
     fn secret_debug_does_not_leak_bytes() {
-        let s = Secret::new([0xAB; 32]);
+        let s = Secret::new(ZeroBuf::<32>::new([0xAB; 32]));
         let dbg = format!("{s:?}");
         assert!(!dbg.contains("171"), "Debug leaks decimal bytes: {dbg}");
         assert!(!dbg.contains("0xab"), "Debug leaks hex bytes: {dbg}");
@@ -237,7 +223,7 @@ mod tests {
 
     #[test]
     fn aead_key_debug_does_not_leak_bytes() {
-        let k = AeadKey::from([0xCD; 16]);
+        let k = AeadKey::new(ZeroBuf::<16>::new([0xCD; 16]));
         let dbg = format!("{k:?}");
         assert!(!dbg.contains("205"), "Debug leaks decimal bytes: {dbg}");
         assert!(!dbg.contains("CD"), "Debug leaks hex bytes: {dbg}");
@@ -246,7 +232,7 @@ mod tests {
 
     #[test]
     fn aead_iv_debug_does_not_leak_bytes() {
-        let iv = AeadIv::from([0xEF; 12]);
+        let iv = AeadIv::new(ZeroBuf::<12>::new([0xEF; 12]));
         let dbg = format!("{iv:?}");
         assert!(!dbg.contains("239"), "Debug leaks decimal bytes: {dbg}");
         assert!(!dbg.contains("EF"), "Debug leaks hex bytes: {dbg}");

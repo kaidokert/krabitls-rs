@@ -62,13 +62,11 @@ pub fn build_client_finished<'a, H: HkdfSha256, A: Aes128GcmAead>(
     seq: u64,
     out_buf: &'a mut [u8],
 ) -> Result<&'a [u8], ClientFinishedError> {
-    // verify_data = HMAC-SHA256(finished_key, transcript_hash). Wrap so
-    // the MAC bytes get wiped when this function returns (including via
-    // `?` early-return through encrypt_record below).
-    let verify_data = ZeroBuf::<32>::new(finished_mac::<H>(
-        c_hs_traffic_secret,
-        transcript_hash_through_server_finished,
-    )?);
+    // verify_data = HMAC-SHA256(finished_key, transcript_hash). The
+    // `finished_mac` return is already `ZeroBuf<32>` — auto-wipes on
+    // scope exit, no extra wrapping needed here.
+    let verify_data =
+        finished_mac::<H>(c_hs_traffic_secret, transcript_hash_through_server_finished)?;
 
     // Finished handshake message = u8(20) || u24(32) || verify_data.
     // Holds the verify_data inline, so the buffer itself is sensitive.

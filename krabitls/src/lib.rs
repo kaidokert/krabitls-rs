@@ -893,19 +893,26 @@ mod tests {
     // against the tls_fixture seed-0 derivation chain so a backend swap can be
     // caught here before it ever reaches the QEMU demo.
 
+    // RFC 8448 / fixture constants are kept as raw `[u8; N]` (const-
+    // friendly) and wrapped into the secret-bearing newtypes at use
+    // site via small helpers, because `Zeroizing::new` isn't `const fn`.
+
     /// RFC 8448 §3: `HKDF-Extract(salt=00..00, IKM=00..00)` → no-PSK early secret.
-    const RFC8448_EARLY_SECRET: Secret = Secret::new([
+    const RFC8448_EARLY_SECRET_BYTES: [u8; 32] = [
         0x33, 0xad, 0x0a, 0x1c, 0x60, 0x7e, 0xc0, 0x3b, 0x09, 0xe6, 0xcd, 0x98, 0x93, 0x68, 0x0c,
         0xe2, 0x10, 0xad, 0xf3, 0x00, 0xaa, 0x1f, 0x26, 0x60, 0xe1, 0xb2, 0x2e, 0x10, 0xf1, 0x70,
         0xf9, 0x2a,
-    ]);
+    ];
+    fn make_rfc8448_early_secret() -> Secret {
+        Secret::new(ZeroBuf::<32>::new(RFC8448_EARLY_SECRET_BYTES))
+    }
     /// RFC 8448 §3: `Derive-Secret(EarlySecret, "derived", "")`.
     /// The empty-string transcript hash is `SHA-256("")`.
-    const RFC8448_DERIVED_FROM_EARLY: Secret = Secret::new([
+    const RFC8448_DERIVED_FROM_EARLY_BYTES: [u8; 32] = [
         0x6f, 0x26, 0x15, 0xa1, 0x08, 0xc7, 0x02, 0xc5, 0x67, 0x8f, 0x54, 0xfc, 0x9d, 0xba, 0xb6,
         0x97, 0x16, 0xc0, 0x76, 0x18, 0x9c, 0x48, 0x25, 0x0c, 0xeb, 0xea, 0xc3, 0x57, 0x6c, 0x36,
         0x11, 0xba,
-    ]);
+    ];
     /// `SHA-256("")` — the empty-transcript hash, used by `Derive-Secret(., "derived", "")`.
     const EMPTY_SHA256: TranscriptDigest = TranscriptDigest::new([
         0xe3, 0xb0, 0xc4, 0x42, 0x98, 0xfc, 0x1c, 0x14, 0x9a, 0xfb, 0xf4, 0xc8, 0x99, 0x6f, 0xb9,
@@ -920,24 +927,25 @@ mod tests {
         0x58, 0x0d, 0x48, 0x77, 0x00, 0x91, 0x1f, 0x47, 0xad, 0x94, 0xcb, 0xb3, 0xb5, 0x35, 0x58,
         0xea, 0x51,
     ];
-    const FIXTURE_HANDSHAKE_SECRET: Secret = Secret::new([
+    const FIXTURE_HANDSHAKE_SECRET_BYTES: [u8; 32] = [
         0x67, 0x4c, 0x4a, 0x90, 0x69, 0x17, 0x0e, 0xcd, 0x7a, 0xc6, 0x92, 0x5e, 0x96, 0x22, 0x49,
         0xa2, 0xa8, 0x6d, 0x22, 0x50, 0xc1, 0x2f, 0x21, 0x7a, 0x2c, 0x2a, 0x28, 0x3c, 0x64, 0xbf,
         0x28, 0x7f,
-    ]);
+    ];
 
     #[test]
     fn rfc8448_early_secret() {
         let zeros = [0u8; 32];
         let prk = Secret::new(RustCrypto::extract(&zeros, &zeros));
-        assert_eq!(prk, RFC8448_EARLY_SECRET);
+        assert_eq!(prk.as_bytes(), &RFC8448_EARLY_SECRET_BYTES);
     }
 
     #[test]
     fn rfc8448_derived_from_early() {
         let derived =
-            derive_secret::<RustCrypto>(&RFC8448_EARLY_SECRET, b"derived", &EMPTY_SHA256).unwrap();
-        assert_eq!(derived, RFC8448_DERIVED_FROM_EARLY);
+            derive_secret::<RustCrypto>(&make_rfc8448_early_secret(), b"derived", &EMPTY_SHA256)
+                .unwrap();
+        assert_eq!(derived.as_bytes(), &RFC8448_DERIVED_FROM_EARLY_BYTES);
     }
 
     #[test]
@@ -972,9 +980,10 @@ mod tests {
     fn fixture_handshake_secret() {
         // handshake_secret = HKDF-Extract(Derive-Secret(EarlySecret, "derived", ""), DHE)
         let derived =
-            derive_secret::<RustCrypto>(&RFC8448_EARLY_SECRET, b"derived", &EMPTY_SHA256).unwrap();
+            derive_secret::<RustCrypto>(&make_rfc8448_early_secret(), b"derived", &EMPTY_SHA256)
+                .unwrap();
         let hs = Secret::new(RustCrypto::extract(derived.as_bytes(), &FIXTURE_DHE));
-        assert_eq!(hs, FIXTURE_HANDSHAKE_SECRET);
+        assert_eq!(hs.as_bytes(), &FIXTURE_HANDSHAKE_SECRET_BYTES);
     }
 
     // ---- Full chain: X25519 -> handshake_secret -> s_hs_traffic_secret ----
@@ -996,16 +1005,19 @@ mod tests {
         0x73, 0x7d, 0xaf, 0x66, 0xa1, 0x1a, 0x89, 0x75, 0x6a, 0xb4, 0xb4, 0x3e, 0xdd, 0x87, 0x45,
         0x3f, 0x39,
     ]);
-    const FIXTURE_S_HS_TRAFFIC_SECRET: Secret = Secret::new([
+    const FIXTURE_S_HS_TRAFFIC_SECRET_BYTES: [u8; 32] = [
         0x55, 0x59, 0xd1, 0xcf, 0x33, 0x31, 0x9c, 0x4b, 0x46, 0x2a, 0x11, 0x42, 0x92, 0x90, 0x2d,
         0x05, 0xb8, 0xcc, 0x08, 0xbc, 0x5a, 0xa5, 0xdd, 0x8e, 0x59, 0x84, 0x8b, 0xd0, 0x8d, 0xb2,
         0x82, 0x9b,
-    ]);
-    const FIXTURE_C_HS_TRAFFIC_SECRET: Secret = Secret::new([
+    ];
+    fn make_fixture_s_hs_traffic_secret() -> Secret {
+        Secret::new(ZeroBuf::<32>::new(FIXTURE_S_HS_TRAFFIC_SECRET_BYTES))
+    }
+    const FIXTURE_C_HS_TRAFFIC_SECRET_BYTES: [u8; 32] = [
         0xa4, 0xfa, 0x72, 0xf0, 0xcc, 0x9e, 0xef, 0xe8, 0xb1, 0xcb, 0x2a, 0x53, 0x3e, 0x40, 0x82,
         0x14, 0x65, 0x32, 0x95, 0x4a, 0x6d, 0x25, 0x57, 0x14, 0xa1, 0x7c, 0x2c, 0xef, 0x69, 0x08,
         0xa7, 0x8d,
-    ]);
+    ];
 
     #[test]
     fn transcript_update_record_rejects_too_short() {
@@ -1107,7 +1119,7 @@ mod tests {
         );
         // 2. handshake_secret = HKDF chain rooted at the no-PSK early_secret
         let hs = handshake_secret::<RustCrypto>(&dhe).unwrap();
-        assert_eq!(hs, FIXTURE_HANDSHAKE_SECRET);
+        assert_eq!(hs.as_bytes(), &FIXTURE_HANDSHAKE_SECRET_BYTES);
         // 3. traffic secrets keyed on SHA-256(CH || SH)
         let th = {
             let mut t = TranscriptHash::<RustCrypto>::new();
@@ -1116,36 +1128,36 @@ mod tests {
             t.snapshot()
         };
         let (c_ts, s_ts) = handshake_traffic_secrets::<RustCrypto>(&hs, &th).unwrap();
-        assert_eq!(c_ts, FIXTURE_C_HS_TRAFFIC_SECRET);
-        assert_eq!(s_ts, FIXTURE_S_HS_TRAFFIC_SECRET);
+        assert_eq!(c_ts.as_bytes(), &FIXTURE_C_HS_TRAFFIC_SECRET_BYTES);
+        assert_eq!(s_ts.as_bytes(), &FIXTURE_S_HS_TRAFFIC_SECRET_BYTES);
     }
 
     // ---- traffic_keys + decrypt_record (the actual unlock of packet 003) ----
 
-    const FIXTURE_S_HS_KEY: AeadKey = AeadKey::new([
+    const FIXTURE_S_HS_KEY_BYTES: [u8; 16] = [
         0x72, 0x34, 0xe7, 0x98, 0x57, 0x93, 0x61, 0xb1, 0x41, 0x61, 0x86, 0x3b, 0x79, 0x98, 0x86,
         0x3c,
-    ]);
-    const FIXTURE_S_HS_IV: AeadIv = AeadIv::new([
+    ];
+    const FIXTURE_S_HS_IV_BYTES: [u8; 12] = [
         0x61, 0xcb, 0x91, 0xee, 0x64, 0xff, 0x4a, 0x91, 0xe7, 0x07, 0x1c, 0xbe,
-    ]);
+    ];
 
     #[test]
     fn fixture_traffic_keys_match() {
-        let (key, iv) = traffic_keys::<RustCrypto>(&FIXTURE_S_HS_TRAFFIC_SECRET).unwrap();
-        assert_eq!(key, FIXTURE_S_HS_KEY);
-        assert_eq!(iv, FIXTURE_S_HS_IV);
+        let (key, iv) = traffic_keys::<RustCrypto>(&make_fixture_s_hs_traffic_secret()).unwrap();
+        assert_eq!(key.as_bytes(), &FIXTURE_S_HS_KEY_BYTES);
+        assert_eq!(iv.as_bytes(), &FIXTURE_S_HS_IV_BYTES);
     }
 
     #[test]
     fn aead_nonce_xors_low_8_bytes() {
         // RFC 8446 §5.3: nonce = iv XOR (seq left-padded to iv_len).
-        let iv = AeadIv::new([0u8; 12]);
+        let iv = AeadIv::new(ZeroBuf::<12>::new([0u8; 12]));
         // seq = 1 should set last byte to 1
-        assert_eq!(aead_nonce(&iv, 1), [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+        assert_eq!(*aead_nonce(&iv, 1), [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
         // seq = 0x0102030405060708 should occupy bytes 4..12
         assert_eq!(
-            aead_nonce(&iv, 0x0102030405060708),
+            *aead_nonce(&iv, 0x0102030405060708),
             [0, 0, 0, 0, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08],
         );
     }
@@ -1166,8 +1178,8 @@ mod tests {
         let err = encrypt_record::<RustCrypto>(
             &big,
             consts::CT_APPLICATION_DATA,
-            &AeadKey::new([0u8; 16]),
-            &AeadIv::new([0u8; 12]),
+            &AeadKey::new(ZeroBuf::<16>::new([0u8; 16])),
+            &AeadIv::new(ZeroBuf::<12>::new([0u8; 12])),
             0,
             &mut out,
         )
@@ -1186,8 +1198,8 @@ mod tests {
         let err = encrypt_record::<RustCrypto>(
             &just_over,
             consts::CT_APPLICATION_DATA,
-            &AeadKey::new([0u8; 16]),
-            &AeadIv::new([0u8; 12]),
+            &AeadKey::new(ZeroBuf::<16>::new([0u8; 16])),
+            &AeadIv::new(ZeroBuf::<12>::new([0u8; 12])),
             0,
             &mut out,
         )

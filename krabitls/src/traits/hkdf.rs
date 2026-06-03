@@ -34,7 +34,12 @@ pub trait HkdfSha256 {
     ///
     /// Per RFC 5869, an empty `salt` is equivalent to a 32-byte zero salt;
     /// implementors should handle both.
-    fn extract(salt: &[u8], ikm: &[u8]) -> [u8; 32];
+    ///
+    /// Returned wrapped in `Zeroizing` — the PRK is secret keying
+    /// material. Wrapping at the trait level makes the hygiene
+    /// contract explicit; the wrapper type comes from the canonical
+    /// `zeroize` crate, no krabitls-internal types involved.
+    fn extract(salt: &[u8], ikm: &[u8]) -> zeroize::Zeroizing<[u8; 32]>;
 
     /// `HKDF-Expand(PRK, info, out.len())` → writes `out.len()` derived bytes
     /// into `out`. Returns [`HkdfExpandError::OutputTooLong`] if `out.len()`

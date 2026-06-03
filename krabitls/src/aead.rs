@@ -5,15 +5,20 @@
 //! `decrypt_record` / `encrypt_record` / `aead_nonce` helpers and their
 //! error types.
 
-use crate::newtype::{AeadIv, AeadKey};
+use crate::newtype::{AeadIv, AeadKey, ZeroBuf};
 use crate::traits::Aes128GcmAead;
 
 /// Per-record AEAD nonce: `iv` XOR `seq` (8-byte sequence number,
 /// big-endian, left-padded). RFC 8446 §5.3.
-#[inline]
-pub fn aead_nonce(iv: &AeadIv, seq: u64) -> [u8; 12] {
+///
+/// Returned wrapped in [`ZeroBuf`] so the nonce bytes don't linger on
+/// the caller's stack after the AEAD operation. The nonce is
+/// `IV XOR seq_be`; the seq is a public counter, so leaking the nonce
+/// is equivalent to leaking the secret IV. Same hygiene level as
+/// [`AeadIv`] itself.
+pub fn aead_nonce(iv: &AeadIv, seq: u64) -> ZeroBuf<12> {
     let seq_be = seq.to_be_bytes(); // 8 bytes
-    let mut nonce = *iv.as_bytes();
+    let mut nonce = ZeroBuf::<12>::new(*iv.as_bytes());
     // XOR seq into the low 8 bytes of the IV (high 4 bytes untouched).
     for i in 0..8 {
         nonce[4 + i] ^= seq_be[i];
@@ -87,7 +92,7 @@ pub fn decrypt_record<'a, A: Aes128GcmAead>(
     // ---- AEAD ----
     let nonce = aead_nonce(iv, seq);
     let aad = &record[..5];
-    match A::decrypt(key.as_bytes(), &nonce, aad, plaintext, &tag) {
+    match A::decrypt(key.as_zeroizing(), &nonce, aad, plaintext, &tag) {
         Ok(()) => Ok(plaintext),
         Err(_) => {
             // AEAD verification failed: the buffer currently holds either
@@ -196,7 +201,12 @@ pub fn encrypt_record<'a, A: Aes128GcmAead>(
 
     // ---- AEAD seal ----
     let nonce = aead_nonce(iv, seq);
-    let tag = A::encrypt(key.as_bytes(), &nonce, &aad, &mut out_buf[5..5 + inner_len]);
+    let tag = A::encrypt(
+        key.as_zeroizing(),
+        &nonce,
+        &aad,
+        &mut out_buf[5..5 + inner_len],
+    );
     out_buf[5 + inner_len..5 + inner_len + AEAD_TAG_LEN].copy_from_slice(&tag);
 
     Ok(&out_buf[..total_len])
