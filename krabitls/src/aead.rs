@@ -105,6 +105,14 @@ pub fn decrypt_record<'a, A: Aes128GcmAead>(
 
 /// Split a TLS 1.3 `TLSInnerPlaintext` (content || content_type || zero
 /// padding) into its inner content and `content_type` byte. RFC 8446 §5.2.
+///
+/// Enforces the §5.4 cap: after padding is stripped, the
+/// `TLSInnerPlaintext.content` may not exceed `2^14` bytes (the
+/// content + content_type byte together fit in `2^14 + 1`). The
+/// ciphertext cap that gated [`decrypt_record`] permits up to `2^14 +
+/// 256` (the AEAD-overhead allowance), so a peer can construct a
+/// record whose ciphertext fits but whose plaintext fragment violates
+/// the §5.4 limit; this check surfaces that as `RecordTooLarge`.
 pub fn split_inner_plaintext(inner: &[u8]) -> Result<(&[u8], u8), DecryptError> {
     let mut end = inner.len();
     while end > 0 && inner[end - 1] == 0 {
@@ -112,6 +120,11 @@ pub fn split_inner_plaintext(inner: &[u8]) -> Result<(&[u8], u8), DecryptError> 
     }
     if end == 0 {
         return Err(DecryptError::EmptyInnerPlaintext);
+    }
+    // After stripping padding, the remaining bytes are `content || content_type`
+    // (= `end` bytes total). `content.len() = end - 1` must be <= 2^14.
+    if end - 1 > TLS_PLAINTEXT_MAX {
+        return Err(DecryptError::RecordTooLarge);
     }
     let content_type = inner[end - 1];
     Ok((&inner[..end - 1], content_type))
@@ -129,6 +142,14 @@ pub fn encrypt_record<'a, A: Aes128GcmAead>(
     seq: u64,
     out_buf: &'a mut [u8],
 ) -> Result<&'a [u8], EncryptError> {
+    // TLSPlaintext.length cap (RFC 8446 §5.1): the inner-plaintext content
+    // must not exceed 2^14 bytes. This is *separate* from the §5.2
+    // ciphertext-body cap below — without it, callers could pass content in
+    // [2^14+1, 2^14+255] which fits the ciphertext cap but produces records
+    // a spec-compliant peer will reject.
+    if content.len() > TLS_PLAINTEXT_MAX {
+        return Err(EncryptError::RecordTooLarge);
+    }
     // Inner plaintext = content || content_type (1 byte); no zero padding.
     let inner_len = content
         .len()
@@ -174,6 +195,11 @@ pub fn encrypt_record<'a, A: Aes128GcmAead>(
 
 const AEAD_TAG_LEN: usize = 16;
 
+/// TLS 1.3 `TLSPlaintext.length` cap (RFC 8446 §5.1 / §5.4): the
+/// inner-plaintext content (before the `content_type` byte and any
+/// zero padding) must not exceed `2^14` bytes.
+const TLS_PLAINTEXT_MAX: usize = 1 << 14;
+
 /// TLS 1.3 `TLSCiphertext.length` cap (RFC 8446 §5.2): the encrypted body
 /// (inner plaintext + AEAD tag) must not exceed `2^14 + 256` bytes.
 const TLS_CIPHERTEXT_MAX: usize = (1 << 14) + 256;
@@ -183,9 +209,10 @@ const TLS_CIPHERTEXT_MAX: usize = (1 << 14) + 256;
 pub enum EncryptError {
     /// `out_buf` cannot fit the resulting record.
     BufferTooSmall { needed: usize, got: usize },
-    /// Plaintext is too large to fit in a single TLS 1.3 record's
-    /// `TLSCiphertext.length` field (RFC 8446 §5.2). Caller must split
-    /// across multiple records.
+    /// Plaintext is too large to fit in a single TLS 1.3 record. Hits
+    /// either the `TLSPlaintext.length` cap (`2^14`, RFC 8446 §5.1) or
+    /// the `TLSCiphertext.length` cap (`2^14 + 256`, §5.2). Caller must
+    /// split across multiple records.
     RecordTooLarge,
 }
 
@@ -194,8 +221,11 @@ pub enum EncryptError {
 pub enum DecryptError {
     /// Record shorter than its declared length, or shorter than `5 + tag_len`.
     Truncated,
-    /// `TLSCiphertext.length` exceeds the RFC 8446 §5.2 cap of `2^14 + 256`.
-    /// Symmetric with [`EncryptError::RecordTooLarge`].
+    /// Record size exceeds spec. Fires for `TLSCiphertext.length > 2^14 +
+    /// 256` (RFC 8446 §5.2, in [`decrypt_record`]) or for an inner-plaintext
+    /// content longer than `2^14` after padding stripping (§5.1 / §5.4, in
+    /// [`split_inner_plaintext`]). Symmetric with
+    /// [`EncryptError::RecordTooLarge`].
     RecordTooLarge,
     /// Bytes left in `record` after the declared `5 + body_len`. Almost
     /// always means the caller handed in more than one TLS record at once.

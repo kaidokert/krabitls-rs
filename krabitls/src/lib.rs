@@ -1125,6 +1125,49 @@ mod tests {
     }
 
     #[test]
+    fn encrypt_record_rejects_plaintext_just_over_14k() {
+        // RFC 8446 §5.1: TLSPlaintext.length max is 2^14. Content of
+        // 2^14 + 1 bytes fits the §5.2 ciphertext cap (2^14 + 256) once
+        // the AEAD tag + content_type are added, but violates the §5.1
+        // plaintext cap — must surface as RecordTooLarge.
+        let just_over = vec![0u8; (1 << 14) + 1];
+        let mut out = vec![0u8; (1 << 14) + 256 + 5];
+        let err = encrypt_record::<RustCrypto>(
+            &just_over,
+            consts::CT_APPLICATION_DATA,
+            &AeadKey::new([0u8; 16]),
+            &AeadIv::new([0u8; 12]),
+            0,
+            &mut out,
+        )
+        .unwrap_err();
+        assert_eq!(err, aead::EncryptError::RecordTooLarge);
+    }
+
+    #[test]
+    fn split_inner_plaintext_rejects_over_14k() {
+        // Build a synthetic inner: 2^14 + 1 bytes of content, then the
+        // content_type byte, no padding. §5.1 / §5.4 require content
+        // (post-padding-strip) <= 2^14.
+        let mut inner = vec![0xABu8; (1 << 14) + 2];
+        let last = inner.len() - 1;
+        inner[last] = consts::CT_APPLICATION_DATA;
+        let err = split_inner_plaintext(&inner).unwrap_err();
+        assert_eq!(err, aead::DecryptError::RecordTooLarge);
+    }
+
+    #[test]
+    fn split_inner_plaintext_accepts_exactly_14k() {
+        // 2^14 content bytes + 1 content_type byte = boundary case.
+        let mut inner = vec![0xCDu8; (1 << 14) + 1];
+        let last = inner.len() - 1;
+        inner[last] = consts::CT_APPLICATION_DATA;
+        let (content, ct) = split_inner_plaintext(&inner).unwrap();
+        assert_eq!(content.len(), 1 << 14);
+        assert_eq!(ct, consts::CT_APPLICATION_DATA);
+    }
+
+    #[test]
     fn certificate_verify_rejects_trailing_bytes() {
         // Synthetic CV body = u16(scheme) || u16(64) || 64 sig bytes || one trailing byte.
         let mut body = [0u8; 4 + 64 + 1];
