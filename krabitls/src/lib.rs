@@ -571,7 +571,10 @@ impl<'a> Reader<'a> {
     }
 
     fn vec_u24(&mut self) -> Result<&'a [u8], ParseError> {
-        let n = self.u24()? as usize;
+        // 24-bit lengths exceed `u16::MAX` and so don't fit a 16-bit `usize`.
+        // Use `try_into` instead of `as usize` so the truncation surfaces
+        // as a clean parse error rather than a silent slice underflow.
+        let n: usize = self.u24()?.try_into().map_err(|_| ParseError::Truncated)?;
         self.take(n)
     }
 }

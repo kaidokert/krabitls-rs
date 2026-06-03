@@ -156,10 +156,14 @@ fn decode_tlv_header(buf: &[u8]) -> Result<(u8, usize, &[u8]), IdentityError> {
     if n == 0 || n > 4 || buf.len() < 2 + n {
         return Err(IdentityError::MalformedSan);
     }
-    let mut len = 0usize;
+    // Up to 4 length bytes => values up to `u32::MAX`. Don't shift through
+    // `usize`: a 16-bit `usize` can't hold n > 2 bytes and would silently
+    // truncate. Accumulate as `u32`, then convert.
+    let mut len: u32 = 0;
     for i in 0..n {
-        len = (len << 8) | (buf[2 + i] as usize);
+        len = (len << 8) | (buf[2 + i] as u32);
     }
+    let len: usize = len.try_into().map_err(|_| IdentityError::MalformedSan)?;
     Ok((tag, len, &buf[2 + n..]))
 }
 

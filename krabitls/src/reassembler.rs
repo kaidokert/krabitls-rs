@@ -58,9 +58,15 @@ impl<const N: usize> ServerFlightReassembler<N> {
         let mut i = 0;
         while i + 4 <= buf.len() {
             let msg_type = buf[i];
-            let len = ((buf[i + 1] as usize) << 16)
-                | ((buf[i + 2] as usize) << 8)
-                | (buf[i + 3] as usize);
+            // 24-bit handshake-message length. Decode as `u32` (24 bits don't
+            // fit a 16-bit `usize`) and bail out on conversion failure rather
+            // than silently truncating on 16-bit targets.
+            let len = match usize::try_from(
+                ((buf[i + 1] as u32) << 16) | ((buf[i + 2] as u32) << 8) | (buf[i + 3] as u32),
+            ) {
+                Ok(l) => l,
+                Err(_) => return false,
+            };
             if i + 4 + len > buf.len() {
                 return false;
             }

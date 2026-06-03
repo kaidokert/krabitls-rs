@@ -182,12 +182,14 @@ impl<'a> HsReader<'a> {
             return Err(FlightError::Truncated);
         }
         let msg_type = self.buf[self.pos];
-        let len = u32::from_be_bytes([
+        let len: usize = u32::from_be_bytes([
             0,
             self.buf[self.pos + 1],
             self.buf[self.pos + 2],
             self.buf[self.pos + 3],
-        ]) as usize;
+        ])
+        .try_into()
+        .map_err(|_| FlightError::Truncated)?;
         let body_start = self.pos + 4;
         let body_end = body_start + len;
         if self.buf.len() < body_end {
@@ -223,7 +225,8 @@ pub fn extract_cert_der(cert_body: &[u8]) -> Result<&[u8], FlightError> {
     if cert_body.len() < after_ctx + 3 {
         return Err(FlightError::Truncated);
     }
-    let list_len = read_u24(&cert_body[after_ctx..after_ctx + 3]);
+    let list_len = usize::try_from(read_u24(&cert_body[after_ctx..after_ctx + 3]))
+        .map_err(|_| FlightError::Truncated)?;
     let list_start = after_ctx + 3;
     let list_end = list_start + list_len;
     if cert_body.len() < list_end {
@@ -244,7 +247,8 @@ pub fn extract_cert_der(cert_body: &[u8]) -> Result<&[u8], FlightError> {
     if list.len() < 3 {
         return Err(FlightError::Truncated);
     }
-    let cert_data_len = read_u24(&list[0..3]);
+    let cert_data_len =
+        usize::try_from(read_u24(&list[0..3])).map_err(|_| FlightError::Truncated)?;
     let cert_end = 3 + cert_data_len;
     if list.len() < cert_end + 2 {
         return Err(FlightError::Truncated);
@@ -258,9 +262,14 @@ pub fn extract_cert_der(cert_body: &[u8]) -> Result<&[u8], FlightError> {
     Ok(&list[3..cert_end])
 }
 
-fn read_u24(b: &[u8]) -> usize {
+/// Read a big-endian 24-bit length. Returned as `u32`: a 24-bit value
+/// can hold `2^24 - 1 ≈ 16.7 MiB`, which exceeds `u16::MAX` on 16-bit
+/// platforms — leaving the conversion to `usize` (with `try_from`) to
+/// the call site lets each callsite emit a clean error instead of
+/// silently truncating.
+fn read_u24(b: &[u8]) -> u32 {
     debug_assert!(b.len() == 3);
-    ((b[0] as usize) << 16) | ((b[1] as usize) << 8) | (b[2] as usize)
+    ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | (b[2] as u32)
 }
 
 // =====================================================================
