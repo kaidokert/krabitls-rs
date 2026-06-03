@@ -17,8 +17,11 @@ repos:
     -   id: fmt
         name: Fmt for krabitls
         args: ['--manifest-path=krabitls/Cargo.toml', '--']
+    -   id: fmt
+        name: Fmt for cortex_m_demo
+        args: ['--manifest-path=cortex_m_demo/Cargo.toml', '--']
 
-# Local hooks: actually build and test the library.
+# Local hooks: actually build and test the library + the M3 example.
 -   repo: local
     hooks:
     -   id: krabitls-clippy
@@ -33,3 +36,9 @@ repos:
         language: system
         pass_filenames: false
         files: ^krabitls/.*\.(rs|toml)$
+    -   id: cortex-m-build
+        name: cargo build cortex_m_demo (thumbv7m)
+        entry: cargo build --manifest-path=cortex_m_demo/Cargo.toml --release --example krabitls --target thumbv7m-none-eabi
+        language: system
+        pass_filenames: false
+        files: ^(cortex_m_demo|krabitls|testdata)/.*\.(rs|toml|x|bin)$
