@@ -10,5 +10,9 @@ fn main() -> ! {
         || cortex_m_demo::run_handshake::<JedisctCrypto>().is_ok(),
         "krabitls_jedisct",
     );
-    unreachable!()
+    // See krabitls.rs: `loop { nop }` to satisfy `fn() -> !` without
+    // pulling in panic-fmt machinery via `unreachable!()`.
+    loop {
+        cortex_m::asm::nop();
+    }
 }

@@ -144,11 +144,10 @@ pub const FIXTURE_C_HS_TRAFFIC_SECRET_BYTES: [u8; 32] = [
 ];
 
 use cyclecount::CycleCounter;
-use krabitls::newtype::Secret;
 use krabitls::{
-    CLIENT_FINISHED_LEN, DerCert, HkdfSha256, RustCrypto, TranscriptHash, ZeroBuf,
-    build_client_finished, decrypt_record, handshake_secret, handshake_traffic_secrets,
-    split_inner_plaintext, traffic_keys, verify_server_flight,
+    CLIENT_FINISHED_LEN, DerCert, HkdfSha256, RustCrypto, TranscriptHash, build_client_finished,
+    decrypt_record, handshake_secret, handshake_traffic_secrets, split_inner_plaintext,
+    traffic_keys, verify_server_flight,
 };
 use stack::{check_stack_high_water_mark, paint_stack};
 
@@ -204,8 +203,16 @@ pub fn run_handshake<H: HkdfSha256>() -> Result<(), ()> {
     transcript
         .update_record(&SERVER_HELLO_BYTES)
         .map_err(|_| ())?;
-    let (_c_ts, s_ts) =
+    let (c_ts, s_ts) =
         handshake_traffic_secrets::<H>(&hs, &transcript.snapshot()).map_err(|_| ())?;
+    // Validate the client-side `"c hs traffic"` derivation against the
+    // Python fixture before we use it. Otherwise a regression in the
+    // backend's client-secret derivation would still pass the
+    // ClientFinished comparison, because we'd be feeding the fixture
+    // bytes into `build_client_finished` instead of the derived secret.
+    if c_ts.as_bytes() != &FIXTURE_C_HS_TRAFFIC_SECRET_BYTES {
+        return Err(());
+    }
     let (key, iv) = traffic_keys::<H>(&s_ts).map_err(|_| ())?;
 
     let mut pt_buf = [0u8; 400];
@@ -227,13 +234,9 @@ pub fn run_handshake<H: HkdfSha256>() -> Result<(), ()> {
         return Err(());
     }
 
-    // `FIXTURE_C_HS_TRAFFIC_SECRET_BYTES` is a bare `[u8; 32]` because
-    // `Zeroizing::new` isn't const-stable. Wrap here at the consumer;
-    // the resulting `Secret` drop-zeroes at scope exit.
-    let c_hs_ts = Secret::new(ZeroBuf::<32>::new(FIXTURE_C_HS_TRAFFIC_SECRET_BYTES));
     let th_through_sf = transcript.snapshot();
     let mut out = [0u8; 64];
-    let record = build_client_finished::<H, RustCrypto>(&c_hs_ts, &th_through_sf, 0, &mut out)
+    let record = build_client_finished::<H, RustCrypto>(&c_ts, &th_through_sf, 0, &mut out)
         .map_err(|_| ())?;
     if record.len() != CLIENT_FINISHED_LEN || record != &FIXTURE_PACKET_4[..] {
         return Err(());

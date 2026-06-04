@@ -15,7 +15,10 @@ fn main() -> ! {
         "krabitls",
     );
     // test_fixture always exits via cortex_m_semihosting::debug::exit, so we
-    // never get here; satisfies cortex_m_rt's `fn() -> !` requirement without
-    // clippy's empty_loop warning.
-    unreachable!()
+    // never get here. `loop { nop }` satisfies the `fn() -> !` requirement
+    // without dragging in panic-fmt machinery (which `unreachable!()` /
+    // `panic!()` would) or tripping clippy's empty_loop.
+    loop {
+        cortex_m::asm::nop();
+    }
 }

@@ -49,10 +49,14 @@ impl HkdfSha256 for JedisctCrypto {
     }
 
     fn expand(prk: &[u8; 32], info: &[u8], out: &mut [u8]) -> Result<(), HkdfExpandError> {
-        // RFC 5869 §2.3 caps Expand output at `255 * HashLen` *inclusive*
-        // (8160 B for SHA-256). Reject strictly more than that; jedisct1's
-        // HKDF::expand would panic on overflow, so check upfront.
-        if out.len() > 255 * 32 {
+        // RFC 5869 §2.3 permits Expand output up to `255 * HashLen` *inclusive*
+        // (8160 B for SHA-256), and the RustCrypto backend honors that. jedisct1's
+        // `HKDF::expand` asserts `out.len() < 0xff * 32` (strict), so it panics
+        // at exactly 8160 bytes. Guard with `>=` so this backend cleanly rejects
+        // the boundary case rather than panicking — a slight contract bend
+        // versus RustCrypto, but TLS 1.3 never requests that much from a single
+        // expand and the alternative is a reachable panic from a public API.
+        if out.len() >= 255 * 32 {
             return Err(HkdfExpandError::OutputTooLong);
         }
         HKDF::expand(out, prk.as_slice(), info);
