@@ -36,6 +36,8 @@ pub mod traits;
 pub use aead::{
     DecryptError, EncryptError, aead_nonce, decrypt_record, encrypt_record, split_inner_plaintext,
 };
+#[cfg(feature = "jedisct")]
+pub use backends::JedisctCrypto;
 pub use backends::{DerCert, RustCrypto};
 pub use client_flight::{CLIENT_FINISHED_LEN, ClientFinishedError, build_client_finished};
 pub use hkdf::{

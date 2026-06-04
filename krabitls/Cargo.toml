@@ -3,8 +3,19 @@ name = "krabitls"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = []
+# Alternate HKDF / SHA-256 backend wired to jedisct1's `hmac-sha256` crate
+# (a standalone all-in-one impl with no `digest` / `crypto-common` /
+# `generic-array` dependency). Pull this in when the binary should drop
+# the RustCrypto `sha2 + hmac + hkdf + digest + crypto-common +
+# generic-array` chain. AEAD stays on `aes-gcm` either way — jedisct1
+# has no AES-GCM equivalent in the same family.
+jedisct = ["dep:hmac-sha256"]
+
 [dependencies]
 embedded-io = { version = "0.7.1", default-features = false }
+hmac-sha256 = { version = "1", default-features = false, optional = true }
 
 # RustCrypto stable line — all share generic-array 0.14 / crypto-common 0.1.
 aes-gcm = { version = "0.10", default-features = false, features = ["aes"] }

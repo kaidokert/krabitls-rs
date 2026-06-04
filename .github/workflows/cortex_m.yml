@@ -57,3 +57,7 @@ jobs:
     - name: Run krabitls example (baseline)
       working-directory: cortex_m_demo
       run: cargo run --release --example krabitls --target ${{ matrix.target }} --features baseline
+
+    - name: Run krabitls_jedisct example
+      working-directory: cortex_m_demo
+      run: cargo run --release --example krabitls_jedisct --target ${{ matrix.target }} --features jedisct

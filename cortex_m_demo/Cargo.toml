@@ -12,6 +12,18 @@ autobenches = false
 # fixture buffer. The difference (`.text(real) - .text(baseline)`) is the
 # honest cost of the TLS+crypto code itself.
 baseline = []
+# Build the krabitls_jedisct example, which swaps the HKDF / SHA-256 backend
+# from RustCrypto to jedisct1's `hmac-sha256`. AEAD stays on `aes-gcm`.
+# Same fixture as the `krabitls` example, just a different HKDF impl —
+# useful for comparing kcycles between the two backends on M3.
+jedisct = ["krabitls/jedisct"]
+
+[[example]]
+name = "krabitls"
+
+[[example]]
+name = "krabitls_jedisct"
+required-features = ["jedisct"]
 
 [dependencies]
 # `critical-section-single-core` provides a critical-section implementation
