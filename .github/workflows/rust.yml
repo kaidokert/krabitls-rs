@@ -28,6 +28,8 @@ jobs:
     - uses: dtolnay/rust-toolchain@stable
       with:
         components: rustfmt, clippy
+        # Needed by the local `cortex-m-build` hook in .pre-commit-config.yaml.
+        targets: thumbv7m-none-eabi
     - uses: actions/cache@v4
       with:
         path: |
