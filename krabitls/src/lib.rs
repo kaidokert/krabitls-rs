@@ -183,13 +183,17 @@ use consts::*;
 //
 // supported_versions: u8(list_len=2) + u16(TLS_1_3)            = 3 inner -> 7 total
 // supported_groups:   u16(list_len=2) + u16(x25519)            = 4 inner -> 8 total
-// signature_algorithms: u16(list_len=2) + u16(ed25519)         = 4 inner -> 8 total
+// signature_algorithms (no rsa): u16(list_len=2) + u16(ed25519) = 4 inner -> 8 total
+// signature_algorithms (+rsa):   u16(list_len=4) + ed25519 + rsa_pss = 6 inner -> 10 total
 // key_share: u16(list_len=36) + u16(group) + u16(32) + 32B pub = 38 inner -> 42 total
 // server_name (when present): u16(list_len) + u8(name_type=0) + u16(hostname_len) + N
 //                            = 5 + N inner -> 9 + N total
 const EXT_SUPPORTED_VERSIONS_TOTAL: u16 = 4 + 3;
 const EXT_SUPPORTED_GROUPS_TOTAL: u16 = 4 + 4;
+#[cfg(not(feature = "rsa"))]
 const EXT_SIGNATURE_ALGORITHMS_TOTAL: u16 = 4 + 4;
+#[cfg(feature = "rsa")]
+const EXT_SIGNATURE_ALGORITHMS_TOTAL: u16 = 4 + 6;
 const EXT_KEY_SHARE_TOTAL: u16 = 4 + 38;
 
 /// Fixed-extension total when the caller supplies no SNI.
@@ -220,14 +224,21 @@ pub const fn client_hello_len(hostname_len: Option<usize>) -> usize {
 }
 
 /// Serialized size of the ClientHello [`write_client_hello`] produces when
-/// no SNI is supplied. 117 bytes for the locked Ed25519-only profile.
+/// no SNI is supplied. 117 bytes by default, 119 with `feature = "rsa"` (the
+/// signature_algorithms extension carries one extra scheme entry).
 ///
 /// Composed from per-field lengths above — adding or dropping an extension
 /// flows through `CH_EXTENSIONS_FIXED_TOTAL` automatically.
 pub const CLIENT_HELLO_LEN: usize = client_hello_len(None);
 
 // Sanity pin against the Python fixture's seed-0 ed25519-mode ClientHello.
+// With `feature = "rsa"`, krabitls's CH advertises both ed25519 and
+// rsa_pss_rsae_sha256, which the seed-0 fixture doesn't — the byte-identity
+// tests are cfg-gated accordingly.
+#[cfg(not(feature = "rsa"))]
 const _: () = assert!(CLIENT_HELLO_LEN == 117);
+#[cfg(feature = "rsa")]
+const _: () = assert!(CLIENT_HELLO_LEN == 119);
 
 /// Big-endian byte-emission helpers layered on top of [`embedded_io::Write`].
 ///
@@ -299,7 +310,8 @@ impl<E> From<E> for ClientHelloError<E> {
 ///
 /// Returns the number of bytes written on success, equal to
 /// [`client_hello_len`]`(hostname.map(|h| h.len()))`. When `hostname` is
-/// `None`, that's [`CLIENT_HELLO_LEN`] (117 bytes).
+/// `None`, that's [`CLIENT_HELLO_LEN`] (117 by default, 119 with
+/// `feature = "rsa"` from the extra `rsa_pss_rsae_sha256` scheme entry).
 pub fn write_client_hello<W: Write>(
     out: &mut W,
     random: &[u8; 32],
@@ -355,9 +367,19 @@ pub fn write_client_hello<W: Write>(
 
     // -- signature_algorithms --
     out.write_u16(EXT_SIGNATURE_ALGORITHMS)?;
-    out.write_u16(4)?; // ext_data_len = list_len(2) + scheme(2)
-    out.write_u16(2)?; // sig schemes list length
-    out.write_u16(SIG_SCHEME_ED25519)?;
+    #[cfg(not(feature = "rsa"))]
+    {
+        out.write_u16(4)?; // ext_data_len = list_len(2) + scheme(2)
+        out.write_u16(2)?; // sig schemes list length
+        out.write_u16(SIG_SCHEME_ED25519)?;
+    }
+    #[cfg(feature = "rsa")]
+    {
+        out.write_u16(6)?; // ext_data_len = list_len(2) + scheme(2) + scheme(2)
+        out.write_u16(4)?; // sig schemes list length = 2 schemes * 2 bytes
+        out.write_u16(SIG_SCHEME_ED25519)?;
+        out.write_u16(SIG_SCHEME_RSA_PSS_RSAE_SHA256)?;
+    }
 
     // -- server_name (SNI), if supplied --
     if let Some(h) = hostname {
@@ -705,6 +727,10 @@ mod tests {
         Ok(cursor)
     }
 
+    // Byte-identity against the seed-0 Python fixture only holds when our CH
+    // advertises ed25519 alone. With `feature = "rsa"` we also advertise
+    // rsa_pss_rsae_sha256, so the bytes diverge (CH is 119 B instead of 117 B).
+    #[cfg(not(feature = "rsa"))]
     #[test]
     fn matches_python_fixture() {
         let mut buf = [0u8; 256];
@@ -715,6 +741,7 @@ mod tests {
         assert_eq!(&buf[..CLIENT_HELLO_LEN], &FIXTURE_CLIENT_HELLO);
     }
 
+    #[cfg(not(feature = "rsa"))]
     #[test]
     fn exact_sized_buffer_works() {
         let mut buf = [0u8; CLIENT_HELLO_LEN];

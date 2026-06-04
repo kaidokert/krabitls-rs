@@ -132,6 +132,10 @@ pub fn run_handshake<H: HkdfSha256>() -> Result<(), ()> {
     if written != krabitls::CLIENT_HELLO_LEN {
         return Err(());
     }
+    // Byte-identity against the 117-byte seed-0 fixture only holds when our
+    // CH advertises ed25519 alone. With `feature = "rsa"` we also advertise
+    // rsa_pss_rsae_sha256, so the CH is 119 B and the array sizes don't match.
+    #[cfg(not(feature = "rsa"))]
     if buf != EXPECTED_CLIENT_HELLO {
         return Err(());
     }
