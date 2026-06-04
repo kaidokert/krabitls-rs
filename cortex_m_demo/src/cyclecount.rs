@@ -7,8 +7,7 @@ static SYSTICK_WRAPS: AtomicU32 = AtomicU32::new(0);
 
 #[exception]
 fn SysTick() {
-    let current = SYSTICK_WRAPS.load(Ordering::Relaxed);
-    SYSTICK_WRAPS.store(current + 1, Ordering::Relaxed);
+    SYSTICK_WRAPS.fetch_add(1, Ordering::Relaxed);
 }
 
 pub struct CycleCounter {
@@ -48,11 +47,15 @@ impl CycleCounter {
     }
 
     // Not `Default`: `new` has side effects (claims SYST peripheral, enables
-    // counter + interrupt) and panics if Peripherals::take has already been
-    // called. `Default::default()` is the wrong shape for that.
+    // counter + interrupt). `Default::default()` is the wrong shape for that.
+    //
+    // `Peripherals::steal()` (not `take`) so a caller who already took the
+    // peripherals elsewhere doesn't trigger a panic in a diagnostic utility.
+    // Only `SYST` is configured here; concurrent users of other peripherals
+    // are unaffected.
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
-        let mut peripherals = cortex_m::Peripherals::take().unwrap();
+        let mut peripherals = unsafe { cortex_m::Peripherals::steal() };
         let syst = &mut peripherals.SYST;
         syst.set_clock_source(SystClkSource::Core);
         syst.set_reload(Self::RELOAD_VALUE);

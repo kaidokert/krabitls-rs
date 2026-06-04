@@ -201,7 +201,7 @@ pub fn test_fixture(testable: fn() -> bool, name: &str) {
     paint_stack();
     let counter = CycleCounter::new();
     let result = testable();
-    let elapsed = counter.elapsed() / 1000;
+    let elapsed_kcycles = counter.elapsed() / 1000;
     let stack = check_stack_high_water_mark();
     if result {
         hprintln!("{} ACCEPT", name);
@@ -209,9 +209,9 @@ pub fn test_fixture(testable: fn() -> bool, name: &str) {
         hprintln!("{} REJECT", name);
     }
     hprintln!(
-        "METRIC stack:{} cycles:{} target:{} name:{}",
+        "METRIC stack:{} kcycles:{} target:{} name:{}",
         stack,
-        elapsed,
+        elapsed_kcycles,
         target_arch_name(),
         name,
     );

@@ -30,6 +30,9 @@ jobs:
       with:
         targets: thumbv7m-none-eabi
 
+    - name: Install QEMU
+      run: sudo apt-get update && sudo apt-get install -y qemu-system-arm
+
     - uses: actions/cache@v4
       with:
         path: |
@@ -39,10 +42,14 @@ jobs:
         key: cortex-m-${{ hashFiles('cortex_m_demo/Cargo.toml', 'krabitls/Cargo.toml') }}
         restore-keys: cortex-m-
 
-    - name: Build krabitls example (M3)
+    # `cargo run` invokes the QEMU runner configured in
+    # cortex_m_demo/.cargo/config.toml, so the semihosted `main` actually
+    # executes and any handshake / fixture regression surfaces as a non-zero
+    # exit. `cargo build` would only have type-checked + linked the binary.
+    - name: Run krabitls example (M3)
       working-directory: cortex_m_demo
-      run: cargo build --release --example krabitls
+      run: cargo run --release --example krabitls
 
-    - name: Build krabitls example (M3, baseline)
+    - name: Run krabitls example (M3, baseline)
       working-directory: cortex_m_demo
-      run: cargo build --release --example krabitls --features baseline
+      run: cargo run --release --example krabitls --features baseline

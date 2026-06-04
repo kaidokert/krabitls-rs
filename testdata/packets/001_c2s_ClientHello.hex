@@ -1,6 +1,6 @@
 # tls_fixture seed-0 ClientHello (117 bytes). TLS 1.3 client → server.
 # Locked profile: cipher TLS_AES_128_GCM_SHA256, group x25519,
-# sig_algs ed25519. Bytes 11..43 are random; bytes 84..116 are x25519 pub.
+# sig_algs ed25519. Bytes 11..43 are random; bytes 85..117 are x25519 pub.
 16 03 03 00 70 01 00 00 6c 03 03 ed e5 7b a2 43
 3a d5 a3 4d 05 50 3a fe 4f c2 89 df d9 e9 53 57
 d8 16 36 80 24 e7 3f bf a6 fa f5 00 00 02 13 01
