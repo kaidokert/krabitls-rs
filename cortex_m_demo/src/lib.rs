@@ -135,18 +135,38 @@ pub const FIXTURE_PACKET_4: [u8; 58] = hex_decode(include_str!(
     "../../testdata/packets/004_c2s_ClientFinished_encrypted.hex"
 ));
 
-/// Client handshake traffic secret from packets/002 notes — needed to build
-/// the client Finished MAC + AEAD keys. Wrapped at use site into a `Secret`
-/// (see the comment on `FIXTURE_S_HS_TRAFFIC_SECRET_BYTES`).
+/// Client handshake traffic secret from packets/002 notes — used to validate
+/// the derived `c_hs_ts` produced by the chosen HKDF backend.
 pub const FIXTURE_C_HS_TRAFFIC_SECRET_BYTES: [u8; 32] = [
     0xa4, 0xfa, 0x72, 0xf0, 0xcc, 0x9e, 0xef, 0xe8, 0xb1, 0xcb, 0x2a, 0x53, 0x3e, 0x40, 0x82, 0x14,
     0x65, 0x32, 0x95, 0x4a, 0x6d, 0x25, 0x57, 0x14, 0xa1, 0x7c, 0x2c, 0xef, 0x69, 0x08, 0xa7, 0x8d,
 ];
 
+/// packets/005: c→s app data record #0 (52 bytes including record header).
+pub const FIXTURE_PACKET_5: [u8; 52] = hex_decode(include_str!(
+    "../../testdata/packets/005_c2s_AppData_send_0.hex"
+));
+
+/// packets/006: s→c app data reply #0 (48 bytes including record header).
+pub const FIXTURE_PACKET_6: [u8; 48] = hex_decode(include_str!(
+    "../../testdata/packets/006_s2c_AppData_reply_0.hex"
+));
+
+/// Plaintext that the Python fixture put through `encrypt_record` to produce
+/// `FIXTURE_PACKET_5`. The handshake harness re-encrypts this under the
+/// derived c_ap key/iv and checks the output matches byte-for-byte.
+pub const PACKET_5_PLAINTEXT: &[u8] = b"hello from the embedded client";
+
+/// Inner plaintext we expect to recover after decrypting `FIXTURE_PACKET_6`
+/// under the derived s_ap key/iv. The em-dash is the UTF-8 sequence
+/// `\xe2\x80\x94`.
+pub const PACKET_6_PLAINTEXT: &[u8] = b"hello back \xe2\x80\x94 server here";
+
 use cyclecount::CycleCounter;
 use krabitls::{
-    CLIENT_FINISHED_LEN, DerCert, HkdfSha256, RustCrypto, TranscriptHash, build_client_finished,
-    decrypt_record, handshake_secret, handshake_traffic_secrets, split_inner_plaintext,
+    CLIENT_FINISHED_LEN, DerCert, HkdfSha256, RustCrypto, TranscriptHash,
+    application_traffic_secrets, build_client_finished, decrypt_record, encrypt_record,
+    handshake_secret, handshake_traffic_secrets, master_secret, split_inner_plaintext,
     traffic_keys, verify_server_flight,
 };
 use stack::{check_stack_high_water_mark, paint_stack};
@@ -242,6 +262,50 @@ pub fn run_handshake<H: HkdfSha256>() -> Result<(), ()> {
         return Err(());
     }
 
+    // ---- App-data round trip ----
+    //   ms      = HKDF-Extract(Derive-Secret(hs, "derived", ""), 0^32)
+    //   c_ap_ts = Derive-Secret(ms, "c ap traffic", th_through_sf)
+    //   s_ap_ts = Derive-Secret(ms, "s ap traffic", th_through_sf)
+    //   (RFC 8446 §7.1; the AP traffic secrets use the transcript through the
+    //   *server's* Finished, not the client's.)
+    //
+    // (1) re-encrypt PACKET_5_PLAINTEXT under c_ap, seq=0 → must equal FIXTURE_PACKET_5
+    // (2) decrypt FIXTURE_PACKET_6 under s_ap, seq=0 → must yield PACKET_6_PLAINTEXT
+    //
+    // Both calls pass `seq = 0` because the fixture only replays the *first*
+    // record under each freshly-installed traffic key. RFC 8446 §5.3 resets
+    // record numbering to 0 whenever a new key/IV pair is installed, and
+    // c_ap / s_ap each get a fresh pair here, so this is the correct seq.
+    let ms = master_secret::<H>(&hs).map_err(|_| ())?;
+    let (c_ap_ts, s_ap_ts) =
+        application_traffic_secrets::<H>(&ms, &th_through_sf).map_err(|_| ())?;
+    let (c_ap_key, c_ap_iv) = traffic_keys::<H>(&c_ap_ts).map_err(|_| ())?;
+    let (s_ap_key, s_ap_iv) = traffic_keys::<H>(&s_ap_ts).map_err(|_| ())?;
+
+    // Reuse the 400-byte `pt_buf` from the server-flight decrypt above for
+    // both the encrypt and the decrypt — `pt_buf` is no longer live and the
+    // 52 / 48 byte app-data records fit comfortably.
+    let sent = encrypt_record::<RustCrypto>(
+        PACKET_5_PLAINTEXT,
+        krabitls::consts::CT_APPLICATION_DATA,
+        &c_ap_key,
+        &c_ap_iv,
+        0,
+        &mut pt_buf,
+    )
+    .map_err(|_| ())?;
+    if sent != &FIXTURE_PACKET_5[..] {
+        return Err(());
+    }
+
+    let inner =
+        decrypt_record::<RustCrypto>(&FIXTURE_PACKET_6, &s_ap_key, &s_ap_iv, 0, &mut pt_buf)
+            .map_err(|_| ())?;
+    let (content, ct) = split_inner_plaintext(inner).map_err(|_| ())?;
+    if ct != krabitls::consts::CT_APPLICATION_DATA || content != PACKET_6_PLAINTEXT {
+        return Err(());
+    }
+
     Ok(())
 }
 
@@ -285,6 +349,10 @@ pub fn fake_krabitls_pipeline() -> bool {
     black_box(&SERVER_HELLO_BYTES);
     black_box(&FIXTURE_PACKET_3);
     black_box(&FIXTURE_PACKET_4);
+    black_box(&FIXTURE_PACKET_5);
+    black_box(&FIXTURE_PACKET_6);
+    black_box(PACKET_5_PLAINTEXT);
+    black_box(PACKET_6_PLAINTEXT);
     black_box(&FIXTURE_DHE);
     black_box(&FIXTURE_HANDSHAKE_SECRET);
     black_box(&FIXTURE_S_HS_TRAFFIC_SECRET_BYTES);
