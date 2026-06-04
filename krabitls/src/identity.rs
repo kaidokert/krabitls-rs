@@ -281,30 +281,24 @@ fn parse_validity_der(der: &[u8]) -> Result<(u64, u64), ValidityError> {
         return Err(ValidityError::Malformed);
     }
     let not_after = decode_time(t2_tag, &after2[..t2_len])?;
+    // RFC 5280 §4.1.2.5: `Validity ::= SEQUENCE { notBefore Time, notAfter Time }`
+    // is *exactly* two Time fields — reject `SEQUENCE { Time, Time, ...trailing }`
+    // so a malformed encoding can't slip through as long as the first two
+    // timestamps happen to bracket `now`.
+    if !after2[t2_len..].is_empty() {
+        return Err(ValidityError::Malformed);
+    }
     Ok((not_before, not_after))
 }
 
 /// TLV-header decoder for the validity walker. Returns `(tag, length,
-/// rest_after_header)`.
+/// rest_after_header)`. Delegates to the SAN walker's `decode_tlv_header`
+/// so the 16-bit-safe length accumulation (u32 → `try_into::<usize>()`)
+/// is shared instead of duplicated — the previous in-place copy here
+/// silently truncated on 16-bit `usize` for long-form lengths with n > 2.
 #[cfg(feature = "validity")]
 fn decode_tlv_header_inner(buf: &[u8]) -> Result<(u8, usize, &[u8]), ValidityError> {
-    if buf.len() < 2 {
-        return Err(ValidityError::Malformed);
-    }
-    let tag = buf[0];
-    let first_len = buf[1];
-    if first_len < 0x80 {
-        return Ok((tag, first_len as usize, &buf[2..]));
-    }
-    let n = (first_len & 0x7f) as usize;
-    if n == 0 || n > 4 || buf.len() < 2 + n {
-        return Err(ValidityError::Malformed);
-    }
-    let mut len = 0usize;
-    for i in 0..n {
-        len = (len << 8) | (buf[2 + i] as usize);
-    }
-    Ok((tag, len, &buf[2 + n..]))
+    decode_tlv_header(buf).map_err(|_| ValidityError::Malformed)
 }
 
 /// Decode one X.509 `Time` value (either `UTCTime` 0x17 or
@@ -369,12 +363,16 @@ fn days_to_epoch_secs(y: u32, m: u32, d: u32, h: u32, mn: u32, s: u32) -> Option
     // Per-month day limit so Feb 30 / Apr 31 / etc. don't pass through.
     // Gregorian leap rule: divisible by 4 except centuries unless ÷400.
     let leap = (y % 4 == 0) && (y % 100 != 0 || y % 400 == 0);
+    // `m` is validated to `1..=12` at the top of this function, so by the
+    // time we reach this match it's always exactly one of the listed
+    // values. The `_ => 28` wildcard covers non-leap February (the only
+    // remaining case) and avoids `unreachable!()`, which would link
+    // panic-fmt machinery into the binary in `no_std` builds.
     let days_in_month: u32 = match m {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
         4 | 6 | 9 | 11 => 30,
         2 if leap => 29,
-        2 => 28,
-        _ => unreachable!(),
+        _ => 28,
     };
     if d > days_in_month {
         return None;
@@ -692,6 +690,29 @@ mod tests {
         #[test]
         fn validity_malformed_der_rejected() {
             let der = [0xFF, 0xFF, 0xFF];
+            let view = cert_view_with_validity(&der);
+            assert_eq!(
+                verify_validity(&view, &FixedTime(T_2024_06_15_LATE)),
+                Err(ValidityError::Malformed)
+            );
+        }
+
+        #[test]
+        fn validity_rejects_trailing_fields_in_sequence() {
+            // `Validity ::= SEQUENCE { notBefore Time, notAfter Time }` is
+            // exactly two Time fields. Append a third TLV inside the SEQUENCE
+            // (here: a NULL `0x05 0x00`) and confirm it's rejected rather
+            // than silently accepted because the first two timestamps happen
+            // to bracket `now`.
+            let two_times = validity_der(b"200115000000Z", b"300115000000Z");
+            // Pull out the inner SEQUENCE body, append the trailing TLV, and
+            // re-wrap with a fixed SEQUENCE header. The two-Time body is
+            // `two_times[2..]`; the SEQUENCE header is `0x30 <len>`.
+            let inner = &two_times[2..];
+            let mut body = Vec::from(inner);
+            body.extend_from_slice(&[0x05, 0x00]); // trailing NULL
+            let mut der = vec![0x30, body.len() as u8];
+            der.extend(body);
             let view = cert_view_with_validity(&der);
             assert_eq!(
                 verify_validity(&view, &FixedTime(T_2024_06_15_LATE)),
