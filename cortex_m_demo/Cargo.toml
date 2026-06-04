@@ -14,10 +14,16 @@ autobenches = false
 baseline = []
 
 [dependencies]
-cortex-m = "0.7"
+# `critical-section-single-core` provides a critical-section implementation
+# so `portable-atomic` can emulate AtomicU32 / AtomicUsize on thumbv6m
+# (Cortex-M0/M0+), which lacks native 32-bit atomics. On v7m+ targets the
+# native atomic instructions are used and the critical-section impl is
+# dead code.
+cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
 cortex-m-rt = "0.7"
 cortex-m-semihosting = "0.5"
 panic-semihosting = { version = "0.6", features = ["exit"] }
+portable-atomic = { version = "1", default-features = false, features = ["critical-section"] }
 
 krabitls = { path = "../krabitls" }
 ed25519_heapless = { version = "0.0.3", default-features = false, features = ["fixed-bigint", "sha512-sha2"] }

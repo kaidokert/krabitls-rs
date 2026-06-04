@@ -1,7 +1,7 @@
-use core::sync::atomic::{AtomicU32, Ordering};
-
 use cortex_m::peripheral::{SYST, syst::SystClkSource};
 use cortex_m_rt::exception;
+// portable-atomic so thumbv6m (no native 32-bit atomics) builds.
+use portable_atomic::{AtomicU32, Ordering};
 
 static SYSTICK_WRAPS: AtomicU32 = AtomicU32::new(0);
 

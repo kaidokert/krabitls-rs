@@ -1,4 +1,5 @@
-use core::sync::atomic::{AtomicUsize, Ordering};
+// portable-atomic so thumbv6m (no native 32-bit atomics) builds.
+use portable_atomic::{AtomicUsize, Ordering};
 
 unsafe extern "C" {
     static _stack_start: u32;
@@ -86,6 +87,9 @@ pub fn check_stack_high_water_mark_inner<const SAFE: usize>() -> usize {
             current = current.add(1);
         }
 
-        stack_start.offset_from(current) as usize
+        // `stack_start` and `current` are derived from different linker
+        // symbols (different abstract allocations), so `offset_from` would
+        // be UB. Subtract as `usize` instead.
+        (stack_start as usize) - (current as usize)
     }
 }
