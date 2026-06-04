@@ -39,6 +39,8 @@ pub use aead::{
 #[cfg(feature = "jedisct")]
 pub use backends::JedisctCrypto;
 pub use backends::{DerCert, RustCrypto};
+#[cfg(feature = "rsa")]
+pub use backends::{RsaVerifierKey, RsaVerifyError};
 pub use client_flight::{CLIENT_FINISHED_LEN, ClientFinishedError, build_client_finished};
 pub use hkdf::{
     EMPTY_TRANSCRIPT_HASH, HkdfLabelError, TranscriptError, TranscriptHash,
@@ -62,6 +64,73 @@ pub use traits::{FixedTime, TimeSource};
 
 use embedded_io::Write;
 
+/// Compile-time hex decoder for the readable `testdata/*.hex` fixtures.
+///
+/// **Not a TLS-API surface item** — this is a testdata helper. Gated behind
+/// `feature = "dev-utils"` (and `#[cfg(test)]` for this crate's own tests)
+/// so production library builds neither see nor compile it.
+///
+/// Skips whitespace (spaces, tabs, newlines) and `#`-to-EOL comments, so
+/// the hex files can be hand-eyeball-friendly. Each remaining pair of hex
+/// digits becomes one byte. `N` must match the post-decode byte count
+/// exactly, or compilation fails with the const-eval panic below.
+///
+/// Usage:
+///
+/// ```ignore
+/// pub const FIXTURE_PACKET_3: [u8; 380] =
+///     krabitls::hex_decode(include_str!("../../testdata/packets/003_*.hex"));
+/// ```
+#[cfg(any(test, feature = "dev-utils"))]
+pub const fn hex_decode<const N: usize>(s: &str) -> [u8; N] {
+    let bytes = s.as_bytes();
+    let mut out = [0u8; N];
+    let mut i = 0; // input cursor
+    let mut o = 0; // output cursor
+    while i < bytes.len() {
+        let c = bytes[i];
+        // Skip whitespace.
+        if c == b' ' || c == b'\t' || c == b'\n' || c == b'\r' {
+            i += 1;
+            continue;
+        }
+        // Skip `#`-to-EOL comments.
+        if c == b'#' {
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        // Two hex digits → one byte. The const panic on a bad nibble
+        // gives a compile-time error pointing at the bad input.
+        let hi = hex_nibble(bytes[i]);
+        if i + 1 >= bytes.len() {
+            panic!("hex_decode: dangling nibble at end of input");
+        }
+        let lo = hex_nibble(bytes[i + 1]);
+        if o >= N {
+            panic!("hex_decode: more bytes in input than the declared N");
+        }
+        out[o] = (hi << 4) | lo;
+        i += 2;
+        o += 1;
+    }
+    if o != N {
+        panic!("hex_decode: fewer bytes in input than the declared N");
+    }
+    out
+}
+
+#[cfg(any(test, feature = "dev-utils"))]
+const fn hex_nibble(c: u8) -> u8 {
+    match c {
+        b'0'..=b'9' => c - b'0',
+        b'a'..=b'f' => c - b'a' + 10,
+        b'A'..=b'F' => c - b'A' + 10,
+        _ => panic!("hex_decode: non-hex byte in input"),
+    }
+}
+
 /// Wire constants — straight out of RFC 8446.
 pub mod consts {
     pub const CT_HANDSHAKE: u8 = 22;
@@ -78,6 +147,9 @@ pub mod consts {
     pub const CIPHER_AES_128_GCM_SHA256: u16 = 0x1301;
     pub const NAMED_GROUP_X25519: u16 = 0x001D;
     pub const SIG_SCHEME_ED25519: u16 = 0x0807;
+    /// `rsa_pss_rsae_sha256` — RSASSA-PSS with the leaf's RSAE key encoding,
+    /// MGF1-SHA-256, salt_len = hash output (32 B). RFC 8446 §4.2.3.
+    pub const SIG_SCHEME_RSA_PSS_RSAE_SHA256: u16 = 0x0804;
 
     pub const EXT_SERVER_NAME: u16 = 0;
     pub const EXT_SUPPORTED_GROUPS: u16 = 10;
@@ -1285,5 +1357,89 @@ mod tests {
         body[17..22].copy_from_slice(&[6, 7, 8, 9, 10]);
         let leaf = extract_cert_der(&body).expect("first cert");
         assert_eq!(leaf, &[1, 2, 3, 4, 5]);
+    }
+
+    // ---- RSA: end-to-end replay against captured packets_rsa/ fixtures ----
+
+    #[cfg(feature = "rsa")]
+    mod rsa_tests {
+        use super::*;
+
+        /// RSA fixture, c→s ClientHello.
+        const FIXTURE_RSA_CLIENT_HELLO: [u8; 117] = crate::hex_decode(include_str!(
+            "../../testdata/packets_rsa/001_c2s_ClientHello.hex"
+        ));
+        /// RSA fixture, s→c ServerHello.
+        const FIXTURE_RSA_SERVER_HELLO: [u8; 95] = crate::hex_decode(include_str!(
+            "../../testdata/packets_rsa/002_s2c_ServerHello.hex"
+        ));
+        /// RSA fixture, encrypted server flight (1034 B — dominated by the
+        /// 2048-bit RSA cert + 256-byte RSA-PSS signature).
+        const FIXTURE_RSA_PACKET_3: [u8; 1034] = crate::hex_decode(include_str!(
+            "../../testdata/packets_rsa/003_s2c_ServerFlight_encrypted.hex"
+        ));
+
+        /// Server handshake traffic secret from the fixture's packets_rsa/004 notes.
+        /// Bare `[u8; 32]` because `Zeroizing::new` isn't const-stable; wrap into
+        /// `Secret` at the use site.
+        const FIXTURE_RSA_S_HS_TRAFFIC_SECRET_BYTES: [u8; 32] = [
+            0x6e, 0xb5, 0xef, 0x9a, 0x73, 0xd2, 0x86, 0xdd, 0x12, 0x24, 0xb2, 0x33, 0xd3, 0xa4,
+            0xac, 0xa7, 0xaa, 0x1b, 0x4a, 0x47, 0x58, 0x61, 0x26, 0x7b, 0x68, 0xac, 0x55, 0xa9,
+            0x9d, 0xbb, 0x41, 0xe9,
+        ];
+
+        fn s_hs_traffic_secret() -> Secret {
+            Secret::new(ZeroBuf::<32>::new(FIXTURE_RSA_S_HS_TRAFFIC_SECRET_BYTES))
+        }
+
+        #[test]
+        fn fixture_rsa_server_flight_verifies() {
+            // Derive AEAD (key, iv) from the fixture's server handshake traffic secret.
+            let s_hs_ts = s_hs_traffic_secret();
+            let (key, iv) = traffic_keys::<RustCrypto>(&s_hs_ts).expect("traffic_keys");
+
+            // Decrypt the RSA fixture's server flight.
+            let mut pt_buf = [0u8; 1100];
+            let pt = decrypt_record::<RustCrypto>(&FIXTURE_RSA_PACKET_3, &key, &iv, 0, &mut pt_buf)
+                .expect("decrypt packets_rsa/003");
+            let (content, ct) = split_inner_plaintext(pt).unwrap();
+            assert_eq!(ct, consts::CT_HANDSHAKE);
+
+            // Walk the inner flight + verify cert (RSA-PKCS#1-v1.5 self-sig) +
+            // CertificateVerify (rsa_pss_rsae_sha256) + Finished MAC.
+            let mut transcript = TranscriptHash::<RustCrypto>::new();
+            transcript.update_record(&FIXTURE_RSA_CLIENT_HELLO).unwrap();
+            transcript.update_record(&FIXTURE_RSA_SERVER_HELLO).unwrap();
+            verify_server_flight::<RustCrypto, DerCert, RustCrypto>(
+                &mut transcript,
+                content,
+                &s_hs_ts,
+            )
+            .expect("verify RSA server flight");
+        }
+
+        #[test]
+        fn fixture_rsa_cert_parses_as_rsa_view() {
+            // Spot-check that DerCert parses the fixture's RSA cert into the
+            // RSA variant with a 2048-bit modulus and exponent 65537.
+            let s_hs_ts = s_hs_traffic_secret();
+            let (key, iv) = traffic_keys::<RustCrypto>(&s_hs_ts).unwrap();
+            let mut pt_buf = [0u8; 1100];
+            let pt = decrypt_record::<RustCrypto>(&FIXTURE_RSA_PACKET_3, &key, &iv, 0, &mut pt_buf)
+                .unwrap();
+            let (content, _) = split_inner_plaintext(pt).unwrap();
+            let flight = parse_server_flight(content).unwrap();
+            let cert_der = extract_cert_der(flight.cert_body).unwrap();
+            let view = <DerCert as CertParser>::parse(cert_der).expect("RSA cert parses");
+            match view {
+                CertView::Rsa {
+                    modulus, exponent, ..
+                } => {
+                    assert_eq!(modulus.len(), 256, "RSA-2048 modulus is 256 bytes");
+                    assert_eq!(exponent, 65537, "fixture priv uses e=65537");
+                }
+                _ => panic!("expected CertView::Rsa, got {:?}", view),
+            }
+        }
     }
 }

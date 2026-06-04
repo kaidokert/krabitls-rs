@@ -16,6 +16,8 @@
 //!    the server picked the same handshake keys we did.
 
 use crate::consts::SIG_SCHEME_ED25519;
+#[cfg(feature = "rsa")]
+use crate::consts::SIG_SCHEME_RSA_PSS_RSAE_SHA256;
 use crate::hkdf::{HkdfLabelError, TranscriptHash, hkdf_expand_label};
 use crate::newtype::{Secret, TranscriptDigest, ZeroBuf};
 use crate::traits::{CertParseError, CertParser, CertView, Ed25519Verify, HkdfSha256};
@@ -328,6 +330,21 @@ pub fn verify_self_signed_cert_with_cache<E: Ed25519Verify>(
                 return Err(FlightError::CertSelfSignatureInvalid);
             }
         }
+        #[cfg(feature = "rsa")]
+        CertView::Rsa {
+            tbs,
+            signature,
+            modulus,
+            exponent,
+            ..
+        } => {
+            // Self-signed RSA cert: outer signature is `sha256WithRSAEncryption`
+            // (PKCS#1-v1.5). Modulus length matches `signature.len()` (already
+            // enforced in `parse_rsa_pubkey` + the cert parser's length check),
+            // so dispatch falls through `rsa_verify`'s 1024/2048 split cleanly.
+            crate::backends::rsa_verify::verify_pkcs1v15_sha256(modulus, *exponent, tbs, signature)
+                .map_err(|_| FlightError::CertSelfSignatureInvalid)?;
+        }
     }
     Ok(())
 }
@@ -398,6 +415,21 @@ pub fn verify_certificate_verify_with_cache<E: Ed25519Verify>(
             }
             Ok(())
         }
+        #[cfg(feature = "rsa")]
+        (
+            SIG_SCHEME_RSA_PSS_RSAE_SHA256,
+            CertView::Rsa {
+                modulus, exponent, ..
+            },
+        ) => {
+            // PSS signature length equals the RSA modulus length.
+            if sig_len != modulus.len() {
+                return Err(FlightError::WrongSignatureLength);
+            }
+            crate::backends::rsa_verify::verify_pss_sha256(modulus, *exponent, &signed, sig_bytes)
+                .map_err(|_| FlightError::CertVerifyInvalid)?;
+            Ok(())
+        }
         _ => Err(FlightError::UnexpectedSignatureScheme(scheme)),
     }
 }
@@ -460,7 +492,10 @@ pub enum ServerPubkey<'a> {
     /// The phantom binds the enum's lifetime parameter without contributing
     /// any storage.
     Ed25519([u8; 32], core::marker::PhantomData<&'a ()>),
-    // More variants when optional features land
+    /// RSA modulus + exponent. Borrowed: the modulus is up to 256 B; the
+    /// caller's `cert_view` owns it.
+    #[cfg(feature = "rsa")]
+    Rsa { modulus: &'a [u8], exponent: u32 },
 }
 
 impl<'a> ServerPubkey<'a> {
@@ -469,15 +504,21 @@ impl<'a> ServerPubkey<'a> {
         ServerPubkey::Ed25519(pubkey, core::marker::PhantomData)
     }
 
-    /// If the variant is Ed25519, return the 32-byte pubkey. Single-variant
-    /// today so the let-binding is irrefutable; silence that warning rather
-    /// than complicating the implementation.
-    #[allow(irrefutable_let_patterns)]
+    /// If the variant is Ed25519, return the 32-byte pubkey.
     pub fn as_ed25519(&self) -> Option<[u8; 32]> {
-        if let ServerPubkey::Ed25519(pk, _) = self {
-            Some(*pk)
-        } else {
-            None
+        match self {
+            ServerPubkey::Ed25519(pk, _) => Some(*pk),
+            #[cfg(feature = "rsa")]
+            ServerPubkey::Rsa { .. } => None,
+        }
+    }
+
+    /// If the variant is RSA, return the `(modulus, exponent)` pair.
+    #[cfg(feature = "rsa")]
+    pub fn as_rsa(&self) -> Option<(&'a [u8], u32)> {
+        match self {
+            ServerPubkey::Rsa { modulus, exponent } => Some((*modulus, *exponent)),
+            ServerPubkey::Ed25519(_, _) => None,
         }
     }
 }
@@ -544,6 +585,10 @@ pub fn verify_server_flight<'a, H: HkdfSha256, C: CertParser, E: Ed25519Verify>(
 
     let server_pubkey = match cert_view {
         CertView::Ed25519 { pubkey, .. } => ServerPubkey::ed25519(*pubkey),
+        #[cfg(feature = "rsa")]
+        CertView::Rsa {
+            modulus, exponent, ..
+        } => ServerPubkey::Rsa { modulus, exponent },
     };
     Ok(ServerFlightVerified { server_pubkey })
 }

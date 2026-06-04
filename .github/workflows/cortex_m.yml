@@ -61,3 +61,11 @@ jobs:
     - name: Run krabitls_jedisct example
       working-directory: cortex_m_demo
       run: cargo run --release --example krabitls_jedisct --target ${{ matrix.target }} --features jedisct
+
+    # The captured-fixture buffers (8 KiB plaintext + 8 KiB flight) overflow
+    # microbit's 16 KiB RAM by 16 B, so the M0 build skips this example.
+    # RSA itself runs on M0 — it's the example's I/O buffers that don't fit.
+    - name: Run krabitls_rsa example (M3 only)
+      if: matrix.target == 'thumbv7m-none-eabi'
+      working-directory: cortex_m_demo
+      run: cargo run --release --example krabitls_rsa --target ${{ matrix.target }} --features rsa

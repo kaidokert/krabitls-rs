@@ -5,6 +5,10 @@
 //! STRING handling without us writing it. Krabitls picks this implementation
 //! by default; callers can plug in their own [`CertParser`] impl by
 //! parameterizing [`crate::verify_server_flight`] over a different marker.
+//!
+//! Ed25519 is always supported. RSA (RFC 3279 `rsaEncryption` SPKI plus
+//! `sha256WithRSAEncryption` outer signature) is gated behind
+//! `feature = "rsa"`.
 
 use der::asn1::{AnyRef, BitStringRef, ObjectIdentifier};
 use der::{Decode, Reader, SliceReader, Tag, TagNumber};
@@ -18,6 +22,11 @@ pub struct DerCert;
 /// certificate `signatureAlgorithm` (outer + TBS) and the SPKI `algorithm`
 /// field of an Ed25519 self-signed cert.
 const ED25519_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.101.112");
+
+/// `rsaEncryption` OID (`1.2.840.113549.1.1.1`, RFC 3279). Used for the SPKI
+/// algorithm of an RSA cert.
+#[cfg(feature = "rsa")]
+const RSA_ENCRYPTION_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.1");
 
 /// `subjectAltName` extension OID (`2.5.29.17`, RFC 5280 §4.2.1.6). The
 /// extnValue OCTET STRING wraps a `GeneralNames` SEQUENCE; we surface its
@@ -44,6 +53,8 @@ const X509_V3: u8 = 2;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SpkiKind {
     Ed25519,
+    #[cfg(feature = "rsa")]
+    Rsa,
 }
 
 impl CertParser for DerCert {
@@ -169,6 +180,22 @@ impl CertParser for DerCert {
                     validity_der,
                 })
             }
+            #[cfg(feature = "rsa")]
+            SpkiKind::Rsa => {
+                let (modulus, exponent) = parse_rsa_pubkey(pk_bytes)?;
+                // PKCS#1 v1.5 signature length == RSA modulus length.
+                if sig_bytes.len() != modulus.len() {
+                    return Err(CertParseError::WrongSignatureLength);
+                }
+                Ok(CertView::Rsa {
+                    tbs: tbs_bytes,
+                    signature: sig_bytes,
+                    modulus,
+                    exponent,
+                    san: san_bytes,
+                    validity_der,
+                })
+            }
         }
     }
 }
@@ -269,5 +296,82 @@ fn classify_spki_algorithm(alg_id_bytes: &[u8]) -> Result<SpkiKind, CertParseErr
         }
         return Ok(SpkiKind::Ed25519);
     }
+    #[cfg(feature = "rsa")]
+    if oid == RSA_ENCRYPTION_OID {
+        // RFC 3279 §2.3.1: parameters MUST be NULL (explicit).
+        require_optional_null_params(&mut r)?;
+        return Ok(SpkiKind::Rsa);
+    }
     Err(CertParseError::WrongAlgorithmOid)
+}
+
+/// Helper for RSA paths: consume an optional NULL TLV (`05 00`) and require
+/// the reader is then exhausted.
+#[cfg(feature = "rsa")]
+fn require_optional_null_params(r: &mut SliceReader<'_>) -> Result<(), CertParseError> {
+    let map_err = |_| CertParseError::Malformed;
+    if r.is_finished() {
+        return Ok(());
+    }
+    let any = AnyRef::decode(r).map_err(map_err)?;
+    if any.header().tag() != Tag::Null || !any.value().is_empty() {
+        return Err(CertParseError::AlgorithmHasParameters);
+    }
+    if !r.is_finished() {
+        return Err(CertParseError::AlgorithmHasParameters);
+    }
+    Ok(())
+}
+
+/// Parse an `RSAPublicKey ::= SEQUENCE { modulus INTEGER, publicExponent
+/// INTEGER }` (RFC 8017 §A.1.1) out of the SPKI BIT STRING contents. Returns
+/// the modulus as a stripped-leading-zero big-endian byte slice and the
+/// exponent as a u32 (both 3 and 65537 fit comfortably).
+#[cfg(feature = "rsa")]
+fn parse_rsa_pubkey(bit_string: &[u8]) -> Result<(&[u8], u32), CertParseError> {
+    let map_err = |_| CertParseError::BadRsaPubkey;
+    let any = AnyRef::try_from(bit_string).map_err(map_err)?;
+    if any.header().tag() != Tag::Sequence {
+        return Err(CertParseError::BadRsaPubkey);
+    }
+    let mut r = SliceReader::new(any.value()).map_err(map_err)?;
+
+    let modulus_any = AnyRef::decode(&mut r).map_err(map_err)?;
+    if modulus_any.header().tag() != Tag::Integer {
+        return Err(CertParseError::BadRsaPubkey);
+    }
+    let modulus_raw = modulus_any.value();
+    // DER INTEGER encoding adds a leading 0x00 if the high bit is set
+    // (to keep it positive). Strip that for the raw modulus bytes.
+    let modulus = match modulus_raw {
+        [0x00, rest @ ..] if !rest.is_empty() && (rest[0] & 0x80) != 0 => rest,
+        b => b,
+    };
+    // Only support 1024-bit (128 B) and 2048-bit (256 B) moduli for now;
+    // refuse anything else so the runtime dispatch in `rsa_verify::*` stays
+    // mechanical.
+    if modulus.len() != 128 && modulus.len() != 256 {
+        return Err(CertParseError::UnsupportedRsaKeySize);
+    }
+
+    let exponent_any = AnyRef::decode(&mut r).map_err(map_err)?;
+    if exponent_any.header().tag() != Tag::Integer {
+        return Err(CertParseError::BadRsaPubkey);
+    }
+    let exponent_bytes = exponent_any.value();
+    let exp_bytes = match exponent_bytes {
+        [0x00, rest @ ..] if !rest.is_empty() && (rest[0] & 0x80) != 0 => rest,
+        b => b,
+    };
+    if exp_bytes.is_empty() || exp_bytes.len() > 4 {
+        return Err(CertParseError::BadRsaPubkey);
+    }
+    let mut exponent: u32 = 0;
+    for &b in exp_bytes {
+        exponent = (exponent << 8) | b as u32;
+    }
+    if !r.is_finished() {
+        return Err(CertParseError::BadRsaPubkey);
+    }
+    Ok((modulus, exponent))
 }

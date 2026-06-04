@@ -13,9 +13,13 @@
 pub mod der_cert;
 #[cfg(feature = "jedisct")]
 pub mod jedisct;
+#[cfg(feature = "rsa")]
+pub mod rsa_verify;
 pub mod rustcrypto;
 
 pub use der_cert::DerCert;
 #[cfg(feature = "jedisct")]
 pub use jedisct::JedisctCrypto;
+#[cfg(feature = "rsa")]
+pub use rsa_verify::{RsaVerifierKey, RsaVerifyError};
 pub use rustcrypto::RustCrypto;

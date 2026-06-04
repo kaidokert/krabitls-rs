@@ -47,8 +47,11 @@ pub enum IdentityError {
 pub enum PinnedPubkey<'a> {
     /// 32-byte raw Ed25519 public key.
     Ed25519([u8; 32]),
-    // Bind the `'a` lifetime parameter without contributing storage.
-    // Once additional borrowed variants are implemted, this can drop.
+    /// RSA modulus + exponent. Available with `feature = "rsa"`.
+    #[cfg(feature = "rsa")]
+    Rsa { modulus: &'a [u8], exponent: u32 },
+    /// Lifetime binding for the Ed25519-only variant when `feature = "rsa"`
+    /// is off (and a placeholder for future borrowed variants).
     #[doc(hidden)]
     _Phantom(core::marker::PhantomData<&'a ()>),
 }
@@ -63,6 +66,22 @@ pub fn verify_pinned_pubkey(
     match (cert_view, pin) {
         (CertView::Ed25519 { pubkey, .. }, PinnedPubkey::Ed25519(expected)) => {
             if **pubkey == *expected {
+                Ok(())
+            } else {
+                Err(IdentityError::PinMismatch)
+            }
+        }
+        #[cfg(feature = "rsa")]
+        (
+            CertView::Rsa {
+                modulus, exponent, ..
+            },
+            PinnedPubkey::Rsa {
+                modulus: pm,
+                exponent: pe,
+            },
+        ) => {
+            if modulus == pm && exponent == pe {
                 Ok(())
             } else {
                 Err(IdentityError::PinMismatch)
