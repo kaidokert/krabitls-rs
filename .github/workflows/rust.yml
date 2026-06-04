@@ -66,3 +66,5 @@ jobs:
       run: cargo build --manifest-path=krabitls/Cargo.toml --verbose
     - name: Test
       run: cargo test --manifest-path=krabitls/Cargo.toml --verbose
+    - name: Test (all-features)
+      run: cargo test --manifest-path=krabitls/Cargo.toml --all-features --verbose

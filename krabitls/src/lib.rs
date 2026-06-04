@@ -45,6 +45,8 @@ pub use hkdf::{
     application_traffic_secrets, derive_secret, early_secret, finished_mac, handshake_secret,
     handshake_traffic_secrets, hkdf_expand_label, master_secret, traffic_keys,
 };
+#[cfg(feature = "validity")]
+pub use identity::{ValidityError, verify_validity};
 pub use newtype::{AeadIv, AeadKey, Secret, TranscriptDigest, ZeroBuf};
 pub use server_flight::{
     FlightError, ServerFlightVerified, ServerFlightView, ServerPubkey, extract_cert_der,
@@ -55,6 +57,8 @@ pub use traits::{
     AeadError, Aes128GcmAead, CertParseError, CertParser, CertView, Ed25519Verify, HkdfExpandError,
     HkdfSha256, Sha256Hasher,
 };
+#[cfg(feature = "validity")]
+pub use traits::{FixedTime, TimeSource};
 
 use embedded_io::Write;
 
@@ -1250,6 +1254,7 @@ mod tests {
             signature: &ZERO_SIG,
             pubkey: &ZERO_PUB,
             san: None,
+            validity_der: &[],
         };
         let th = TranscriptDigest::new([0u8; 32]);
         let err =

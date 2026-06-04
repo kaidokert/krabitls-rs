@@ -115,11 +115,13 @@ impl CertParser for DerCert {
         if tbs_sig_alg_bytes != outer_sig_alg_bytes {
             return Err(CertParseError::SignatureAlgorithmMismatch);
         }
-        // issuer, validity, subject — skipped (this core profile doesn't
-        // act on them). Validity-window enforcement comes back with the
-        // optional `validity` feature in a follow-up PR.
+        // issuer, validity, subject — capture the validity TLV bytes for
+        // the optional `verify_validity` check (see `crate::identity`).
+        // The bytes carry the DER `SEQUENCE { notBefore, notAfter }`;
+        // parsing the UTCTime / GeneralizedTime → epoch seconds happens
+        // on demand only when the validity check runs.
         tbs_r.tlv_bytes().map_err(map_err)?; // issuer
-        tbs_r.tlv_bytes().map_err(map_err)?; // validity
+        let validity_der = tbs_r.tlv_bytes().map_err(map_err)?;
         tbs_r.tlv_bytes().map_err(map_err)?; // subject
 
         // SubjectPublicKeyInfo ::= SEQUENCE { algorithm AlgorithmIdentifier,
@@ -164,6 +166,7 @@ impl CertParser for DerCert {
                     signature,
                     pubkey,
                     san: san_bytes,
+                    validity_der,
                 })
             }
         }
