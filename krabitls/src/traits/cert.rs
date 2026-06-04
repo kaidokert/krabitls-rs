@@ -121,9 +121,11 @@ pub enum CertParseError {
     /// interpreted at parse time, so unknown values there don't trigger
     /// this variant; they only matter when self-sig verification runs.
     WrongAlgorithmOid,
-    /// An Ed25519 `AlgorithmIdentifier` carried a non-empty `parameters`
-    /// field (RFC 8410 §3 requires it absent), or an RSA one was missing the
-    /// required NULL parameter.
+    /// `AlgorithmIdentifier.parameters` violated the spec for the algorithm:
+    /// Ed25519 requires absent (RFC 8410 §3); `rsaEncryption` requires an
+    /// explicit NULL TLV per RFC 3279 §2.3.1. Any other shape — Ed25519 with
+    /// a non-empty parameter, RSA with absent / non-NULL / extra bytes —
+    /// surfaces here.
     AlgorithmHasParameters,
     /// The outer `Certificate.signatureAlgorithm` and `TBSCertificate.signature`
     /// don't carry identical bytes. RFC 5280 §4.1.1.2 / §4.1.2.3 require them
@@ -134,11 +136,14 @@ pub enum CertParseError {
     /// only for the default `v1`, which this client doesn't accept).
     UnsupportedCertVersion,
     /// RSA pubkey SPKI bit string didn't decode as `SEQUENCE { INTEGER
-    /// modulus, INTEGER exponent }`.
+    /// modulus, INTEGER exponent }` with valid DER framing — wrong tags,
+    /// truncated body, non-minimal INTEGER encoding (redundant leading
+    /// zeros), exponent that doesn't fit in `u32`, or exponent that's
+    /// even or less than 3 (RFC 8017 §3.1).
     #[cfg(feature = "rsa")]
     BadRsaPubkey,
-    /// RSA modulus or exponent had a leading zero where DER INTEGER encoding
-    /// said it shouldn't, or modulus was outside the 1024/2048-bit set we support.
+    /// RSA modulus length wasn't in the 128 B (RSA-1024) or 256 B
+    /// (RSA-2048) set this crate's `rsa_verify` dispatch supports.
     #[cfg(feature = "rsa")]
     UnsupportedRsaKeySize,
 }

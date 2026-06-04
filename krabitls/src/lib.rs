@@ -1419,6 +1419,21 @@ mod tests {
         }
 
         #[test]
+        fn rsa_verify_rejects_wrong_signature_length() {
+            // `FixedUInt::from_be_bytes` requires an exact-length slice; the
+            // public RSA verify APIs must guard against wrong-length input
+            // and return `RsaVerifyError` instead of panicking. This test
+            // would have panicked before the length checks were added.
+            use crate::backends::rsa_verify::{verify_pkcs1v15_sha256, verify_pss_sha256};
+            let modulus_2048 = [0xFFu8; 256]; // contents don't matter, only length
+            let exponent: u32 = 65537;
+            // 200-byte signature for a 256-byte modulus → reject.
+            let short_sig = [0u8; 200];
+            assert!(verify_pkcs1v15_sha256(&modulus_2048, exponent, b"msg", &short_sig).is_err());
+            assert!(verify_pss_sha256(&modulus_2048, exponent, b"msg", &short_sig).is_err());
+        }
+
+        #[test]
         fn fixture_rsa_cert_parses_as_rsa_view() {
             // Spot-check that DerCert parses the fixture's RSA cert into the
             // RSA variant with a 2048-bit modulus and exponent 65537.

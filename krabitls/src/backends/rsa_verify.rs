@@ -106,12 +106,20 @@ impl RsaVerifierKey {
         let prehash = Sha256::digest(message);
         match self {
             RsaVerifierKey::U1024(vks) => {
+                // `from_be_bytes` requires an exact-length slice — a mismatch
+                // would panic, so reject up front.
+                if signature.len() != 128 {
+                    return Err(RsaVerifyError);
+                }
                 let sig = Pkcs1Sig::from(U1024::from_be_bytes(signature));
                 vks.pkcs1
                     .verify_prehash(&prehash, &sig)
                     .map_err(|_| RsaVerifyError)
             }
             RsaVerifierKey::U2048(vks) => {
+                if signature.len() != 256 {
+                    return Err(RsaVerifyError);
+                }
                 let sig = Pkcs1Sig::from(U2048::from_be_bytes(signature));
                 vks.pkcs1
                     .verify_prehash(&prehash, &sig)
@@ -130,12 +138,18 @@ impl RsaVerifierKey {
         let prehash = Sha256::digest(message);
         match self {
             RsaVerifierKey::U1024(vks) => {
+                if signature.len() != 128 {
+                    return Err(RsaVerifyError);
+                }
                 let sig = PssSig::from(U1024::from_be_bytes(signature));
                 vks.pss
                     .verify_prehash(&prehash, &sig)
                     .map_err(|_| RsaVerifyError)
             }
             RsaVerifierKey::U2048(vks) => {
+                if signature.len() != 256 {
+                    return Err(RsaVerifyError);
+                }
                 let sig = PssSig::from(U2048::from_be_bytes(signature));
                 vks.pss
                     .verify_prehash(&prehash, &sig)
@@ -169,6 +183,12 @@ pub fn verify_pkcs1v15_sha256(
     message: &[u8],
     signature: &[u8],
 ) -> Result<(), RsaVerifyError> {
+    // PKCS#1-v1.5 signature length always equals modulus length. Reject
+    // mismatches up front — `FixedUInt::from_be_bytes` requires an exact-
+    // length slice and would panic otherwise.
+    if signature.len() != modulus.len() {
+        return Err(RsaVerifyError);
+    }
     let prehash = Sha256::digest(message);
     match modulus.len() {
         128 => verify_pkcs1v15_1024(modulus, exponent, &prehash, signature),
@@ -185,6 +205,11 @@ pub fn verify_pss_sha256(
     message: &[u8],
     signature: &[u8],
 ) -> Result<(), RsaVerifyError> {
+    // PSS signature length equals modulus length. Reject mismatches up front
+    // for the same reason as `verify_pkcs1v15_sha256`.
+    if signature.len() != modulus.len() {
+        return Err(RsaVerifyError);
+    }
     let prehash = Sha256::digest(message);
     match modulus.len() {
         128 => verify_pss_1024(modulus, exponent, &prehash, signature),
