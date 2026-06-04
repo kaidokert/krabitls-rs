@@ -1,0 +1,8 @@
+# tls_fixture seed-0 s→c app data reply #0 (48 bytes including record header).
+# Encrypted under s_ap_traffic_secret-derived (key, iv), seq=0. Inner plaintext
+# = b"hello back \xe2\x80\x94 server here" ("hello back — server here", 26 B
+# UTF-8) + 0x17 inner content_type byte, AES-128-GCM tag → 43 B payload + 5 B
+# record header.
+17 03 03 00 2b a8 4a 4c 33 b0 8d 92 4c 24 0f 77
+46 ce 05 58 86 ce f9 da d5 a7 67 44 05 42 21 ed
+89 85 c3 6d a4 4d 92 34 3f 43 98 8f dd 27 79 4b
