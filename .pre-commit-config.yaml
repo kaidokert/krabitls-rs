@@ -31,8 +31,8 @@ repos:
         pass_filenames: false
         files: ^krabitls/.*\.(rs|toml)$
     -   id: krabitls-test
-        name: cargo test krabitls (host)
-        entry: cargo test --manifest-path=krabitls/Cargo.toml
+        name: cargo test krabitls (host, all-features)
+        entry: cargo test --manifest-path=krabitls/Cargo.toml --all-features
         language: system
         pass_filenames: false
         files: ^krabitls/.*\.(rs|toml)$

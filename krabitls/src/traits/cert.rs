@@ -38,6 +38,11 @@ pub enum CertView<'a> {
         /// if the cert doesn't carry a SAN extension. Use
         /// [`crate::identity::san_dns_names`] to iterate the dNSName entries.
         san: Option<&'a [u8]>,
+        /// DER bytes of the `Validity SEQUENCE { notBefore, notAfter }`
+        /// from TBSCertificate. Always captured (cheap); the actual
+        /// notBefore / notAfter dates are parsed on demand by
+        /// [`crate::identity::verify_validity`] under `feature = "validity"`.
+        validity_der: &'a [u8],
     },
 }
 
@@ -53,6 +58,17 @@ impl<'a> CertView<'a> {
     pub fn san(&self) -> Option<&'a [u8]> {
         match self {
             CertView::Ed25519 { san, .. } => *san,
+        }
+    }
+
+    /// Borrow the raw DER bytes of the `Validity` SEQUENCE
+    /// (`SEQUENCE { notBefore, notAfter }`). The
+    /// [`crate::identity::verify_validity`] helper (under
+    /// `feature = "validity"`) parses these into Unix-epoch seconds and
+    /// compares against a caller-supplied [`crate::traits::TimeSource`].
+    pub fn validity_der(&self) -> &'a [u8] {
+        match self {
+            CertView::Ed25519 { validity_der, .. } => validity_der,
         }
     }
 }

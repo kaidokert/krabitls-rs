@@ -12,6 +12,12 @@ default = []
 # generic-array` chain. AEAD stays on `aes-gcm` either way — jedisct1
 # has no AES-GCM equivalent in the same family.
 jedisct = ["dep:hmac-sha256"]
+# Cert `notBefore` / `notAfter` validity-window check + the [`TimeSource`]
+# trait. krabitls is sans-io / no-clock; this feature adds the optional
+# contract a caller can use IF it has a clock. Embedded targets without an
+# RTC build with the feature OFF (default) and pay no code-size cost for
+# either the check or the trait.
+validity = []
 
 [dependencies]
 embedded-io = { version = "0.7.1", default-features = false }
