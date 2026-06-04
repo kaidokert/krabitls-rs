@@ -271,29 +271,35 @@ pub fn run_handshake<H: HkdfSha256>() -> Result<(), ()> {
     //
     // (1) re-encrypt PACKET_5_PLAINTEXT under c_ap, seq=0 → must equal FIXTURE_PACKET_5
     // (2) decrypt FIXTURE_PACKET_6 under s_ap, seq=0 → must yield PACKET_6_PLAINTEXT
+    //
+    // Both calls pass `seq = 0` because the fixture only replays the *first*
+    // record under each freshly-installed traffic key. RFC 8446 §5.3 resets
+    // record numbering to 0 whenever a new key/IV pair is installed, and
+    // c_ap / s_ap each get a fresh pair here, so this is the correct seq.
     let ms = master_secret::<H>(&hs).map_err(|_| ())?;
     let (c_ap_ts, s_ap_ts) =
         application_traffic_secrets::<H>(&ms, &th_through_sf).map_err(|_| ())?;
     let (c_ap_key, c_ap_iv) = traffic_keys::<H>(&c_ap_ts).map_err(|_| ())?;
     let (s_ap_key, s_ap_iv) = traffic_keys::<H>(&s_ap_ts).map_err(|_| ())?;
 
-    let mut send_buf = [0u8; 80];
+    // Reuse the 400-byte `pt_buf` from the server-flight decrypt above for
+    // both the encrypt and the decrypt — `pt_buf` is no longer live and the
+    // 52 / 48 byte app-data records fit comfortably.
     let sent = encrypt_record::<RustCrypto>(
         PACKET_5_PLAINTEXT,
         krabitls::consts::CT_APPLICATION_DATA,
         &c_ap_key,
         &c_ap_iv,
         0,
-        &mut send_buf,
+        &mut pt_buf,
     )
     .map_err(|_| ())?;
     if sent != &FIXTURE_PACKET_5[..] {
         return Err(());
     }
 
-    let mut recv_buf = [0u8; 64];
     let inner =
-        decrypt_record::<RustCrypto>(&FIXTURE_PACKET_6, &s_ap_key, &s_ap_iv, 0, &mut recv_buf)
+        decrypt_record::<RustCrypto>(&FIXTURE_PACKET_6, &s_ap_key, &s_ap_iv, 0, &mut pt_buf)
             .map_err(|_| ())?;
     let (content, ct) = split_inner_plaintext(inner).map_err(|_| ())?;
     if ct != krabitls::consts::CT_APPLICATION_DATA || content != PACKET_6_PLAINTEXT {
