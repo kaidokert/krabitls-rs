@@ -36,7 +36,9 @@ jobs:
           ~/.cargo/registry
           ~/.cargo/git
           krabitls/target
-        key: pre-commit-${{ hashFiles('krabitls/Cargo.toml') }}
+          krabitls_cli/target
+          cortex_m_demo/target
+        key: pre-commit-${{ hashFiles('krabitls/Cargo.toml', 'krabitls_cli/Cargo.toml', 'cortex_m_demo/Cargo.toml') }}
         restore-keys: pre-commit-
     - uses: pre-commit/action@v3.0.1
 
@@ -55,11 +57,14 @@ jobs:
           ~/.cargo/registry
           ~/.cargo/git
           krabitls/target
-        key: host-${{ hashFiles('krabitls/Cargo.toml') }}
+          krabitls_cli/target
+        key: host-${{ hashFiles('krabitls/Cargo.toml', 'krabitls_cli/Cargo.toml') }}
         restore-keys: host-
 
-    - name: Format check
+    - name: Format check (krabitls)
       run: cargo fmt --manifest-path=krabitls/Cargo.toml -- --check
+    - name: Format check (krabitls_cli)
+      run: cargo fmt --manifest-path=krabitls_cli/Cargo.toml -- --check
 
     - name: Clippy (default features)
       run: cargo clippy --manifest-path=krabitls/Cargo.toml --all-targets -- -D warnings
@@ -67,6 +72,10 @@ jobs:
       run: cargo clippy --manifest-path=krabitls/Cargo.toml --all-targets --features rsa -- -D warnings
     - name: Clippy (feature = validity)
       run: cargo clippy --manifest-path=krabitls/Cargo.toml --all-targets --features validity -- -D warnings
+    - name: Clippy (krabitls_cli, default + rsa)
+      run: |
+        cargo clippy --manifest-path=krabitls_cli/Cargo.toml --all-targets -- -D warnings
+        cargo clippy --manifest-path=krabitls_cli/Cargo.toml --all-targets --features rsa -- -D warnings
 
     - name: Build (default features)
       run: cargo build --manifest-path=krabitls/Cargo.toml --verbose
@@ -83,3 +92,8 @@ jobs:
       run: cargo test --manifest-path=krabitls/Cargo.toml --features validity --verbose
     - name: Test (all-features)
       run: cargo test --manifest-path=krabitls/Cargo.toml --all-features --verbose
+
+    - name: Build krabitls_cli (default + rsa)
+      run: |
+        cargo build --manifest-path=krabitls_cli/Cargo.toml --verbose
+        cargo build --manifest-path=krabitls_cli/Cargo.toml --features rsa --verbose

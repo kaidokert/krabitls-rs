@@ -18,6 +18,9 @@ repos:
         name: Fmt for krabitls
         args: ['--manifest-path=krabitls/Cargo.toml', '--']
     -   id: fmt
+        name: Fmt for krabitls_cli
+        args: ['--manifest-path=krabitls_cli/Cargo.toml', '--']
+    -   id: fmt
         name: Fmt for cortex_m_demo
         args: ['--manifest-path=cortex_m_demo/Cargo.toml', '--']
 
@@ -36,6 +39,18 @@ repos:
         language: system
         pass_filenames: false
         files: ^krabitls/.*\.(rs|toml)$
+    -   id: krabitls-cli-clippy
+        name: "cargo clippy krabitls_cli (default + rsa)"
+        entry: sh -c "cargo clippy --manifest-path=krabitls_cli/Cargo.toml --all-targets -- -D warnings && cargo clippy --manifest-path=krabitls_cli/Cargo.toml --all-targets --features rsa -- -D warnings"
+        language: system
+        pass_filenames: false
+        files: ^(krabitls_cli|krabitls)/.*\.(rs|toml)$
+    -   id: krabitls-cli-build
+        name: "cargo build krabitls_cli (default + rsa)"
+        entry: sh -c "cargo build --manifest-path=krabitls_cli/Cargo.toml && cargo build --manifest-path=krabitls_cli/Cargo.toml --features rsa"
+        language: system
+        pass_filenames: false
+        files: ^(krabitls_cli|krabitls)/.*\.(rs|toml)$
     -   id: cortex-m-clippy
         name: cargo clippy cortex_m_demo (thumbv7m)
         entry: cargo clippy --manifest-path=cortex_m_demo/Cargo.toml --release --example krabitls --target thumbv7m-none-eabi -- -D warnings

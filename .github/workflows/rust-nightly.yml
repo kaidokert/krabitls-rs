@@ -34,7 +34,8 @@ jobs:
           ~/.cargo/registry
           ~/.cargo/git
           krabitls/target
-        key: nightly-${{ hashFiles('krabitls/Cargo.toml') }}
+          krabitls_cli/target
+        key: nightly-${{ hashFiles('krabitls/Cargo.toml', 'krabitls_cli/Cargo.toml') }}
         restore-keys: nightly-
 
     - name: Build (default features)
@@ -50,3 +51,8 @@ jobs:
       run: cargo test --manifest-path=krabitls/Cargo.toml --features rsa --verbose
     - name: Test (feature = validity)
       run: cargo test --manifest-path=krabitls/Cargo.toml --features validity --verbose
+
+    - name: Build krabitls_cli (default + rsa)
+      run: |
+        cargo build --manifest-path=krabitls_cli/Cargo.toml --verbose
+        cargo build --manifest-path=krabitls_cli/Cargo.toml --features rsa --verbose

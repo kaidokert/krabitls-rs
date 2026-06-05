@@ -1,0 +1,7 @@
+/target/
+Cargo.lock
+# Runtime artifacts written by `krabitls_cli --conn-init` / `--conn-negotiate`
+# / `--send` — captured TLS packet bytes and the persisted private key +
+# session-secrets state. Not meant to be tracked.
+/packets/
+/state/
