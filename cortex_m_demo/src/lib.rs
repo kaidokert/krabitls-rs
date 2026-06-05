@@ -122,6 +122,10 @@ use stack::{check_stack_high_water_mark, paint_stack};
 /// example's `false` test result. The `()` error type plus `.map_err(|_| ())?`
 /// keeps the body `?`-driven without dragging every krabitls error enum
 /// into scope just to discriminate them.
+// `Result<(), ()>` is intentional — the caller surfaces failure as `false`
+// (see `test_fixture`'s contract); naming an error enum here would drag every
+// krabitls error variant into scope just to discriminate them at the binding.
+#[allow(clippy::result_unit_err)]
 pub fn run_handshake<H: HkdfSha256>() -> Result<(), ()> {
     // ---- ClientHello writer ----
     let mut buf = [0u8; krabitls::CLIENT_HELLO_LEN];

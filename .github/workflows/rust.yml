@@ -60,11 +60,26 @@ jobs:
 
     - name: Format check
       run: cargo fmt --manifest-path=krabitls/Cargo.toml -- --check
-    - name: Clippy
+
+    - name: Clippy (default features)
       run: cargo clippy --manifest-path=krabitls/Cargo.toml --all-targets -- -D warnings
-    - name: Build
+    - name: Clippy (feature = rsa)
+      run: cargo clippy --manifest-path=krabitls/Cargo.toml --all-targets --features rsa -- -D warnings
+    - name: Clippy (feature = validity)
+      run: cargo clippy --manifest-path=krabitls/Cargo.toml --all-targets --features validity -- -D warnings
+
+    - name: Build (default features)
       run: cargo build --manifest-path=krabitls/Cargo.toml --verbose
-    - name: Test
+    - name: Build (feature = rsa)
+      run: cargo build --manifest-path=krabitls/Cargo.toml --features rsa --verbose
+    - name: Build (feature = validity)
+      run: cargo build --manifest-path=krabitls/Cargo.toml --features validity --verbose
+
+    - name: Test (default features)
       run: cargo test --manifest-path=krabitls/Cargo.toml --verbose
+    - name: Test (feature = rsa)
+      run: cargo test --manifest-path=krabitls/Cargo.toml --features rsa --verbose
+    - name: Test (feature = validity)
+      run: cargo test --manifest-path=krabitls/Cargo.toml --features validity --verbose
     - name: Test (all-features)
       run: cargo test --manifest-path=krabitls/Cargo.toml --all-features --verbose
