@@ -99,6 +99,23 @@ macro_rules! secret_newtype {
                 &*self.0
             }
         }
+
+        // Convenience `From<[u8; N]>` so callers can write `AeadKey::from(bytes)`
+        // without explicitly wrapping into `ZeroBuf`. The plain-array path is
+        // a single move into the `Zeroizing` wrapper — same hygiene as `new`.
+        impl From<[u8; $n]> for $name {
+            fn from(bytes: [u8; $n]) -> Self {
+                Self(ZeroBuf::<$n>::new(bytes))
+            }
+        }
+
+        // Explicit `Zeroize` impl (delegates to the inner `Zeroizing`) so
+        // callers can wipe bytes on demand, not just on drop.
+        impl zeroize::Zeroize for $name {
+            fn zeroize(&mut self) {
+                zeroize::Zeroize::zeroize(&mut *self.0);
+            }
+        }
     };
 }
 
@@ -206,6 +223,26 @@ mod tests {
         assert_eq!(iv.as_bytes(), &[0x22; 12]);
         let td = TranscriptDigest::new([0x33; 32]);
         assert_eq!(td.as_bytes(), &[0x33; 32]);
+    }
+
+    #[test]
+    fn from_array_round_trip() {
+        // `From<[u8; N]>` wraps a plain array into the secret-bearing newtype
+        // without callers having to spell out the `ZeroBuf` step.
+        let s = Secret::from([0x42; 32]);
+        assert_eq!(s.as_bytes(), &[0x42; 32]);
+        let key: AeadKey = [0x11; 16].into();
+        assert_eq!(key.as_bytes(), &[0x11; 16]);
+        let iv: AeadIv = [0x22; 12].into();
+        assert_eq!(iv.as_bytes(), &[0x22; 12]);
+    }
+
+    #[test]
+    fn secret_zeroizes() {
+        use zeroize::Zeroize;
+        let mut s = Secret::from([0x42; 32]);
+        s.zeroize();
+        assert_eq!(s.as_bytes(), &[0u8; 32]);
     }
 
     extern crate alloc;

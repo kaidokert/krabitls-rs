@@ -5,67 +5,9 @@ use cortex_m_semihosting::{debug, hprintln};
 pub mod cyclecount;
 pub mod stack;
 
-/// Compile-time hex decoder for the readable `testdata/*.hex` fixtures.
-///
-/// Skips whitespace (spaces, tabs, newlines) and `#`-to-EOL comments, so
-/// the hex files can be hand-eyeball-friendly without bloating the
-/// binary. Each remaining pair of hex digits becomes one byte. `N` must
-/// match the post-decode byte count exactly, or compilation fails with
-/// the const-eval panic below.
-///
-/// Usage at the call site:
-///
-/// ```ignore
-/// pub const FIXTURE_PACKET_3: [u8; 380] =
-///     hex_decode(include_str!("../../testdata/packets/003_*.hex"));
-/// ```
-pub const fn hex_decode<const N: usize>(s: &str) -> [u8; N] {
-    let bytes = s.as_bytes();
-    let mut out = [0u8; N];
-    let mut i = 0; // input cursor
-    let mut o = 0; // output cursor
-    while i < bytes.len() {
-        let c = bytes[i];
-        // Skip whitespace.
-        if c == b' ' || c == b'\t' || c == b'\n' || c == b'\r' {
-            i += 1;
-            continue;
-        }
-        // Skip `#`-to-EOL comments.
-        if c == b'#' {
-            while i < bytes.len() && bytes[i] != b'\n' {
-                i += 1;
-            }
-            continue;
-        }
-        // Two hex digits → one byte. The const panic on a bad nibble
-        // gives a compile-time error pointing at the bad input.
-        let hi = hex_nibble(bytes[i]);
-        if i + 1 >= bytes.len() {
-            panic!("hex_decode: dangling nibble at end of input");
-        }
-        let lo = hex_nibble(bytes[i + 1]);
-        if o >= N {
-            panic!("hex_decode: more bytes in input than the declared N");
-        }
-        out[o] = (hi << 4) | lo;
-        i += 2;
-        o += 1;
-    }
-    if o != N {
-        panic!("hex_decode: fewer bytes in input than the declared N");
-    }
-    out
-}
-
-const fn hex_nibble(c: u8) -> u8 {
-    match c {
-        b'0'..=b'9' => c - b'0',
-        b'a'..=b'f' => c - b'a' + 10,
-        b'A'..=b'F' => c - b'A' + 10,
-        _ => panic!("hex_decode: non-hex byte in input"),
-    }
-}
+// Re-export `hex_decode` from krabitls so the rest of this crate (and any
+// downstream examples) can use it without picking a new import path.
+pub use krabitls::hex_decode;
 
 // ClientHello inputs + reference bytes, from tls_fixture seed=0.
 pub const CLIENT_RANDOM: [u8; 32] = [
@@ -180,6 +122,10 @@ use stack::{check_stack_high_water_mark, paint_stack};
 /// example's `false` test result. The `()` error type plus `.map_err(|_| ())?`
 /// keeps the body `?`-driven without dragging every krabitls error enum
 /// into scope just to discriminate them.
+// `Result<(), ()>` is intentional — the caller surfaces failure as `false`
+// (see `test_fixture`'s contract); naming an error enum here would drag every
+// krabitls error variant into scope just to discriminate them at the binding.
+#[allow(clippy::result_unit_err)]
 pub fn run_handshake<H: HkdfSha256>() -> Result<(), ()> {
     // ---- ClientHello writer ----
     let mut buf = [0u8; krabitls::CLIENT_HELLO_LEN];
@@ -190,6 +136,10 @@ pub fn run_handshake<H: HkdfSha256>() -> Result<(), ()> {
     if written != krabitls::CLIENT_HELLO_LEN {
         return Err(());
     }
+    // Byte-identity against the 117-byte seed-0 fixture only holds when our
+    // CH advertises ed25519 alone. With `feature = "rsa"` we also advertise
+    // rsa_pss_rsae_sha256, so the CH is 119 B and the array sizes don't match.
+    #[cfg(not(feature = "rsa"))]
     if buf != EXPECTED_CLIENT_HELLO {
         return Err(());
     }

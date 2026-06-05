@@ -17,6 +17,12 @@ baseline = []
 # Same fixture as the `krabitls` example, just a different HKDF impl —
 # useful for comparing kcycles between the two backends on M3.
 jedisct = ["krabitls/jedisct"]
+# Build the krabitls_rsa example, which replays a captured example.com
+# handshake (RSA-2048 cert chain) on M3 — exercises cert parse + the
+# RSA-PKCS#1-v1.5 self-sig verify and the RSA-PSS CertificateVerify verify.
+# M3-only: the example's 8 KiB plaintext + 8 KiB flight buffers overflow
+# microbit's 16 KiB RAM, so CI skips thumbv6m for this example.
+rsa = ["krabitls/rsa"]
 
 [[example]]
 name = "krabitls"
@@ -24,6 +30,10 @@ name = "krabitls"
 [[example]]
 name = "krabitls_jedisct"
 required-features = ["jedisct"]
+
+[[example]]
+name = "krabitls_rsa"
+required-features = ["rsa"]
 
 [dependencies]
 # `critical-section-single-core` provides a critical-section implementation
@@ -37,7 +47,7 @@ cortex-m-semihosting = "0.5"
 panic-semihosting = { version = "0.6", features = ["exit"] }
 portable-atomic = { version = "1", default-features = false, features = ["critical-section"] }
 
-krabitls = { path = "../krabitls" }
+krabitls = { path = "../krabitls", features = ["dev-utils"] }
 ed25519_heapless = { version = "0.0.3", default-features = false, features = ["fixed-bigint", "sha512-sha2"] }
 fixed-bigint = { version = "0.3", default-features = false, features = ["use-unsafe"] }
 

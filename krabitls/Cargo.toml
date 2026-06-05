@@ -5,6 +5,17 @@ edition = "2024"
 
 [features]
 default = []
+# Expose internal helpers that aren't part of the TLS 1.3 API
+dev-utils = []
+# Optional RSA cert + CertificateVerify support (rsa_pss_rsae_sha256 + the
+# self-signed cert's outer PKCS#1-v1.5). Pulls in rsa_heapless 0.2 (verify-only
+# on the heapless path) plus sha2 0.11 under a renamed package — rsa_heapless
+# builds on digest 0.11, one major ahead of the digest 0.10 we use for HKDF /
+# transcript hashing, so the two sha2 versions sit side-by-side in an
+# rsa-enabled build. ~1-2 KiB duplicate SHA-256 code is the cost of opting in;
+# the default (rsa-disabled) binary is untouched. Supports both 1024-bit and
+# 2048-bit RSA moduli via runtime dispatch.
+rsa = ["dep:rsa_heapless", "dep:sha2_v11"]
 # Alternate HKDF / SHA-256 backend wired to jedisct1's `hmac-sha256` crate
 # (a standalone all-in-one impl with no `digest` / `crypto-common` /
 # `generic-array` dependency). Pull this in when the binary should drop
@@ -22,6 +33,8 @@ validity = []
 [dependencies]
 embedded-io = { version = "0.7.1", default-features = false }
 hmac-sha256 = { version = "1", default-features = false, optional = true }
+rsa_heapless = { version = "0.2.1", default-features = false, features = ["modmath"], optional = true }
+sha2_v11 = { package = "sha2", version = "0.11", default-features = false, features = ["oid"], optional = true }
 
 # RustCrypto stable line — all share generic-array 0.14 / crypto-common 0.1.
 aes-gcm = { version = "0.10", default-features = false, features = ["aes"] }

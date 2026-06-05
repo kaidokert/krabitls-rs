@@ -25,8 +25,8 @@ repos:
 -   repo: local
     hooks:
     -   id: krabitls-clippy
-        name: cargo clippy krabitls
-        entry: cargo clippy --manifest-path=krabitls/Cargo.toml --tests --all-targets -- -D warnings
+        name: "cargo clippy krabitls (default + rsa + validity)"
+        entry: sh -c "cargo clippy --manifest-path=krabitls/Cargo.toml --tests --all-targets -- -D warnings && cargo clippy --manifest-path=krabitls/Cargo.toml --tests --all-targets --features rsa -- -D warnings && cargo clippy --manifest-path=krabitls/Cargo.toml --tests --all-targets --features validity -- -D warnings"
         language: system
         pass_filenames: false
         files: ^krabitls/.*\.(rs|toml)$
@@ -36,9 +36,15 @@ repos:
         language: system
         pass_filenames: false
         files: ^krabitls/.*\.(rs|toml)$
+    -   id: cortex-m-clippy
+        name: cargo clippy cortex_m_demo (thumbv7m)
+        entry: cargo clippy --manifest-path=cortex_m_demo/Cargo.toml --release --example krabitls --target thumbv7m-none-eabi -- -D warnings
+        language: system
+        pass_filenames: false
+        files: ^(cortex_m_demo|krabitls)/.*\.(rs|toml|x)$
     -   id: cortex-m-build
-        name: "cargo build cortex_m_demo (thumbv7m: default + baseline + jedisct)"
-        entry: sh -c "cargo build --manifest-path=cortex_m_demo/Cargo.toml --release --example krabitls --target thumbv7m-none-eabi && cargo build --manifest-path=cortex_m_demo/Cargo.toml --release --example krabitls --target thumbv7m-none-eabi --features baseline && cargo build --manifest-path=cortex_m_demo/Cargo.toml --release --example krabitls_jedisct --target thumbv7m-none-eabi --features jedisct"
+        name: "cargo build cortex_m_demo (thumbv7m: default + baseline + jedisct + rsa)"
+        entry: sh -c "cargo build --manifest-path=cortex_m_demo/Cargo.toml --release --example krabitls --target thumbv7m-none-eabi && cargo build --manifest-path=cortex_m_demo/Cargo.toml --release --example krabitls --target thumbv7m-none-eabi --features baseline && cargo build --manifest-path=cortex_m_demo/Cargo.toml --release --example krabitls_jedisct --target thumbv7m-none-eabi --features jedisct && cargo build --manifest-path=cortex_m_demo/Cargo.toml --release --example krabitls_rsa --target thumbv7m-none-eabi --features rsa"
         language: system
         pass_filenames: false
         files: ^(cortex_m_demo|krabitls|testdata)/.*\.(rs|toml|x|bin|hex)$
