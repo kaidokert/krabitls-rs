@@ -73,7 +73,12 @@ pub fn verify_pinned_pubkey(
 /// Verify the cert's SubjectAltName binds the given hostname.
 ///
 /// Matching is ASCII-case-insensitive. Wildcards are limited to the leftmost
-/// label and match exactly one candidate label.
+/// label and bind exactly one candidate label. Quick examples:
+///
+/// - `*.example.com` matches `foo.example.com` and `BAR.example.com`,
+///   but NOT `example.com` (no leftmost label) or `a.b.example.com`
+///   (wildcard binds one label, not multiple).
+/// - `*` alone, or wildcards in any non-leftmost position, are rejected.
 pub fn verify_hostname(cert_view: &CertView<'_>, hostname: &[u8]) -> Result<(), IdentityError> {
     let san = cert_view.san().ok_or(IdentityError::NoSan)?;
     for entry in san_dns_names(san) {

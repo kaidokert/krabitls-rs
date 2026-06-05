@@ -34,15 +34,6 @@ pub enum FlightError {
     TrailingBytes,
     /// Handshake messages didn't appear in `EE -> Cert -> CV -> Finished` order.
     UnexpectedHandshakeType { expected: u8, got: u8 },
-    /// `EncryptedExtensions` body wasn't an empty extensions list.
-    NonEmptyEncryptedExtensions,
-    /// `Certificate` message carried more than one `CertificateEntry`. Our
-    /// locked profile uses a single self-signed cert.
-    MultipleCertificateEntries,
-    /// A `CertificateEntry.extensions` field was non-empty. RFC 8446 §4.4.2
-    /// requires it be empty unless the client requested specific extensions
-    /// in ClientHello (we don't).
-    NonEmptyCertificateExtensions,
 
     /// X.509 DER parse error.
     BadCert(CertParseError),
@@ -83,6 +74,11 @@ impl From<CertParseError> for FlightError {
 }
 
 /// Walk the 4-message server flight in the decrypted plaintext.
+///
+/// Validates ordering (`EE -> Cert -> CV -> Finished`) and message framing,
+/// then returns body/full slices for each. The `EncryptedExtensions` and
+/// `Certificate` payloads are *not* further parsed here — `extract_cert_der`
+/// handles the leaf-extraction tolerance for public-server chains.
 pub fn parse_server_flight(content: &[u8]) -> Result<ServerFlightView<'_>, FlightError> {
     let mut r = HsReader::new(content);
 
@@ -178,6 +174,9 @@ impl<'a> HsReader<'a> {
 }
 
 /// Pull the leaf DER bytes out of a TLS 1.3 `Certificate` body.
+///
+/// Leaf-only: returns the first `CertificateEntry`'s `cert_data`. Per-entry
+/// extensions and any chain entries that follow are tolerated and ignored.
 pub fn extract_cert_der(cert_body: &[u8]) -> Result<&[u8], FlightError> {
     if cert_body.is_empty() {
         return Err(FlightError::Truncated);
