@@ -385,7 +385,9 @@ fn parse_rsa_pubkey(bit_string: &[u8]) -> Result<(&[u8], u32), CertParseError> {
     // RSA public exponent must be odd and ≥ 3 (RFC 8017 §3.1). e=1 is a
     // no-op; even e is mathematically broken. The realistic values are 3
     // and 65537, but accept anything in [3, u32::MAX] that's odd.
-    if exponent < 3 || exponent % 2 == 0 {
+    // Bit-op (instead of `% 2 == 0`) sidesteps clippy::manual-is-multiple-of
+    // on newer stable, which needs Rust 1.87+ for the suggested API.
+    if exponent < 3 || (exponent & 1) == 0 {
         return Err(CertParseError::BadRsaPubkey);
     }
     if !r.is_finished() {
