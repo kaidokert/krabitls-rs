@@ -46,6 +46,7 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::process::ExitCode;
+use std::time::Duration;
 
 use krabitls::consts::CT_HANDSHAKE;
 use krabitls::reassembler::ServerFlightReassembler;
@@ -130,13 +131,20 @@ fn parse_pin(hex_str: &str) -> std::result::Result<Pin, String> {
 }
 
 fn decode_hex(s: &str) -> std::result::Result<Vec<u8>, String> {
-    if !s.len().is_multiple_of(2) {
+    // `--pin` is user-supplied; non-ASCII input would make `&s[i..i+2]` panic
+    // on a UTF-8 char-boundary slice. Walk byte-by-byte instead. The
+    // `u8::from_str_radix` rejects non-hex bytes (including >=0x80) so
+    // anything non-ASCII bubbles up as a clean error.
+    let bytes = s.as_bytes();
+    if (bytes.len() & 1) != 0 {
         return Err("hex string must have even length".into());
     }
-    let mut out = Vec::with_capacity(s.len() / 2);
-    for i in (0..s.len()).step_by(2) {
-        let byte = u8::from_str_radix(&s[i..i + 2], 16)
-            .map_err(|_| format!("bad hex byte at offset {i}"))?;
+    let mut out = Vec::with_capacity(bytes.len() / 2);
+    for i in (0..bytes.len()).step_by(2) {
+        let pair = std::str::from_utf8(&bytes[i..i + 2])
+            .map_err(|_| format!("non-ASCII byte at offset {i}"))?;
+        let byte =
+            u8::from_str_radix(pair, 16).map_err(|_| format!("bad hex byte at offset {i}"))?;
         out.push(byte);
     }
     Ok(out)
@@ -222,6 +230,12 @@ fn run(host: &str, port: u16, capture_dir: Option<&str>, pin: Option<&Pin>) -> R
     let endpoint = format!("{host}:{port}");
     info!("connecting to {endpoint}");
     let mut stream = TcpStream::connect(&endpoint)?;
+    // Without timeouts, a stalled peer can wedge `read_exact` / `write_all`
+    // forever. 15 s is generous for typical TLS handshakes (sub-second
+    // against well-provisioned public servers) and short enough that a
+    // misbehaving peer fails fast in the demo.
+    stream.set_read_timeout(Some(Duration::from_secs(15)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(15)))?;
 
     // ---- Send ClientHello with SNI ----
     let host_bytes = host.as_bytes();
@@ -341,7 +355,14 @@ fn run(host: &str, port: u16, capture_dir: Option<&str>, pin: Option<&Pin>) -> R
             }
         }
     }
-    let flight_bytes = reassembler.as_slice();
+    // `flight_bytes()` slices up through the first well-framed `Finished`,
+    // dropping any trailing post-handshake bytes (e.g. NewSessionTicket
+    // coalesced into the final record). `as_slice()` would include them, and
+    // `parse_server_flight` is strict about trailing bytes → `TrailingBytes`
+    // on any server that packs NST after Finished in the same record.
+    let flight_bytes = reassembler
+        .flight_bytes()
+        .ok_or("reassembler reported complete but flight_bytes returned None")?;
     info!(
         "reassembled server flight: {} bytes from {} record(s)",
         flight_bytes.len(),
@@ -547,16 +568,23 @@ fn read_record(stream: &mut TcpStream) -> Result<Vec<u8>> {
 fn log_cert_view(view: &CertView<'_>) {
     match view {
         CertView::Ed25519 { pubkey, .. } => {
-            info!("server identity: Ed25519, pubkey={}", hex(&pubkey[..8]));
+            // pubkey is a fixed `&[u8; 32]`, so 8 bytes is always safe; bound
+            // anyway so the slice math doesn't become a future foot-gun if
+            // the variant shape ever moves to `&[u8]`.
+            let preview = pubkey.get(..8).unwrap_or(&pubkey[..]);
+            info!("server identity: Ed25519, pubkey={}", hex(preview));
         }
         CertView::Rsa {
             modulus, exponent, ..
         } => {
+            // modulus is a borrowed `&[u8]` and `CertView` carries untrusted
+            // wire input — a short modulus must not panic the logger.
+            let preview = modulus.get(..8).unwrap_or(modulus);
             info!(
                 "server identity: RSA-{}, e={}, modulus={}...",
                 modulus.len() * 8,
                 exponent,
-                hex(&modulus[..8])
+                hex(preview)
             );
         }
     }
