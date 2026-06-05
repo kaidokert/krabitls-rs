@@ -1,33 +1,16 @@
 //! Server-identity checks against a parsed [`CertView`].
 //!
-//! `verify_server_flight` proves the server holds the cert's private key. It
-//! does NOT prove the cert belongs to whoever the client *meant* to talk to.
-//! That bridge is built here, in two shapes the embedded use case actually
-//! wants:
-//!
-//! 1. **Pinned public key** ([`verify_pinned_pubkey`]). The caller knows
-//!    which key it expects (out-of-band trust establishment — pre-shared,
-//!    burned into firmware, etc.). Krabitls just byte-compares. This is the
-//!    correct production answer for controlled-endpoint deployments and
-//!    needs no CA bundle.
-//!
-//! 2. **SubjectAltName / hostname match** ([`verify_hostname`]). The caller
-//!    knows a hostname; the cert's SAN dNSName entries must include it.
-//!    Wildcard rules per RFC 6125 §6.4.3 (leftmost-label only). This is
-//!    what's needed when you want to talk to "google.com" and trust that
-//!    whoever holds a cert for that name is them.
-//!
-//! Neither verifies chain-to-CA — that's [`crate::PRODUCTION_GAPS`] gap
-//! #24c and intentionally out of scope. The embedded answer is the pin.
+//! Server-flight verification proves key possession; callers still need a
+//! policy that binds that key to the intended peer. This module supports
+//! pinned public keys and SAN hostname matching. It does not build or verify
+//! certificate chains.
 
 use crate::traits::cert::CertView;
 
 /// Reasons a server-identity check may fail.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum IdentityError {
-    /// Cert had no SubjectAltName extension. The locked-profile assumption is
-    /// that real servers always present one — bare Subject CN matching is
-    /// deprecated (RFC 6125 §6.4.4, CA/Browser Forum baseline requirements).
+    /// Cert had no SubjectAltName extension.
     NoSan,
     /// None of the cert's SAN dNSName entries matched the requested hostname.
     HostnameMismatch,
@@ -40,9 +23,7 @@ pub enum IdentityError {
     PinAlgorithmMismatch,
 }
 
-/// What a caller pins out-of-band to identify the server. Shape mirrors
-/// [`crate::ServerPubkey`]; the `'a` lifetime is reserved for future
-/// borrowed variants.
+/// Public key material pinned out-of-band.
 #[derive(Debug, Clone, Copy)]
 pub enum PinnedPubkey<'a> {
     /// 32-byte raw Ed25519 public key.
@@ -56,9 +37,7 @@ pub enum PinnedPubkey<'a> {
     _Phantom(core::marker::PhantomData<&'a ()>),
 }
 
-/// Compare the cert's public key to a pinned reference. Constant-time over
-/// the key bytes is **not** attempted — see the threat-model write-up for
-/// why `subtle` isn't pulled in here.
+/// Compare the cert's public key to a pinned reference.
 pub fn verify_pinned_pubkey(
     cert_view: &CertView<'_>,
     pin: &PinnedPubkey<'_>,
@@ -93,14 +72,13 @@ pub fn verify_pinned_pubkey(
 
 /// Verify the cert's SubjectAltName binds the given hostname.
 ///
-/// Walks every dNSName entry in the SAN and checks it against `hostname`.
-/// Matches are ASCII-case-insensitive (per RFC 6125 §6.4.1). A SAN entry
-/// of the form `*.example.com` matches exactly one extra leftmost label of
-/// the candidate (RFC 6125 §6.4.3): `foo.example.com` matches, `example.com`
-/// and `a.b.example.com` do not.
+/// Matching is ASCII-case-insensitive. Wildcards are limited to the leftmost
+/// label and bind exactly one candidate label. Quick examples:
 ///
-/// `hostname` should be the unqualified, undecorated DNS label sequence
-/// the caller intends to reach — no scheme, no port, no trailing dot.
+/// - `*.example.com` matches `foo.example.com` and `BAR.example.com`,
+///   but NOT `example.com` (no leftmost label) or `a.b.example.com`
+///   (wildcard binds one label, not multiple).
+/// - `*` alone, or wildcards in any non-leftmost position, are rejected.
 pub fn verify_hostname(cert_view: &CertView<'_>, hostname: &[u8]) -> Result<(), IdentityError> {
     let san = cert_view.san().ok_or(IdentityError::NoSan)?;
     for entry in san_dns_names(san) {
@@ -112,11 +90,7 @@ pub fn verify_hostname(cert_view: &CertView<'_>, hostname: &[u8]) -> Result<(), 
     Err(IdentityError::HostnameMismatch)
 }
 
-/// Iterator over dNSName entries in a SAN `GeneralNames` SEQUENCE content.
-///
-/// `san_bytes` is the inner DER bytes of the SAN extension's `extnValue`
-/// OCTET STRING — i.e. the content of the wrapped `GeneralNames` SEQUENCE,
-/// which is what [`CertView::san`] returns.
+/// Iterator over dNSName entries in a SAN `GeneralNames` SEQUENCE.
 pub fn san_dns_names(san_bytes: &[u8]) -> SanDnsIter<'_> {
     SanDnsIter { rest: san_bytes }
 }
@@ -129,10 +103,6 @@ impl<'a> Iterator for SanDnsIter<'a> {
     type Item = Result<&'a [u8], IdentityError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // Walk DER TLVs at the GeneralName level. We're past the GeneralNames
-        // outer SEQUENCE; each iteration consumes one GeneralName CHOICE.
-        // We only return dNSName ([2] IMPLICIT IA5String, tag 0x82); other
-        // names are skipped.
         while !self.rest.is_empty() {
             let (tag, len, rest_after_header) = match decode_tlv_header(self.rest) {
                 Ok(t) => t,
@@ -233,11 +203,9 @@ fn ascii_eq_ignore_case(a: &[u8], b: &[u8]) -> bool {
     a.eq_ignore_ascii_case(b)
 }
 
-// =====================================================================
 // Cert validity-window check.
 // Gated on feature = "validity" — embedded builds without a clock pay
 // no code-size cost for either the check or the TimeSource trait.
-// =====================================================================
 
 /// Reasons [`verify_validity`] may reject a cert.
 #[cfg(feature = "validity")]
@@ -419,8 +387,6 @@ fn days_to_epoch_secs(y: u32, m: u32, d: u32, h: u32, mn: u32, s: u32) -> Option
 mod tests {
     use super::*;
 
-    // ---- dns_name_matches: exact, case, wildcard ----
-
     #[test]
     fn exact_match() {
         assert!(dns_name_matches(b"example.com", b"example.com"));
@@ -464,8 +430,6 @@ mod tests {
         assert!(!dns_name_matches(b"foo.*.com", b"foo.bar.com"));
         assert!(!dns_name_matches(b"*foo.com", b"abcfoo.com"));
     }
-
-    // ---- san_dns_names: walk a hand-built GeneralNames SEQUENCE content ----
 
     /// Encode one DER TLV: short-form length only (sufficient for the test
     /// inputs we build here).
@@ -512,8 +476,6 @@ mod tests {
         assert_eq!(r, Err(IdentityError::MalformedSan));
     }
 
-    // ---- verify_pinned_pubkey ----
-
     fn ed25519_view(pubkey: &[u8; 32]) -> CertView<'_> {
         const SIG: [u8; 64] = [0u8; 64];
         CertView::Ed25519 {
@@ -557,8 +519,6 @@ mod tests {
             Err(IdentityError::PinAlgorithmMismatch)
         );
     }
-
-    // ---- validity: feature-gated check + UTCTime / GeneralizedTime parser ----
 
     #[cfg(feature = "validity")]
     mod validity_tests {

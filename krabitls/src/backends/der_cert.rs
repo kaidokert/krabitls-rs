@@ -1,14 +1,4 @@
-//! [`CertParser`] impl backed by the `der` crate.
-//!
-//! `der` is small (zero transitive deps on `thumbv7m-none-eabi` with
-//! `default-features = false`) and gives us robust DER length / tag / BIT
-//! STRING handling without us writing it. Krabitls picks this implementation
-//! by default; callers can plug in their own [`CertParser`] impl by
-//! parameterizing [`crate::verify_server_flight`] over a different marker.
-//!
-//! Ed25519 is always supported. RSA (RFC 3279 `rsaEncryption` SPKI plus
-//! `sha256WithRSAEncryption` outer signature) is gated behind
-//! `feature = "rsa"`.
+//! [`CertParser`] implementation backed by the `der` crate.
 
 use der::asn1::{AnyRef, BitStringRef, ObjectIdentifier};
 use der::{Decode, Reader, SliceReader, Tag, TagNumber};
@@ -18,38 +8,16 @@ use crate::traits::cert::{CertParseError, CertParser, CertView};
 /// Marker type for the `der`-crate-backed [`CertParser`].
 pub struct DerCert;
 
-/// Ed25519 algorithm OID (`1.3.101.112`, RFC 8410). Used for both the
-/// certificate `signatureAlgorithm` (outer + TBS) and the SPKI `algorithm`
-/// field of an Ed25519 self-signed cert.
 const ED25519_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.101.112");
 
-/// `rsaEncryption` OID (`1.2.840.113549.1.1.1`, RFC 3279). Used for the SPKI
-/// algorithm of an RSA cert.
 #[cfg(feature = "rsa")]
 const RSA_ENCRYPTION_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.1");
 
-/// `subjectAltName` extension OID (`2.5.29.17`, RFC 5280 §4.2.1.6). The
-/// extnValue OCTET STRING wraps a `GeneralNames` SEQUENCE; we surface its
-/// inner bytes on `CertView::san` for the identity-match helpers in
-/// `crate::identity`.
 const SAN_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.5.29.17");
 
-/// X.509 `v3` (encoded as INTEGER value `2`). RFC 5280 §4.1.2.1.
 const X509_V3: u8 = 2;
 
-/// Which algorithm family the cert's `SubjectPublicKeyInfo` carries.
-/// Drives the `CertView` variant returned by the parser.
-///
-/// **Why SPKI and not the cert's outer `signatureAlgorithm`?** For a
-/// self-signed cert (the locked-profile case) they always agree. For a
-/// leaf cert signed by an intermediate CA (the public-internet case),
-/// the outer signature describes the *issuer's* sig algorithm — which
-/// is independent of the leaf's pubkey family and is often something
-/// we don't recognize (ECDSA-P256, sha384WithRSA, etc.). Dispatching
-/// on outer OID would have us reject every real-world leaf cert at
-/// parse time. The leaf's identity is determined by its SPKI; the
-/// outer signature is only meaningful when *we're* verifying it (i.e.
-/// only in `verify_self_signed_cert`).
+/// Public-key algorithm carried by SubjectPublicKeyInfo.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SpkiKind {
     Ed25519,
@@ -61,7 +29,6 @@ impl CertParser for DerCert {
     fn parse<'a>(cert_der: &'a [u8]) -> Result<CertView<'a>, CertParseError> {
         let map_err = |_| CertParseError::Malformed;
 
-        // ---- outer SEQUENCE: { tbs, sigAlg, signature } ----
         let outer = AnyRef::try_from(cert_der).map_err(map_err)?;
         if outer.header().tag() != Tag::Sequence {
             return Err(CertParseError::Malformed);
@@ -69,11 +36,8 @@ impl CertParser for DerCert {
         let mut body = SliceReader::new(outer.value()).map_err(map_err)?;
 
         let tbs_bytes = body.tlv_bytes().map_err(map_err)?;
-        // Outer Certificate.signatureAlgorithm is captured for the TBS-
-        // vs-outer symmetry check (RFC 5280 §4.1.1.2 / §4.1.2.3) below,
-        // but NOT interpreted at parse time. See the SpkiKind docstring
-        // for why — an issuer-signed leaf will routinely carry an outer
-        // OID we don't recognize, and that's fine.
+        // Do not dispatch on the outer signatureAlgorithm: issuer-signed
+        // leaves commonly use an algorithm unrelated to the leaf SPKI.
         let outer_sig_alg_bytes = body.tlv_bytes().map_err(map_err)?;
 
         let sig_bit = BitStringRef::decode(&mut body).map_err(map_err)?;
@@ -84,7 +48,6 @@ impl CertParser for DerCert {
             .as_bytes()
             .ok_or(CertParseError::BitStringHasUnusedBits)?;
 
-        // ---- step into the TBS SEQUENCE; walk to SubjectPublicKeyInfo ----
         let tbs_any = AnyRef::try_from(tbs_bytes).map_err(map_err)?;
         if tbs_any.header().tag() != Tag::Sequence {
             return Err(CertParseError::Malformed);
@@ -114,20 +77,17 @@ impl CertParser for DerCert {
                 return Err(CertParseError::Malformed);
             }
         } else {
-            // DER omits `[0] EXPLICIT version` only when it carries the
-            // default (v1). Our locked profile is v3-only — reject.
+            // DER omits this only for v1; this client is v3-only.
             return Err(CertParseError::UnsupportedCertVersion);
         }
         // serialNumber
         tbs_r.tlv_bytes().map_err(map_err)?;
-        // TBS signature (AlgorithmIdentifier) — must match the outer
-        // signatureAlgorithm byte-for-byte (RFC 5280 §4.1.1.2 / §4.1.2.3).
+        // RFC 5280 requires TBS and outer signatureAlgorithm to match.
         let tbs_sig_alg_bytes = tbs_r.tlv_bytes().map_err(map_err)?;
         if tbs_sig_alg_bytes != outer_sig_alg_bytes {
             return Err(CertParseError::SignatureAlgorithmMismatch);
         }
-        // issuer, validity, subject — capture the validity TLV bytes for
-        // the optional `verify_validity` check (see `crate::identity`).
+        // Capture validity for optional date checks.
         // The bytes carry the DER `SEQUENCE { notBefore, notAfter }`;
         // parsing the UTCTime / GeneralizedTime → epoch seconds happens
         // on demand only when the validity check runs.

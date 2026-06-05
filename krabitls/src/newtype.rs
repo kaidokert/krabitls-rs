@@ -1,67 +1,11 @@
-//! Small newtypes for byte arrays that aren't interchangeable.
+//! Newtypes for secret-bearing byte arrays and transcript digests.
 //!
-//! The library used to thread `[u8; 32]` / `[u8; 16]` / `[u8; 12]` and
-//! bare `&[u8]` for things with very different semantics — a 32-byte
-//! traffic secret, a 32-byte transcript hash, a 32-byte pubkey, a
-//! 16-byte AEAD key, a 12-byte AEAD IV, and so on. The compiler
-//! couldn't tell them apart, which made wrong-site bugs ("I passed
-//! the *server* traffic secret where the *client* one was expected")
-//! silent.
-//!
-//! These wrappers are zero-cost (`#[repr(transparent)]`) and bring the
-//! type system in to catch a few obvious confusions at compile time:
-//!
-//! - [`Secret`] for any 32-byte HKDF output (early / handshake / master /
-//!   traffic secrets). Secret-bearing — **not `Copy`**, zeroes on drop.
-//! - [`TranscriptDigest`] for the public 32-byte hash returned from
-//!   [`crate::TranscriptHash::snapshot`]. Public protocol material, so
-//!   it stays `Copy` and is printable.
-//! - [`AeadKey`] / [`AeadIv`] for the 16-byte AEAD key and 12-byte AEAD
-//!   IV produced by [`crate::traffic_keys`]. Same secret-bearing
-//!   treatment as `Secret`.
-//!
-//! Secret-bearing types are deliberately **not `Copy`** so that every
-//! move shows up in the source — implicit bitwise copies leave
-//! sensitive bytes scattered across stack frames you can't audit.
-//! `Clone` is kept so callers who genuinely need a fresh copy can ask
-//! for one explicitly; the absence of `Copy` forces them to.
-//!
-//! What we deliberately did *not* newtype here:
-//!
-//! - Public keys (Ed25519 32-byte). They're named struct fields on
-//!   `CertView` already, so wrong-site confusion is structural, not
-//!   type-based.
-//! - The Finished MAC output and HKDF-Expand-Label output buffers. The
-//!   former is a one-shot verify_data that lives inside its handler;
-//!   the latter is a short-lived scratch that wraps into one of the
-//!   newtypes above.
+//! Secret-bearing types are not `Copy` and zeroize on drop so implicit moves do
+//! not scatter key material silently.
 
 /// Fixed-size byte buffer that wipes its contents on drop.
-///
-/// Type alias for [`zeroize::Zeroizing<[u8; N]>`] — picks up the
-/// crate's auto-zero-on-drop, `Deref<Target = [u8; N]>` (so `*buf`
-/// gives the array, `&buf[..]` gives the slice, `buf[i]` indexes), and
-/// `DerefMut` for the same on the write side.
-///
-/// Use for short-lived stack scratch that holds secret bytes en route
-/// to one of the long-lived [`Secret`] / [`AeadKey`] / [`AeadIv`]
-/// newtypes (which themselves auto-zero on drop). On every code path —
-/// including `?` early-returns — the bytes are wiped when the binding
-/// goes out of scope.
-///
-/// ```ignore
-/// let mut key = ZeroBuf::<16>::new([0; 16]);
-/// hkdf_expand_label::<H>(..., &mut key[..])?;
-/// let aead_key = AeadKey::new(*key);
-/// ```
 pub type ZeroBuf<const N: usize> = zeroize::Zeroizing<[u8; N]>;
 
-/// Generates a secret-bearing byte newtype.
-///
-/// Holds `Zeroizing<[u8; N]>` internally — Drop-zero comes from the
-/// inner wrapper, no manual impl needed. Constructor takes the
-/// wrapped value by move, so handing bytes through ZeroBuf → newtype
-/// is a single move with no implicit `*key` deref-copy of the array.
 macro_rules! secret_newtype {
     (
         $(#[$attr:meta])*
@@ -73,22 +17,17 @@ macro_rules! secret_newtype {
         pub struct $name(ZeroBuf<$n>);
 
         impl $name {
-            /// Wrap an existing `ZeroBuf<N>` (= `Zeroizing<[u8; N]>`).
-            /// Takes the wrapper by move — no copy of the bytes.
+            /// Wrap an existing zeroizing buffer.
             pub fn new(bytes: ZeroBuf<$n>) -> Self {
                 Self(bytes)
             }
 
-            /// Borrow the underlying bytes as `&[u8; N]`. The returned
-            /// reference is short-lived; the secret bytes stay owned by
-            /// the inner `Zeroizing<>`.
+            /// Borrow the underlying bytes.
             pub fn as_bytes(&self) -> &[u8; $n] {
                 &*self.0
             }
 
-            /// Borrow the underlying `Zeroizing<[u8; N]>` directly —
-            /// for handing to APIs that expect that contract at the
-            /// type level (e.g. [`crate::traits::Aes128GcmAead`]).
+            /// Borrow the underlying zeroizing buffer.
             pub fn as_zeroizing(&self) -> &ZeroBuf<$n> {
                 &self.0
             }
@@ -100,17 +39,12 @@ macro_rules! secret_newtype {
             }
         }
 
-        // Convenience `From<[u8; N]>` so callers can write `AeadKey::from(bytes)`
-        // without explicitly wrapping into `ZeroBuf`. The plain-array path is
-        // a single move into the `Zeroizing` wrapper — same hygiene as `new`.
         impl From<[u8; $n]> for $name {
             fn from(bytes: [u8; $n]) -> Self {
                 Self(ZeroBuf::<$n>::new(bytes))
             }
         }
 
-        // Explicit `Zeroize` impl (delegates to the inner `Zeroizing`) so
-        // callers can wipe bytes on demand, not just on drop.
         impl zeroize::Zeroize for $name {
             fn zeroize(&mut self) {
                 zeroize::Zeroize::zeroize(&mut *self.0);
@@ -120,21 +54,11 @@ macro_rules! secret_newtype {
 }
 
 secret_newtype! {
-    /// 32-byte HKDF secret material. Covers early_secret, handshake_secret,
-    /// master_secret, and the four traffic secrets (client/server × hs/ap).
-    ///
-    /// The type doesn't distinguish *which* role the secret plays — the
-    /// embedded TLS profile doesn't earn the noise of per-role types. It
-    /// does prevent confusion with [`TranscriptDigest`] (the other common
-    /// 32-byte goo), with raw OS-random output, and with cert pubkey bytes.
-    ///
-    /// Not `Copy`; zeroes on drop.
+    /// 32-byte HKDF secret material. Not `Copy`; zeroes on drop.
     Secret(32)
 }
 
-// Redacted Debug — printing raw secret bytes via `{:?}` (panic messages,
-// log macros, derived Debug on containing structs) would defeat the
-// Zeroize hygiene this module is built around.
+// Never print raw secret bytes.
 impl core::fmt::Debug for Secret {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str("Secret([redacted; 32])")

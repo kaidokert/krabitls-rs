@@ -1,30 +1,12 @@
 //! Cert-parsing abstraction for the TLS 1.3 server flight.
-//!
-//! Krabitls's locked profile only needs three things out of the server's
-//! self-signed certificate: the bytes that were signed (`tbs`), the signature
-//! itself, and the SubjectPublicKey to verify them with. We abstract that
-//! with a one-method trait so the backend (today: the `der` crate; tomorrow:
-//! maybe something hand-rolled) can be swapped without touching the
-//! verification pipeline in `server_flight.rs`.
-//!
-//! Ed25519 is always supported; RSA is opt-in via `feature = "rsa"`.
 
-/// Trait the verification pipeline uses to extract the byte slices it needs
-/// from an X.509 cert.
+/// Extract the X.509 fields needed by server-flight verification.
 pub trait CertParser {
-    /// Parse a DER-encoded X.509 certificate and return borrows into
-    /// `cert_der`. Implementations should validate enough structure that:
-    ///
-    /// * `tbs` is exactly the byte range the signature was computed over
-    ///   (i.e., the full TBSCertificate TLV including its outer SEQUENCE
-    ///   header and length);
-    /// * pubkey + signature slices are stripped of any BIT STRING
-    ///   `unused_bits` prefix and are the raw payloads consumers expect.
+    /// Parse a DER-encoded X.509 certificate and return borrows into `cert_der`.
     fn parse<'a>(cert_der: &'a [u8]) -> Result<CertView<'a>, CertParseError>;
 }
 
-/// Parsed view of a self-signed X.509 cert. Variants reflect the public-key
-/// algorithm carried by the SubjectPublicKeyInfo.
+/// Parsed view of a self-signed X.509 cert.
 #[derive(Debug, Clone, Copy)]
 pub enum CertView<'a> {
     /// Ed25519 server identity (RFC 8410). The standard krabitls profile.
@@ -35,15 +17,9 @@ pub enum CertView<'a> {
         signature: &'a [u8; 64],
         /// 32-byte Ed25519 SubjectPublicKey.
         pubkey: &'a [u8; 32],
-        /// Inner DER bytes of the SubjectAltName extension's `extnValue`
-        /// OCTET STRING, i.e. the `GeneralNames` SEQUENCE *content*. `None`
-        /// if the cert doesn't carry a SAN extension. Use
-        /// [`crate::identity::san_dns_names`] to iterate the dNSName entries.
+        /// Inner DER bytes of the SubjectAltName `GeneralNames` SEQUENCE.
         san: Option<&'a [u8]>,
-        /// DER bytes of the `Validity SEQUENCE { notBefore, notAfter }`
-        /// from TBSCertificate. Always captured (cheap); the actual
-        /// notBefore / notAfter dates are parsed on demand by
-        /// [`crate::identity::verify_validity`] under `feature = "validity"`.
+        /// DER bytes of the `Validity SEQUENCE { notBefore, notAfter }`.
         validity_der: &'a [u8],
     },
     /// RSA server identity (RFC 3279). Available with `feature = "rsa"`.
@@ -85,11 +61,7 @@ impl<'a> CertView<'a> {
         }
     }
 
-    /// Borrow the raw DER bytes of the `Validity` SEQUENCE
-    /// (`SEQUENCE { notBefore, notAfter }`). The
-    /// [`crate::identity::verify_validity`] helper (under
-    /// `feature = "validity"`) parses these into Unix-epoch seconds and
-    /// compares against a caller-supplied [`crate::traits::TimeSource`].
+    /// Borrow the raw DER bytes of the `Validity` SEQUENCE.
     pub fn validity_der(&self) -> &'a [u8] {
         match self {
             CertView::Ed25519 { validity_der, .. } => validity_der,
@@ -99,8 +71,7 @@ impl<'a> CertView<'a> {
     }
 }
 
-/// Reasons cert parsing may fail. Deliberately small — debugging a wire-format
-/// problem doesn't need a taxonomy of every ASN.1 sin.
+/// Reasons cert parsing may fail.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum CertParseError {
     /// Underlying DER parse / length / tag error.

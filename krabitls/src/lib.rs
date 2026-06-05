@@ -1,25 +1,8 @@
-//! `krabitls` — a sans-io, `no_std` TLS 1.3 client.
+//! `krabitls` — a sans-io, `no_std` TLS 1.3 client for a fixed embedded profile.
 //!
-//! Step zero: emit a minimal ClientHello and parse the matching ServerHello.
-//! The wire format is locked to the same fixed profile the rest of the
-//! embedded TLS stack uses:
-//!
-//! | Slot               | Value                              |
-//! | ------------------ | ---------------------------------- |
-//! | record version     | TLS 1.2 sentinel (`0x0303`)        |
-//! | negotiated version | TLS 1.3 (via `supported_versions`) |
-//! | cipher suite       | `TLS_AES_128_GCM_SHA256` (`0x1301`) |
-//! | named group        | `x25519` (`0x001D`)                |
-//! | signature scheme   | `ed25519` (`0x0807`)               |
-//! | session id / SNI / PSK | none                           |
-//!
-//! Because the profile is fixed, the ClientHello is exactly
-//! [`CLIENT_HELLO_LEN`] = 117 bytes; the caller supplies only the 32-byte
-//! `random` and the 32-byte X25519 public key.
-//!
-//! Output goes through any [`embedded_io::Write`], so the caller decides
-//! whether the destination is a borrowed `&mut [u8]`, a serial UART, or
-//! anything else.
+//! The crate emits a minimal ClientHello and parses the matching ServerHello.
+//! Callers provide the 32-byte random and X25519 public key; output goes
+//! through any [`embedded_io::Write`].
 
 #![cfg_attr(not(test), no_std)]
 
@@ -64,23 +47,7 @@ pub use traits::{FixedTime, TimeSource};
 
 use embedded_io::Write;
 
-/// Compile-time hex decoder for the readable `testdata/*.hex` fixtures.
-///
-/// **Not a TLS-API surface item** — this is a testdata helper. Gated behind
-/// `feature = "dev-utils"` (and `#[cfg(test)]` for this crate's own tests)
-/// so production library builds neither see nor compile it.
-///
-/// Skips whitespace (spaces, tabs, newlines) and `#`-to-EOL comments, so
-/// the hex files can be hand-eyeball-friendly. Each remaining pair of hex
-/// digits becomes one byte. `N` must match the post-decode byte count
-/// exactly, or compilation fails with the const-eval panic below.
-///
-/// Usage:
-///
-/// ```ignore
-/// pub const FIXTURE_PACKET_3: [u8; 380] =
-///     krabitls::hex_decode(include_str!("../../testdata/packets/003_*.hex"));
-/// ```
+/// Compile-time hex decoder for `testdata/*.hex` fixtures.
 #[cfg(any(test, feature = "dev-utils"))]
 pub const fn hex_decode<const N: usize>(s: &str) -> [u8; N] {
     let bytes = s.as_bytes();
@@ -101,8 +68,6 @@ pub const fn hex_decode<const N: usize>(s: &str) -> [u8; N] {
             }
             continue;
         }
-        // Two hex digits → one byte. The const panic on a bad nibble
-        // gives a compile-time error pointing at the bad input.
         let hi = hex_nibble(bytes[i]);
         if i + 1 >= bytes.len() {
             panic!("hex_decode: dangling nibble at end of input");
@@ -131,7 +96,6 @@ const fn hex_nibble(c: u8) -> u8 {
     }
 }
 
-/// Wire constants — straight out of RFC 8446.
 pub mod consts {
     pub const CT_HANDSHAKE: u8 = 22;
     pub const CT_APPLICATION_DATA: u8 = 23;
@@ -334,16 +298,13 @@ pub fn write_client_hello<W: Write>(
     let body_len = (2 + 32 + 1 + (2 + 2) + (1 + 1) + 2 + extensions_total as usize) as u16;
     let hs_len = 4 + body_len;
 
-    // ---- TLS record header (5 bytes) ----
     out.write_u8(CT_HANDSHAKE)?; // 0x16
     out.write_u16(LEGACY_VERSION)?; // 0x0303
     out.write_u16(hs_len)?; // length of handshake message that follows
 
-    // ---- Handshake message header (4 bytes) ----
     out.write_u8(HS_CLIENT_HELLO)?; // 0x01
     out.write_u24(body_len as u32)?; // length of ClientHello body
 
-    // ---- ClientHello body ----
     out.write_u16(LEGACY_VERSION)?; // legacy_version = 0x0303
     out.write_all(random)?; // random (32)
     out.write_u8(0)?; // legacy_session_id length = 0
@@ -405,9 +366,7 @@ pub fn write_client_hello<W: Write>(
     Ok(total_len)
 }
 
-// =====================================================================
 // ServerHello — parse the inverse of write_client_hello.
-// =====================================================================
 
 /// Parsed view of a ServerHello, with borrows into the caller's input.
 ///
@@ -486,7 +445,6 @@ impl core::fmt::Display for ParseError {
 pub fn parse_server_hello(input: &[u8]) -> Result<ServerHelloView<'_>, ParseError> {
     let mut r = Reader::new(input);
 
-    // ---- TLS record header ----
     let content_type = r.u8()?;
     if content_type != CT_HANDSHAKE {
         return Err(ParseError::UnexpectedContentType(content_type));
@@ -500,7 +458,6 @@ pub fn parse_server_hello(input: &[u8]) -> Result<ServerHelloView<'_>, ParseErro
         return Err(ParseError::TrailingBytes);
     }
 
-    // ---- Handshake message header ----
     let mut hr = Reader::new(record_body);
     let hs_type = hr.u8()?;
     if hs_type != HS_SERVER_HELLO {
@@ -511,7 +468,6 @@ pub fn parse_server_hello(input: &[u8]) -> Result<ServerHelloView<'_>, ParseErro
         return Err(ParseError::LengthMismatch);
     }
 
-    // ---- ServerHello body ----
     let mut b = Reader::new(hs_body);
     let legacy_version = b.u16()?;
     if legacy_version != LEGACY_VERSION {
@@ -553,7 +509,6 @@ pub fn parse_server_hello(input: &[u8]) -> Result<ServerHelloView<'_>, ParseErro
         return Err(ParseError::TrailingBytes);
     }
 
-    // ---- Extensions: walk the list, pick out the two we care about ----
     let mut selected_version: Option<u16> = None;
     let mut x25519_share: Option<&[u8; 32]> = None;
 
@@ -609,10 +564,8 @@ pub fn parse_server_hello(input: &[u8]) -> Result<ServerHelloView<'_>, ParseErro
     })
 }
 
-// ---------------------------------------------------------------------
 // Internal byte reader. Mirrors the Writer/WriteExt pair; returns ParseError
 // on truncation / length-prefix overruns.
-// ---------------------------------------------------------------------
 
 struct Reader<'a> {
     buf: &'a [u8],
@@ -683,9 +636,7 @@ impl<'a> Reader<'a> {
     }
 }
 
-// ---------------------------------------------------------------------
 // Tests — cross-check against the Python fixture's seed-0 ClientHello.
-// ---------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -817,8 +768,6 @@ mod tests {
         write_client_hello(&mut cursor, &FIXTURE_RANDOM, &pub_key, None).unwrap();
         assert_eq!(&buf[CLIENT_HELLO_LEN - 32..], &pub_key);
     }
-
-    // ---- ServerHello tests ----
 
     // Captured from tls_fixture/packets/002_s2c_ServerHello.bin (seed 0).
     const FIXTURE_SERVER_HELLO: [u8; 95] = [
@@ -991,7 +940,6 @@ mod tests {
         );
     }
 
-    // ---- HKDF tests ----
     //
     // Two angles: RFC 8448 §3 publishes intermediate values for a full TLS 1.3
     // handshake (well-known, not derived from our fixture), and we also pin
@@ -1026,7 +974,6 @@ mod tests {
     ]);
 
     /// `tls_fixture` seed-0: handshake_secret computed from the recorded X25519 DHE.
-    /// Source: `packets/002_s2c_ServerHello.txt` notes.
     const FIXTURE_DHE: [u8; 32] = [
         0xd6, 0xe8, 0x68, 0xc2, 0x71, 0xfa, 0x06, 0x2a, 0x48, 0xab, 0x2a, 0xcc, 0x32, 0xfe, 0x98,
         0x58, 0x0d, 0x48, 0x77, 0x00, 0x91, 0x1f, 0x47, 0xad, 0x94, 0xcb, 0xb3, 0xb5, 0x35, 0x58,
@@ -1090,8 +1037,6 @@ mod tests {
         let hs = Secret::new(RustCrypto::extract(derived.as_bytes(), &FIXTURE_DHE));
         assert_eq!(hs.as_bytes(), &FIXTURE_HANDSHAKE_SECRET_BYTES);
     }
-
-    // ---- Full chain: X25519 -> handshake_secret -> s_hs_traffic_secret ----
 
     /// tls_fixture seed-0 client X25519 private (from state/client.json).
     const FIXTURE_CLIENT_X25519_PRIV: [u8; 32] = [
@@ -1237,8 +1182,6 @@ mod tests {
         assert_eq!(s_ts.as_bytes(), &FIXTURE_S_HS_TRAFFIC_SECRET_BYTES);
     }
 
-    // ---- traffic_keys + decrypt_record (the actual unlock of packet 003) ----
-
     const FIXTURE_S_HS_KEY_BYTES: [u8; 16] = [
         0x72, 0x34, 0xe7, 0x98, 0x57, 0x93, 0x61, 0xb1, 0x41, 0x61, 0x86, 0x3b, 0x79, 0x98, 0x86,
         0x3c,
@@ -1266,8 +1209,6 @@ mod tests {
             [0, 0, 0, 0, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08],
         );
     }
-
-    // ---- packets/003 server flight: decrypt + walk + verify ----
 
     /// packets/003_s2c_ServerFlight_encrypted.hex (380 bytes, decoded at compile time).
     const FIXTURE_PACKET_3: [u8; 380] = crate::hex_decode(include_str!(
@@ -1361,7 +1302,6 @@ mod tests {
         // Cert: extract Ed25519 pubkey via the DER walker.
         let cert_der = extract_cert_der(flight.cert_body).expect("extract_cert_der");
         let cert_view = <DerCert as CertParser>::parse(cert_der).expect("parse cert");
-        // The fixture server's Ed25519 pubkey at seed 0 (from packets/003 notes).
         const EXPECTED_SERVER_ID_PUB: [u8; 32] = [
             0x9d, 0xfe, 0x2a, 0xb0, 0x3e, 0x35, 0x70, 0x4b, 0x9c, 0xfb, 0x93, 0xb6, 0x03, 0xa6,
             0x61, 0x18, 0x82, 0x17, 0xa6, 0xb5, 0xfd, 0x6a, 0x1f, 0x75, 0xe6, 0x16, 0x1a, 0x39,
@@ -1590,8 +1530,6 @@ mod tests {
         assert_eq!(err, FlightError::FinishedMacInvalid);
     }
 
-    // ---- app-data round trip: packets/005 (c→s) + 006 (s→c) + client Finished ----
-
     /// packets/005_c2s_AppData_send_0.hex (52 bytes) — first client app-data record.
     const FIXTURE_PACKET_5: [u8; 52] = crate::hex_decode(include_str!(
         "../../testdata/packets/005_c2s_AppData_send_0.hex"
@@ -1651,7 +1589,6 @@ mod tests {
     #[test]
     fn fixture_packet_5_encrypts_byte_identical() {
         let ((c_key, c_iv), _) = application_keys();
-        // Spot-check the derived c_ap (key, iv) against the fixture's dump.
         assert_eq!(
             c_key.as_bytes(),
             &[
@@ -1690,8 +1627,6 @@ mod tests {
         assert_eq!(ct, consts::CT_APPLICATION_DATA);
         assert_eq!(content, PACKET_6_PLAINTEXT);
     }
-
-    // ---- client Finished: byte-identical match against fixture's packet 4 ----
 
     /// packets/004_c2s_ClientFinished_encrypted.hex (58 bytes).
     const FIXTURE_PACKET_4: [u8; 58] = crate::hex_decode(include_str!(
@@ -1755,7 +1690,6 @@ mod tests {
         let (c_ap, s_ap) =
             application_traffic_secrets::<RustCrypto>(&ms, &transcript.snapshot()).unwrap();
 
-        // Expected values from packets/003 dump notes (seed 0).
         const FIXTURE_C_AP_BYTES: [u8; 32] = [
             0x0b, 0x35, 0x2a, 0x04, 0x91, 0x96, 0x84, 0x43, 0x4b, 0x94, 0x50, 0x24, 0x30, 0x0c,
             0xf8, 0xc6, 0xd8, 0xea, 0xd3, 0x7b, 0x66, 0xcb, 0x58, 0x3d, 0x1e, 0xe5, 0x3c, 0xd0,
@@ -1967,8 +1901,6 @@ mod tests {
         assert_eq!(leaf, &[1, 2, 3, 4, 5]);
     }
 
-    // ---- RSA: end-to-end replay against captured packets_rsa/ fixtures ----
-
     #[cfg(feature = "rsa")]
     mod rsa_tests {
         use super::*;
@@ -1987,9 +1919,7 @@ mod tests {
             "../../testdata/packets_rsa/003_s2c_ServerFlight_encrypted.hex"
         ));
 
-        /// Server handshake traffic secret from the fixture's packets_rsa/004 notes.
-        /// Bare `[u8; 32]` because `Zeroizing::new` isn't const-stable; wrap into
-        /// `Secret` at the use site.
+        /// Server handshake traffic secret from the RSA fixture.
         const FIXTURE_RSA_S_HS_TRAFFIC_SECRET_BYTES: [u8; 32] = [
             0x6e, 0xb5, 0xef, 0x9a, 0x73, 0xd2, 0x86, 0xdd, 0x12, 0x24, 0xb2, 0x33, 0xd3, 0xa4,
             0xac, 0xa7, 0xaa, 0x1b, 0x4a, 0x47, 0x58, 0x61, 0x26, 0x7b, 0x68, 0xac, 0x55, 0xa9,
