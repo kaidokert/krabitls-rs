@@ -11,9 +11,7 @@
 use crate::newtype::{AeadIv, AeadKey, Secret, TranscriptDigest, ZeroBuf};
 use crate::traits::{HkdfExpandError, HkdfSha256, Sha256Hasher};
 
-// =====================================================================
 // TLS 1.3 derivation helpers built on top of the HKDF trait.
-// =====================================================================
 
 /// Maximum size of the encoded `HkdfLabel` struct in TLS 1.3.
 ///
@@ -52,11 +50,6 @@ impl From<HkdfExpandError> for HkdfLabelError {
 }
 
 /// `HKDF-Expand-Label(secret, label, context, len)` per RFC 8446 §7.1.
-///
-/// Builds the `HkdfLabel` structure and dispatches to [`HkdfSha256::expand`].
-/// Returns an error instead of panicking if a caller supplies non-TLS-sized
-/// inputs. All labels used by krabitls's own TLS 1.3 key schedule are fixed
-/// short strings and fit by construction.
 pub fn hkdf_expand_label<H: HkdfSha256>(
     secret: &[u8; 32],
     label: &[u8],
@@ -65,8 +58,6 @@ pub fn hkdf_expand_label<H: HkdfSha256>(
 ) -> Result<(), HkdfLabelError> {
     const PREFIX: &[u8] = b"tls13 ";
 
-    // Encoding-limit checks for the length fields the wire format carries.
-    // The Vec capacity below covers EncodedTooLong on its own.
     if out.len() > u16::MAX as usize {
         return Err(HkdfLabelError::OutputTooLong);
     }
@@ -78,10 +69,6 @@ pub fn hkdf_expand_label<H: HkdfSha256>(
         return Err(HkdfLabelError::ContextTooLong);
     }
 
-    // HkdfLabel wire format:
-    //   uint16 length
-    //   opaque label<7..255>    = u8(len) || "tls13 " || label
-    //   opaque context<0..255>  = u8(len) || context
     let mut info: heapless::Vec<u8, HKDF_LABEL_MAX> = heapless::Vec::new();
     info.extend_from_slice(&(out.len() as u16).to_be_bytes())?;
     info.extend_from_slice(&[label_total as u8])?;
@@ -95,10 +82,6 @@ pub fn hkdf_expand_label<H: HkdfSha256>(
 }
 
 /// `Derive-Secret(secret, label, transcript_hash)` per RFC 8446 §7.1.
-///
-/// This is `HKDF-Expand-Label` specialized to a 32-byte transcript-hash
-/// context and a 32-byte output, the shape used everywhere in the TLS 1.3
-/// key schedule.
 pub fn derive_secret<H: HkdfSha256>(
     secret: &Secret,
     label: &[u8],
@@ -118,34 +101,13 @@ pub fn derive_secret<H: HkdfSha256>(
     Ok(Secret::new(out))
 }
 
-// =====================================================================
-// TLS 1.3 key schedule wired up end-to-end.
-//
-// All transcript hashes here are SHA-256 of the concatenated handshake
-// messages (the inner body, NOT the TLS record header) up to and
-// including the latest message — see RFC 8446 §4.4.1.
-// =====================================================================
-
 /// `SHA-256("")` — the empty-transcript hash used by `Derive-Secret(., x, "")`.
 pub const EMPTY_TRANSCRIPT_HASH: TranscriptDigest = TranscriptDigest::new([
     0xe3, 0xb0, 0xc4, 0x42, 0x98, 0xfc, 0x1c, 0x14, 0x9a, 0xfb, 0xf4, 0xc8, 0x99, 0x6f, 0xb9, 0x24,
     0x27, 0xae, 0x41, 0xe4, 0x64, 0x9b, 0x93, 0x4c, 0xa4, 0x95, 0x99, 0x1b, 0x78, 0x52, 0xb8, 0x55,
 ]);
 
-/// Running SHA-256 over the TLS 1.3 handshake transcript (RFC 8446 §4.4.1).
-///
-/// Owns the incremental hasher state so each handshake message gets fed in
-/// exactly once. The wrapper exposes two `update_*` flavors — one that takes
-/// a TLS *record* (5-byte header + handshake body) and strips the header, and
-/// one that takes raw handshake-message bytes — so callers don't have to
-/// remember to do `&record[5..]` slicing themselves (which was the original
-/// bug class).
-///
-/// Snapshots clone the hasher state, so a single `TranscriptHash` covers
-/// every intermediate hash boundary the TLS 1.3 handshake needs (after CH+SH
-/// for handshake traffic secrets, after each verification step inside the
-/// server flight, and after server Finished for client Finished + app traffic
-/// secrets).
+/// Running SHA-256 over the TLS 1.3 handshake transcript.
 pub struct TranscriptHash<H: HkdfSha256> {
     hasher: H::Hasher,
 }

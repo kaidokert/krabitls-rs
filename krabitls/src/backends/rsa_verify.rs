@@ -59,9 +59,7 @@ type U2048 = FixedUInt<u32, 64>;
 /// For single-shot callers, the free functions
 /// ([`verify_pkcs1v15_sha256`] / [`verify_pss_sha256`]) still work and
 /// are simpler — they just construct + verify in one go.
-// Clippy wants the larger variant boxed; we're no_alloc, so we take the
-// 2 KiB-on-the-stack hit when the small variant is in use. RSA stack
-// frames are large by nature.
+// no_alloc: keep the large variant inline rather than boxing it.
 #[allow(clippy::large_enum_variant)]
 pub enum RsaVerifierKey {
     /// 1024-bit RSA key.
@@ -82,9 +80,7 @@ where
 }
 
 impl RsaVerifierKey {
-    /// Build the cached verifying keys for one RSA public key. Triggers
-    /// the `ModMathParams::new` precompute exactly once; the second VK
-    /// is built from a cheap clone (`4×T` memcpy of the params).
+    /// Build cached verifying keys for one RSA public key.
     pub fn new(modulus: &[u8], exponent: u32) -> Result<Self, RsaVerifyError> {
         match modulus.len() {
             128 => Ok(RsaVerifierKey::U1024(build_vk_pair::<U1024>(
@@ -106,8 +102,6 @@ impl RsaVerifierKey {
         let prehash = Sha256::digest(message);
         match self {
             RsaVerifierKey::U1024(vks) => {
-                // `from_be_bytes` requires an exact-length slice — a mismatch
-                // would panic, so reject up front.
                 if signature.len() != 128 {
                     return Err(RsaVerifyError);
                 }
@@ -164,28 +158,20 @@ where
     T: rsa::modmath_support::ModMathInt,
 {
     let key = public_key_from_be_bytes::<T>(modulus, exponent).map_err(|_| RsaVerifyError)?;
-    // Build both VKs from the same key — Clone on the underlying
-    // GenericRsaPublicKey is a memcpy of the precomputed
-    // ModMathParams, not a recompute. ~512 cycles on M3 vs the
-    // ~400-800k a second `public_key_from_be_bytes` would cost.
+    // Clone reuses RSA precomputation instead of rebuilding it.
     let pkcs1 = Pkcs1Vk::<Sha256, _, _>::new(key.clone());
     let pss = PssVk::<Sha256, _, _>::new(key);
     Ok(VkPair { pkcs1, pss })
 }
 
-/// Verify an RSASSA-PKCS#1-v1.5 SHA-256 signature. Used for the self-signed
-/// RSA cert's outer signature (RFC 5754).
-///
-/// Dispatches on `modulus.len()` — 128 B for RSA-1024, 256 B for RSA-2048.
+/// Verify an RSASSA-PKCS#1-v1.5 SHA-256 signature.
 pub fn verify_pkcs1v15_sha256(
     modulus: &[u8],
     exponent: u32,
     message: &[u8],
     signature: &[u8],
 ) -> Result<(), RsaVerifyError> {
-    // PKCS#1-v1.5 signature length always equals modulus length. Reject
-    // mismatches up front — `FixedUInt::from_be_bytes` requires an exact-
-    // length slice and would panic otherwise.
+    // `FixedUInt::from_be_bytes` requires an exact-length slice.
     if signature.len() != modulus.len() {
         return Err(RsaVerifyError);
     }
@@ -205,8 +191,7 @@ pub fn verify_pss_sha256(
     message: &[u8],
     signature: &[u8],
 ) -> Result<(), RsaVerifyError> {
-    // PSS signature length equals modulus length. Reject mismatches up front
-    // for the same reason as `verify_pkcs1v15_sha256`.
+    // `FixedUInt::from_be_bytes` requires an exact-length slice.
     if signature.len() != modulus.len() {
         return Err(RsaVerifyError);
     }

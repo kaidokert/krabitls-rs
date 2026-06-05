@@ -41,7 +41,6 @@ pub fn decrypt_record<'a, A: Aes128GcmAead>(
     seq: u64,
     plaintext_buf: &'a mut [u8],
 ) -> Result<&'a [u8], DecryptError> {
-    // ---- record header ----
     if record.len() < 5 {
         return Err(DecryptError::Truncated);
     }
@@ -62,15 +61,11 @@ pub fn decrypt_record<'a, A: Aes128GcmAead>(
     if record.len() < 5 + body_len {
         return Err(DecryptError::Truncated);
     }
-    // Strict: caller must pass exactly one record. Bytes past `5 + body_len`
-    // would be a second record we'd silently ignore — surface them instead.
-    // (Switch to `Ok((plaintext, consumed))` if/when we add multi-record
-    // server-flight support — see PRODUCTION_GAPS #4 / #21.)
+    // Reject trailing bytes so callers do not accidentally drop a second record.
     if record.len() != 5 + body_len {
         return Err(DecryptError::TrailingBytes);
     }
 
-    // ---- body = ciphertext || 16-byte tag ----
     if body_len < 16 {
         return Err(DecryptError::Truncated);
     }
@@ -89,7 +84,6 @@ pub fn decrypt_record<'a, A: Aes128GcmAead>(
     let plaintext = &mut plaintext_buf[..ct_len];
     plaintext.copy_from_slice(ciphertext);
 
-    // ---- AEAD ----
     let nonce = aead_nonce(iv, seq);
     let aad = &record[..5];
     match A::decrypt(key.as_zeroizing(), &nonce, aad, plaintext, &tag) {
@@ -108,16 +102,7 @@ pub fn decrypt_record<'a, A: Aes128GcmAead>(
     }
 }
 
-/// Split a TLS 1.3 `TLSInnerPlaintext` (content || content_type || zero
-/// padding) into its inner content and `content_type` byte. RFC 8446 §5.2.
-///
-/// Enforces the §5.4 cap: after padding is stripped, the
-/// `TLSInnerPlaintext.content` may not exceed `2^14` bytes (the
-/// content + content_type byte together fit in `2^14 + 1`). The
-/// ciphertext cap that gated [`decrypt_record`] permits up to `2^14 +
-/// 256` (the AEAD-overhead allowance), so a peer can construct a
-/// record whose ciphertext fits but whose plaintext fragment violates
-/// the §5.4 limit; this check surfaces that as `RecordTooLarge`.
+/// Split TLS 1.3 inner plaintext into content and content type.
 pub fn split_inner_plaintext(inner: &[u8]) -> Result<(&[u8], u8), DecryptError> {
     let mut end = inner.len();
     while end > 0 && inner[end - 1] == 0 {
@@ -126,8 +111,6 @@ pub fn split_inner_plaintext(inner: &[u8]) -> Result<(&[u8], u8), DecryptError> 
     if end == 0 {
         return Err(DecryptError::EmptyInnerPlaintext);
     }
-    // After stripping padding, the remaining bytes are `content || content_type`
-    // (= `end` bytes total). `content.len() = end - 1` must be <= 2^14.
     if end - 1 > TLS_PLAINTEXT_MAX {
         return Err(DecryptError::RecordTooLarge);
     }
@@ -135,10 +118,7 @@ pub fn split_inner_plaintext(inner: &[u8]) -> Result<(&[u8], u8), DecryptError> 
     Ok((&inner[..end - 1], content_type))
 }
 
-/// Encrypt one piece of TLS 1.3 inner plaintext into an application_data record.
-///
-/// Builds `header(5) || aead_encrypt(plaintext || content_type, key, nonce, aad=header) || tag(16)`
-/// into `out_buf` and returns the slice covering the record bytes. No padding.
+/// Encrypt one TLS 1.3 inner plaintext into an application_data record.
 pub fn encrypt_record<'a, A: Aes128GcmAead>(
     content: &[u8],
     content_type: u8,
@@ -155,7 +135,6 @@ pub fn encrypt_record<'a, A: Aes128GcmAead>(
     if content.len() > TLS_PLAINTEXT_MAX {
         return Err(EncryptError::RecordTooLarge);
     }
-    // Inner plaintext = content || content_type (1 byte); no zero padding.
     let inner_len = content
         .len()
         .checked_add(1)
@@ -178,7 +157,6 @@ pub fn encrypt_record<'a, A: Aes128GcmAead>(
         });
     }
 
-    // ---- record header ----
     // The cipher_body_len <= TLS_CIPHERTEXT_MAX (= 2^14 + 256 = 16640) cap
     // above means the `as u16` cast here is provably non-truncating.
     // Build the AAD directly (no `try_into().expect(...)`), then copy it
@@ -195,11 +173,9 @@ pub fn encrypt_record<'a, A: Aes128GcmAead>(
     ];
     out_buf[..5].copy_from_slice(&aad);
 
-    // ---- inner plaintext ----
     out_buf[5..5 + content.len()].copy_from_slice(content);
     out_buf[5 + content.len()] = content_type;
 
-    // ---- AEAD seal ----
     let nonce = aead_nonce(iv, seq);
     let tag = A::encrypt(
         key.as_zeroizing(),
