@@ -17,7 +17,6 @@
 
 use std::error::Error;
 use std::fs;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -127,7 +126,7 @@ fn run(cli: &Cli) -> Result<()> {
 fn priv_for_init(seed: u64, use_random: bool) -> Result<[u8; 32]> {
     if use_random {
         let mut buf = [0u8; 32];
-        std::fs::File::open("/dev/urandom")?.read_exact(&mut buf)?;
+        getrandom::fill(&mut buf).map_err(|e| format!("getrandom: {e}"))?;
         fs::create_dir_all(STATE_DIR)?;
         write_secret_file(PRIV_STATE_FILE, &buf)?;
         Ok(buf)
@@ -166,22 +165,32 @@ fn write_secret_file(path: &str, bytes: &[u8]) -> Result<()> {
 }
 
 /// `--conn-negotiate` / `--send` priv: prefer persisted random priv, else seed.
-fn priv_for_followup(seed: u64) -> [u8; 32] {
-    if let Ok(bytes) = fs::read(PRIV_STATE_FILE)
-        && bytes.len() == 32
-    {
-        let mut arr = [0u8; 32];
-        arr.copy_from_slice(&bytes);
-        return arr;
+///
+/// If `state/priv.bin` exists but isn't exactly 32 bytes the file is corrupt
+/// — fail loudly rather than silently regenerating a seed-derived key whose
+/// public half won't match what the server already responded to.
+fn priv_for_followup(seed: u64) -> Result<[u8; 32]> {
+    match fs::read(PRIV_STATE_FILE) {
+        Ok(bytes) if bytes.len() == 32 => {
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&bytes);
+            Ok(arr)
+        }
+        Ok(bytes) => Err(format!(
+            "{} has unexpected size {} (expected 32); run --reset and --conn-init again",
+            PRIV_STATE_FILE,
+            bytes.len()
+        )
+        .into()),
+        Err(_) => Ok(derive_bytes::<32>(seed, "client_x25519")),
     }
-    derive_bytes::<32>(seed, "client_x25519")
 }
 
 /// `--conn-init`'s ClientHello.random: OS-RNG in `--random` mode, else seed-derived.
 fn client_random_for_init(seed: u64, use_random: bool) -> Result<[u8; 32]> {
     if use_random {
         let mut buf = [0u8; 32];
-        std::fs::File::open("/dev/urandom")?.read_exact(&mut buf)?;
+        getrandom::fill(&mut buf).map_err(|e| format!("getrandom: {e}"))?;
         Ok(buf)
     } else {
         Ok(derive_bytes::<32>(seed, "client_random"))
@@ -215,7 +224,7 @@ fn cmd_conn_init(seed: u64, use_random: bool) -> Result<()> {
 // =====================================================================
 
 fn cmd_conn_negotiate(seed: u64) -> Result<()> {
-    let priv_bytes = priv_for_followup(seed);
+    let priv_bytes = priv_for_followup(seed)?;
     let session = compute_session_secrets(&priv_bytes)?;
 
     let mut out = [0u8; krabitls::CLIENT_FINISHED_LEN];
@@ -247,7 +256,7 @@ fn cmd_send(seed: u64, text: &str) -> Result<()> {
     let c_ap_ts = match load_session_state()? {
         Some((c_ap, _s_ap)) => c_ap,
         None => {
-            let priv_bytes = priv_for_followup(seed);
+            let priv_bytes = priv_for_followup(seed)?;
             compute_session_secrets(&priv_bytes)?.c_ap_ts
         }
     };
@@ -283,7 +292,7 @@ fn cmd_receive(seed: u64) -> Result<()> {
     let s_ap_ts = match load_session_state()? {
         Some((_c_ap, s_ap)) => s_ap,
         None => {
-            let priv_bytes = priv_for_followup(seed);
+            let priv_bytes = priv_for_followup(seed)?;
             compute_session_secrets(&priv_bytes)?.s_ap_ts
         }
     };

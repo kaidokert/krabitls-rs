@@ -42,7 +42,6 @@
 //!     cargo run --bin krabitls_connect --features rsa -- --pin HEX  HOST
 
 use std::error::Error;
-use std::fs::File;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::process::ExitCode;
@@ -220,10 +219,13 @@ fn run(host: &str, port: u16, capture_dir: Option<&str>, pin: Option<&Pin>) -> R
     // (a change in ed25519_heapless 0.0.3) is what makes this possible
     // without forcing extra copies. See PRODUCTION_GAPS #8 for what this
     // does NOT address (blinding, CT field-op audit).
+    // Cross-platform OS RNG via `getrandom` — one call for the X25519 priv,
+    // a second for the CH random. Each goes through getrandom_uninit-style
+    // syscall internally (no /dev/urandom file-handle juggling).
     let mut x25519_priv = zeroize::Zeroizing::new([0u8; 32]);
-    File::open("/dev/urandom")?.read_exact(&mut *x25519_priv)?;
+    getrandom::fill(&mut *x25519_priv).map_err(|e| format!("getrandom (x25519): {e}"))?;
     let mut ch_random = [0u8; 32];
-    File::open("/dev/urandom")?.read_exact(&mut ch_random)?;
+    getrandom::fill(&mut ch_random).map_err(|e| format!("getrandom (ch_random): {e}"))?;
     let x25519_pub = ed25519_heapless::x25519_base::<Bn>(&x25519_priv);
 
     // ---- TCP ----
