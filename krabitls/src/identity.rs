@@ -381,7 +381,9 @@ fn days_to_epoch_secs(y: u32, m: u32, d: u32, h: u32, mn: u32, s: u32) -> Option
     }
     // Per-month day limit so Feb 30 / Apr 31 / etc. don't pass through.
     // Gregorian leap rule: divisible by 4 except centuries unless ÷400.
-    let leap = (y % 4 == 0) && (y % 100 != 0 || y % 400 == 0);
+    // `is_multiple_of` (Rust 1.87+, satisfied by our edition-2024 MSRV)
+    // dodges clippy::manual-is-multiple-of for the non-power-of-2 divisors.
+    let leap = y.is_multiple_of(4) && (!y.is_multiple_of(100) || y.is_multiple_of(400));
     // `m` is validated to `1..=12` at the top of this function, so by the
     // time we reach this match it's always exactly one of the listed
     // values. The `_ => 28` wildcard covers non-leap February (the only
