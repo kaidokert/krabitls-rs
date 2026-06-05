@@ -25,8 +25,8 @@ repos:
 -   repo: local
     hooks:
     -   id: krabitls-clippy
-        name: cargo clippy krabitls
-        entry: cargo clippy --manifest-path=krabitls/Cargo.toml --tests --all-targets -- -D warnings
+        name: "cargo clippy krabitls (default + rsa + validity)"
+        entry: sh -c "cargo clippy --manifest-path=krabitls/Cargo.toml --tests --all-targets -- -D warnings && cargo clippy --manifest-path=krabitls/Cargo.toml --tests --all-targets --features rsa -- -D warnings && cargo clippy --manifest-path=krabitls/Cargo.toml --tests --all-targets --features validity -- -D warnings"
         language: system
         pass_filenames: false
         files: ^krabitls/.*\.(rs|toml)$
