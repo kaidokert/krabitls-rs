@@ -129,11 +129,40 @@ fn priv_for_init(seed: u64, use_random: bool) -> Result<[u8; 32]> {
         let mut buf = [0u8; 32];
         std::fs::File::open("/dev/urandom")?.read_exact(&mut buf)?;
         fs::create_dir_all(STATE_DIR)?;
-        fs::write(PRIV_STATE_FILE, buf)?;
+        write_secret_file(PRIV_STATE_FILE, &buf)?;
         Ok(buf)
     } else {
         Ok(derive_bytes::<32>(seed, "client_x25519"))
     }
+}
+
+/// Write `bytes` to `path` with owner-only perms (0o600) on Unix so the
+/// secret material isn't world-readable. On non-Unix targets falls back to
+/// the platform default, since `std::os::unix::fs::OpenOptionsExt` isn't
+/// available there.
+fn write_secret_file(path: &str, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
+        f.write_all(bytes)?;
+    }
+    #[cfg(not(unix))]
+    {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(path)?;
+        f.write_all(bytes)?;
+    }
+    Ok(())
 }
 
 /// `--conn-negotiate` / `--send` priv: prefer persisted random priv, else seed.
@@ -226,7 +255,7 @@ fn cmd_send(seed: u64, text: &str) -> Result<()> {
         .map_err(|e| format!("traffic_keys (c_ap): {:?}", e))?;
 
     // Per-AEAD-key sequence number: # of c2s app-data records already on disk.
-    let ap_seq = count_c2s_app_data_sends()? as u64;
+    let ap_seq = next_c2s_app_data_seq()?;
 
     let mut out = vec![0u8; text.len() + 32]; // header(5) + content + content_type(1) + tag(16) padding
     let record = krabitls::encrypt_record::<krabitls::RustCrypto>(
@@ -381,7 +410,7 @@ fn write_session_state(
     let mut buf = [0u8; 64];
     buf[..32].copy_from_slice(c_ap_ts.as_bytes());
     buf[32..].copy_from_slice(s_ap_ts.as_bytes());
-    fs::write(SESSION_STATE_FILE, buf)?;
+    write_secret_file(SESSION_STATE_FILE, &buf)?;
     Ok(())
 }
 
@@ -472,22 +501,42 @@ fn packet_path(seq: u32, direction: &str, name: &str) -> PathBuf {
     p
 }
 
-/// How many `_c2s_AppData_send_*.bin` records the directory already has.
-/// That count is the next per-AEAD-key sequence number under `c_ap_traffic_secret`.
-fn count_c2s_app_data_sends() -> Result<usize> {
+/// Next per-AEAD-key sequence number under `c_ap_traffic_secret`. Derived
+/// from `max(seq in filename) + 1` across the existing `*_c2s_AppData_send_N.bin`
+/// records, NOT from the file count.
+///
+/// **Why max+1, not count.** AES-GCM nonces are `iv XOR seq`, so reusing a
+/// `(key, seq)` pair with two different plaintexts breaks the cipher (CTR
+/// keystream re-use → XOR-leaks plaintext, plus a single forged tag enables
+/// full GHASH key recovery). If we picked "count of files" and the user
+/// deleted any earlier record, the next `--send` would re-emit an already-
+/// used seq under the same `c_ap_key` from session.bin — silently
+/// catastrophic. Parsing the trailing `_N.bin` and taking the max+1 means
+/// `--send` keeps moving forward monotonically regardless of file deletes.
+fn next_c2s_app_data_seq() -> Result<u64> {
     if !Path::new(PACKETS_DIR).exists() {
         return Ok(0);
     }
-    let mut n = 0;
+    let mut max_seq: Option<u64> = None;
     for entry in fs::read_dir(PACKETS_DIR)? {
         let entry = entry?;
         let name = entry.file_name();
         let s = name.to_str().unwrap_or("");
-        if s.contains("_c2s_AppData_send_") && s.ends_with(".bin") {
-            n += 1;
+        // Filename shape: `NNN_c2s_AppData_send_{seq}.bin` where NNN is
+        // the global packet sequence and {seq} is the per-AEAD-key index.
+        if !s.ends_with(".bin") {
+            continue;
         }
+        let Some(after) = s.split("_c2s_AppData_send_").nth(1) else {
+            continue;
+        };
+        let seq_str = after.trim_end_matches(".bin");
+        let Ok(seq) = seq_str.parse::<u64>() else {
+            continue;
+        };
+        max_seq = Some(max_seq.map_or(seq, |m| m.max(seq)));
     }
-    Ok(n)
+    Ok(max_seq.map_or(0, |m| m + 1))
 }
 
 // =====================================================================
