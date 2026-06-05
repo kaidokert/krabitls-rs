@@ -18,8 +18,10 @@ baseline = []
 # useful for comparing kcycles between the two backends on M3.
 jedisct = ["krabitls/jedisct"]
 # Build the krabitls_rsa example, which replays a captured example.com
-# handshake (RSA-2048 cert chain) on M3 / M0 — exercises cert parse + the
+# handshake (RSA-2048 cert chain) on M3 — exercises cert parse + the
 # RSA-PKCS#1-v1.5 self-sig verify and the RSA-PSS CertificateVerify verify.
+# M3-only: the example's 8 KiB plaintext + 8 KiB flight buffers overflow
+# microbit's 16 KiB RAM, so CI skips thumbv6m for this example.
 rsa = ["krabitls/rsa"]
 
 [[example]]
