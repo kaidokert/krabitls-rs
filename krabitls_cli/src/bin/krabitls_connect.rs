@@ -310,6 +310,10 @@ fn run(host: &str, port: u16, capture_dir: Option<&str>, pin: Option<&Pin>) -> R
     // to exercise the full AEAD + verify pipeline against deterministic data.
     let mut flight_enc_bytes: Vec<u8> = Vec::new();
     let mut seq: u64 = 0;
+    // Pre-allocate the per-record decrypt scratch once, sized to the §5.2
+    // TLSCiphertext cap. Re-using across iterations avoids the per-iter
+    // `vec![0u8; record.len()]` allocation cost on large server flights.
+    let mut pt = vec![0u8; READ_BUF_CAP];
     loop {
         let record = read_record(&mut stream)?;
         match record[0] {
@@ -321,7 +325,6 @@ fn run(host: &str, port: u16, capture_dir: Option<&str>, pin: Option<&Pin>) -> R
             // application_data — decrypt under s_hs_traffic_secret.
             0x17 => {
                 flight_enc_bytes.extend_from_slice(&record);
-                let mut pt = vec![0u8; record.len()];
                 let plaintext =
                     decrypt_record::<RustCrypto>(&record, &s_hs_key, &s_hs_iv, seq, &mut pt)
                         .map_err(krabitls_err("decrypt server flight"))?;
@@ -495,6 +498,9 @@ fn run(host: &str, port: u16, capture_dir: Option<&str>, pin: Option<&Pin>) -> R
     // ---- Read response records until the server closes / signals close_notify ----
     let mut rx_seq: u64 = 0;
     let mut body_total = 0usize;
+    // Pre-allocate the per-record decrypt scratch once; same rationale as
+    // the server-flight loop above.
+    let mut pt = vec![0u8; READ_BUF_CAP];
     loop {
         let record = match read_record(&mut stream) {
             Ok(r) => r,
@@ -506,7 +512,6 @@ fn run(host: &str, port: u16, capture_dir: Option<&str>, pin: Option<&Pin>) -> R
         match record[0] {
             0x14 => continue, // ignore any further CCS
             0x17 => {
-                let mut pt = vec![0u8; record.len()];
                 let plaintext = match decrypt_record::<RustCrypto>(
                     &record, &s_ap_key, &s_ap_iv, rx_seq, &mut pt,
                 ) {

@@ -354,7 +354,6 @@ struct SessionSecrets {
     /// SHA-256(CH || SH || EE || Cert || CertVerify || ServerFinished).
     transcript_hash_through_server_finished: krabitls::newtype::TranscriptDigest,
     c_ap_ts: krabitls::newtype::Secret,
-    #[allow(dead_code)]
     s_ap_ts: krabitls::newtype::Secret,
 }
 
