@@ -23,6 +23,10 @@ jedisct = ["krabitls/jedisct"]
 # M3-only: the example's 8 KiB plaintext + 8 KiB flight buffers overflow
 # microbit's 16 KiB RAM, so CI skips thumbv6m for this example.
 rsa = ["krabitls/rsa"]
+# Build the krabitls_chacha example — same handshake fixture as `krabitls`
+# but with the AEAD swapped to ChaCha20-Poly1305. Measures the M3 .text
+# delta from the AEAD swap alone.
+chacha20 = ["krabitls/chacha20"]
 
 [[example]]
 name = "krabitls"
@@ -34,6 +38,10 @@ required-features = ["jedisct"]
 [[example]]
 name = "krabitls_rsa"
 required-features = ["rsa"]
+
+[[example]]
+name = "krabitls_chacha"
+required-features = ["chacha20"]
 
 [dependencies]
 # `critical-section-single-core` provides a critical-section implementation
