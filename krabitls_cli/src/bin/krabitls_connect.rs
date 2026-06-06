@@ -547,6 +547,16 @@ fn run(host: &str, port: u16, capture_dir: Option<&str>, pin: Option<&Pin>) -> R
     //      demo (cortex_m_demo/examples/krabitls_rsa.rs). Bails after writing,
     //      since we'd otherwise also need to clean up the TCP socket. ----
     if let Some(dir) = capture_dir {
+        // The replay demos derive AES-typed traffic keys; a ChaCha-negotiated
+        // capture would be unreplayable. Reject explicitly until the replay
+        // path knows how to dispatch on the captured suite.
+        if sh.cipher_suite != CIPHER_AES_128_GCM_SHA256 {
+            return Err(format!(
+                "--capture is only supported when the server picks AES-128-GCM (negotiated {})",
+                cipher_suite_name(sh.cipher_suite),
+            )
+            .into());
+        }
         dump_capture(
             dir,
             host,

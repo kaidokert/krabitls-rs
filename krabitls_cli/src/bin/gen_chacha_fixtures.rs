@@ -32,6 +32,10 @@ const SERVER_X25519_PUB: [u8; 32] = [
 ];
 const PACKET_5_PLAINTEXT: &[u8] = b"hello from the embedded client";
 
+/// Maximum overhead an `encrypt_record_chacha` call adds on top of the
+/// inner content: 5 record header + 1 content_type + 16 AEAD tag.
+const RECORD_OVERHEAD: usize = 5 + 1 + 16;
+
 fn main() -> Result<()> {
     let testdata = repo_root().join("testdata/packets");
     let out_dir = repo_root().join("cortex_m_demo/captured_chacha");
@@ -57,14 +61,14 @@ fn main() -> Result<()> {
 
     // ---- packet 3: AES-decrypt → re-encrypt under ChaCha. ----
     let (s_aes_key, s_aes_iv) = traffic_keys::<RustCrypto>(&s_hs_ts).map_err(hkdf_err)?;
-    let mut pt_buf = vec![0u8; 400];
+    let mut pt_buf = vec![0u8; p3_aes.len()];
     let p3_inner = decrypt_record::<RustCrypto>(&p3_aes, &s_aes_key, &s_aes_iv, 0, &mut pt_buf)
         .map_err(decrypt_err)?
         .to_vec();
     let (p3_content, p3_ct) = split_inner_plaintext(&p3_inner).map_err(decrypt_err)?;
     let (s_chacha_key, s_chacha_iv) =
         traffic_keys_chacha::<RustCrypto>(&s_hs_ts).map_err(hkdf_err)?;
-    let mut p3_out = vec![0u8; 400];
+    let mut p3_out = vec![0u8; p3_content.len() + RECORD_OVERHEAD];
     let p3_chacha = encrypt_record_chacha::<RustCrypto>(
         p3_content,
         p3_ct,
@@ -80,7 +84,7 @@ fn main() -> Result<()> {
     )?;
 
     // Round-trip sanity: decrypt with chacha, must match the AES plaintext.
-    let mut p3_rt = vec![0u8; 400];
+    let mut p3_rt = vec![0u8; p3_chacha.len()];
     let p3_rt_plain =
         decrypt_record_chacha::<RustCrypto>(p3_chacha, &s_chacha_key, &s_chacha_iv, 0, &mut p3_rt)
             .map_err(decrypt_err)?;
@@ -118,7 +122,7 @@ fn main() -> Result<()> {
 
     // packet 5: encrypt PACKET_5_PLAINTEXT under c_ap chacha.
     let (c_ap_key, c_ap_iv) = traffic_keys_chacha::<RustCrypto>(&c_ap_ts).map_err(hkdf_err)?;
-    let mut p5_out = vec![0u8; 128];
+    let mut p5_out = vec![0u8; PACKET_5_PLAINTEXT.len() + RECORD_OVERHEAD];
     let p5_chacha = encrypt_record_chacha::<RustCrypto>(
         PACKET_5_PLAINTEXT,
         krabitls::consts::CT_APPLICATION_DATA,
@@ -132,7 +136,7 @@ fn main() -> Result<()> {
 
     // packet 6: AES-decrypt under s_ap, re-encrypt under s_ap chacha.
     let (s_ap_aes_key, s_ap_aes_iv) = traffic_keys::<RustCrypto>(&s_ap_ts).map_err(hkdf_err)?;
-    let mut p6_pt = vec![0u8; 128];
+    let mut p6_pt = vec![0u8; p6_aes.len()];
     let p6_inner =
         decrypt_record::<RustCrypto>(&p6_aes, &s_ap_aes_key, &s_ap_aes_iv, 0, &mut p6_pt)
             .map_err(decrypt_err)?
@@ -140,7 +144,7 @@ fn main() -> Result<()> {
     let (p6_content, p6_ct) = split_inner_plaintext(&p6_inner).map_err(decrypt_err)?;
     let (s_ap_chacha_key, s_ap_chacha_iv) =
         traffic_keys_chacha::<RustCrypto>(&s_ap_ts).map_err(hkdf_err)?;
-    let mut p6_out = vec![0u8; 128];
+    let mut p6_out = vec![0u8; p6_content.len() + RECORD_OVERHEAD];
     let p6_chacha = encrypt_record_chacha::<RustCrypto>(
         p6_content,
         p6_ct,
@@ -161,14 +165,17 @@ fn main() -> Result<()> {
 }
 
 fn repo_root() -> PathBuf {
-    // Run via `cargo run --manifest-path=krabitls_cli/Cargo.toml` from repo root.
-    std::env::current_dir().expect("cwd")
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("krabitls_cli sits one level under repo root")
+        .to_path_buf()
 }
 
 fn read_hex(path: PathBuf) -> Result<Vec<u8>> {
     let s = fs::read_to_string(&path)?;
     let mut out = Vec::new();
     let mut it = s.bytes().peekable();
+    let ctx = |label: &str| format!("{}: {label}", path.display());
     while let Some(&c) = it.peek() {
         if c == b' ' || c == b'\t' || c == b'\n' || c == b'\r' {
             it.next();
@@ -183,19 +190,21 @@ fn read_hex(path: PathBuf) -> Result<Vec<u8>> {
             }
             continue;
         }
-        let hi = nibble(it.next().unwrap());
-        let lo = nibble(it.next().ok_or("odd hex")?);
+        let hi_byte = it.next().ok_or_else(|| ctx("odd hex"))?;
+        let lo_byte = it.next().ok_or_else(|| ctx("odd hex"))?;
+        let hi = nibble(hi_byte).map_err(|e| ctx(&e))?;
+        let lo = nibble(lo_byte).map_err(|e| ctx(&e))?;
         out.push((hi << 4) | lo);
     }
     Ok(out)
 }
 
-fn nibble(c: u8) -> u8 {
+fn nibble(c: u8) -> std::result::Result<u8, String> {
     match c {
-        b'0'..=b'9' => c - b'0',
-        b'a'..=b'f' => c - b'a' + 10,
-        b'A'..=b'F' => c - b'A' + 10,
-        _ => panic!("bad hex nibble: {c}"),
+        b'0'..=b'9' => Ok(c - b'0'),
+        b'a'..=b'f' => Ok(c - b'a' + 10),
+        b'A'..=b'F' => Ok(c - b'A' + 10),
+        _ => Err(format!("bad hex nibble: 0x{c:02x}")),
     }
 }
 
