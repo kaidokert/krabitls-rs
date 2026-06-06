@@ -1,69 +1,82 @@
 #![no_main]
 #![no_std]
 
-//! M3 RSA verify resource measurement.
-//!
-//! Replays the encrypted server flight captured from a real `example.com`
-//! handshake (Cloudflare RSA-2048 cert chain) and runs the full verify
-//! pipeline: AEAD decrypt + parse_server_flight + cert parse (RSA SPKI) +
+//! M3 footprint example: AES-128-GCM-SHA256 record layer + RSA-2048-PSS
+//! server cert. Replays a captured TLS 1.3 handshake from a local openssl
+//! s_server (testdata/local_server/rsa2048.{crt,key}). Verify pipeline:
+//! AEAD decrypt + parse_server_flight + cert parse (RSA SPKI) +
 //! verify_certificate_verify (RSA-PSS-SHA256) + verify_server_finished +
-//! build_client_finished.
-//!
-//! Captured via `krabitls_connect --capture <dir> example.com`. The captured
-//! files are committed under `cortex_m_demo/captured_rsa/`.
-//!
-//! Buffers live as stack locals — M3's 64 KiB RAM has room for the ~16 KiB
-//! total without `static mut` (which would force an `unsafe` block per
-//! access and isn't worth the few-KiB stack-measurement clean-up here).
-//! The cm0 microbit profile lacks the RAM for this example anyway and is
-//! skipped in CI.
+//! build_client_finished (byte-checked against `c_finished.hex`).
 
 use cortex_m_rt::entry;
+#[cfg(not(feature = "baseline"))]
 use krabitls::newtype::Secret;
+#[cfg(not(feature = "baseline"))]
 use krabitls::{
-    CertParser, CertView, DerCert, RustCrypto, TranscriptHash, ZeroBuf, build_client_finished,
-    decrypt_record, extract_cert_der, parse_server_flight, split_inner_plaintext, traffic_keys,
-    verify_certificate_verify, verify_server_finished,
+    CLIENT_FINISHED_LEN, CertParser, CertView, DerCert, RustCrypto, TranscriptHash, ZeroBuf,
+    build_client_finished, decrypt_record, extract_cert_der, parse_server_flight,
+    split_inner_plaintext, traffic_keys, verify_certificate_verify, verify_server_finished,
 };
 
-/// Captured fixture from a real example.com handshake. Sizes embedded in
-/// the type so a fixture-size drift trips a compile-time error rather than
-/// a silent runtime mismatch.
-const CH: [u8; 139] = krabitls::hex_decode(include_str!("../captured_rsa/ch.hex"));
-const SH: [u8; 95] = krabitls::hex_decode(include_str!("../captured_rsa/sh.hex"));
-const S_HS_TS: [u8; 32] = krabitls::hex_decode(include_str!("../captured_rsa/s_hs_ts.hex"));
-const C_HS_TS: [u8; 32] = krabitls::hex_decode(include_str!("../captured_rsa/c_hs_ts.hex"));
-const FLIGHT_ENC: [u8; 6292] = krabitls::hex_decode(include_str!("../captured_rsa/flight_enc.hex"));
+// Captured fixture from a local openssl s_server. Sizes embedded so a
+// fixture-size drift trips a compile-time error rather than a silent runtime
+// mismatch. Regenerate via `cargo run --bin krabitls_connect -- --capture
+// <dir> localhost:8443` against `openssl s_server -tls1_3 -cert rsa2048.crt
+// -key rsa2048.key -ciphersuites TLS_AES_128_GCM_SHA256 -no_ticket -www`.
+const CH: [u8; 137] = krabitls::hex_decode(include_str!("../captured/aes_rsa2048/ch.hex"));
+const SH: [u8; 95] = krabitls::hex_decode(include_str!("../captured/aes_rsa2048/sh.hex"));
+const S_HS_TS: [u8; 32] = krabitls::hex_decode(include_str!("../captured/aes_rsa2048/s_hs_ts.hex"));
+const C_HS_TS: [u8; 32] = krabitls::hex_decode(include_str!("../captured/aes_rsa2048/c_hs_ts.hex"));
+const FLIGHT_ENC: [u8; 1234] =
+    krabitls::hex_decode(include_str!("../captured/aes_rsa2048/flight_enc.hex"));
+const C_FINISHED: [u8; 58] =
+    krabitls::hex_decode(include_str!("../captured/aes_rsa2048/c_finished.hex"));
 
 #[entry]
 fn main() -> ! {
-    cortex_m_demo::test_fixture(|| run().is_ok(), "krabitls_rsa");
-    // See krabitls.rs: `loop { nop }` to satisfy `fn() -> !` without
-    // pulling in panic-fmt machinery via `unreachable!()`.
+    cortex_m_demo::test_fixture(
+        #[cfg(feature = "baseline")]
+        || fake_pipeline(),
+        #[cfg(not(feature = "baseline"))]
+        || run().is_ok(),
+        "krabitls_rsa",
+    );
     loop {
         cortex_m::asm::nop();
     }
 }
 
+/// Baseline stub for `--features baseline,rsa`. Touches every captured fixture
+/// so the rodata layout matches the real build; the .text delta isolates the
+/// crypto + protocol code.
+#[cfg(feature = "baseline")]
+#[inline(never)]
+fn fake_pipeline() -> bool {
+    use core::hint::black_box;
+    black_box(&CH);
+    black_box(&SH);
+    black_box(&S_HS_TS);
+    black_box(&C_HS_TS);
+    black_box(&FLIGHT_ENC);
+    black_box(&C_FINISHED);
+    true
+}
+
+#[cfg(not(feature = "baseline"))]
 fn run() -> Result<(), ()> {
-    // ---- TranscriptHash through CH + SH ----
     let mut transcript = TranscriptHash::<RustCrypto>::new();
     transcript.update_record(&CH).map_err(|_| ())?;
     transcript.update_record(&SH).map_err(|_| ())?;
 
-    // ---- Derive s_hs (key, iv) from the captured traffic secret ----
     let s_hs_ts: Secret = Secret::new(ZeroBuf::<32>::new(S_HS_TS));
     let c_hs_ts: Secret = Secret::new(ZeroBuf::<32>::new(C_HS_TS));
     let (s_hs_key, s_hs_iv) = traffic_keys::<RustCrypto>(&s_hs_ts).map_err(|_| ())?;
 
-    // ---- Walk encrypted flight records, decrypt, reassemble ----
-    //
-    // `plaintext` is the per-record decrypt scratch (sized for the largest
-    // record we expect); `flight` accumulates the inner-handshake content
-    // bytes across records. Both are stack-local — the captured fixture is
-    // ~6.3 KiB inner, 8 KiB gives headroom for typical TLS records.
-    let mut plaintext = [0u8; 8192];
-    let mut flight = [0u8; 8192];
+    // 8 KiB plaintext + 8 KiB flight buffers — uniform across all footprint-
+    // suite rows so their stack deltas compare directly. The suite subtracts
+    // the 16 KiB buffer footprint when emitting the table.
+    let mut plaintext = [0u8; cortex_m_demo::RECORD_BUF_CAP];
+    let mut flight = [0u8; cortex_m_demo::FLIGHT_BUF_CAP];
     let mut flight_len = 0usize;
     let mut pos = 0usize;
     let mut seq: u64 = 0;
@@ -93,12 +106,9 @@ fn run() -> Result<(), ()> {
         seq += 1;
     }
 
-    // ---- Verify server flight ----
     let parsed = parse_server_flight(&flight[..flight_len]).map_err(|_| ())?;
-
     let cert_der = extract_cert_der(parsed.cert_body).map_err(|_| ())?;
     let view = <DerCert as CertParser>::parse(cert_der).map_err(|_| ())?;
-    // Confirm we got the RSA path, not Ed25519 — sanity check on the fixture.
     if !matches!(view, CertView::Rsa { .. }) {
         return Err(());
     }
@@ -117,15 +127,16 @@ fn run() -> Result<(), ()> {
     transcript.update(parsed.fin_full);
     let th_through_finished = transcript.snapshot();
 
-    // Build client Finished too — exercises the c_hs path so the measurement
-    // covers all of "what you'd do in a real handshake."
     let mut cf_out = [0u8; 80];
-    let _record = build_client_finished::<RustCrypto, RustCrypto>(
+    let record = build_client_finished::<RustCrypto, RustCrypto>(
         &c_hs_ts,
         &th_through_finished,
         0,
         &mut cf_out,
     )
     .map_err(|_| ())?;
+    if record.len() != CLIENT_FINISHED_LEN || record != &C_FINISHED[..] {
+        return Err(());
+    }
     Ok(())
 }
