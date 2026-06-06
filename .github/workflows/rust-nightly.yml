@@ -44,6 +44,8 @@ jobs:
       run: cargo build --manifest-path=krabitls/Cargo.toml --features rsa --verbose
     - name: Build (feature = validity)
       run: cargo build --manifest-path=krabitls/Cargo.toml --features validity --verbose
+    - name: Build (feature = chacha20)
+      run: cargo build --manifest-path=krabitls/Cargo.toml --features chacha20 --verbose
 
     - name: Test (default features)
       run: cargo test --manifest-path=krabitls/Cargo.toml --verbose
@@ -51,8 +53,12 @@ jobs:
       run: cargo test --manifest-path=krabitls/Cargo.toml --features rsa --verbose
     - name: Test (feature = validity)
       run: cargo test --manifest-path=krabitls/Cargo.toml --features validity --verbose
+    - name: Test (feature = chacha20)
+      run: cargo test --manifest-path=krabitls/Cargo.toml --features chacha20 --verbose
 
-    - name: Build krabitls_cli (default + rsa)
+    - name: Build krabitls_cli (default + rsa + chacha20)
       run: |
         cargo build --manifest-path=krabitls_cli/Cargo.toml --verbose
         cargo build --manifest-path=krabitls_cli/Cargo.toml --features rsa --verbose
+        cargo build --manifest-path=krabitls_cli/Cargo.toml --features chacha20 --verbose
+        cargo build --manifest-path=krabitls_cli/Cargo.toml --features rsa --features chacha20 --verbose
