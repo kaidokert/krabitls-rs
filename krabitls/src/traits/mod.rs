@@ -8,8 +8,10 @@
 //!
 //! - [`HkdfSha256`] + [`Sha256Hasher`] — HKDF over SHA-256 and the
 //!   matching incremental hasher (default: [`crate::RustCrypto`]).
-//! - [`Aes128GcmAead`] — record-layer AEAD (default:
-//!   [`crate::RustCrypto`]).
+//! - [`Aes128GcmAead`] — record-layer AEAD for `TLS_AES_128_GCM_SHA256`
+//!   (default: [`crate::RustCrypto`]).
+//! - [`ChaCha20Poly1305Aead`] — record-layer AEAD for
+//!   `TLS_CHACHA20_POLY1305_SHA256`, gated on `feature = "chacha20"`.
 //! - [`CertParser`] — X.509 DER parser (default: [`crate::DerCert`]).
 //! - [`Ed25519Verify`] — Ed25519 signature verify (default:
 //!   [`crate::RustCrypto`] wrapping `ed25519_heapless`).
@@ -23,6 +25,8 @@ pub mod hkdf;
 #[cfg(feature = "validity")]
 pub mod time;
 
+#[cfg(feature = "chacha20")]
+pub use aead::ChaCha20Poly1305Aead;
 pub use aead::{AeadError, Aes128GcmAead};
 pub use cert::{CertParseError, CertParser, CertView};
 pub use ed25519_verify::Ed25519Verify;

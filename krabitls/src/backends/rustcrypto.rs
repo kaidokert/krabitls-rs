@@ -14,6 +14,8 @@ use sha2::{Digest, Sha256};
 
 use zeroize::Zeroizing;
 
+#[cfg(feature = "chacha20")]
+use crate::traits::ChaCha20Poly1305Aead;
 use crate::traits::ed25519_verify::Ed25519Verify;
 use crate::traits::{AeadError, Aes128GcmAead};
 use crate::traits::{HkdfExpandError, HkdfSha256, Sha256Hasher};
@@ -45,7 +47,7 @@ impl HkdfSha256 for RustCrypto {
     }
 
     fn expand(prk: &[u8; 32], info: &[u8], out: &mut [u8]) -> Result<(), HkdfExpandError> {
-        let hk = Hkdf::<Sha256>::from_prk(prk).expect("32-byte PRK is always valid for SHA-256");
+        let hk = Hkdf::<Sha256>::from_prk(prk).map_err(|_| HkdfExpandError::InvalidPrk)?;
         hk.expand(info, out)
             .map_err(|_| HkdfExpandError::OutputTooLong)
     }
@@ -59,12 +61,14 @@ impl Aes128GcmAead for RustCrypto {
         buffer: &mut [u8],
         tag: &[u8; 16],
     ) -> Result<(), AeadError> {
-        let cipher =
-            Aes128Gcm::new_from_slice(&**key).expect("16-byte key is always valid for AES-128-GCM");
-        let nonce = GenericArray::from_slice(&**nonce);
-        let tag = GenericArray::from_slice(tag);
+        // `GenericArray::from([u8; N])` is a compile-time conversion (N is
+        // already a const generic) and links no panic site, unlike the
+        // length-checked `from_slice` / `new_from_slice`.
+        let cipher = Aes128Gcm::new(&GenericArray::from(**key));
+        let nonce = GenericArray::from(**nonce);
+        let tag = GenericArray::from(*tag);
         cipher
-            .decrypt_in_place_detached(nonce, aad, buffer, tag)
+            .decrypt_in_place_detached(&nonce, aad, buffer, &tag)
             .map_err(|_| AeadError)
     }
 
@@ -73,14 +77,49 @@ impl Aes128GcmAead for RustCrypto {
         nonce: &Zeroizing<[u8; 12]>,
         aad: &[u8],
         buffer: &mut [u8],
-    ) -> [u8; 16] {
-        let cipher =
-            Aes128Gcm::new_from_slice(&**key).expect("16-byte key is always valid for AES-128-GCM");
-        let nonce = GenericArray::from_slice(&**nonce);
+    ) -> Result<[u8; 16], AeadError> {
+        let cipher = Aes128Gcm::new(&GenericArray::from(**key));
+        let nonce = GenericArray::from(**nonce);
         let tag = cipher
-            .encrypt_in_place_detached(nonce, aad, buffer)
-            .expect("AES-128-GCM encrypt cannot fail on well-sized inputs");
-        tag.into()
+            .encrypt_in_place_detached(&nonce, aad, buffer)
+            .map_err(|_| AeadError)?;
+        Ok(tag.into())
+    }
+}
+
+#[cfg(feature = "chacha20")]
+impl ChaCha20Poly1305Aead for RustCrypto {
+    fn decrypt(
+        key: &Zeroizing<[u8; 32]>,
+        nonce: &Zeroizing<[u8; 12]>,
+        aad: &[u8],
+        buffer: &mut [u8],
+        tag: &[u8; 16],
+    ) -> Result<(), AeadError> {
+        use chacha20poly1305::aead::generic_array::GenericArray as CpGenericArray;
+        use chacha20poly1305::{ChaCha20Poly1305, KeyInit as _, aead::AeadInPlace as _};
+        let cipher = ChaCha20Poly1305::new(&CpGenericArray::from(**key));
+        let nonce = CpGenericArray::from(**nonce);
+        let tag = CpGenericArray::from(*tag);
+        cipher
+            .decrypt_in_place_detached(&nonce, aad, buffer, &tag)
+            .map_err(|_| AeadError)
+    }
+
+    fn encrypt(
+        key: &Zeroizing<[u8; 32]>,
+        nonce: &Zeroizing<[u8; 12]>,
+        aad: &[u8],
+        buffer: &mut [u8],
+    ) -> Result<[u8; 16], AeadError> {
+        use chacha20poly1305::aead::generic_array::GenericArray as CpGenericArray;
+        use chacha20poly1305::{ChaCha20Poly1305, KeyInit as _, aead::AeadInPlace as _};
+        let cipher = ChaCha20Poly1305::new(&CpGenericArray::from(**key));
+        let nonce = CpGenericArray::from(**nonce);
+        let tag = cipher
+            .encrypt_in_place_detached(&nonce, aad, buffer)
+            .map_err(|_| AeadError)?;
+        Ok(tag.into())
     }
 }
 

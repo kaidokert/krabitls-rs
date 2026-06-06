@@ -124,14 +124,12 @@ impl CertParser for DerCert {
         // checked at self-sig verification time, not here.)
         match classify_spki_algorithm(spki_alg_bytes)? {
             SpkiKind::Ed25519 => {
-                if pk_bytes.len() != 32 {
+                let Ok(pubkey) = <&[u8; 32]>::try_from(pk_bytes) else {
                     return Err(CertParseError::WrongPubkeyLength);
-                }
-                let pubkey: &[u8; 32] = pk_bytes.try_into().expect("length checked above");
-                if sig_bytes.len() != 64 {
+                };
+                let Ok(signature) = <&[u8; 64]>::try_from(sig_bytes) else {
                     return Err(CertParseError::WrongSignatureLength);
-                }
-                let signature: &[u8; 64] = sig_bytes.try_into().expect("length checked above");
+                };
                 Ok(CertView::Ed25519 {
                     tbs: tbs_bytes,
                     signature,

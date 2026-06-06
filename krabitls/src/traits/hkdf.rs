@@ -55,6 +55,11 @@ pub enum HkdfExpandError {
     /// `out.len() > 255 * hash_len`. For SHA-256 that's 8160 bytes
     /// (RFC 5869's hard cap on HKDF-Expand output).
     OutputTooLong,
+    /// PRK was rejected by the backend (e.g. wrong size). The trait's
+    /// `prk: &[u8; 32]` type makes this statically unreachable for
+    /// well-behaved backends, but the variant exists so impls don't have
+    /// to `.expect()` the underlying crate's fallible constructor.
+    InvalidPrk,
 }
 
 /// Incremental SHA-256 hash state.
