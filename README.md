@@ -3,11 +3,13 @@
 [![Rust](https://github.com/kaidokert/krabitls-rs/actions/workflows/rust.yml/badge.svg)](https://github.com/kaidokert/krabitls-rs/actions/workflows/rust.yml)
 [![Cortex-M](https://github.com/kaidokert/krabitls-rs/actions/workflows/cortex_m.yml/badge.svg)](https://github.com/kaidokert/krabitls-rs/actions/workflows/cortex_m.yml)
 
-A hobby TLS 1.3 client for microcontrollers. Don't use it for anything you care about.
+A hobby `no_std` TLS 1.3 client for microcontrollers. Don't use it for anything you care about.
 
 - Locked to one cipher / curve / sig combo per build — won't negotiate with most servers
 - Trust model is "pin a pubkey or trust SAN" — no CA bundle, no chain walking
 - Hand-rolled, unaudited, not constant-time, no scalar blinding
+
+No heap allocations, and prefer reduced flash + stack size over speed.
 
 #### Resource usage (as of version 0.1.0)
 
