@@ -47,14 +47,21 @@ use std::net::TcpStream;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use krabitls::consts::CT_HANDSHAKE;
+#[cfg(feature = "chacha20")]
+use krabitls::consts::CIPHER_CHACHA20_POLY1305_SHA256;
+use krabitls::consts::{CIPHER_AES_128_GCM_SHA256, CT_HANDSHAKE};
 use krabitls::reassembler::ServerFlightReassembler;
 use krabitls::{
-    CertParser, CertView, DerCert, RustCrypto, TranscriptHash, application_traffic_secrets,
-    build_client_finished, decrypt_record, encrypt_record, extract_cert_der, handshake_secret,
-    handshake_traffic_secrets, master_secret, parse_server_flight, parse_server_hello,
-    split_inner_plaintext, traffic_keys, verify_certificate_verify, verify_server_finished,
-    write_client_hello,
+    AeadIv, AeadKey, CertParser, CertView, DecryptError, DerCert, EncryptError, RustCrypto, Secret,
+    TranscriptDigest, TranscriptHash, application_traffic_secrets, build_client_finished,
+    decrypt_record, encrypt_record, extract_cert_der, handshake_secret, handshake_traffic_secrets,
+    master_secret, parse_server_flight, parse_server_hello, split_inner_plaintext, traffic_keys,
+    verify_certificate_verify, verify_server_finished, write_client_hello,
+};
+#[cfg(feature = "chacha20")]
+use krabitls::{
+    AeadKey32, build_client_finished_chacha, decrypt_record_chacha, encrypt_record_chacha,
+    traffic_keys_chacha,
 };
 use log::{debug, error, info, warn};
 
@@ -66,6 +73,102 @@ type Result<T> = std::result::Result<T, Box<dyn Error>>;
 /// errors in this binary.
 fn krabitls_err<E: core::fmt::Debug>(ctx: &'static str) -> impl FnOnce(E) -> Box<dyn Error> {
     move |e| format!("{ctx}: {e:?}").into()
+}
+
+fn cipher_suite_name(suite: u16) -> &'static str {
+    match suite {
+        CIPHER_AES_128_GCM_SHA256 => "TLS_AES_128_GCM_SHA256",
+        #[cfg(feature = "chacha20")]
+        CIPHER_CHACHA20_POLY1305_SHA256 => "TLS_CHACHA20_POLY1305_SHA256",
+        _ => "unknown",
+    }
+}
+
+/// Negotiated AEAD keys + IV. Branches at runtime on the cipher suite.
+enum AeadKeys {
+    Aes(AeadKey, AeadIv),
+    #[cfg(feature = "chacha20")]
+    Chacha(AeadKey32, AeadIv),
+}
+
+impl AeadKeys {
+    fn derive(cipher_suite: u16, traffic_secret: &Secret) -> Result<Self> {
+        match cipher_suite {
+            CIPHER_AES_128_GCM_SHA256 => {
+                let (k, iv) = traffic_keys::<RustCrypto>(traffic_secret)
+                    .map_err(|e| format!("traffic_keys: {:?}", e))?;
+                Ok(AeadKeys::Aes(k, iv))
+            }
+            #[cfg(feature = "chacha20")]
+            CIPHER_CHACHA20_POLY1305_SHA256 => {
+                let (k, iv) = traffic_keys_chacha::<RustCrypto>(traffic_secret)
+                    .map_err(|e| format!("traffic_keys_chacha: {:?}", e))?;
+                Ok(AeadKeys::Chacha(k, iv))
+            }
+            other => Err(format!("unexpected cipher_suite 0x{other:04x}").into()),
+        }
+    }
+
+    fn decrypt_record<'a>(
+        &self,
+        record: &[u8],
+        seq: u64,
+        plaintext_buf: &'a mut [u8],
+    ) -> std::result::Result<&'a [u8], DecryptError> {
+        match self {
+            AeadKeys::Aes(k, iv) => decrypt_record::<RustCrypto>(record, k, iv, seq, plaintext_buf),
+            #[cfg(feature = "chacha20")]
+            AeadKeys::Chacha(k, iv) => {
+                decrypt_record_chacha::<RustCrypto>(record, k, iv, seq, plaintext_buf)
+            }
+        }
+    }
+
+    fn encrypt_record<'a>(
+        &self,
+        content: &[u8],
+        content_type: u8,
+        seq: u64,
+        out_buf: &'a mut [u8],
+    ) -> std::result::Result<&'a [u8], EncryptError> {
+        match self {
+            AeadKeys::Aes(k, iv) => {
+                encrypt_record::<RustCrypto>(content, content_type, k, iv, seq, out_buf)
+            }
+            #[cfg(feature = "chacha20")]
+            AeadKeys::Chacha(k, iv) => {
+                encrypt_record_chacha::<RustCrypto>(content, content_type, k, iv, seq, out_buf)
+            }
+        }
+    }
+}
+
+/// Build the client Finished record under the negotiated cipher suite.
+fn build_cf_dispatch<'a>(
+    cipher_suite: u16,
+    c_hs_traffic_secret: &Secret,
+    transcript_hash: &TranscriptDigest,
+    seq: u64,
+    out: &'a mut [u8],
+) -> Result<&'a [u8]> {
+    match cipher_suite {
+        CIPHER_AES_128_GCM_SHA256 => build_client_finished::<RustCrypto, RustCrypto>(
+            c_hs_traffic_secret,
+            transcript_hash,
+            seq,
+            out,
+        )
+        .map_err(krabitls_err("build_client_finished")),
+        #[cfg(feature = "chacha20")]
+        CIPHER_CHACHA20_POLY1305_SHA256 => build_client_finished_chacha::<RustCrypto, RustCrypto>(
+            c_hs_traffic_secret,
+            transcript_hash,
+            seq,
+            out,
+        )
+        .map_err(krabitls_err("build_client_finished_chacha")),
+        other => Err(format!("unexpected cipher_suite 0x{other:04x}").into()),
+    }
 }
 
 // RFC 8446 §5.2: TLSCiphertext.length max = 2^14 + 256 (plaintext + AEAD
@@ -297,8 +400,12 @@ fn run(host: &str, port: u16, capture_dir: Option<&str>, pin: Option<&Pin>) -> R
     let th_ch_sh = transcript.snapshot();
     let (c_hs_ts, s_hs_ts) = handshake_traffic_secrets::<RustCrypto>(&hs, &th_ch_sh)
         .map_err(|e| format!("handshake_traffic_secrets: {:?}", e))?;
-    let (s_hs_key, s_hs_iv) =
-        traffic_keys::<RustCrypto>(&s_hs_ts).map_err(|e| format!("traffic_keys: {:?}", e))?;
+    info!(
+        "negotiated {} (0x{:04x})",
+        cipher_suite_name(sh.cipher_suite),
+        sh.cipher_suite,
+    );
+    let s_hs_keys = AeadKeys::derive(sh.cipher_suite, &s_hs_ts)?;
 
     // ---- Read encrypted server flight (one or more application_data records),
     //      skipping any middlebox-compat ChangeCipherSpec records. Reassemble
@@ -325,9 +432,9 @@ fn run(host: &str, port: u16, capture_dir: Option<&str>, pin: Option<&Pin>) -> R
             // application_data — decrypt under s_hs_traffic_secret.
             0x17 => {
                 flight_enc_bytes.extend_from_slice(&record);
-                let plaintext =
-                    decrypt_record::<RustCrypto>(&record, &s_hs_key, &s_hs_iv, seq, &mut pt)
-                        .map_err(krabitls_err("decrypt server flight"))?;
+                let plaintext = s_hs_keys
+                    .decrypt_record(&record, seq, &mut pt)
+                    .map_err(krabitls_err("decrypt server flight"))?;
                 let (content, inner_ct) = split_inner_plaintext(plaintext)
                     .map_err(krabitls_err("split inner plaintext"))?;
                 if inner_ct != CT_HANDSHAKE {
@@ -455,13 +562,13 @@ fn run(host: &str, port: u16, capture_dir: Option<&str>, pin: Option<&Pin>) -> R
 
     // ---- Build + send client Finished ----
     let mut cf_out = [0u8; 80];
-    let cf_record = build_client_finished::<RustCrypto, RustCrypto>(
+    let cf_record = build_cf_dispatch(
+        sh.cipher_suite,
         &c_hs_ts,
         &th_through_finished,
         0,
         &mut cf_out,
-    )
-    .map_err(krabitls_err("build_client_finished"))?;
+    )?;
     stream.write_all(cf_record)?;
     info!("sent client Finished ({} bytes)", cf_record.len());
 
@@ -469,25 +576,22 @@ fn run(host: &str, port: u16, capture_dir: Option<&str>, pin: Option<&Pin>) -> R
     let ms = master_secret::<RustCrypto>(&hs).map_err(|e| format!("master_secret: {:?}", e))?;
     let (c_ap_ts, s_ap_ts) = application_traffic_secrets::<RustCrypto>(&ms, &th_through_finished)
         .map_err(|e| format!("application_traffic_secrets: {:?}", e))?;
-    let (c_ap_key, c_ap_iv) = traffic_keys::<RustCrypto>(&c_ap_ts)
-        .map_err(|e| format!("traffic_keys (c_ap): {:?}", e))?;
-    let (s_ap_key, s_ap_iv) = traffic_keys::<RustCrypto>(&s_ap_ts)
-        .map_err(|e| format!("traffic_keys (s_ap): {:?}", e))?;
+    let c_ap_keys = AeadKeys::derive(sh.cipher_suite, &c_ap_ts)?;
+    let s_ap_keys = AeadKeys::derive(sh.cipher_suite, &s_ap_ts)?;
 
     // ---- Send a GET request encrypted ----
     let request = format!(
         "GET / HTTP/1.1\r\nHost: {host}\r\nUser-Agent: krabitls_connect\r\nConnection: close\r\n\r\n",
     );
     let mut req_buf = vec![0u8; request.len() + 64];
-    let req_record = encrypt_record::<RustCrypto>(
-        request.as_bytes(),
-        krabitls::consts::CT_APPLICATION_DATA,
-        &c_ap_key,
-        &c_ap_iv,
-        0,
-        &mut req_buf,
-    )
-    .map_err(krabitls_err("encrypt_record"))?;
+    let req_record = c_ap_keys
+        .encrypt_record(
+            request.as_bytes(),
+            krabitls::consts::CT_APPLICATION_DATA,
+            0,
+            &mut req_buf,
+        )
+        .map_err(krabitls_err("encrypt_record"))?;
     stream.write_all(req_record)?;
     info!(
         "sent GET / ({} plaintext, {} ciphertext bytes)",
@@ -512,9 +616,7 @@ fn run(host: &str, port: u16, capture_dir: Option<&str>, pin: Option<&Pin>) -> R
         match record[0] {
             0x14 => continue, // ignore any further CCS
             0x17 => {
-                let plaintext = match decrypt_record::<RustCrypto>(
-                    &record, &s_ap_key, &s_ap_iv, rx_seq, &mut pt,
-                ) {
+                let plaintext = match s_ap_keys.decrypt_record(&record, rx_seq, &mut pt) {
                     Ok(p) => p,
                     Err(e) => {
                         warn!("decrypt failed: {e:?}");

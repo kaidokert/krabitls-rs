@@ -24,42 +24,131 @@ repos:
         name: Fmt for cortex_m_demo
         args: ['--manifest-path=cortex_m_demo/Cargo.toml', '--']
 
-# Local hooks: actually build and test the library + the M3 example.
+# Local hooks: one cargo invocation per feature combo. Splitting them out
+# (instead of chaining with `sh -c`) means the failing combo names itself
+# in the pre-commit output, and there's no shell-quoting/portability tax.
 -   repo: local
     hooks:
-    -   id: krabitls-clippy
-        name: "cargo clippy krabitls (default + rsa + validity)"
-        entry: sh -c "cargo clippy --manifest-path=krabitls/Cargo.toml --tests --all-targets -- -D warnings && cargo clippy --manifest-path=krabitls/Cargo.toml --tests --all-targets --features rsa -- -D warnings && cargo clippy --manifest-path=krabitls/Cargo.toml --tests --all-targets --features validity -- -D warnings"
+    # ---- krabitls clippy: 5 combos ----
+    -   id: krabitls-clippy-default
+        name: clippy krabitls (default)
+        entry: cargo clippy --manifest-path=krabitls/Cargo.toml --tests --all-targets -- -D warnings
         language: system
         pass_filenames: false
         files: ^krabitls/.*\.(rs|toml)$
+    -   id: krabitls-clippy-rsa
+        name: clippy krabitls (rsa)
+        entry: cargo clippy --manifest-path=krabitls/Cargo.toml --tests --all-targets --features rsa -- -D warnings
+        language: system
+        pass_filenames: false
+        files: ^krabitls/.*\.(rs|toml)$
+    -   id: krabitls-clippy-validity
+        name: clippy krabitls (validity)
+        entry: cargo clippy --manifest-path=krabitls/Cargo.toml --tests --all-targets --features validity -- -D warnings
+        language: system
+        pass_filenames: false
+        files: ^krabitls/.*\.(rs|toml)$
+    -   id: krabitls-clippy-chacha20
+        name: clippy krabitls (chacha20)
+        entry: cargo clippy --manifest-path=krabitls/Cargo.toml --tests --all-targets --features chacha20 -- -D warnings
+        language: system
+        pass_filenames: false
+        files: ^krabitls/.*\.(rs|toml)$
+    -   id: krabitls-clippy-chacha20-rsa
+        name: clippy krabitls (chacha20 + rsa)
+        entry: cargo clippy --manifest-path=krabitls/Cargo.toml --tests --all-targets --features chacha20 --features rsa -- -D warnings
+        language: system
+        pass_filenames: false
+        files: ^krabitls/.*\.(rs|toml)$
+
+    # ---- krabitls host tests: all-features covers the matrix ----
     -   id: krabitls-test
-        name: cargo test krabitls (host, all-features)
+        name: test krabitls (all-features)
         entry: cargo test --manifest-path=krabitls/Cargo.toml --all-features
         language: system
         pass_filenames: false
         files: ^krabitls/.*\.(rs|toml)$
-    -   id: krabitls-cli-clippy
-        name: "cargo clippy krabitls_cli (default + rsa)"
-        entry: sh -c "cargo clippy --manifest-path=krabitls_cli/Cargo.toml --all-targets -- -D warnings && cargo clippy --manifest-path=krabitls_cli/Cargo.toml --all-targets --features rsa -- -D warnings"
+
+    # ---- krabitls_cli clippy: 4 combos ----
+    -   id: krabitls-cli-clippy-default
+        name: clippy krabitls_cli (default)
+        entry: cargo clippy --manifest-path=krabitls_cli/Cargo.toml --all-targets -- -D warnings
         language: system
         pass_filenames: false
         files: ^(krabitls_cli|krabitls)/.*\.(rs|toml)$
-    -   id: krabitls-cli-build
-        name: "cargo build krabitls_cli (default + rsa)"
-        entry: sh -c "cargo build --manifest-path=krabitls_cli/Cargo.toml && cargo build --manifest-path=krabitls_cli/Cargo.toml --features rsa"
+    -   id: krabitls-cli-clippy-rsa
+        name: clippy krabitls_cli (rsa)
+        entry: cargo clippy --manifest-path=krabitls_cli/Cargo.toml --all-targets --features rsa -- -D warnings
         language: system
         pass_filenames: false
         files: ^(krabitls_cli|krabitls)/.*\.(rs|toml)$
+    -   id: krabitls-cli-clippy-chacha20
+        name: clippy krabitls_cli (chacha20)
+        entry: cargo clippy --manifest-path=krabitls_cli/Cargo.toml --all-targets --features chacha20 -- -D warnings
+        language: system
+        pass_filenames: false
+        files: ^(krabitls_cli|krabitls)/.*\.(rs|toml)$
+    -   id: krabitls-cli-clippy-rsa-chacha20
+        name: clippy krabitls_cli (rsa + chacha20)
+        entry: cargo clippy --manifest-path=krabitls_cli/Cargo.toml --all-targets --features rsa --features chacha20 -- -D warnings
+        language: system
+        pass_filenames: false
+        files: ^(krabitls_cli|krabitls)/.*\.(rs|toml)$
+
+    # ---- krabitls_cli build: 4 combos ----
+    -   id: krabitls-cli-build-default
+        name: build krabitls_cli (default)
+        entry: cargo build --manifest-path=krabitls_cli/Cargo.toml
+        language: system
+        pass_filenames: false
+        files: ^(krabitls_cli|krabitls)/.*\.(rs|toml)$
+    -   id: krabitls-cli-build-rsa
+        name: build krabitls_cli (rsa)
+        entry: cargo build --manifest-path=krabitls_cli/Cargo.toml --features rsa
+        language: system
+        pass_filenames: false
+        files: ^(krabitls_cli|krabitls)/.*\.(rs|toml)$
+    -   id: krabitls-cli-build-chacha20
+        name: build krabitls_cli (chacha20)
+        entry: cargo build --manifest-path=krabitls_cli/Cargo.toml --features chacha20
+        language: system
+        pass_filenames: false
+        files: ^(krabitls_cli|krabitls)/.*\.(rs|toml)$
+    -   id: krabitls-cli-build-rsa-chacha20
+        name: build krabitls_cli (rsa + chacha20)
+        entry: cargo build --manifest-path=krabitls_cli/Cargo.toml --features rsa --features chacha20
+        language: system
+        pass_filenames: false
+        files: ^(krabitls_cli|krabitls)/.*\.(rs|toml)$
+
+    # ---- cortex_m_demo (thumbv7m) ----
     -   id: cortex-m-clippy
-        name: cargo clippy cortex_m_demo (thumbv7m)
+        name: clippy cortex_m_demo (thumbv7m)
         entry: cargo clippy --manifest-path=cortex_m_demo/Cargo.toml --release --example krabitls --target thumbv7m-none-eabi -- -D warnings
         language: system
         pass_filenames: false
         files: ^(cortex_m_demo|krabitls)/.*\.(rs|toml|x)$
-    -   id: cortex-m-build
-        name: "cargo build cortex_m_demo (thumbv7m: default + baseline + jedisct + rsa)"
-        entry: sh -c "cargo build --manifest-path=cortex_m_demo/Cargo.toml --release --example krabitls --target thumbv7m-none-eabi && cargo build --manifest-path=cortex_m_demo/Cargo.toml --release --example krabitls --target thumbv7m-none-eabi --features baseline && cargo build --manifest-path=cortex_m_demo/Cargo.toml --release --example krabitls_jedisct --target thumbv7m-none-eabi --features jedisct && cargo build --manifest-path=cortex_m_demo/Cargo.toml --release --example krabitls_rsa --target thumbv7m-none-eabi --features rsa"
+    -   id: cortex-m-build-default
+        name: build cortex_m_demo (thumbv7m, default)
+        entry: cargo build --manifest-path=cortex_m_demo/Cargo.toml --release --example krabitls --target thumbv7m-none-eabi
+        language: system
+        pass_filenames: false
+        files: ^(cortex_m_demo|krabitls|testdata)/.*\.(rs|toml|x|bin|hex)$
+    -   id: cortex-m-build-baseline
+        name: build cortex_m_demo (thumbv7m, baseline)
+        entry: cargo build --manifest-path=cortex_m_demo/Cargo.toml --release --example krabitls --target thumbv7m-none-eabi --features baseline
+        language: system
+        pass_filenames: false
+        files: ^(cortex_m_demo|krabitls|testdata)/.*\.(rs|toml|x|bin|hex)$
+    -   id: cortex-m-build-jedisct
+        name: build cortex_m_demo (thumbv7m, jedisct)
+        entry: cargo build --manifest-path=cortex_m_demo/Cargo.toml --release --example krabitls_jedisct --target thumbv7m-none-eabi --features jedisct
+        language: system
+        pass_filenames: false
+        files: ^(cortex_m_demo|krabitls|testdata)/.*\.(rs|toml|x|bin|hex)$
+    -   id: cortex-m-build-rsa
+        name: build cortex_m_demo (thumbv7m, rsa)
+        entry: cargo build --manifest-path=cortex_m_demo/Cargo.toml --release --example krabitls_rsa --target thumbv7m-none-eabi --features rsa
         language: system
         pass_filenames: false
         files: ^(cortex_m_demo|krabitls|testdata)/.*\.(rs|toml|x|bin|hex)$
