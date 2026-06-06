@@ -94,6 +94,27 @@ pub const FIXTURE_PACKET_6: [u8; 48] = hex_decode(include_str!(
     "../../testdata/packets/006_s2c_AppData_reply_0.hex"
 ));
 
+/// ChaCha20-Poly1305 variants of packets 3..6 above. Same plaintexts,
+/// re-encrypted under traffic-keys-chacha-derived keys. Regenerate via
+/// `cargo run --manifest-path=krabitls_cli/Cargo.toml --bin gen_chacha_fixtures --features chacha20`
+/// from the repo root after the AES baseline changes.
+#[cfg(feature = "chacha20")]
+pub const FIXTURE_PACKET_3_CHACHA: [u8; 380] = hex_decode(include_str!(
+    "../captured_chacha/003_s2c_ServerFlight_encrypted.hex"
+));
+#[cfg(feature = "chacha20")]
+pub const FIXTURE_PACKET_4_CHACHA: [u8; 58] = hex_decode(include_str!(
+    "../captured_chacha/004_c2s_ClientFinished_encrypted.hex"
+));
+#[cfg(feature = "chacha20")]
+pub const FIXTURE_PACKET_5_CHACHA: [u8; 52] = hex_decode(include_str!(
+    "../captured_chacha/005_c2s_AppData_send_0.hex"
+));
+#[cfg(feature = "chacha20")]
+pub const FIXTURE_PACKET_6_CHACHA: [u8; 48] = hex_decode(include_str!(
+    "../captured_chacha/006_s2c_AppData_reply_0.hex"
+));
+
 /// Plaintext that the Python fixture put through `encrypt_record` to produce
 /// `FIXTURE_PACKET_5`. The handshake harness re-encrypts this under the
 /// derived c_ap key/iv and checks the output matches byte-for-byte.
@@ -106,28 +127,162 @@ pub const PACKET_6_PLAINTEXT: &[u8] = b"hello back \xe2\x80\x94 server here";
 
 use cyclecount::CycleCounter;
 use krabitls::{
-    CLIENT_FINISHED_LEN, DerCert, HkdfSha256, RustCrypto, TranscriptHash,
+    AeadIv, AeadKey, CLIENT_FINISHED_LEN, ClientFinishedError, DecryptError, DerCert, EncryptError,
+    HkdfLabelError, HkdfSha256, RustCrypto, Secret, TranscriptDigest, TranscriptHash,
     application_traffic_secrets, build_client_finished, decrypt_record, encrypt_record,
     handshake_secret, handshake_traffic_secrets, master_secret, split_inner_plaintext,
     traffic_keys, verify_server_flight,
 };
+#[cfg(feature = "chacha20")]
+use krabitls::{
+    AeadKey32, build_client_finished_chacha, decrypt_record_chacha, encrypt_record_chacha,
+    traffic_keys_chacha,
+};
 use stack::{check_stack_high_water_mark, paint_stack};
 
-/// Generic over the HKDF / SHA-256 backend so the same handshake body
-/// is shared by `examples/krabitls.rs` (uses `RustCrypto`) and
-/// `examples/krabitls_jedisct.rs` (uses `JedisctCrypto`). AEAD stays on
-/// `RustCrypto` and cert parsing on `DerCert` either way.
+/// X25519 / Ed25519 backing bigint width.
+type Bn = fixed_bigint::FixedUInt<u32, 16, fixed_bigint::Ct>;
+
+/// Server Ed25519 identity pubkey baked into the fixture cert. Checked against
+/// the `ServerPubkey::Ed25519` returned by `verify_server_flight`.
+const EXPECTED_SERVER_ID_PUB: [u8; 32] = [
+    0x9d, 0xfe, 0x2a, 0xb0, 0x3e, 0x35, 0x70, 0x4b, 0x9c, 0xfb, 0x93, 0xb6, 0x03, 0xa6, 0x61, 0x18,
+    0x82, 0x17, 0xa6, 0xb5, 0xfd, 0x6a, 0x1f, 0x75, 0xe6, 0x16, 0x1a, 0x39, 0xe0, 0x53, 0x4c, 0x3f,
+];
+
+/// Cipher-suite-specific record-layer hooks. `run_handshake_inner`
+/// parameterizes over this so the AES baseline and the ChaCha mirror share
+/// the verify + key-schedule body; only key derivation and the four AEAD
+/// ops differ.
+trait HandshakeAead<H: HkdfSha256> {
+    type Key;
+    type Iv;
+    fn traffic_keys(ts: &Secret) -> Result<(Self::Key, Self::Iv), HkdfLabelError>;
+    fn decrypt_record<'a>(
+        record: &[u8],
+        key: &Self::Key,
+        iv: &Self::Iv,
+        seq: u64,
+        plaintext_buf: &'a mut [u8],
+    ) -> Result<&'a [u8], DecryptError>;
+    fn encrypt_record<'a>(
+        content: &[u8],
+        content_type: u8,
+        key: &Self::Key,
+        iv: &Self::Iv,
+        seq: u64,
+        out_buf: &'a mut [u8],
+    ) -> Result<&'a [u8], EncryptError>;
+    fn build_client_finished<'a>(
+        c_hs_traffic_secret: &Secret,
+        th_through_sf: &TranscriptDigest,
+        seq: u64,
+        out_buf: &'a mut [u8],
+    ) -> Result<&'a [u8], ClientFinishedError>;
+}
+
+struct AesPath;
+impl<H: HkdfSha256> HandshakeAead<H> for AesPath {
+    type Key = AeadKey;
+    type Iv = AeadIv;
+    fn traffic_keys(ts: &Secret) -> Result<(AeadKey, AeadIv), HkdfLabelError> {
+        traffic_keys::<H>(ts)
+    }
+    fn decrypt_record<'a>(
+        record: &[u8],
+        key: &AeadKey,
+        iv: &AeadIv,
+        seq: u64,
+        pt: &'a mut [u8],
+    ) -> Result<&'a [u8], DecryptError> {
+        decrypt_record::<RustCrypto>(record, key, iv, seq, pt)
+    }
+    fn encrypt_record<'a>(
+        content: &[u8],
+        ct: u8,
+        key: &AeadKey,
+        iv: &AeadIv,
+        seq: u64,
+        out: &'a mut [u8],
+    ) -> Result<&'a [u8], EncryptError> {
+        encrypt_record::<RustCrypto>(content, ct, key, iv, seq, out)
+    }
+    fn build_client_finished<'a>(
+        c_hs: &Secret,
+        th: &TranscriptDigest,
+        seq: u64,
+        out: &'a mut [u8],
+    ) -> Result<&'a [u8], ClientFinishedError> {
+        build_client_finished::<H, RustCrypto>(c_hs, th, seq, out)
+    }
+}
+
+#[cfg(feature = "chacha20")]
+struct ChachaPath;
+#[cfg(feature = "chacha20")]
+impl<H: HkdfSha256> HandshakeAead<H> for ChachaPath {
+    type Key = AeadKey32;
+    type Iv = AeadIv;
+    fn traffic_keys(ts: &Secret) -> Result<(AeadKey32, AeadIv), HkdfLabelError> {
+        traffic_keys_chacha::<H>(ts)
+    }
+    fn decrypt_record<'a>(
+        record: &[u8],
+        key: &AeadKey32,
+        iv: &AeadIv,
+        seq: u64,
+        pt: &'a mut [u8],
+    ) -> Result<&'a [u8], DecryptError> {
+        decrypt_record_chacha::<RustCrypto>(record, key, iv, seq, pt)
+    }
+    fn encrypt_record<'a>(
+        content: &[u8],
+        ct: u8,
+        key: &AeadKey32,
+        iv: &AeadIv,
+        seq: u64,
+        out: &'a mut [u8],
+    ) -> Result<&'a [u8], EncryptError> {
+        encrypt_record_chacha::<RustCrypto>(content, ct, key, iv, seq, out)
+    }
+    fn build_client_finished<'a>(
+        c_hs: &Secret,
+        th: &TranscriptDigest,
+        seq: u64,
+        out: &'a mut [u8],
+    ) -> Result<&'a [u8], ClientFinishedError> {
+        build_client_finished_chacha::<H, RustCrypto>(c_hs, th, seq, out)
+    }
+}
+
+/// Shared body for the AES baseline and the ChaCha mirror. `A` selects the
+/// AEAD path; everything else (Ed25519 verify, HKDF / SHA-256, cert parse,
+/// transcript) stays the same.
 ///
-/// Returns `Err(())` on any step's failure; callers surface that as the
-/// example's `false` test result. The `()` error type plus `.map_err(|_| ())?`
-/// keeps the body `?`-driven without dragging every krabitls error enum
-/// into scope just to discriminate them.
-// `Result<(), ()>` is intentional — the caller surfaces failure as `false`
-// (see `test_fixture`'s contract); naming an error enum here would drag every
-// krabitls error variant into scope just to discriminate them at the binding.
+/// Note: `write_client_hello` is exercised for footprint accounting but its
+/// output bytes are intentionally discarded — the transcript and the fixture
+/// comparisons below all key off `EXPECTED_CLIENT_HELLO` regardless of which
+/// feature combo widened the actual CH.
+///
+/// Note: the SH fixture (`SERVER_HELLO_BYTES`) has `cipher_suite = 0x1301`
+/// regardless of which AEAD this function tests. The ChaCha path reuses the
+/// SH bytes for transcript continuity; the ChaCha codepath itself is
+/// exercised through `A`'s record-layer trait impls below, not by what the
+/// SH advertises.
 #[allow(clippy::result_unit_err)]
-pub fn run_handshake<H: HkdfSha256>() -> Result<(), ()> {
-    // ---- ClientHello writer ----
+fn run_handshake_inner<H, A>(
+    p3: &[u8],
+    p4: &[u8],
+    p5: &[u8],
+    p6: &[u8],
+    pt_buf: &mut [u8],
+    cf_out: &mut [u8],
+) -> Result<(), ()>
+where
+    H: HkdfSha256,
+    A: HandshakeAead<H>,
+{
+    // ---- ClientHello writer (output discarded; see fn-level doc) ----
     let mut buf = [0u8; krabitls::CLIENT_HELLO_LEN];
     let mut cursor: &mut [u8] = &mut buf;
     let written =
@@ -136,10 +291,11 @@ pub fn run_handshake<H: HkdfSha256>() -> Result<(), ()> {
     if written != krabitls::CLIENT_HELLO_LEN {
         return Err(());
     }
-    // Byte-identity against the 117-byte seed-0 fixture only holds when our
-    // CH advertises ed25519 alone. With `feature = "rsa"` we also advertise
-    // rsa_pss_rsae_sha256, so the CH is 119 B and the array sizes don't match.
-    #[cfg(not(feature = "rsa"))]
+    // Byte-identity against the 117-byte seed-0 fixture only holds when the
+    // CH advertises ed25519 + AES alone. `feature = "rsa"` (+2 B) and
+    // `"chacha20"` (+2 B) each grow the CH past 117; skip the check in those
+    // builds (rsa: 119 B, chacha20: 119 B, both: 121 B).
+    #[cfg(all(not(feature = "rsa"), not(feature = "chacha20")))]
     if buf != EXPECTED_CLIENT_HELLO {
         return Err(());
     }
@@ -155,15 +311,11 @@ pub fn run_handshake<H: HkdfSha256>() -> Result<(), ()> {
         return Err(());
     }
 
-    // ---- Full key schedule + decrypt of packet 003 ----
+    // ---- Key schedule through `s_hs_traffic_secret` ----
     //   DHE  = X25519(client_priv, server_pub)
     //   hs   = handshake_secret(DHE)
-    //   th   = SHA-256(CH || SH)                 (handshake bodies, no record headers)
+    //   th   = SHA-256(CH || SH)
     //   s_ts = Derive-Secret(hs, "s hs traffic", th)
-    //   key  = HKDF-Expand-Label(s_ts, "key", "", 16)
-    //   iv   = HKDF-Expand-Label(s_ts, "iv",  "", 12)
-    //   plaintext = AES-128-GCM-decrypt(packet_3, key, iv, seq=0)
-    type Bn = fixed_bigint::FixedUInt<u32, 16, fixed_bigint::Ct>;
     let dhe = ed25519_heapless::x25519::<Bn>(&CLIENT_X25519_PRIV, &SERVER_X25519_PUB);
     let hs = handshake_secret::<H>(&dhe).map_err(|_| ())?;
     let mut transcript = TranscriptHash::<H>::new();
@@ -175,40 +327,30 @@ pub fn run_handshake<H: HkdfSha256>() -> Result<(), ()> {
         .map_err(|_| ())?;
     let (c_ts, s_ts) =
         handshake_traffic_secrets::<H>(&hs, &transcript.snapshot()).map_err(|_| ())?;
-    // Validate the client-side `"c hs traffic"` derivation against the
-    // Python fixture before we use it. Otherwise a regression in the
-    // backend's client-secret derivation would still pass the
-    // ClientFinished comparison, because we'd be feeding the fixture
-    // bytes into `build_client_finished` instead of the derived secret.
+    // Cross-check the client-side derivation against the fixture so a backend
+    // regression on "c hs traffic" doesn't slip past via the ClientFinished
+    // comparison (which uses the derived secret, not the fixture bytes).
     if c_ts.as_bytes() != &FIXTURE_C_HS_TRAFFIC_SECRET_BYTES {
         return Err(());
     }
-    let (key, iv) = traffic_keys::<H>(&s_ts).map_err(|_| ())?;
 
-    let mut pt_buf = [0u8; 400];
-    let pt = decrypt_record::<RustCrypto>(&FIXTURE_PACKET_3, &key, &iv, 0, &mut pt_buf)
-        .map_err(|_| ())?;
+    // ---- Decrypt server flight; verify cert + server Finished ----
+    let (key, iv) = A::traffic_keys(&s_ts).map_err(|_| ())?;
+    let pt = A::decrypt_record(p3, &key, &iv, 0, pt_buf).map_err(|_| ())?;
     let (content, content_type) = split_inner_plaintext(pt).map_err(|_| ())?;
     if content_type != krabitls::consts::CT_HANDSHAKE {
         return Err(());
     }
-
     let verified = verify_server_flight::<H, DerCert, RustCrypto>(&mut transcript, content, &s_ts)
         .map_err(|_| ())?;
-    const EXPECTED_SERVER_ID_PUB: [u8; 32] = [
-        0x9d, 0xfe, 0x2a, 0xb0, 0x3e, 0x35, 0x70, 0x4b, 0x9c, 0xfb, 0x93, 0xb6, 0x03, 0xa6, 0x61,
-        0x18, 0x82, 0x17, 0xa6, 0xb5, 0xfd, 0x6a, 0x1f, 0x75, 0xe6, 0x16, 0x1a, 0x39, 0xe0, 0x53,
-        0x4c, 0x3f,
-    ];
     if verified.server_pubkey.as_ed25519() != Some(EXPECTED_SERVER_ID_PUB) {
         return Err(());
     }
 
+    // ---- Build client Finished against `transcript through server Finished` ----
     let th_through_sf = transcript.snapshot();
-    let mut out = [0u8; 64];
-    let record = build_client_finished::<H, RustCrypto>(&c_ts, &th_through_sf, 0, &mut out)
-        .map_err(|_| ())?;
-    if record.len() != CLIENT_FINISHED_LEN || record != &FIXTURE_PACKET_4[..] {
+    let record = A::build_client_finished(&c_ts, &th_through_sf, 0, cf_out).map_err(|_| ())?;
+    if record.len() != CLIENT_FINISHED_LEN || record != p4 {
         return Err(());
     }
 
@@ -216,47 +358,81 @@ pub fn run_handshake<H: HkdfSha256>() -> Result<(), ()> {
     //   ms      = HKDF-Extract(Derive-Secret(hs, "derived", ""), 0^32)
     //   c_ap_ts = Derive-Secret(ms, "c ap traffic", th_through_sf)
     //   s_ap_ts = Derive-Secret(ms, "s ap traffic", th_through_sf)
-    //   (RFC 8446 §7.1; the AP traffic secrets use the transcript through the
-    //   *server's* Finished, not the client's.)
+    //   (RFC 8446 §7.1; the AP traffic secrets use the transcript through
+    //   the *server's* Finished, not the client's.)
     //
-    // (1) re-encrypt PACKET_5_PLAINTEXT under c_ap, seq=0 → must equal FIXTURE_PACKET_5
-    // (2) decrypt FIXTURE_PACKET_6 under s_ap, seq=0 → must yield PACKET_6_PLAINTEXT
+    // (1) re-encrypt PACKET_5_PLAINTEXT under c_ap, seq=0 → must equal p5
+    // (2) decrypt p6 under s_ap, seq=0 → must yield PACKET_6_PLAINTEXT
     //
-    // Both calls pass `seq = 0` because the fixture only replays the *first*
-    // record under each freshly-installed traffic key. RFC 8446 §5.3 resets
-    // record numbering to 0 whenever a new key/IV pair is installed, and
-    // c_ap / s_ap each get a fresh pair here, so this is the correct seq.
+    // `seq = 0` for both because the fixture replays only the first record
+    // under each freshly-installed traffic key (RFC 8446 §5.3).
     let ms = master_secret::<H>(&hs).map_err(|_| ())?;
     let (c_ap_ts, s_ap_ts) =
         application_traffic_secrets::<H>(&ms, &th_through_sf).map_err(|_| ())?;
-    let (c_ap_key, c_ap_iv) = traffic_keys::<H>(&c_ap_ts).map_err(|_| ())?;
-    let (s_ap_key, s_ap_iv) = traffic_keys::<H>(&s_ap_ts).map_err(|_| ())?;
+    let (c_ap_key, c_ap_iv) = A::traffic_keys(&c_ap_ts).map_err(|_| ())?;
+    let (s_ap_key, s_ap_iv) = A::traffic_keys(&s_ap_ts).map_err(|_| ())?;
 
-    // Reuse the 400-byte `pt_buf` from the server-flight decrypt above for
-    // both the encrypt and the decrypt — `pt_buf` is no longer live and the
-    // 52 / 48 byte app-data records fit comfortably.
-    let sent = encrypt_record::<RustCrypto>(
+    // `pt_buf` is no longer live from the server-flight decrypt — reused
+    // here for both the app-data encrypt and the app-data decrypt.
+    let sent = A::encrypt_record(
         PACKET_5_PLAINTEXT,
         krabitls::consts::CT_APPLICATION_DATA,
         &c_ap_key,
         &c_ap_iv,
         0,
-        &mut pt_buf,
+        pt_buf,
     )
     .map_err(|_| ())?;
-    if sent != &FIXTURE_PACKET_5[..] {
+    if sent != p5 {
         return Err(());
     }
 
-    let inner =
-        decrypt_record::<RustCrypto>(&FIXTURE_PACKET_6, &s_ap_key, &s_ap_iv, 0, &mut pt_buf)
-            .map_err(|_| ())?;
+    let inner = A::decrypt_record(p6, &s_ap_key, &s_ap_iv, 0, pt_buf).map_err(|_| ())?;
     let (content, ct) = split_inner_plaintext(inner).map_err(|_| ())?;
     if ct != krabitls::consts::CT_APPLICATION_DATA || content != PACKET_6_PLAINTEXT {
         return Err(());
     }
 
     Ok(())
+}
+
+/// AES baseline. `H` lets `examples/krabitls.rs` (uses `RustCrypto`) and
+/// `examples/krabitls_jedisct.rs` (uses `JedisctCrypto`) swap HKDF / SHA-256
+/// backends.
+///
+/// `Result<(), ()>` is intentional — the caller surfaces failure as `false`
+/// (see `test_fixture`); naming an error enum would drag every krabitls
+/// error variant into scope just to discriminate them at the binding.
+#[allow(clippy::result_unit_err)]
+pub fn run_handshake<H: HkdfSha256>() -> Result<(), ()> {
+    let mut pt_buf = [0u8; FIXTURE_PACKET_3.len()];
+    let mut cf_out = [0u8; CLIENT_FINISHED_LEN];
+    run_handshake_inner::<H, AesPath>(
+        &FIXTURE_PACKET_3,
+        &FIXTURE_PACKET_4,
+        &FIXTURE_PACKET_5,
+        &FIXTURE_PACKET_6,
+        &mut pt_buf,
+        &mut cf_out,
+    )
+}
+
+/// `run_handshake` with ChaCha20-Poly1305 swapped in for AES-128-GCM via
+/// the `ChachaPath` impl. Lets `examples/krabitls_chacha.rs` measure the
+/// M3 `.text` delta from the AEAD swap alone.
+#[cfg(feature = "chacha20")]
+#[allow(clippy::result_unit_err)]
+pub fn run_handshake_chacha<H: HkdfSha256>() -> Result<(), ()> {
+    let mut pt_buf = [0u8; FIXTURE_PACKET_3_CHACHA.len()];
+    let mut cf_out = [0u8; CLIENT_FINISHED_LEN];
+    run_handshake_inner::<H, ChachaPath>(
+        &FIXTURE_PACKET_3_CHACHA,
+        &FIXTURE_PACKET_4_CHACHA,
+        &FIXTURE_PACKET_5_CHACHA,
+        &FIXTURE_PACKET_6_CHACHA,
+        &mut pt_buf,
+        &mut cf_out,
+    )
 }
 
 pub fn target_arch_name() -> &'static str {

@@ -152,3 +152,15 @@ repos:
         language: system
         pass_filenames: false
         files: ^(cortex_m_demo|krabitls|testdata)/.*\.(rs|toml|x|bin|hex)$
+    -   id: cortex-m-clippy-chacha20
+        name: clippy cortex_m_demo (thumbv7m, chacha20)
+        entry: cargo clippy --manifest-path=cortex_m_demo/Cargo.toml --release --example krabitls_chacha --target thumbv7m-none-eabi --features chacha20 -- -D warnings
+        language: system
+        pass_filenames: false
+        files: ^(cortex_m_demo|krabitls)/.*\.(rs|toml|x)$
+    -   id: cortex-m-build-chacha20
+        name: build cortex_m_demo (thumbv7m, chacha20)
+        entry: cargo build --manifest-path=cortex_m_demo/Cargo.toml --release --example krabitls_chacha --target thumbv7m-none-eabi --features chacha20
+        language: system
+        pass_filenames: false
+        files: ^(cortex_m_demo|krabitls|testdata)/.*\.(rs|toml|x|bin|hex)$
