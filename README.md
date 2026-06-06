@@ -12,8 +12,8 @@ A hobby TLS 1.3 client for microcontrollers. Don't use it for anything you care 
 #### Resource usage (as of version 0.1.0)
 
 Cortex-M3 footprint. Values are real-minus-baseline deltas from the Cortex-M
-workflow's step summary; the suite subtracts the per-row 16 KiB wire-data
-buffer footprint uniformly.
+workflow's step summary. Wire-data scratch buffers live in `.bss` (via
+`with_buffers`), so the stack column reflects only the crypto + protocol cost.
 
 | Target | Suite             | Sig          | .text (KiB) | Stack (B) |
 |--------|-------------------|--------------|------------:|----------:|

@@ -26,12 +26,6 @@ TARGET_LABEL = "M3"
 TIMEOUT_RUN = 120
 TIMEOUT_BUILD = 600
 
-# Wire-data buffer footprint each example allocates on the stack (8 KiB
-# per-record decrypt scratch + 8 KiB flight accumulator). Kept identical
-# across all examples so the rows compare directly; subtracted here so
-# the reported stack delta isolates the crypto + protocol cost.
-BUFFER_DISCOUNT = 16 * 1024
-
 
 def run_cmd(args, timeout=TIMEOUT_RUN):
     return subprocess.run(args, capture_output=True, text=True, timeout=timeout)
@@ -118,10 +112,7 @@ def main():
             rendered_rows.append((suite, sig, "-", "-"))
             continue
         dtext_kib = (real_text - baseline_text) / 1024
-        # Each example allocates 8 KiB record + 8 KiB flight buffers on the
-        # stack so all three rows pay the same wire-data cost; subtract that
-        # 16 KiB uniformly to report the "crypto + protocol" stack delta.
-        dstack = real_stack - baseline_stack - BUFFER_DISCOUNT
+        dstack = real_stack - baseline_stack
         rendered_rows.append((suite, sig, f"{dtext_kib:.1f}", f"{dstack}"))
 
     print()
