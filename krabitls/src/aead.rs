@@ -1,7 +1,8 @@
-//! TLS 1.3 record-layer encrypt / decrypt on top of the
-//! [`Aes128GcmAead`](crate::traits::Aes128GcmAead) trait.
+//! TLS 1.3 record-layer encrypt / decrypt over a pluggable AEAD.
 //!
-//! Trait definition lives in [`crate::traits::aead`]. This module owns the
+//! AEAD trait definitions live in [`crate::traits::aead`]
+//! ([`crate::traits::Aes128GcmAead`] and, under `feature = "chacha20"`,
+//! [`crate::traits::ChaCha20Poly1305Aead`]). This module owns the
 //! `decrypt_record` / `encrypt_record` / `aead_nonce` helpers and their
 //! error types.
 
@@ -302,7 +303,7 @@ pub enum DecryptError {
     UnexpectedLegacyVersion(u16),
     /// `plaintext_buf` cannot fit the ciphertext (= plaintext length).
     BufferTooSmall { needed: usize, got: usize },
-    /// AES-128-GCM tag verification failed — almost certainly a wrong key or
+    /// AEAD tag verification failed — almost certainly a wrong key or
     /// tampered ciphertext.
     AeadFailed,
     /// `TLSInnerPlaintext` was all zeros — has no `content_type` byte.

@@ -38,6 +38,10 @@ pub trait Aes128GcmAead {
 #[cfg(feature = "chacha20")]
 pub trait ChaCha20Poly1305Aead {
     /// Verify the 16-byte `tag` and decrypt `buffer` in place.
+    ///
+    /// On entry, `buffer` contains the ciphertext (no tag). On `Ok`, `buffer`
+    /// contains the plaintext of the same length. On `Err`, `buffer` is
+    /// trashed and MUST NOT be used.
     fn decrypt(
         key: &Zeroizing<[u8; 32]>,
         nonce: &Zeroizing<[u8; 12]>,
@@ -47,6 +51,9 @@ pub trait ChaCha20Poly1305Aead {
     ) -> Result<(), AeadError>;
 
     /// Encrypt `buffer` in place and return the 16-byte authentication tag.
+    ///
+    /// On entry, `buffer` contains the plaintext. On return, `buffer` contains
+    /// the ciphertext of the same length and the caller appends the returned tag.
     fn encrypt(
         key: &Zeroizing<[u8; 32]>,
         nonce: &Zeroizing<[u8; 12]>,

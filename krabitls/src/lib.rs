@@ -301,7 +301,14 @@ impl<E> From<E> for ClientHelloError<E> {
 /// Returns the number of bytes written on success, equal to
 /// [`client_hello_len`]`(hostname.map(|h| h.len()))`. When `hostname` is
 /// `None`, that's [`CLIENT_HELLO_LEN`] (117 by default, 119 with
-/// `feature = "rsa"` from the extra `rsa_pss_rsae_sha256` scheme entry).
+/// `feature = "rsa"` or `feature = "chacha20"`, 121 with both).
+///
+/// With `feature = "chacha20"`, the CH advertises
+/// `TLS_CHACHA20_POLY1305_SHA256` first. Callers MUST dispatch their
+/// record-layer code on the suite returned in `ServerHelloView::cipher_suite` —
+/// using AES-typed `traffic_keys` / `decrypt_record` / `encrypt_record` /
+/// `build_client_finished` on a ChaCha-negotiated connection will fail at the
+/// first encrypted record.
 pub fn write_client_hello<W: Write>(
     out: &mut W,
     random: &[u8; 32],
@@ -336,7 +343,7 @@ pub fn write_client_hello<W: Write>(
     out.write_all(random)?; // random (32)
     out.write_u8(0)?; // legacy_session_id length = 0
     // ChaCha first so servers that honor client preference pick it.
-    out.write_u16((CH_CIPHER_SUITES_FIELD_LEN - 2) as u16)?;
+    out.write_u16((2 * CH_CIPHER_SUITES_COUNT) as u16)?;
     #[cfg(feature = "chacha20")]
     out.write_u16(CIPHER_CHACHA20_POLY1305_SHA256)?;
     out.write_u16(CIPHER_AES_128_GCM_SHA256)?;
@@ -409,7 +416,9 @@ pub struct ServerHelloView<'a> {
     pub random: &'a [u8; 32],
     /// Echoed `legacy_session_id` — empty in our profile.
     pub session_id_echo: &'a [u8],
-    /// Selected cipher suite. Validated to be `TLS_AES_128_GCM_SHA256`.
+    /// Selected cipher suite. `TLS_AES_128_GCM_SHA256` (`0x1301`), or
+    /// `TLS_CHACHA20_POLY1305_SHA256` (`0x1303`) when `feature = "chacha20"`
+    /// is enabled. Callers must dispatch their record-layer code on this value.
     pub cipher_suite: u16,
     /// Selected TLS version (from `supported_versions`). Validated to be `0x0304`.
     pub selected_version: u16,
@@ -470,8 +479,9 @@ impl core::fmt::Display for ParseError {
 
 /// Parse a complete TLS record carrying a `server_hello` handshake message.
 ///
-/// Validates the locked profile (TLS 1.3 / AES-128-GCM-SHA256 / x25519) and
-/// returns a [`ServerHelloView`] borrowing into `input`.
+/// Validates the locked profile (TLS 1.3, x25519, AES-128-GCM-SHA256 or
+/// `TLS_CHACHA20_POLY1305_SHA256` under `feature = "chacha20"`) and returns
+/// a [`ServerHelloView`] borrowing into `input`.
 pub fn parse_server_hello(input: &[u8]) -> Result<ServerHelloView<'_>, ParseError> {
     let mut r = Reader::new(input);
 
@@ -812,6 +822,10 @@ mod tests {
         0x24, 0xfb, 0x7d, 0x3a, 0x88, 0x8d, 0xa5, 0xac, 0x36, 0x72, 0x72, 0x6d, 0x20, 0x06, 0x44,
         0x04, 0xf7, 0x06, 0xdb, 0x7e,
     ];
+    // Offset of `cipher_suite` inside `FIXTURE_SERVER_HELLO`:
+    // 5 (record hdr) + 4 (hs hdr) + 2 (legacy_ver) + 32 (random) + 1 (session_id len).
+    const SH_CIPHER_SUITE_OFFSET: usize = 44;
+
     const FIXTURE_SERVER_RANDOM: [u8; 32] = [
         0x64, 0x1c, 0x5b, 0xd9, 0x34, 0xab, 0xe1, 0xc5, 0x98, 0xa9, 0xc9, 0x61, 0xf7, 0xcb, 0x1e,
         0x06, 0x28, 0x0b, 0x4a, 0x5e, 0x88, 0x0c, 0x1c, 0x19, 0xd2, 0xfe, 0x9e, 0xef, 0x33, 0x48,
@@ -865,8 +879,8 @@ mod tests {
     #[test]
     fn server_hello_chacha20_accepted() {
         let mut sh = FIXTURE_SERVER_HELLO;
-        sh[44] = 0x13;
-        sh[45] = 0x03;
+        sh[SH_CIPHER_SUITE_OFFSET] = 0x13;
+        sh[SH_CIPHER_SUITE_OFFSET + 1] = 0x03;
         let v = parse_server_hello(&sh).unwrap();
         assert_eq!(v.cipher_suite, CIPHER_CHACHA20_POLY1305_SHA256);
     }
@@ -875,8 +889,8 @@ mod tests {
     #[test]
     fn server_hello_chacha20_rejected_without_feature() {
         let mut sh = FIXTURE_SERVER_HELLO;
-        sh[44] = 0x13;
-        sh[45] = 0x03;
+        sh[SH_CIPHER_SUITE_OFFSET] = 0x13;
+        sh[SH_CIPHER_SUITE_OFFSET + 1] = 0x03;
         assert_eq!(
             parse_server_hello(&sh),
             Err(ParseError::UnsupportedCipherSuite(0x1303)),
@@ -886,11 +900,9 @@ mod tests {
     #[test]
     fn wrong_cipher_suite_rejected() {
         let mut bad = FIXTURE_SERVER_HELLO;
-        // cipher_suite is at offset 5 (hs hdr) + 4 (legacy_ver+random+session_id_len) ... let me just
-        // patch the known offset: TLS_AES_256_GCM_SHA384 = 0x1302
-        // offset = 5 (record) + 4 (hs hdr) + 2 (legacy_ver) + 32 (random) + 1 (sid len) = 44
-        bad[44] = 0x13;
-        bad[45] = 0x02;
+        // Patch to TLS_AES_256_GCM_SHA384 = 0x1302 (not in our profile).
+        bad[SH_CIPHER_SUITE_OFFSET] = 0x13;
+        bad[SH_CIPHER_SUITE_OFFSET + 1] = 0x02;
         assert_eq!(
             parse_server_hello(&bad),
             Err(ParseError::UnsupportedCipherSuite(0x1302)),
