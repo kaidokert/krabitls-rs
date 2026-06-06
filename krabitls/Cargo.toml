@@ -29,6 +29,8 @@ jedisct = ["dep:hmac-sha256"]
 # RTC build with the feature OFF (default) and pay no code-size cost for
 # either the check or the trait.
 validity = []
+# Advertise TLS_CHACHA20_POLY1305_SHA256 alongside AES-128-GCM-SHA256.
+chacha20 = ["dep:chacha20poly1305"]
 
 [dependencies]
 embedded-io = { version = "0.7.1", default-features = false }
@@ -38,6 +40,7 @@ sha2_v11 = { package = "sha2", version = "0.11", default-features = false, featu
 
 # RustCrypto stable line — all share generic-array 0.14 / crypto-common 0.1.
 aes-gcm = { version = "0.10", default-features = false, features = ["aes"] }
+chacha20poly1305 = { version = "0.10", default-features = false, optional = true }
 sha2 = { version = "0.10", default-features = false, features = ["force-soft-compact"] }
 hmac = { version = "0.12", default-features = false }
 hkdf = { version = "0.12", default-features = false }

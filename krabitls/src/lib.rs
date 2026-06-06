@@ -19,12 +19,18 @@ pub mod traits;
 pub use aead::{
     DecryptError, EncryptError, aead_nonce, decrypt_record, encrypt_record, split_inner_plaintext,
 };
+#[cfg(feature = "chacha20")]
+pub use aead::{decrypt_record_chacha, encrypt_record_chacha};
 #[cfg(feature = "jedisct")]
 pub use backends::JedisctCrypto;
 pub use backends::{DerCert, RustCrypto};
 #[cfg(feature = "rsa")]
 pub use backends::{RsaVerifierKey, RsaVerifyError};
+#[cfg(feature = "chacha20")]
+pub use client_flight::build_client_finished_chacha;
 pub use client_flight::{CLIENT_FINISHED_LEN, ClientFinishedError, build_client_finished};
+#[cfg(feature = "chacha20")]
+pub use hkdf::traffic_keys_chacha;
 pub use hkdf::{
     EMPTY_TRANSCRIPT_HASH, HkdfLabelError, TranscriptError, TranscriptHash,
     application_traffic_secrets, derive_secret, early_secret, finished_mac, handshake_secret,
@@ -32,12 +38,14 @@ pub use hkdf::{
 };
 #[cfg(feature = "validity")]
 pub use identity::{ValidityError, verify_validity};
-pub use newtype::{AeadIv, AeadKey, Secret, TranscriptDigest, ZeroBuf};
+pub use newtype::{AeadIv, AeadKey, AeadKey32, Secret, TranscriptDigest, ZeroBuf};
 pub use server_flight::{
     FlightError, ServerFlightVerified, ServerFlightView, ServerPubkey, extract_cert_der,
     parse_server_flight, verify_certificate_verify, verify_self_signed_cert,
     verify_server_finished, verify_server_flight,
 };
+#[cfg(feature = "chacha20")]
+pub use traits::ChaCha20Poly1305Aead;
 pub use traits::{
     AeadError, Aes128GcmAead, CertParseError, CertParser, CertView, Ed25519Verify, HkdfExpandError,
     HkdfSha256, Sha256Hasher,
@@ -109,6 +117,7 @@ pub mod consts {
     pub const HS_SERVER_HELLO: u8 = 2;
 
     pub const CIPHER_AES_128_GCM_SHA256: u16 = 0x1301;
+    pub const CIPHER_CHACHA20_POLY1305_SHA256: u16 = 0x1303;
     pub const NAMED_GROUP_X25519: u16 = 0x001D;
     pub const SIG_SCHEME_ED25519: u16 = 0x0807;
     /// `rsa_pss_rsae_sha256` — RSASSA-PSS with the leaf's RSAE key encoding,
@@ -160,6 +169,14 @@ const EXT_SIGNATURE_ALGORITHMS_TOTAL: u16 = 4 + 4;
 const EXT_SIGNATURE_ALGORITHMS_TOTAL: u16 = 4 + 6;
 const EXT_KEY_SHARE_TOTAL: u16 = 4 + 38;
 
+#[cfg(not(feature = "chacha20"))]
+const CH_CIPHER_SUITES_COUNT: usize = 1;
+#[cfg(feature = "chacha20")]
+const CH_CIPHER_SUITES_COUNT: usize = 2;
+
+/// Wire size of `cipher_suites`: 2-byte length prefix + 2 bytes per suite.
+const CH_CIPHER_SUITES_FIELD_LEN: usize = 2 + 2 * CH_CIPHER_SUITES_COUNT;
+
 /// Fixed-extension total when the caller supplies no SNI.
 const CH_EXTENSIONS_FIXED_TOTAL: u16 = EXT_SUPPORTED_VERSIONS_TOTAL
     + EXT_SUPPORTED_GROUPS_TOTAL
@@ -182,9 +199,17 @@ pub const fn client_hello_len(hostname_len: Option<usize>) -> usize {
     };
     // 5 (record header) + 4 (handshake header) + body
     // body = legacy_version(2) + random(32) + session_id(1+0)
-    //      + cipher_suites(2+2) + compression(1+1)
+    //      + cipher_suites(2 + 2*N) + compression(1+1)
     //      + extensions_len(2) + fixed_extensions + sni_ext
-    5 + 4 + 2 + 32 + 1 + (2 + 2) + (1 + 1) + 2 + CH_EXTENSIONS_FIXED_TOTAL as usize + sni
+    5 + 4
+        + 2
+        + 32
+        + 1
+        + CH_CIPHER_SUITES_FIELD_LEN
+        + (1 + 1)
+        + 2
+        + CH_EXTENSIONS_FIXED_TOTAL as usize
+        + sni
 }
 
 /// Serialized size of the ClientHello [`write_client_hello`] produces when
@@ -195,14 +220,15 @@ pub const fn client_hello_len(hostname_len: Option<usize>) -> usize {
 /// flows through `CH_EXTENSIONS_FIXED_TOTAL` automatically.
 pub const CLIENT_HELLO_LEN: usize = client_hello_len(None);
 
-// Sanity pin against the Python fixture's seed-0 ed25519-mode ClientHello.
-// With `feature = "rsa"`, krabitls's CH advertises both ed25519 and
-// rsa_pss_rsae_sha256, which the seed-0 fixture doesn't — the byte-identity
-// tests are cfg-gated accordingly.
-#[cfg(not(feature = "rsa"))]
+// Sanity pin on CLIENT_HELLO_LEN under each feature combo.
+#[cfg(all(not(feature = "rsa"), not(feature = "chacha20")))]
 const _: () = assert!(CLIENT_HELLO_LEN == 117);
-#[cfg(feature = "rsa")]
+#[cfg(all(feature = "rsa", not(feature = "chacha20")))]
 const _: () = assert!(CLIENT_HELLO_LEN == 119);
+#[cfg(all(not(feature = "rsa"), feature = "chacha20"))]
+const _: () = assert!(CLIENT_HELLO_LEN == 119);
+#[cfg(all(feature = "rsa", feature = "chacha20"))]
+const _: () = assert!(CLIENT_HELLO_LEN == 121);
 
 /// Big-endian byte-emission helpers layered on top of [`embedded_io::Write`].
 ///
@@ -295,7 +321,8 @@ pub fn write_client_hello<W: Write>(
 
     let sni_total = hostname.map(|h| sni_ext_total(h.len())).unwrap_or(0);
     let extensions_total = (CH_EXTENSIONS_FIXED_TOTAL as usize + sni_total) as u16;
-    let body_len = (2 + 32 + 1 + (2 + 2) + (1 + 1) + 2 + extensions_total as usize) as u16;
+    let body_len =
+        (2 + 32 + 1 + CH_CIPHER_SUITES_FIELD_LEN + (1 + 1) + 2 + extensions_total as usize) as u16;
     let hs_len = 4 + body_len;
 
     out.write_u8(CT_HANDSHAKE)?; // 0x16
@@ -308,7 +335,10 @@ pub fn write_client_hello<W: Write>(
     out.write_u16(LEGACY_VERSION)?; // legacy_version = 0x0303
     out.write_all(random)?; // random (32)
     out.write_u8(0)?; // legacy_session_id length = 0
-    out.write_u16(2)?; // cipher_suites length = 2
+    // ChaCha first so servers that honor client preference pick it.
+    out.write_u16((CH_CIPHER_SUITES_FIELD_LEN - 2) as u16)?;
+    #[cfg(feature = "chacha20")]
+    out.write_u16(CIPHER_CHACHA20_POLY1305_SHA256)?;
     out.write_u16(CIPHER_AES_128_GCM_SHA256)?;
     out.write_u8(1)?; // legacy_compression_methods length
     out.write_u8(0)?; // null compression
@@ -497,7 +527,9 @@ pub fn parse_server_hello(input: &[u8]) -> Result<ServerHelloView<'_>, ParseErro
         return Err(ParseError::UnexpectedSessionIdEcho);
     }
     let cipher_suite = b.u16()?;
-    if cipher_suite != CIPHER_AES_128_GCM_SHA256 {
+    let suite_accepted = cipher_suite == CIPHER_AES_128_GCM_SHA256
+        || (cfg!(feature = "chacha20") && cipher_suite == CIPHER_CHACHA20_POLY1305_SHA256);
+    if !suite_accepted {
         return Err(ParseError::UnsupportedCipherSuite(cipher_suite));
     }
     let compression = b.u8()?;
@@ -679,9 +711,10 @@ mod tests {
     }
 
     // Byte-identity against the seed-0 Python fixture only holds when our CH
-    // advertises ed25519 alone. With `feature = "rsa"` we also advertise
-    // rsa_pss_rsae_sha256, so the bytes diverge (CH is 119 B instead of 117 B).
-    #[cfg(not(feature = "rsa"))]
+    // advertises ed25519 alone with AES-128-GCM only. With `feature = "rsa"`
+    // we also advertise rsa_pss_rsae_sha256; with `feature = "chacha20"` we
+    // also advertise CHACHA20_POLY1305_SHA256 — either changes the CH bytes.
+    #[cfg(all(not(feature = "rsa"), not(feature = "chacha20")))]
     #[test]
     fn matches_python_fixture() {
         let mut buf = [0u8; 256];
@@ -692,7 +725,7 @@ mod tests {
         assert_eq!(&buf[..CLIENT_HELLO_LEN], &FIXTURE_CLIENT_HELLO);
     }
 
-    #[cfg(not(feature = "rsa"))]
+    #[cfg(all(not(feature = "rsa"), not(feature = "chacha20")))]
     #[test]
     fn exact_sized_buffer_works() {
         let mut buf = [0u8; CLIENT_HELLO_LEN];
@@ -825,6 +858,28 @@ mod tests {
         assert_eq!(
             parse_server_hello(&bad),
             Err(ParseError::UnexpectedHandshakeType(1)),
+        );
+    }
+
+    #[cfg(feature = "chacha20")]
+    #[test]
+    fn server_hello_chacha20_accepted() {
+        let mut sh = FIXTURE_SERVER_HELLO;
+        sh[44] = 0x13;
+        sh[45] = 0x03;
+        let v = parse_server_hello(&sh).unwrap();
+        assert_eq!(v.cipher_suite, CIPHER_CHACHA20_POLY1305_SHA256);
+    }
+
+    #[cfg(not(feature = "chacha20"))]
+    #[test]
+    fn server_hello_chacha20_rejected_without_feature() {
+        let mut sh = FIXTURE_SERVER_HELLO;
+        sh[44] = 0x13;
+        sh[45] = 0x03;
+        assert_eq!(
+            parse_server_hello(&sh),
+            Err(ParseError::UnsupportedCipherSuite(0x1303)),
         );
     }
 
@@ -1805,6 +1860,31 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err, aead::EncryptError::RecordTooLarge);
+    }
+
+    #[cfg(feature = "chacha20")]
+    #[test]
+    fn chacha20_encrypt_decrypt_round_trip() {
+        let key = AeadKey32::new(ZeroBuf::<32>::new([0x11; 32]));
+        let iv = AeadIv::new(ZeroBuf::<12>::new([0x22; 12]));
+        let plaintext = b"hello world";
+        let mut record_buf = [0u8; 64];
+        let record = encrypt_record_chacha::<RustCrypto>(
+            plaintext,
+            consts::CT_APPLICATION_DATA,
+            &key,
+            &iv,
+            7,
+            &mut record_buf,
+        )
+        .unwrap();
+        let record_owned = record.to_vec();
+        let mut pt_buf = [0u8; 64];
+        let inner =
+            decrypt_record_chacha::<RustCrypto>(&record_owned, &key, &iv, 7, &mut pt_buf).unwrap();
+        let (content, content_type) = aead::split_inner_plaintext(inner).unwrap();
+        assert_eq!(content, plaintext);
+        assert_eq!(content_type, consts::CT_APPLICATION_DATA);
     }
 
     #[test]

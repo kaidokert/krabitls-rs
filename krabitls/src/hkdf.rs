@@ -8,6 +8,8 @@
 //! `TranscriptHash` running-hash wrapper, the `hkdf_expand_label`
 //! encoder, and the `HkdfLabelError` enum.
 
+#[cfg(feature = "chacha20")]
+use crate::newtype::AeadKey32;
 use crate::newtype::{AeadIv, AeadKey, Secret, TranscriptDigest, ZeroBuf};
 use crate::traits::{HkdfExpandError, HkdfSha256, Sha256Hasher};
 
@@ -221,6 +223,18 @@ pub fn traffic_keys<H: HkdfSha256>(
     hkdf_expand_label::<H>(traffic_secret.as_bytes(), b"key", &[], &mut key[..])?;
     hkdf_expand_label::<H>(traffic_secret.as_bytes(), b"iv", &[], &mut iv[..])?;
     Ok((AeadKey::new(key), AeadIv::new(iv)))
+}
+
+/// `traffic_keys` for `TLS_CHACHA20_POLY1305_SHA256`. 32-byte key, 12-byte IV.
+#[cfg(feature = "chacha20")]
+pub fn traffic_keys_chacha<H: HkdfSha256>(
+    traffic_secret: &Secret,
+) -> Result<(AeadKey32, AeadIv), HkdfLabelError> {
+    let mut key = ZeroBuf::<32>::new([0; 32]);
+    let mut iv = ZeroBuf::<12>::new([0; 12]);
+    hkdf_expand_label::<H>(traffic_secret.as_bytes(), b"key", &[], &mut key[..])?;
+    hkdf_expand_label::<H>(traffic_secret.as_bytes(), b"iv", &[], &mut iv[..])?;
+    Ok((AeadKey32::new(key), AeadIv::new(iv)))
 }
 
 /// `master_secret = HKDF-Extract(Derive-Secret(handshake_secret, "derived", H("")), 0_hash)`

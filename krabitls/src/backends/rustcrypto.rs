@@ -14,6 +14,8 @@ use sha2::{Digest, Sha256};
 
 use zeroize::Zeroizing;
 
+#[cfg(feature = "chacha20")]
+use crate::traits::ChaCha20Poly1305Aead;
 use crate::traits::ed25519_verify::Ed25519Verify;
 use crate::traits::{AeadError, Aes128GcmAead};
 use crate::traits::{HkdfExpandError, HkdfSha256, Sha256Hasher};
@@ -80,6 +82,42 @@ impl Aes128GcmAead for RustCrypto {
         let tag = cipher
             .encrypt_in_place_detached(nonce, aad, buffer)
             .expect("AES-128-GCM encrypt cannot fail on well-sized inputs");
+        tag.into()
+    }
+}
+
+#[cfg(feature = "chacha20")]
+impl ChaCha20Poly1305Aead for RustCrypto {
+    fn decrypt(
+        key: &Zeroizing<[u8; 32]>,
+        nonce: &Zeroizing<[u8; 12]>,
+        aad: &[u8],
+        buffer: &mut [u8],
+        tag: &[u8; 16],
+    ) -> Result<(), AeadError> {
+        use chacha20poly1305::{ChaCha20Poly1305, KeyInit as _, aead::AeadInPlace as _};
+        let cipher = ChaCha20Poly1305::new_from_slice(&**key)
+            .expect("32-byte key is always valid for ChaCha20-Poly1305");
+        let nonce = chacha20poly1305::aead::generic_array::GenericArray::from_slice(&**nonce);
+        let tag = chacha20poly1305::aead::generic_array::GenericArray::from_slice(tag);
+        cipher
+            .decrypt_in_place_detached(nonce, aad, buffer, tag)
+            .map_err(|_| AeadError)
+    }
+
+    fn encrypt(
+        key: &Zeroizing<[u8; 32]>,
+        nonce: &Zeroizing<[u8; 12]>,
+        aad: &[u8],
+        buffer: &mut [u8],
+    ) -> [u8; 16] {
+        use chacha20poly1305::{ChaCha20Poly1305, KeyInit as _, aead::AeadInPlace as _};
+        let cipher = ChaCha20Poly1305::new_from_slice(&**key)
+            .expect("32-byte key is always valid for ChaCha20-Poly1305");
+        let nonce = chacha20poly1305::aead::generic_array::GenericArray::from_slice(&**nonce);
+        let tag = cipher
+            .encrypt_in_place_detached(nonce, aad, buffer)
+            .expect("ChaCha20-Poly1305 encrypt cannot fail on well-sized inputs");
         tag.into()
     }
 }

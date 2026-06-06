@@ -5,8 +5,12 @@
 //! `decrypt_record` / `encrypt_record` / `aead_nonce` helpers and their
 //! error types.
 
+#[cfg(feature = "chacha20")]
+use crate::newtype::AeadKey32;
 use crate::newtype::{AeadIv, AeadKey, ZeroBuf};
 use crate::traits::Aes128GcmAead;
+#[cfg(feature = "chacha20")]
+use crate::traits::ChaCha20Poly1305Aead;
 
 /// Per-record AEAD nonce: `iv` XOR `seq` (8-byte sequence number,
 /// big-endian, left-padded). RFC 8446 §5.3.
@@ -41,6 +45,36 @@ pub fn decrypt_record<'a, A: Aes128GcmAead>(
     seq: u64,
     plaintext_buf: &'a mut [u8],
 ) -> Result<&'a [u8], DecryptError> {
+    decrypt_record_with(record, iv, seq, plaintext_buf, |nonce, aad, pt, tag| {
+        A::decrypt(key.as_zeroizing(), nonce, aad, pt, tag)
+    })
+}
+
+/// `decrypt_record` for the `TLS_CHACHA20_POLY1305_SHA256` suite.
+#[cfg(feature = "chacha20")]
+pub fn decrypt_record_chacha<'a, C: ChaCha20Poly1305Aead>(
+    record: &[u8],
+    key: &AeadKey32,
+    iv: &AeadIv,
+    seq: u64,
+    plaintext_buf: &'a mut [u8],
+) -> Result<&'a [u8], DecryptError> {
+    decrypt_record_with(record, iv, seq, plaintext_buf, |nonce, aad, pt, tag| {
+        C::decrypt(key.as_zeroizing(), nonce, aad, pt, tag)
+    })
+}
+
+/// Shared record-layer decrypt; the closure performs the AEAD verify+decrypt.
+fn decrypt_record_with<'a, F>(
+    record: &[u8],
+    iv: &AeadIv,
+    seq: u64,
+    plaintext_buf: &'a mut [u8],
+    aead_decrypt: F,
+) -> Result<&'a [u8], DecryptError>
+where
+    F: FnOnce(&ZeroBuf<12>, &[u8], &mut [u8], &[u8; 16]) -> Result<(), crate::traits::AeadError>,
+{
     if record.len() < 5 {
         return Err(DecryptError::Truncated);
     }
@@ -86,7 +120,7 @@ pub fn decrypt_record<'a, A: Aes128GcmAead>(
 
     let nonce = aead_nonce(iv, seq);
     let aad = &record[..5];
-    match A::decrypt(key.as_zeroizing(), &nonce, aad, plaintext, &tag) {
+    match aead_decrypt(&nonce, aad, plaintext, &tag) {
         Ok(()) => Ok(plaintext),
         Err(_) => {
             // AEAD verification failed: the buffer currently holds either
@@ -127,6 +161,48 @@ pub fn encrypt_record<'a, A: Aes128GcmAead>(
     seq: u64,
     out_buf: &'a mut [u8],
 ) -> Result<&'a [u8], EncryptError> {
+    encrypt_record_with(
+        content,
+        content_type,
+        iv,
+        seq,
+        out_buf,
+        |nonce, aad, buf| A::encrypt(key.as_zeroizing(), nonce, aad, buf),
+    )
+}
+
+/// `encrypt_record` for the `TLS_CHACHA20_POLY1305_SHA256` suite.
+#[cfg(feature = "chacha20")]
+pub fn encrypt_record_chacha<'a, C: ChaCha20Poly1305Aead>(
+    content: &[u8],
+    content_type: u8,
+    key: &AeadKey32,
+    iv: &AeadIv,
+    seq: u64,
+    out_buf: &'a mut [u8],
+) -> Result<&'a [u8], EncryptError> {
+    encrypt_record_with(
+        content,
+        content_type,
+        iv,
+        seq,
+        out_buf,
+        |nonce, aad, buf| C::encrypt(key.as_zeroizing(), nonce, aad, buf),
+    )
+}
+
+/// Shared record-layer encrypt; the closure performs the AEAD seal.
+fn encrypt_record_with<'a, F>(
+    content: &[u8],
+    content_type: u8,
+    iv: &AeadIv,
+    seq: u64,
+    out_buf: &'a mut [u8],
+    aead_encrypt: F,
+) -> Result<&'a [u8], EncryptError>
+where
+    F: FnOnce(&ZeroBuf<12>, &[u8], &mut [u8]) -> [u8; 16],
+{
     // TLSPlaintext.length cap (RFC 8446 §5.1): the inner-plaintext content
     // must not exceed 2^14 bytes. This is *separate* from the §5.2
     // ciphertext-body cap below — without it, callers could pass content in
@@ -177,12 +253,7 @@ pub fn encrypt_record<'a, A: Aes128GcmAead>(
     out_buf[5 + content.len()] = content_type;
 
     let nonce = aead_nonce(iv, seq);
-    let tag = A::encrypt(
-        key.as_zeroizing(),
-        &nonce,
-        &aad,
-        &mut out_buf[5..5 + inner_len],
-    );
+    let tag = aead_encrypt(&nonce, &aad, &mut out_buf[5..5 + inner_len]);
     out_buf[5 + inner_len..5 + inner_len + AEAD_TAG_LEN].copy_from_slice(&tag);
 
     Ok(&out_buf[..total_len])
