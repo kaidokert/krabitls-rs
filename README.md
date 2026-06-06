@@ -17,9 +17,9 @@ workflow's step summary. Wire-data scratch buffers live in `.bss` (via
 
 | Target | Suite             | Sig          | .text (KiB) | Stack (B) |
 |--------|-------------------|--------------|------------:|----------:|
-| M3     | AES-128-GCM       | Ed25519      |           - |         - |
-| M3     | ChaCha20-Poly1305 | Ed25519      |           - |         - |
-| M3     | AES-128-GCM       | RSA-2048-PSS |           - |         - |
+| M3     | AES-128-GCM       | Ed25519      |        32.8 |      5764 |
+| M3     | ChaCha20-Poly1305 | Ed25519      |        28.3 |      5716 |
+| M3     | AES-128-GCM       | RSA-2048-PSS |        42.5 |     15572 |
 
 ## License
 
