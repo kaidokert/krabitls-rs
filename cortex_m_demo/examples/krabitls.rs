@@ -2,8 +2,7 @@
 #![no_std]
 
 //! M3 footprint example: AES-128-GCM-SHA256 record layer + Ed25519 server
-//! cert. Replays a captured TLS 1.3 handshake from a local openssl s_server
-//! (testdata/local_server/ed25519.{crt,key}).
+//! cert. Replays a TLS 1.3 handshake captured from a local openssl s_server.
 
 use cortex_m_rt::entry;
 #[cfg(not(feature = "baseline"))]

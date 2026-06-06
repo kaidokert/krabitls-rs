@@ -2,11 +2,8 @@
 #![no_std]
 
 //! M3 footprint example: AES-128-GCM-SHA256 record layer + RSA-2048-PSS
-//! server cert. Replays a captured TLS 1.3 handshake from a local openssl
-//! s_server (testdata/local_server/rsa2048.{crt,key}). Verify pipeline:
-//! AEAD decrypt + parse_server_flight + cert parse (RSA SPKI) +
-//! verify_certificate_verify (RSA-PSS-SHA256) + verify_server_finished +
-//! build_client_finished (byte-checked against `c_finished.hex`).
+//! server cert. Replays a TLS 1.3 handshake captured from a local openssl
+//! s_server.
 
 use cortex_m_rt::entry;
 #[cfg(not(feature = "baseline"))]
@@ -18,11 +15,6 @@ use krabitls::{
     split_inner_plaintext, traffic_keys, verify_certificate_verify, verify_server_finished,
 };
 
-// Captured fixture from a local openssl s_server. Sizes embedded so a
-// fixture-size drift trips a compile-time error rather than a silent runtime
-// mismatch. Regenerate via `cargo run --bin krabitls_connect -- --capture
-// <dir> localhost:8443` against `openssl s_server -tls1_3 -cert rsa2048.crt
-// -key rsa2048.key -ciphersuites TLS_AES_128_GCM_SHA256 -no_ticket -www`.
 const CH: [u8; 137] = krabitls::hex_decode(include_str!("../captured/aes_rsa2048/ch.hex"));
 const SH: [u8; 95] = krabitls::hex_decode(include_str!("../captured/aes_rsa2048/sh.hex"));
 const S_HS_TS: [u8; 32] = krabitls::hex_decode(include_str!("../captured/aes_rsa2048/s_hs_ts.hex"));

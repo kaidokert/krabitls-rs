@@ -2,9 +2,8 @@
 #![no_std]
 
 //! M3 footprint example: ChaCha20-Poly1305-SHA256 record layer + Ed25519
-//! server cert. Replays a captured handshake from a local openssl s_server
-//! (testdata/local_server/ed25519.{crt,key}, `-ciphersuites
-//! TLS_CHACHA20_POLY1305_SHA256`).
+//! server cert. Replays a TLS 1.3 handshake captured from a local openssl
+//! s_server.
 
 use cortex_m_rt::entry;
 #[cfg(not(feature = "baseline"))]
