@@ -329,10 +329,9 @@ pub fn verify_certificate_verify_with_cache<E: Ed25519Verify>(
 
     match (scheme, cert_view) {
         (SIG_SCHEME_ED25519, CertView::Ed25519 { pubkey, .. }) => {
-            if sig_len != 64 {
+            let Ok(signature) = <&[u8; 64]>::try_from(sig_bytes) else {
                 return Err(FlightError::WrongSignatureLength);
-            }
-            let signature: &[u8; 64] = sig_bytes.try_into().expect("length checked above");
+            };
             if !E::verify_with_cache(cache, pubkey, &signed, signature) {
                 return Err(FlightError::CertVerifyInvalid);
             }

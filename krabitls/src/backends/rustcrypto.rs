@@ -47,7 +47,7 @@ impl HkdfSha256 for RustCrypto {
     }
 
     fn expand(prk: &[u8; 32], info: &[u8], out: &mut [u8]) -> Result<(), HkdfExpandError> {
-        let hk = Hkdf::<Sha256>::from_prk(prk).expect("32-byte PRK is always valid for SHA-256");
+        let hk = Hkdf::<Sha256>::from_prk(prk).map_err(|_| HkdfExpandError::InvalidPrk)?;
         hk.expand(info, out)
             .map_err(|_| HkdfExpandError::OutputTooLong)
     }
@@ -77,18 +77,13 @@ impl Aes128GcmAead for RustCrypto {
         nonce: &Zeroizing<[u8; 12]>,
         aad: &[u8],
         buffer: &mut [u8],
-    ) -> [u8; 16] {
+    ) -> Result<[u8; 16], AeadError> {
         let cipher = Aes128Gcm::new(&GenericArray::from(**key));
         let nonce = GenericArray::from(**nonce);
-        // `encrypt_in_place_detached` only errors past AES-GCM's 2^36-byte cap
-        // (RFC 5288 §3). TLS 1.3 enforces a `2^14 + 256` cap upstream
-        // (RFC 8446 §5.2, `crate::aead::encrypt_record`), so this is
-        // statically unreachable. A silent zero-tag fallback would still
-        // produce a record the peer rejects as `bad_record_mac`.
         let tag = cipher
             .encrypt_in_place_detached(&nonce, aad, buffer)
-            .expect("TLS record below AES-GCM 2^36-byte cap");
-        tag.into()
+            .map_err(|_| AeadError)?;
+        Ok(tag.into())
     }
 }
 
@@ -116,17 +111,15 @@ impl ChaCha20Poly1305Aead for RustCrypto {
         nonce: &Zeroizing<[u8; 12]>,
         aad: &[u8],
         buffer: &mut [u8],
-    ) -> [u8; 16] {
+    ) -> Result<[u8; 16], AeadError> {
         use chacha20poly1305::aead::generic_array::GenericArray as CpGenericArray;
         use chacha20poly1305::{ChaCha20Poly1305, KeyInit as _, aead::AeadInPlace as _};
         let cipher = ChaCha20Poly1305::new(&CpGenericArray::from(**key));
         let nonce = CpGenericArray::from(**nonce);
-        // Same `2^14 + 256` upstream cap as the AES path; the size-overflow
-        // branch of `encrypt_in_place_detached` is statically unreachable.
         let tag = cipher
             .encrypt_in_place_detached(&nonce, aad, buffer)
-            .expect("TLS record below ChaCha20-Poly1305 cap");
-        tag.into()
+            .map_err(|_| AeadError)?;
+        Ok(tag.into())
     }
 }
 

@@ -202,7 +202,7 @@ fn encrypt_record_with<'a, F>(
     aead_encrypt: F,
 ) -> Result<&'a [u8], EncryptError>
 where
-    F: FnOnce(&ZeroBuf<12>, &[u8], &mut [u8]) -> [u8; 16],
+    F: FnOnce(&ZeroBuf<12>, &[u8], &mut [u8]) -> Result<[u8; 16], crate::traits::AeadError>,
 {
     // TLSPlaintext.length cap (RFC 8446 §5.1): the inner-plaintext content
     // must not exceed 2^14 bytes. This is *separate* from the §5.2
@@ -254,7 +254,8 @@ where
     out_buf[5 + content.len()] = content_type;
 
     let nonce = aead_nonce(iv, seq);
-    let tag = aead_encrypt(&nonce, &aad, &mut out_buf[5..5 + inner_len]);
+    let tag = aead_encrypt(&nonce, &aad, &mut out_buf[5..5 + inner_len])
+        .map_err(|_| EncryptError::AeadFailed)?;
     out_buf[5 + inner_len..5 + inner_len + AEAD_TAG_LEN].copy_from_slice(&tag);
 
     Ok(&out_buf[..total_len])
@@ -281,6 +282,10 @@ pub enum EncryptError {
     /// the `TLSCiphertext.length` cap (`2^14 + 256`, §5.2). Caller must
     /// split across multiple records.
     RecordTooLarge,
+    /// The AEAD backend rejected the encrypt call. Statically unreachable
+    /// for TLS-bounded record sizes; surfaced rather than swallowed so
+    /// backends don't have to `.expect()` their underlying crate.
+    AeadFailed,
 }
 
 /// Reasons a `decrypt_record` call may fail.

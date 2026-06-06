@@ -23,15 +23,19 @@ pub trait Aes128GcmAead {
 
     /// Encrypt `buffer` in place and return the 16-byte authentication tag.
     ///
-    /// On entry, `buffer` contains the plaintext. On return, `buffer` contains
+    /// On entry, `buffer` contains the plaintext. On `Ok`, `buffer` contains
     /// the ciphertext of the same length and the caller appends the returned
-    /// tag.
+    /// tag. `Err(AeadError)` is reserved for cases the backend can't service
+    /// (e.g. AAD or buffer exceeding AEAD's plaintext cap); TLS 1.3's
+    /// upstream record-size cap makes this unreachable in practice, but the
+    /// fallible signature lets impls avoid `.expect()` on the underlying
+    /// crypto crate's own fallible call.
     fn encrypt(
         key: &Zeroizing<[u8; 16]>,
         nonce: &Zeroizing<[u8; 12]>,
         aad: &[u8],
         buffer: &mut [u8],
-    ) -> [u8; 16];
+    ) -> Result<[u8; 16], AeadError>;
 }
 
 /// ChaCha20-Poly1305 AEAD with a fixed 32-byte key, 12-byte nonce, and 16-byte tag.
@@ -51,15 +55,13 @@ pub trait ChaCha20Poly1305Aead {
     ) -> Result<(), AeadError>;
 
     /// Encrypt `buffer` in place and return the 16-byte authentication tag.
-    ///
-    /// On entry, `buffer` contains the plaintext. On return, `buffer` contains
-    /// the ciphertext of the same length and the caller appends the returned tag.
+    /// See [`Aes128GcmAead::encrypt`] for the `Err` contract.
     fn encrypt(
         key: &Zeroizing<[u8; 32]>,
         nonce: &Zeroizing<[u8; 12]>,
         aad: &[u8],
         buffer: &mut [u8],
-    ) -> [u8; 16];
+    ) -> Result<[u8; 16], AeadError>;
 }
 
 /// Authentication-tag verification failed. Per RFC 8446 §5.2 the connection
