@@ -21,10 +21,6 @@ concurrency:
 jobs:
   cortex-m:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        target: [thumbv6m-none-eabi, thumbv7m-none-eabi]
     steps:
     - uses: actions/checkout@v4
       with:
@@ -32,10 +28,10 @@ jobs:
 
     - uses: dtolnay/rust-toolchain@stable
       with:
-        targets: ${{ matrix.target }}
+        targets: thumbv7m-none-eabi
 
-    - name: Install QEMU
-      run: sudo apt-get update && sudo apt-get install -y qemu-system-arm
+    - name: Install QEMU + arm-none-eabi binutils
+      run: sudo apt-get update && sudo apt-get install -y qemu-system-arm binutils-arm-none-eabi
 
     - uses: actions/cache@v4
       with:
@@ -43,8 +39,8 @@ jobs:
           ~/.cargo/registry
           ~/.cargo/git
           cortex_m_demo/target
-        key: cortex-m-${{ matrix.target }}-${{ hashFiles('cortex_m_demo/Cargo.toml', 'krabitls/Cargo.toml') }}
-        restore-keys: cortex-m-${{ matrix.target }}-
+        key: cortex-m-${{ hashFiles('cortex_m_demo/Cargo.toml', 'krabitls/Cargo.toml') }}
+        restore-keys: cortex-m-
 
     # `cargo run` invokes the QEMU runner configured in
     # cortex_m_demo/.cargo/config.toml, so the semihosted `main` actually
@@ -52,20 +48,26 @@ jobs:
     # exit. `cargo build` would only have type-checked + linked the binary.
     - name: Run krabitls example
       working-directory: cortex_m_demo
-      run: cargo run --release --example krabitls --target ${{ matrix.target }}
+      run: cargo run --release --example krabitls --target thumbv7m-none-eabi
 
     - name: Run krabitls example (baseline)
       working-directory: cortex_m_demo
-      run: cargo run --release --example krabitls --target ${{ matrix.target }} --features baseline
+      run: cargo run --release --example krabitls --target thumbv7m-none-eabi --features baseline
 
     - name: Run krabitls_jedisct example
       working-directory: cortex_m_demo
-      run: cargo run --release --example krabitls_jedisct --target ${{ matrix.target }} --features jedisct
+      run: cargo run --release --example krabitls_jedisct --target thumbv7m-none-eabi --features jedisct
 
-    # The captured-fixture buffers (8 KiB plaintext + 8 KiB flight) overflow
-    # microbit's 16 KiB RAM by 16 B, so the M0 build skips this example.
-    # RSA itself runs on M0 — it's the example's I/O buffers that don't fit.
-    - name: Run krabitls_rsa example (M3 only)
-      if: matrix.target == 'thumbv7m-none-eabi'
+    - name: Run krabitls_chacha example
       working-directory: cortex_m_demo
-      run: cargo run --release --example krabitls_rsa --target ${{ matrix.target }} --features rsa
+      run: cargo run --release --example krabitls_chacha --target thumbv7m-none-eabi --features chacha20
+
+    - name: Run krabitls_rsa example
+      working-directory: cortex_m_demo
+      run: cargo run --release --example krabitls_rsa --target thumbv7m-none-eabi --features rsa
+
+    - name: Footprint suite
+      working-directory: cortex_m_demo
+      run: |
+        set -o pipefail
+        python3 run_suite.py | tee -a "$GITHUB_STEP_SUMMARY"

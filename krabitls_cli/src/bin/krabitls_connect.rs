@@ -543,20 +543,25 @@ fn run(host: &str, port: u16, capture_dir: Option<&str>, pin: Option<&Pin>) -> R
     transcript.update(flight.fin_full);
     let th_through_finished = transcript.snapshot();
 
+    // ---- Build client Finished (also dumped under --capture for the
+    //      cortex_m_demo replays to compare their own build_client_finished
+    //      output against the byte-identity expected value). ----
+    let mut cf_out = [0u8; 80];
+    let cf_record = build_cf_dispatch(
+        sh.cipher_suite,
+        &c_hs_ts,
+        &th_through_finished,
+        0,
+        &mut cf_out,
+    )?;
+
     // ---- Optional: dump the captured handshake state for an offline replay
-    //      demo (cortex_m_demo/examples/krabitls_rsa.rs). Bails after writing,
+    //      demo (cortex_m_demo/examples/krabitls_*.rs). Bails after writing,
     //      since we'd otherwise also need to clean up the TCP socket. ----
     if let Some(dir) = capture_dir {
-        // The replay demos derive AES-typed traffic keys; a ChaCha-negotiated
-        // capture would be unreplayable. Reject explicitly until the replay
-        // path knows how to dispatch on the captured suite.
-        if sh.cipher_suite != CIPHER_AES_128_GCM_SHA256 {
-            return Err(format!(
-                "--capture is only supported when the server picks AES-128-GCM (negotiated {})",
-                cipher_suite_name(sh.cipher_suite),
-            )
-            .into());
-        }
+        // Both AES-128-GCM and ChaCha20-Poly1305 captures are supported now;
+        // the replay path dispatches on `sh.cipher_suite` parsed out of the
+        // captured `sh.bin`.
         dump_capture(
             dir,
             host,
@@ -566,19 +571,10 @@ fn run(host: &str, port: u16, capture_dir: Option<&str>, pin: Option<&Pin>) -> R
             &c_hs_ts,
             &flight_enc_bytes,
             seq,
+            cf_record,
         )?;
         return Ok(());
     }
-
-    // ---- Build + send client Finished ----
-    let mut cf_out = [0u8; 80];
-    let cf_record = build_cf_dispatch(
-        sh.cipher_suite,
-        &c_hs_ts,
-        &th_through_finished,
-        0,
-        &mut cf_out,
-    )?;
     stream.write_all(cf_record)?;
     info!("sent client Finished ({} bytes)", cf_record.len());
 
@@ -722,20 +718,37 @@ fn dump_capture(
     c_hs_ts: &krabitls::newtype::Secret,
     flight_enc: &[u8],
     flight_record_count: u64,
+    c_finished: &[u8],
 ) -> Result<()> {
     std::fs::create_dir_all(dir)?;
-    let write = |name: &str, bytes: &[u8]| -> Result<()> {
+    let write_hex = |name: &str, label: &str, bytes: &[u8]| -> Result<()> {
         let path = format!("{dir}/{name}");
-        std::fs::write(&path, bytes)?;
+        let mut s = format!("# {label} from {host} ({} bytes).\n", bytes.len());
+        for (i, b) in bytes.iter().enumerate() {
+            if i > 0 {
+                s.push(if i % 16 == 0 { '\n' } else { ' ' });
+            }
+            s.push_str(&format!("{b:02x}"));
+        }
+        s.push('\n');
+        std::fs::write(&path, s)?;
         debug!("capture wrote {} ({} bytes)", path, bytes.len());
         Ok(())
     };
-    write("ch.bin", ch)?;
-    write("sh.bin", sh)?;
-    write("s_hs_ts.bin", s_hs_ts.as_bytes())?;
-    write("c_hs_ts.bin", c_hs_ts.as_bytes())?;
-    write("flight_enc.bin", flight_enc)?;
-    write("host.txt", host.as_bytes())?;
+    write_hex("ch.hex", "ClientHello record", ch)?;
+    write_hex("sh.hex", "ServerHello record", sh)?;
+    write_hex(
+        "s_hs_ts.hex",
+        "server handshake traffic secret",
+        s_hs_ts.as_bytes(),
+    )?;
+    write_hex(
+        "c_hs_ts.hex",
+        "client handshake traffic secret",
+        c_hs_ts.as_bytes(),
+    )?;
+    write_hex("flight_enc.hex", "encrypted server flight", flight_enc)?;
+    write_hex("c_finished.hex", "client Finished record", c_finished)?;
     info!(
         "capture: {} encrypted flight records ({} total wire bytes) under s_hs_traffic_secret",
         flight_record_count,

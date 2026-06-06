@@ -2,6 +2,16 @@
 name = "krabitls"
 version = "0.1.0"
 edition = "2024"
+readme = "../README.md"
+authors = ["kaidokert <kaidokert@gmail.com>"]
+license = "Apache-2.0"
+description = """
+A TLS13 client lib for microcontrollers.
+"""
+repository = "https://github.com/kaidokert/krabitls-rs"
+homepage = "https://github.com/kaidokert/krabitls-rs"
+keywords = ["embedded", "no-std", "no-heap", "tls"]
+categories = ["cryptography", "no-std", "no-std::no-alloc"]
 
 [features]
 default = []

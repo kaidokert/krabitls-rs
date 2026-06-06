@@ -30,7 +30,3 @@ getrandom = "0.3"
 [[bin]]
 name = "krabitls_connect"
 required-features = ["rsa"]
-
-[[bin]]
-name = "gen_chacha_fixtures"
-required-features = ["chacha20"]
