@@ -721,19 +721,34 @@ fn dump_capture(
     c_finished: &[u8],
 ) -> Result<()> {
     std::fs::create_dir_all(dir)?;
-    let write = |name: &str, bytes: &[u8]| -> Result<()> {
+    let write_hex = |name: &str, label: &str, bytes: &[u8]| -> Result<()> {
         let path = format!("{dir}/{name}");
-        std::fs::write(&path, bytes)?;
+        let mut s = format!("# {label} from {host} ({} bytes).\n", bytes.len());
+        for (i, b) in bytes.iter().enumerate() {
+            if i > 0 {
+                s.push(if i % 16 == 0 { '\n' } else { ' ' });
+            }
+            s.push_str(&format!("{b:02x}"));
+        }
+        s.push('\n');
+        std::fs::write(&path, s)?;
         debug!("capture wrote {} ({} bytes)", path, bytes.len());
         Ok(())
     };
-    write("ch.bin", ch)?;
-    write("sh.bin", sh)?;
-    write("s_hs_ts.bin", s_hs_ts.as_bytes())?;
-    write("c_hs_ts.bin", c_hs_ts.as_bytes())?;
-    write("flight_enc.bin", flight_enc)?;
-    write("c_finished.bin", c_finished)?;
-    write("host.txt", host.as_bytes())?;
+    write_hex("ch.hex", "ClientHello record", ch)?;
+    write_hex("sh.hex", "ServerHello record", sh)?;
+    write_hex(
+        "s_hs_ts.hex",
+        "server handshake traffic secret",
+        s_hs_ts.as_bytes(),
+    )?;
+    write_hex(
+        "c_hs_ts.hex",
+        "client handshake traffic secret",
+        c_hs_ts.as_bytes(),
+    )?;
+    write_hex("flight_enc.hex", "encrypted server flight", flight_enc)?;
+    write_hex("c_finished.hex", "client Finished record", c_finished)?;
     info!(
         "capture: {} encrypted flight records ({} total wire bytes) under s_hs_traffic_secret",
         flight_record_count,
