@@ -9,6 +9,7 @@
 pub mod aead;
 pub mod backends;
 pub mod client_flight;
+pub mod connection;
 pub mod hkdf;
 pub mod identity;
 pub mod newtype;
