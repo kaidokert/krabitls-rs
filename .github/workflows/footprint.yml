@@ -1,0 +1,94 @@
+name: Footprint
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * 1'  # Weekly on Monday at 06:00 UTC
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+
+concurrency:
+  group: footprint-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  footprint:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: thumbv7m-none-eabi, riscv32imac-unknown-none-elf
+        components: llvm-tools
+
+    - name: Install QEMU
+      run: sudo apt-get update && sudo apt-get install -y qemu-system-arm qemu-system-misc
+
+    - uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          footprint/cortex-m/target
+          footprint/risc-v/target
+        key: footprint-${{ hashFiles('footprint/**/Cargo.toml', 'krabitls/Cargo.toml') }}
+        restore-keys: footprint-
+
+    # `cargo run` invokes the QEMU runner configured in each crate's
+    # `.cargo/config.toml`, so the semihosted `main` actually executes and
+    # any handshake / fixture regression surfaces as a non-zero exit.
+    - name: cortex-m / krabitls
+      working-directory: footprint/cortex-m
+      run: cargo run --release --example krabitls --target thumbv7m-none-eabi
+
+    - name: cortex-m / krabitls (baseline)
+      working-directory: footprint/cortex-m
+      run: cargo run --release --example krabitls --target thumbv7m-none-eabi --features baseline
+
+    - name: cortex-m / krabitls_jedisct
+      working-directory: footprint/cortex-m
+      run: cargo run --release --example krabitls_jedisct --target thumbv7m-none-eabi --features jedisct
+
+    - name: cortex-m / krabitls_chacha
+      working-directory: footprint/cortex-m
+      run: cargo run --release --example krabitls_chacha --target thumbv7m-none-eabi --features chacha20
+
+    - name: cortex-m / krabitls_rsa
+      working-directory: footprint/cortex-m
+      run: cargo run --release --example krabitls_rsa --target thumbv7m-none-eabi --features rsa
+
+    - name: risc-v / krabitls
+      working-directory: footprint/risc-v
+      run: cargo run --release --example krabitls --target riscv32imac-unknown-none-elf
+
+    - name: risc-v / krabitls (baseline)
+      working-directory: footprint/risc-v
+      run: cargo run --release --example krabitls --target riscv32imac-unknown-none-elf --features baseline
+
+    - name: risc-v / krabitls_jedisct
+      working-directory: footprint/risc-v
+      run: cargo run --release --example krabitls_jedisct --target riscv32imac-unknown-none-elf --features jedisct
+
+    - name: risc-v / krabitls_chacha
+      working-directory: footprint/risc-v
+      run: cargo run --release --example krabitls_chacha --target riscv32imac-unknown-none-elf --features chacha20
+
+    - name: risc-v / krabitls_rsa
+      working-directory: footprint/risc-v
+      run: cargo run --release --example krabitls_rsa --target riscv32imac-unknown-none-elf --features rsa
+
+    - name: Footprint suite
+      working-directory: footprint
+      run: |
+        set -o pipefail
+        python3 run_suite.py | tee -a "$GITHUB_STEP_SUMMARY"

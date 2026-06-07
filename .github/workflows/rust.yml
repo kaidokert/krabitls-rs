@@ -28,8 +28,9 @@ jobs:
     - uses: dtolnay/rust-toolchain@stable
       with:
         components: rustfmt, clippy
-        # Needed by the local `cortex-m-build` hook in .pre-commit-config.yaml.
-        targets: thumbv7m-none-eabi
+        # Needed by the local `footprint-*-build` hooks in
+        # .pre-commit-config.yaml — one per target crate.
+        targets: thumbv7m-none-eabi, riscv32imac-unknown-none-elf
     - uses: actions/cache@v4
       with:
         path: |
@@ -37,8 +38,9 @@ jobs:
           ~/.cargo/git
           krabitls/target
           krabitls_cli/target
-          cortex_m_demo/target
-        key: pre-commit-${{ hashFiles('krabitls/Cargo.toml', 'krabitls_cli/Cargo.toml', 'cortex_m_demo/Cargo.toml') }}
+          footprint/cortex-m/target
+          footprint/risc-v/target
+        key: pre-commit-${{ hashFiles('krabitls/Cargo.toml', 'krabitls_cli/Cargo.toml', 'footprint/**/Cargo.toml') }}
         restore-keys: pre-commit-
     - uses: pre-commit/action@v3.0.1
 

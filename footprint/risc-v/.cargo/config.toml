@@ -1,0 +1,10 @@
+[build]
+target = "riscv32imac-unknown-none-elf"
+
+[target.riscv32imac-unknown-none-elf]
+# QEMU `virt` machine with semihosting enabled — `debug::exit` terminates
+# the emulator cleanly, so we use the same pattern as cortex-m (no wrapper).
+runner = "qemu-system-riscv32 -cpu rv32 -machine virt -bios none -nographic -semihosting -kernel"
+# Suppress unwind tables; combined with the `link.x` patch in build.rs that
+# drops `.eh_frame` placement, prevents the rust-lld PCREL32 overflow.
+rustflags = ["-C", "force-unwind-tables=no"]

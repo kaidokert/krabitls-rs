@@ -1,0 +1,48 @@
+[package]
+name = "footprint_riscv"
+version = "0.1.0"
+edition = "2024"
+autobins = false
+autotests = false
+autobenches = false
+
+[features]
+# See `footprint_cortex_m/Cargo.toml` — same feature semantics for the
+# baseline / jedisct / rsa / chacha20 rows. Wired through `footprint_handshakes`.
+baseline = []
+jedisct = ["footprint_handshakes/jedisct"]
+rsa = ["footprint_handshakes/rsa"]
+chacha20 = ["footprint_handshakes/chacha20"]
+
+[[example]]
+name = "krabitls"
+
+[[example]]
+name = "krabitls_jedisct"
+required-features = ["jedisct"]
+
+[[example]]
+name = "krabitls_rsa"
+required-features = ["rsa"]
+
+[[example]]
+name = "krabitls_chacha"
+required-features = ["chacha20"]
+
+[dependencies]
+riscv-rt = "0.13"
+# Single-hart critical-section backend so `footprint_handshakes::with_buffers`
+# can take a critical section on QEMU's virt machine (single hart, no SMP).
+riscv = { version = "0.12", features = ["critical-section-single-hart"] }
+riscv-semihosting = "0.2"
+
+footprint_handshakes = { path = "../handshakes" }
+
+[profile.release]
+codegen-units = 1
+debug = true
+lto = true
+opt-level = "z"
+# Suppress unwind tables / `.eh_frame`; otherwise the rust-lld RV32 PCREL
+# relocations overflow once the binary grows past a few KiB.
+panic = "abort"
