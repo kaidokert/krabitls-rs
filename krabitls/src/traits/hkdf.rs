@@ -62,6 +62,17 @@ pub enum HkdfExpandError {
     InvalidPrk,
 }
 
+impl core::fmt::Display for HkdfExpandError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::OutputTooLong => f.write_str("HKDF-Expand output exceeds 255 * hash_len"),
+            Self::InvalidPrk => f.write_str("HKDF backend rejected the PRK"),
+        }
+    }
+}
+
+impl core::error::Error for HkdfExpandError {}
+
 /// Incremental SHA-256 hash state.
 ///
 /// `Clone` is required: the TLS 1.3 transcript hash is updated as each

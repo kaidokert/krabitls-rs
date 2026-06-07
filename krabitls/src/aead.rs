@@ -346,6 +346,49 @@ pub enum DecryptError {
     EmptyInnerPlaintext,
 }
 
+impl core::fmt::Display for EncryptError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::BufferTooSmall { needed, got } => {
+                write!(
+                    f,
+                    "encrypt output buffer too small (needed {needed}, got {got})"
+                )
+            }
+            Self::RecordTooLarge => f.write_str("plaintext exceeds the TLS 1.3 record-size cap"),
+            Self::AeadFailed => f.write_str("AEAD backend rejected the encrypt call"),
+        }
+    }
+}
+
+impl core::error::Error for EncryptError {}
+
+impl core::fmt::Display for DecryptError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Truncated => f.write_str("record shorter than its declared length or AEAD tag"),
+            Self::RecordTooLarge => f.write_str("record exceeds the TLS 1.3 record-size cap"),
+            Self::TrailingBytes => f.write_str("bytes left after the declared record body"),
+            Self::UnexpectedContentType(b) => {
+                write!(
+                    f,
+                    "record content_type was 0x{b:02x}, expected application_data (23)"
+                )
+            }
+            Self::UnexpectedLegacyVersion(v) => {
+                write!(f, "record legacy_version was 0x{v:04x}, expected 0x0303")
+            }
+            Self::BufferTooSmall { needed, got } => {
+                write!(f, "plaintext buffer too small (needed {needed}, got {got})")
+            }
+            Self::AeadFailed => f.write_str("AEAD tag verification failed"),
+            Self::EmptyInnerPlaintext => f.write_str("inner plaintext was all zeros"),
+        }
+    }
+}
+
+impl core::error::Error for DecryptError {}
+
 #[cfg(test)]
 mod tests {
     use super::*;

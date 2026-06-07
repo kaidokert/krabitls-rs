@@ -23,6 +23,21 @@ pub enum IdentityError {
     PinAlgorithmMismatch,
 }
 
+impl core::fmt::Display for IdentityError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let s = match self {
+            Self::NoSan => "cert had no SubjectAltName extension",
+            Self::HostnameMismatch => "no SAN dNSName matched the requested hostname",
+            Self::MalformedSan => "cert SAN extension was malformed",
+            Self::PinMismatch => "pinned public key did not match the cert pubkey",
+            Self::PinAlgorithmMismatch => "pinned-key algorithm family did not match the cert",
+        };
+        f.write_str(s)
+    }
+}
+
+impl core::error::Error for IdentityError {}
+
 /// Public key material pinned out-of-band.
 #[derive(Debug, Clone, Copy)]
 pub enum PinnedPubkey<'a> {
@@ -219,6 +234,24 @@ pub enum ValidityError {
     /// `Time = UTCTime | GeneralizedTime`.
     Malformed,
 }
+
+#[cfg(feature = "validity")]
+impl core::fmt::Display for ValidityError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::NotYetValid { not_before, now } => {
+                write!(f, "cert not yet valid: notBefore={not_before}, now={now}")
+            }
+            Self::Expired { not_after, now } => {
+                write!(f, "cert expired: notAfter={not_after}, now={now}")
+            }
+            Self::Malformed => f.write_str("cert validity field did not decode"),
+        }
+    }
+}
+
+#[cfg(feature = "validity")]
+impl core::error::Error for ValidityError {}
 
 /// Check the cert's `notBefore` / `notAfter` window against a caller-
 /// supplied [`crate::traits::TimeSource`].

@@ -38,6 +38,16 @@ pub enum ReassemblyError {
     Overflow,
 }
 
+impl core::fmt::Display for ReassemblyError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Overflow => f.write_str("server-flight reassembler capacity exceeded"),
+        }
+    }
+}
+
+impl core::error::Error for ReassemblyError {}
+
 impl<const N: usize> ServerFlightReassembler<N> {
     pub const fn new() -> Self {
         Self { buf: Vec::new() }
