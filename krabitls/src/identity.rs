@@ -283,137 +283,61 @@ pub fn verify_validity<T: crate::traits::time::TimeSource>(
 /// Decode the `Validity SEQUENCE { notBefore Time, notAfter Time }`
 /// from the captured DER bytes. Returns `(not_before, not_after)` in
 /// Unix-epoch seconds.
-#[cfg(feature = "validity")]
-fn parse_validity_der(der: &[u8]) -> Result<(u64, u64), ValidityError> {
-    let (seq_tag, seq_len, body) = decode_tlv_header_inner(der)?;
-    if seq_tag != 0x30 || body.len() < seq_len {
-        return Err(ValidityError::Malformed);
-    }
-    let body = &body[..seq_len];
-    let (t1_tag, t1_len, after1) = decode_tlv_header_inner(body)?;
-    if after1.len() < t1_len {
-        return Err(ValidityError::Malformed);
-    }
-    let not_before = decode_time(t1_tag, &after1[..t1_len])?;
-    let rest = &after1[t1_len..];
-    let (t2_tag, t2_len, after2) = decode_tlv_header_inner(rest)?;
-    if after2.len() < t2_len {
-        return Err(ValidityError::Malformed);
-    }
-    let not_after = decode_time(t2_tag, &after2[..t2_len])?;
-    // RFC 5280 §4.1.2.5: `Validity ::= SEQUENCE { notBefore Time, notAfter Time }`
-    // is *exactly* two Time fields — reject `SEQUENCE { Time, Time, ...trailing }`
-    // so a malformed encoding can't slip through as long as the first two
-    // timestamps happen to bracket `now`.
-    if !after2[t2_len..].is_empty() {
-        return Err(ValidityError::Malformed);
-    }
-    Ok((not_before, not_after))
-}
-
-/// TLV-header decoder for the validity walker. Returns `(tag, length,
-/// rest_after_header)`. Delegates to the SAN walker's `decode_tlv_header`
-/// so the 16-bit-safe length accumulation (u32 → `try_into::<usize>()`)
-/// is shared instead of duplicated — the previous in-place copy here
-/// silently truncated on 16-bit `usize` for long-form lengths with n > 2.
-#[cfg(feature = "validity")]
-fn decode_tlv_header_inner(buf: &[u8]) -> Result<(u8, usize, &[u8]), ValidityError> {
-    decode_tlv_header(buf).map_err(|_| ValidityError::Malformed)
-}
-
-/// Decode one X.509 `Time` value (either `UTCTime` 0x17 or
-/// `GeneralizedTime` 0x18) into Unix epoch seconds.
-#[cfg(feature = "validity")]
-fn decode_time(tag: u8, body: &[u8]) -> Result<u64, ValidityError> {
-    // UTCTime:         YYMMDDHHMMSSZ  (13 chars, 2-digit year)
-    // GeneralizedTime: YYYYMMDDHHMMSSZ (15 chars, 4-digit year)
-    let (year, mm, dd, hh, mn, ss) = match tag {
-        0x17 if body.len() == 13 && body[12] == b'Z' => {
-            let yy = parse_n(body, 0, 2)?;
-            // RFC 5280 §4.1.2.5.1: YY < 50 → 20YY, YY >= 50 → 19YY.
-            let year = if yy < 50 { 2000 + yy } else { 1900 + yy };
-            (
-                year,
-                parse_n(body, 2, 2)?,
-                parse_n(body, 4, 2)?,
-                parse_n(body, 6, 2)?,
-                parse_n(body, 8, 2)?,
-                parse_n(body, 10, 2)?,
-            )
-        }
-        0x18 if body.len() == 15 && body[14] == b'Z' => (
-            parse_n(body, 0, 4)?,
-            parse_n(body, 4, 2)?,
-            parse_n(body, 6, 2)?,
-            parse_n(body, 8, 2)?,
-            parse_n(body, 10, 2)?,
-            parse_n(body, 12, 2)?,
-        ),
-        _ => return Err(ValidityError::Malformed),
-    };
-    days_to_epoch_secs(year, mm, dd, hh, mn, ss).ok_or(ValidityError::Malformed)
-}
-
-/// Parse `n` ASCII digits at `body[start..start+n]` into a `u32`.
-#[cfg(feature = "validity")]
-fn parse_n(body: &[u8], start: usize, n: usize) -> Result<u32, ValidityError> {
-    let mut v: u32 = 0;
-    for i in 0..n {
-        let b = body[start + i];
-        if !b.is_ascii_digit() {
-            return Err(ValidityError::Malformed);
-        }
-        v = v * 10 + (b - b'0') as u32;
-    }
-    Ok(v)
-}
-
-/// Convert a Gregorian (Y, M, D, h, m, s) UTC moment into Unix epoch
-/// seconds. Returns `None` for impossible dates (month 0, day 32, etc.)
-/// or pre-1970 (cert validity can't predate the epoch in any realistic
-/// deployment).
 ///
-/// Algorithm: Hinnant civil-from-days, applied forward. Shifts Feb to
-/// the "end of the year" so leap-year edges drop out cleanly.
+/// Delegates the `UTCTime` / `GeneralizedTime` parsing to the `der` crate's
+/// built-in types (no extra feature flag — `to_unix_duration()` is on the
+/// default API surface). The leap-year math, two-digit-year pivot (RFC
+/// 5280 §4.1.2.5.1), and per-month day limits all live in `der` instead
+/// of the previous hand-rolled `days_to_epoch_secs`.
 #[cfg(feature = "validity")]
-fn days_to_epoch_secs(y: u32, m: u32, d: u32, h: u32, mn: u32, s: u32) -> Option<u64> {
-    if y < 1970 || m == 0 || m > 12 || d == 0 || h > 23 || mn > 59 || s > 60 {
-        return None;
+fn parse_validity_der(der_bytes: &[u8]) -> Result<(u64, u64), ValidityError> {
+    use der::{Reader, SliceReader};
+
+    let mut outer = SliceReader::new(der_bytes).map_err(|_| ValidityError::Malformed)?;
+    let result: der::Result<(u64, u64)> = outer.sequence(|inner| {
+        let nb = decode_time_to_unix(inner)?;
+        let na = decode_time_to_unix(inner)?;
+        // RFC 5280 §4.1.2.5: `Validity ::= SEQUENCE { notBefore Time, notAfter Time }`
+        // is *exactly* two Time fields — reject `SEQUENCE { Time, Time, ...trailing }`
+        // so a malformed encoding can't slip through as long as the first two
+        // timestamps happen to bracket `now`.
+        if !inner.is_finished() {
+            return Err(inner.error(der::ErrorKind::TrailingData {
+                decoded: 0u8.into(),
+                remaining: 0u8.into(),
+            }));
+        }
+        Ok((nb, na))
+    });
+    let (nb, na) = result.map_err(|_| ValidityError::Malformed)?;
+    if !outer.is_finished() {
+        return Err(ValidityError::Malformed);
     }
-    // Per-month day limit so Feb 30 / Apr 31 / etc. don't pass through.
-    // Gregorian leap rule: divisible by 4 except centuries unless ÷400.
-    // `is_multiple_of` (Rust 1.87+, satisfied by our edition-2024 MSRV)
-    // dodges clippy::manual-is-multiple-of for the non-power-of-2 divisors.
-    let leap = y.is_multiple_of(4) && (!y.is_multiple_of(100) || y.is_multiple_of(400));
-    // `m` is validated to `1..=12` at the top of this function, so by the
-    // time we reach this match it's always exactly one of the listed
-    // values. The `_ => 28` wildcard covers non-leap February (the only
-    // remaining case) and avoids `unreachable!()`, which would link
-    // panic-fmt machinery into the binary in `no_std` builds.
-    let days_in_month: u32 = match m {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        2 if leap => 29,
-        _ => 28,
+    Ok((nb, na))
+}
+
+/// Decode one X.509 `Time` value from a `der::Reader` cursor into Unix
+/// epoch seconds. The CHOICE `Time ::= UTCTime | GeneralizedTime` is
+/// disambiguated by the leading tag; both `der::asn1::UtcTime` and
+/// `GeneralizedTime` expose `to_unix_duration() -> core::time::Duration`
+/// which we narrow to `u64` seconds.
+#[cfg(feature = "validity")]
+fn decode_time_to_unix<'a, R: der::Reader<'a>>(r: &mut R) -> der::Result<u64> {
+    use der::asn1::{GeneralizedTime, UtcTime};
+    use der::{Decode, Tag};
+
+    let tag = Tag::peek(r)?;
+    let secs = match tag {
+        Tag::UtcTime => UtcTime::decode(r)?.to_unix_duration().as_secs(),
+        Tag::GeneralizedTime => GeneralizedTime::decode(r)?.to_unix_duration().as_secs(),
+        _ => {
+            return Err(r.error(der::ErrorKind::TagUnexpected {
+                expected: None,
+                actual: tag,
+            }));
+        }
     };
-    if d > days_in_month {
-        return None;
-    }
-    let yp = if m <= 2 { y - 1 } else { y };
-    let era = yp / 400;
-    let yoe = yp - era * 400; // [0, 399]
-    let mp = if m > 2 { m - 3 } else { m + 9 }; // [0, 11]
-    let doy = (153 * mp + 2) / 5 + d - 1; // [0, 365]
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
-    let days_since_0000_03_01 = era as i64 * 146097 + doe as i64;
-    // Epoch (1970-01-01) is 719468 days after 0000-03-01 in this counting.
-    let days_since_epoch = days_since_0000_03_01 - 719468;
-    if days_since_epoch < 0 {
-        return None;
-    }
-    let secs =
-        (days_since_epoch as u64) * 86400 + (h as u64) * 3600 + (mn as u64) * 60 + (s as u64);
-    Some(secs)
+    Ok(secs)
 }
 
 #[cfg(test)]
@@ -559,85 +483,10 @@ mod tests {
         use crate::traits::cert::CertView;
         use crate::traits::time::{FixedTime, TimeSource};
 
-        /// 2020-01-15T00:00:00Z = 1579046400 epoch seconds.
-        const T_2020_01_15: u64 = 1579046400;
         /// 2030-01-15T00:00:00Z = 1894665600.
         const T_2030_01_15: u64 = 1894665600;
         /// 2024-06-15T12:34:56Z = 1718454896.
         const T_2024_06_15_LATE: u64 = 1718454896;
-
-        #[test]
-        fn days_to_epoch_known_anchors() {
-            assert_eq!(days_to_epoch_secs(1970, 1, 1, 0, 0, 0), Some(0));
-            assert_eq!(days_to_epoch_secs(2000, 1, 1, 0, 0, 0), Some(946684800));
-            assert_eq!(days_to_epoch_secs(2020, 1, 15, 0, 0, 0), Some(T_2020_01_15));
-            assert_eq!(
-                days_to_epoch_secs(2024, 6, 15, 12, 34, 56),
-                Some(T_2024_06_15_LATE)
-            );
-        }
-
-        #[test]
-        fn days_to_epoch_rejects_pre_epoch_and_bad_dates() {
-            assert!(days_to_epoch_secs(1969, 12, 31, 23, 59, 59).is_none());
-            assert!(days_to_epoch_secs(2024, 0, 1, 0, 0, 0).is_none());
-            assert!(days_to_epoch_secs(2024, 13, 1, 0, 0, 0).is_none());
-            assert!(days_to_epoch_secs(2024, 1, 0, 0, 0, 0).is_none());
-            assert!(days_to_epoch_secs(2024, 1, 32, 0, 0, 0).is_none());
-        }
-
-        #[test]
-        fn days_to_epoch_rejects_per_month_day_overflow() {
-            assert!(days_to_epoch_secs(2024, 4, 31, 0, 0, 0).is_none());
-            assert!(days_to_epoch_secs(2024, 6, 31, 0, 0, 0).is_none());
-            assert!(days_to_epoch_secs(2024, 9, 31, 0, 0, 0).is_none());
-            assert!(days_to_epoch_secs(2024, 11, 31, 0, 0, 0).is_none());
-            assert!(days_to_epoch_secs(2023, 2, 29, 0, 0, 0).is_none());
-            assert!(days_to_epoch_secs(2024, 2, 30, 0, 0, 0).is_none());
-            assert!(days_to_epoch_secs(2100, 2, 29, 0, 0, 0).is_none());
-        }
-
-        #[test]
-        fn days_to_epoch_accepts_per_month_day_edges() {
-            assert!(days_to_epoch_secs(2024, 1, 31, 0, 0, 0).is_some());
-            assert!(days_to_epoch_secs(2024, 12, 31, 0, 0, 0).is_some());
-            assert!(days_to_epoch_secs(2024, 4, 30, 0, 0, 0).is_some());
-            assert!(days_to_epoch_secs(2024, 2, 29, 0, 0, 0).is_some());
-            assert!(days_to_epoch_secs(2000, 2, 29, 0, 0, 0).is_some());
-            assert!(days_to_epoch_secs(2023, 2, 28, 0, 0, 0).is_some());
-        }
-
-        #[test]
-        fn decode_utctime() {
-            let v = decode_time(0x17, b"200115000000Z").unwrap();
-            assert_eq!(v, T_2020_01_15);
-        }
-
-        #[test]
-        fn decode_utctime_pivot_at_50() {
-            // RFC 5280: YY < 50 → 20YY; YY >= 50 → 19YY. days_to_epoch
-            // rejects pre-1970, so YY=99 → 1999 is the latest pre-1970-safe
-            // value vs YY=49 → 2049.
-            let yy_49 = decode_time(0x17, b"490101000000Z").unwrap();
-            let yy_99 = decode_time(0x17, b"991231235959Z").unwrap();
-            assert!(yy_49 > yy_99);
-            // YY=50 → 1950, pre-1970, rejected.
-            assert!(decode_time(0x17, b"500101000000Z").is_err());
-        }
-
-        #[test]
-        fn decode_generalizedtime() {
-            let v = decode_time(0x18, b"20300115000000Z").unwrap();
-            assert_eq!(v, T_2030_01_15);
-        }
-
-        #[test]
-        fn decode_time_rejects_bad_shapes() {
-            assert!(decode_time(0x17, b"200115000000X").is_err()); // missing Z
-            assert!(decode_time(0x17, b"2001150000Z").is_err()); // wrong length
-            assert!(decode_time(0x17, b"20A115000000Z").is_err()); // non-digit
-            assert!(decode_time(0x16, b"200115000000Z").is_err()); // wrong tag
-        }
 
         /// Encode a `Validity SEQUENCE { UTCTime, UTCTime }` (short-form
         /// length only — total fits in 32 bytes).
