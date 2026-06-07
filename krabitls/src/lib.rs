@@ -18,11 +18,13 @@ pub mod server_flight;
 pub mod traits;
 
 #[cfg(feature = "chacha20")]
+// Public surface — typestate API + the trait/backend/error types it
+// surfaces. The sans-io free functions, RecordKeys, and the verify-chain
+// helpers are pub(crate) at their source modules; reach them through
+// `TlsConnection` instead.
+#[cfg(feature = "chacha20")]
 pub use aead::ChaCha20Poly1305Sha256;
-pub use aead::{
-    Aes128GcmSha256, CipherSuite, DecryptError, EncryptError, RecordKeys, aead_nonce,
-    split_inner_plaintext,
-};
+pub use aead::{Aes128GcmSha256, CipherSuite, DecryptError, EncryptError};
 #[cfg(feature = "jedisct")]
 pub use backends::JedisctCrypto;
 pub use backends::{DerCert, RustCrypto};
@@ -33,21 +35,36 @@ pub use connection::{
     AppData, ConnectionError, FlightStep, Init, NegotiatedSuite, ServerFlightDone,
     ServerPubkeyOwned, TlsConnection, VerifyMode, WaitServerFlight, WaitServerHello,
 };
-pub use hkdf::{
-    EMPTY_TRANSCRIPT_HASH, HkdfLabelError, TranscriptError, TranscriptHash,
-    application_traffic_secrets, derive_secret, early_secret, finished_mac, handshake_secret,
-    handshake_traffic_secrets, hkdf_expand_label, master_secret,
+pub use hkdf::{HkdfLabelError, TranscriptError, TranscriptHash};
+// Lib-test convenience re-exports — internal helpers reachable via `crate::foo`
+// inside the in-crate tests module. External callers go through TlsConnection.
+#[cfg(test)]
+pub(crate) use aead::{
+    RecordKeys, aead_nonce, decrypt_record, encrypt_record, split_inner_plaintext,
+};
+#[cfg(all(test, feature = "chacha20"))]
+pub(crate) use aead::{decrypt_record_chacha, encrypt_record_chacha};
+#[cfg(all(test, feature = "chacha20"))]
+pub(crate) use hkdf::traffic_keys_chacha;
+#[cfg(test)]
+pub(crate) use hkdf::{
+    EMPTY_TRANSCRIPT_HASH, application_traffic_secrets, derive_secret, early_secret, finished_mac,
+    handshake_secret, handshake_traffic_secrets, hkdf_expand_label, master_secret, traffic_keys,
 };
 #[cfg(feature = "validity")]
 pub use identity::{ValidityError, verify_validity};
 #[cfg(feature = "chacha20")]
 pub use newtype::AeadKey32;
 pub use newtype::{AeadIv, AeadKey, Secret, TranscriptDigest, ZeroBuf};
-pub use server_flight::{
-    FlightError, ServerFlightVerified, ServerFlightView, ServerPubkey, extract_cert_der,
-    parse_server_flight, verify_certificate_verify, verify_self_signed_cert,
-    verify_server_finished, verify_server_flight,
+#[cfg(test)]
+pub(crate) use server_flight::{
+    ServerFlightVerified, verify_certificate_verify, verify_certificate_verify_with_cache,
+    verify_self_signed_cert, verify_self_signed_cert_with_cache, verify_server_finished,
+    verify_server_flight,
 };
+// `extract_cert_der` + `parse_server_flight` stay pub for callers doing
+// cert-content inspection (SAN / pin / validity) after the typestate verify.
+pub use server_flight::{FlightError, ServerPubkey, extract_cert_der, parse_server_flight};
 #[cfg(feature = "chacha20")]
 pub use traits::ChaCha20Poly1305Aead;
 #[cfg(feature = "rsa")]
@@ -393,7 +410,7 @@ impl<E: core::error::Error + 'static> core::error::Error for ClientHelloError<E>
 /// using AES-typed `traffic_keys` / `decrypt_record` / `encrypt_record` /
 /// `build_client_finished` on a ChaCha-negotiated connection will fail at the
 /// first encrypted record.
-pub fn write_client_hello<W: Write>(
+pub(crate) fn write_client_hello<W: Write>(
     out: &mut W,
     random: &[u8; 32],
     x25519_pub: &[u8; 32],
@@ -617,7 +634,7 @@ impl core::error::Error for ParseError {}
 /// Validates the locked profile (TLS 1.3, x25519, AES-128-GCM-SHA256 or
 /// `TLS_CHACHA20_POLY1305_SHA256` under `feature = "chacha20"`) and returns
 /// a [`ServerHelloView`] borrowing into `input`.
-pub fn parse_server_hello(input: &[u8]) -> Result<ServerHelloView<'_>, ParseError> {
+pub(crate) fn parse_server_hello(input: &[u8]) -> Result<ServerHelloView<'_>, ParseError> {
     let mut r = Reader::new(input);
 
     let content_type = r.u8()?;

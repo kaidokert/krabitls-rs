@@ -8,6 +8,7 @@ use embedded_io::Write;
 
 #[cfg(feature = "chacha20")]
 use crate::aead::ChaCha20Poly1305Sha256;
+use crate::aead::split_inner_plaintext;
 use crate::aead::{Aes128GcmSha256, CipherSuite, RecordKeys};
 use crate::backends::RustCrypto;
 use crate::client_flight::ClientFinishedError;
@@ -21,12 +22,13 @@ use crate::hkdf::{
 use crate::newtype::{Secret, ZeroBuf};
 use crate::reassembler::{ReassemblyError, ServerFlightReassembler};
 use crate::server_flight::ServerPubkey;
+use crate::server_flight::verify_server_flight;
 #[cfg(feature = "chacha20")]
 use crate::traits::ChaCha20Poly1305Aead;
 use crate::traits::{Aes128GcmAead, CertParser, Ed25519Verify, HkdfSha256};
 use crate::{
     ClientHelloError, DecryptError, EncryptError, FlightError, ParseError, parse_server_hello,
-    split_inner_plaintext, verify_server_flight, write_client_hello,
+    write_client_hello,
 };
 
 const CT_ALERT: u8 = 0x15;
@@ -594,9 +596,7 @@ where
         self.state.server_pubkey.as_view()
     }
 
-    /// Server handshake-traffic secret. Exposed for replay-fixture capture
-    /// (persist with the encrypted flight + CH/SH; replay via
-    /// `WaitServerFlight::from_handshake_secrets`).
+    /// Server handshake-traffic secret. Exposed for replay-fixture capture.
     pub fn s_hs_traffic_secret(&self) -> &Secret {
         &self.state.s_hs_ts
     }
@@ -604,6 +604,16 @@ where
     /// Client handshake-traffic secret. Same capture use case.
     pub fn c_hs_traffic_secret(&self) -> &Secret {
         &self.state.c_hs_ts
+    }
+
+    /// Derive the `(c_ap, s_ap)` traffic secrets without transitioning into
+    /// AppData. For replay tools that persist secrets across invocations and
+    /// re-enter AppData via [`TlsConnection::from_app_secrets`].
+    #[cfg(feature = "replay")]
+    pub fn derive_app_secrets(&self) -> Result<(Secret, Secret), ConnectionError> {
+        let th = self.transcript.snapshot();
+        let ms = master_secret::<H>(&self.state.hs)?;
+        Ok(application_traffic_secrets::<H>(&ms, &th)?)
     }
 }
 
@@ -707,6 +717,60 @@ where
                 s_hs_ts,
                 s_hs_keys,
                 seq_in: 0,
+            },
+            _crypto: PhantomData,
+        })
+    }
+}
+
+#[cfg(feature = "replay")]
+impl<H, C> TlsConnection<AppData<Aes128GcmSha256>, H, C>
+where
+    H: HkdfSha256,
+{
+    /// Enter `AppData` from persisted app-traffic secrets + per-direction
+    /// sequence numbers. Replay/fixture-CLI use; bypasses the handshake.
+    pub fn from_app_secrets(
+        c_ap_ts: Secret,
+        s_ap_ts: Secret,
+        seq_out: u64,
+        seq_in: u64,
+    ) -> Result<Self, ConnectionError> {
+        let c_ap_keys = RecordKeys::<Aes128GcmSha256>::derive::<H>(&c_ap_ts)?;
+        let s_ap_keys = RecordKeys::<Aes128GcmSha256>::derive::<H>(&s_ap_ts)?;
+        Ok(Self {
+            transcript: TranscriptHash::<H>::new(),
+            state: AppData {
+                c_ap_keys,
+                s_ap_keys,
+                seq_out,
+                seq_in,
+            },
+            _crypto: PhantomData,
+        })
+    }
+}
+
+#[cfg(all(feature = "replay", feature = "chacha20"))]
+impl<H, C> TlsConnection<AppData<ChaCha20Poly1305Sha256>, H, C>
+where
+    H: HkdfSha256,
+{
+    pub fn from_app_secrets(
+        c_ap_ts: Secret,
+        s_ap_ts: Secret,
+        seq_out: u64,
+        seq_in: u64,
+    ) -> Result<Self, ConnectionError> {
+        let c_ap_keys = RecordKeys::<ChaCha20Poly1305Sha256>::derive::<H>(&c_ap_ts)?;
+        let s_ap_keys = RecordKeys::<ChaCha20Poly1305Sha256>::derive::<H>(&s_ap_ts)?;
+        Ok(Self {
+            transcript: TranscriptHash::<H>::new(),
+            state: AppData {
+                c_ap_keys,
+                s_ap_keys,
+                seq_out,
+                seq_in,
             },
             _crypto: PhantomData,
         })

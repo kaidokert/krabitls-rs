@@ -73,7 +73,7 @@ impl core::error::Error for HkdfLabelError {
 }
 
 /// `HKDF-Expand-Label(secret, label, context, len)` per RFC 8446 §7.1.
-pub fn hkdf_expand_label<H: HkdfSha256>(
+pub(crate) fn hkdf_expand_label<H: HkdfSha256>(
     secret: &[u8; 32],
     label: &[u8],
     context: &[u8],
@@ -105,7 +105,7 @@ pub fn hkdf_expand_label<H: HkdfSha256>(
 }
 
 /// `Derive-Secret(secret, label, transcript_hash)` per RFC 8446 §7.1.
-pub fn derive_secret<H: HkdfSha256>(
+pub(crate) fn derive_secret<H: HkdfSha256>(
     secret: &Secret,
     label: &[u8],
     transcript_hash: &TranscriptDigest,
@@ -125,7 +125,7 @@ pub fn derive_secret<H: HkdfSha256>(
 }
 
 /// `SHA-256("")` — the empty-transcript hash used by `Derive-Secret(., x, "")`.
-pub const EMPTY_TRANSCRIPT_HASH: TranscriptDigest = TranscriptDigest::new([
+pub(crate) const EMPTY_TRANSCRIPT_HASH: TranscriptDigest = TranscriptDigest::new([
     0xe3, 0xb0, 0xc4, 0x42, 0x98, 0xfc, 0x1c, 0x14, 0x9a, 0xfb, 0xf4, 0xc8, 0x99, 0x6f, 0xb9, 0x24,
     0x27, 0xae, 0x41, 0xe4, 0x64, 0x9b, 0x93, 0x4c, 0xa4, 0x95, 0x99, 0x1b, 0x78, 0x52, 0xb8, 0x55,
 ]);
@@ -212,7 +212,7 @@ impl core::fmt::Display for TranscriptError {
 impl core::error::Error for TranscriptError {}
 
 /// `early_secret` for no-PSK: `HKDF-Extract(salt=00..00, IKM=00..00)`. RFC 8446 §7.1.
-pub fn early_secret<H: HkdfSha256>() -> Secret {
+pub(crate) fn early_secret<H: HkdfSha256>() -> Secret {
     let zeros = [0u8; 32];
     Secret::new(H::extract(&zeros, &zeros))
 }
@@ -227,14 +227,14 @@ pub fn early_secret<H: HkdfSha256>() -> Secret {
 /// unreachable for the fixed TLS 1.3 labels this function uses — but
 /// the error is propagated rather than `expect`-ed so the public API
 /// stays uniformly fallible.
-pub fn handshake_secret<H: HkdfSha256>(dhe: &[u8; 32]) -> Result<Secret, HkdfLabelError> {
+pub(crate) fn handshake_secret<H: HkdfSha256>(dhe: &[u8; 32]) -> Result<Secret, HkdfLabelError> {
     let salt = derive_secret::<H>(&early_secret::<H>(), b"derived", &EMPTY_TRANSCRIPT_HASH)?;
     Ok(Secret::new(H::extract(salt.as_bytes(), dhe)))
 }
 
 /// `(client_handshake_traffic_secret, server_handshake_traffic_secret)` from
 /// `handshake_secret` and `transcript_hash(ClientHello || ServerHello)`.
-pub fn handshake_traffic_secrets<H: HkdfSha256>(
+pub(crate) fn handshake_traffic_secrets<H: HkdfSha256>(
     hs: &Secret,
     transcript_hash_ch_sh: &TranscriptDigest,
 ) -> Result<(Secret, Secret), HkdfLabelError> {
@@ -272,7 +272,9 @@ pub(crate) fn traffic_keys_chacha<H: HkdfSha256>(
 
 /// `master_secret = HKDF-Extract(Derive-Secret(handshake_secret, "derived", H("")), 0_hash)`
 /// per RFC 8446 §7.1.
-pub fn master_secret<H: HkdfSha256>(handshake_secret: &Secret) -> Result<Secret, HkdfLabelError> {
+pub(crate) fn master_secret<H: HkdfSha256>(
+    handshake_secret: &Secret,
+) -> Result<Secret, HkdfLabelError> {
     let salt = derive_secret::<H>(handshake_secret, b"derived", &EMPTY_TRANSCRIPT_HASH)?;
     Ok(Secret::new(H::extract(salt.as_bytes(), &[0u8; 32])))
 }
@@ -282,7 +284,7 @@ pub fn master_secret<H: HkdfSha256>(handshake_secret: &Secret) -> Result<Secret,
 ///
 /// Note: the transcript hash here ends at the *server's* Finished — the
 /// client's own Finished does NOT enter the app-traffic-secret derivation.
-pub fn application_traffic_secrets<H: HkdfSha256>(
+pub(crate) fn application_traffic_secrets<H: HkdfSha256>(
     master_secret: &Secret,
     transcript_hash_through_server_finished: &TranscriptDigest,
 ) -> Result<(Secret, Secret), HkdfLabelError> {
@@ -308,7 +310,7 @@ pub fn application_traffic_secrets<H: HkdfSha256>(
 /// Returns the 32-byte MAC wrapped in `ZeroBuf` (= `Zeroizing<[u8; 32]>`).
 /// The MAC isn't a long-term secret but it's derived from the
 /// `finished_key` and shouldn't linger on the stack after consumption.
-pub fn finished_mac<H: HkdfSha256>(
+pub(crate) fn finished_mac<H: HkdfSha256>(
     traffic_secret: &Secret,
     transcript_hash: &TranscriptDigest,
 ) -> Result<ZeroBuf<32>, HkdfLabelError> {

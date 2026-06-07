@@ -1,7 +1,7 @@
-//! krabitls_cli — host-side TLS 1.3 client built on the `krabitls` library.
+//! krabitls_cli — host-side TLS 1.3 client built on the krabitls typestate.
 //!
-//! Mirrors `tls_fixture/cli.py` so you can interleave Rust and Python on the
-//! same `packets/` + `state/` directories:
+//! Mirrors `tls_fixture/cli.py`; interleavable on the same `packets/` +
+//! `state/` directories:
 //!
 //!     krabitls_cli  --conn-init           # writes packets/001_c2s_ClientHello.bin
 //!     python3 …/serv.py --conn-response  # consumes 001, writes 002 + 003
@@ -10,10 +10,13 @@
 //!     python3 …/serv.py --reply "world"  # consumes 005, writes 006
 //!     krabitls_cli  --send "another"      # writes 007
 //!
-//! Deterministic mode (`--seed N`, default 0) carries **no state at all** —
-//! every command re-derives the client X25519 private from `(seed, label)`.
-//! `--random` mode generates an OS-RNG priv on `--conn-init` and persists it
-//! to `state/priv.bin`; subsequent commands pick it up automatically.
+//! Deterministic mode (`--seed N`, default 0) carries no per-handshake state
+//! — every command re-derives the priv from `(seed, label)`. `--random` mode
+//! persists the OS-RNG priv to `state/priv.bin` for follow-up commands.
+//!
+//! Each command starts fresh — the typestate is entered via `replay`
+//! constructors at the right state (WaitServerFlight for negotiate, AppData
+//! for send / receive) so we don't lose state across process boundaries.
 
 use std::error::Error;
 use std::fs;
@@ -21,23 +24,23 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::Parser;
+use krabitls::reassembler::ServerFlightReassembler;
+use krabitls::{Aes128GcmSha256, AppData, DerCert, Init, RustCrypto, TlsConnection, VerifyMode};
 use log::error;
 use sha2::{Digest, Sha256};
 
 const PACKETS_DIR: &str = "packets";
 const STATE_DIR: &str = "state";
 const PRIV_STATE_FILE: &str = "state/priv.bin";
-/// Persisted post-handshake secrets so `--send` / `--receive` don't have to
-/// re-derive the whole HKDF chain + re-verify the server flight on every
-/// call. Layout: `c_ap_ts (32 B) || s_ap_ts (32 B)` = 64 bytes raw, no
-/// header. Written by `--conn-negotiate` after it computes them; read by
-/// `--send` / `--receive` when present, falling back to full re-derivation
-/// if absent (so the Python-fixture-style "no state, just packets/" flow
-/// still works).
+/// `c_ap_ts (32B) || s_ap_ts (32B)`. Written by `--conn-negotiate`; read by
+/// `--send` / `--receive` so they can skip the full HKDF chain + flight verify.
 const SESSION_STATE_FILE: &str = "state/session.bin";
 
 type Bn = fixed_bigint::FixedUInt<u32, 16, fixed_bigint::Ct>;
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
+
+/// Reassembler capacity for the seed-0 single-record server flight.
+const FLIGHT_CAP: usize = 8 * 1024;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -45,35 +48,21 @@ type Result<T> = std::result::Result<T, Box<dyn Error>>;
     about = "TLS 1.3 client built on the krabitls library"
 )]
 struct Cli {
-    /// Emit a ClientHello at the next packet sequence number.
     #[arg(long, group = "action")]
     conn_init: bool,
-
-    /// Consume the server's ServerHello + encrypted flight, emit client Finished.
     #[arg(long, group = "action")]
     conn_negotiate: bool,
-
-    /// Encrypt and append one application_data record.
     #[arg(long, value_name = "TEXT", group = "action")]
     send: Option<String>,
-
-    /// Decrypt all server-to-client app-data records on disk and print them.
     #[arg(long, group = "action")]
     receive: bool,
-
-    /// Wipe ./packets and ./state.
     #[arg(long, group = "action")]
     reset: bool,
-
-    /// Deterministic seed for `--conn-init`-generated ephemeral keys / random.
-    /// Default 0 makes the output byte-identical to the Python fixture's seed 0.
-    /// Ignored on subsequent commands if `state/priv.bin` exists (`--random` mode).
+    /// Seed for deterministic priv / random (default 0; matches Python fixture).
+    /// Ignored if `state/priv.bin` exists from a prior `--random --conn-init`.
     #[arg(long, default_value_t = 0)]
     seed: u64,
-
-    /// Use OS RNG instead of `--seed`. Only meaningful on `--conn-init`; the
-    /// generated private key is persisted to `state/priv.bin` and picked up by
-    /// `--conn-negotiate` and `--send` automatically.
+    /// OS-RNG for `--conn-init`; priv persisted to `state/priv.bin`.
     #[arg(long)]
     random: bool,
 }
@@ -122,7 +111,6 @@ fn run(cli: &Cli) -> Result<()> {
 // Private-key acquisition
 // =====================================================================
 
-/// `--conn-init` priv: either OS-RNG (and persist) or seed-derived.
 fn priv_for_init(seed: u64, use_random: bool) -> Result<[u8; 32]> {
     if use_random {
         let mut buf = [0u8; 32];
@@ -135,10 +123,7 @@ fn priv_for_init(seed: u64, use_random: bool) -> Result<[u8; 32]> {
     }
 }
 
-/// Write `bytes` to `path` with owner-only perms (0o600) on Unix so the
-/// secret material isn't world-readable. On non-Unix targets falls back to
-/// the platform default, since `std::os::unix::fs::OpenOptionsExt` isn't
-/// available there.
+/// 0o600 perms on unix; default elsewhere.
 fn write_secret_file(path: &str, bytes: &[u8]) -> Result<()> {
     use std::io::Write;
     #[cfg(unix)]
@@ -164,11 +149,6 @@ fn write_secret_file(path: &str, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-/// `--conn-negotiate` / `--send` priv: prefer persisted random priv, else seed.
-///
-/// If `state/priv.bin` exists but isn't exactly 32 bytes the file is corrupt
-/// — fail loudly rather than silently regenerating a seed-derived key whose
-/// public half won't match what the server already responded to.
 fn priv_for_followup(seed: u64) -> Result<[u8; 32]> {
     match fs::read(PRIV_STATE_FILE) {
         Ok(bytes) if bytes.len() == 32 => {
@@ -186,7 +166,6 @@ fn priv_for_followup(seed: u64) -> Result<[u8; 32]> {
     }
 }
 
-/// `--conn-init`'s ClientHello.random: OS-RNG in `--random` mode, else seed-derived.
 fn client_random_for_init(seed: u64, use_random: bool) -> Result<[u8; 32]> {
     if use_random {
         let mut buf = [0u8; 32];
@@ -207,10 +186,17 @@ fn cmd_conn_init(seed: u64, use_random: bool) -> Result<()> {
     let random = client_random_for_init(seed, use_random)?;
     let pub_bytes = ed25519_heapless::x25519_base::<Bn>(&priv_bytes);
 
+    let conn = TlsConnection::<Init, RustCrypto, RustCrypto>::new(
+        random,
+        krabitls::ZeroBuf::<32>::new(priv_bytes),
+    );
     let mut record = [0u8; krabitls::CLIENT_HELLO_LEN];
-    let mut cursor: &mut [u8] = &mut record;
-    krabitls::write_client_hello(&mut cursor, &random, &pub_bytes, None)
-        .map_err(|_| "krabitls::write_client_hello: buffer too small")?;
+    {
+        let mut cursor: &mut [u8] = &mut record;
+        let _ = conn
+            .write_client_hello(&mut cursor, &pub_bytes, None)
+            .map_err(|e| format!("write_client_hello: {e:?}"))?;
+    }
 
     let seq = next_packet_seq()?;
     let path = packet_path(seq, "c2s", "ClientHello");
@@ -225,28 +211,65 @@ fn cmd_conn_init(seed: u64, use_random: bool) -> Result<()> {
 
 fn cmd_conn_negotiate(seed: u64) -> Result<()> {
     let priv_bytes = priv_for_followup(seed)?;
-    let session = compute_session_secrets(&priv_bytes)?;
+    let ch_bytes = read_packet(|d, n| d == "c2s" && n.contains("ClientHello"))?;
+    let sh_bytes = read_packet(|d, n| d == "s2c" && n.contains("ServerHello"))?;
+    let sf_bytes = read_packet(|d, n| d == "s2c" && n.contains("ServerFlight"))?;
 
-    let mut out = [0u8; krabitls::CLIENT_FINISHED_LEN];
-    let record = krabitls::RecordKeys::<krabitls::Aes128GcmSha256>::build_client_finished::<
-        krabitls::RustCrypto,
-        krabitls::RustCrypto,
-    >(
-        &session.c_hs_ts,
-        &session.transcript_hash_through_server_finished,
-        0, // first record under c_hs_traffic_secret
-        &mut out,
-    )
-    .map_err(|e| format!("build_client_finished: {:?}", e))?;
+    // Recover CH random from the on-disk record so --random mode (where the
+    // random isn't separately persisted) works the same as --seed mode.
+    if ch_bytes.len() < 43 {
+        return Err("on-disk ClientHello too short to extract random".into());
+    }
+    let mut random = [0u8; 32];
+    random.copy_from_slice(&ch_bytes[11..43]);
+    let pub_bytes = ed25519_heapless::x25519_base::<Bn>(&priv_bytes);
+
+    // Drive Init -> WaitServerHello into a discard sink so the transcript
+    // ends up containing the CH bytes (we already have them on disk).
+    let conn = TlsConnection::<Init, RustCrypto, RustCrypto>::new(
+        random,
+        krabitls::ZeroBuf::<32>::new(priv_bytes),
+    );
+    let mut sink = [0u8; krabitls::CLIENT_HELLO_LEN];
+    let conn = {
+        let mut cursor: &mut [u8] = &mut sink;
+        conn.write_client_hello(&mut cursor, &pub_bytes, None)
+            .map_err(|e| format!("write_client_hello: {e:?}"))?
+    };
+
+    let conn = conn
+        .read_server_hello(&sh_bytes)
+        .map_err(|e| format!("read_server_hello: {e:?}"))?
+        .assume_aes_128_gcm()
+        .map_err(|e| format!("assume_aes_128_gcm: {e:?}"))?;
+
+    let mut reassembler: ServerFlightReassembler<FLIGHT_CAP> = ServerFlightReassembler::new();
+    let mut pt = vec![0u8; sf_bytes.len()];
+    let mut conn = conn;
+    conn.feed_server_record(&sf_bytes, &mut reassembler, &mut pt)
+        .map_err(|e| format!("feed_server_record: {e:?}"))?;
+    let conn = conn
+        .finalize_server_flight::<FLIGHT_CAP, DerCert, RustCrypto>(
+            &reassembler,
+            VerifyMode::SelfSigned,
+        )
+        .map_err(|e| format!("finalize_server_flight: {e:?}"))?;
+
+    // Persist app-traffic secrets before transitioning so --send / --receive
+    // can re-enter AppData via from_app_secrets without re-derivation.
+    let (c_ap_ts, s_ap_ts) = conn
+        .derive_app_secrets()
+        .map_err(|e| format!("derive_app_secrets: {e:?}"))?;
+    write_session_state(&c_ap_ts, &s_ap_ts)?;
+
+    let mut cf_buf = [0u8; 80];
+    let cf_record = conn
+        .build_client_finished(&mut cf_buf)
+        .map_err(|e| format!("build_client_finished: {e:?}"))?;
 
     let seq = next_packet_seq()?;
     let path = packet_path(seq, "c2s", "ClientFinished_encrypted");
-    fs::write(&path, record)?;
-
-    // Persist app-traffic secrets so subsequent --send / --receive can skip
-    // re-derivation of the full HKDF chain + server-flight verify.
-    write_session_state(&session.c_ap_ts, &session.s_ap_ts)?;
-
+    fs::write(&path, cf_record)?;
     println!("wrote {} (handshake complete)", path.display());
     Ok(())
 }
@@ -256,29 +279,29 @@ fn cmd_conn_negotiate(seed: u64) -> Result<()> {
 // =====================================================================
 
 fn cmd_send(seed: u64, text: &str) -> Result<()> {
-    let c_ap_ts = match load_session_state()? {
-        Some((c_ap, _s_ap)) => c_ap,
+    let (c_ap_ts, s_ap_ts) = match load_session_state()? {
+        Some(pair) => pair,
         None => {
             let priv_bytes = priv_for_followup(seed)?;
-            compute_session_secrets(&priv_bytes)?.c_ap_ts
+            renegotiate_app_secrets(&priv_bytes)?
         }
     };
-    let c_ap_keys =
-        krabitls::RecordKeys::<krabitls::Aes128GcmSha256>::derive::<krabitls::RustCrypto>(&c_ap_ts)
-            .map_err(|e| format!("RecordKeys::derive (c_ap): {:?}", e))?;
 
-    // Per-AEAD-key sequence number: # of c2s app-data records already on disk.
     let ap_seq = next_c2s_app_data_seq()?;
+    let mut conn =
+        TlsConnection::<AppData<Aes128GcmSha256>, RustCrypto, RustCrypto>::from_app_secrets(
+            c_ap_ts, s_ap_ts, ap_seq, 0,
+        )
+        .map_err(|e| format!("AppData::from_app_secrets: {e:?}"))?;
 
-    let mut out = vec![0u8; text.len() + 32]; // header(5) + content + content_type(1) + tag(16) padding
-    let record = c_ap_keys
-        .encrypt_record::<krabitls::RustCrypto>(
+    let mut out = vec![0u8; text.len() + 32];
+    let record = conn
+        .encrypt_record(
             text.as_bytes(),
             krabitls::consts::CT_APPLICATION_DATA,
-            ap_seq,
             &mut out,
         )
-        .map_err(|e| format!("encrypt_record: {:?}", e))?;
+        .map_err(|e| format!("encrypt_record: {e:?}"))?;
 
     let seq = next_packet_seq()?;
     let path = packet_path(seq, "c2s", &format!("AppData_send_{}", ap_seq));
@@ -292,19 +315,14 @@ fn cmd_send(seed: u64, text: &str) -> Result<()> {
 // =====================================================================
 
 fn cmd_receive(seed: u64) -> Result<()> {
-    let s_ap_ts = match load_session_state()? {
-        Some((_c_ap, s_ap)) => s_ap,
+    let (c_ap_ts, s_ap_ts) = match load_session_state()? {
+        Some(pair) => pair,
         None => {
             let priv_bytes = priv_for_followup(seed)?;
-            compute_session_secrets(&priv_bytes)?.s_ap_ts
+            renegotiate_app_secrets(&priv_bytes)?
         }
     };
-    let s_ap_keys =
-        krabitls::RecordKeys::<krabitls::Aes128GcmSha256>::derive::<krabitls::RustCrypto>(&s_ap_ts)
-            .map_err(|e| format!("RecordKeys::derive (s_ap): {:?}", e))?;
 
-    // Walk all s2c AppData_reply files in seq order. The trailing "_N" in
-    // the filename is the per-AEAD-key sequence number for s_ap.
     let mut replies: Vec<(u32, PathBuf)> = Vec::new();
     for entry in fs::read_dir(PACKETS_DIR)? {
         let entry = entry?;
@@ -313,7 +331,6 @@ fn cmd_receive(seed: u64) -> Result<()> {
         if !(s.contains("_s2c_AppData_reply_") && s.ends_with(".bin")) {
             continue;
         }
-        // Pull the trailing "_N.bin" sequence number.
         let n_str = s.trim_end_matches(".bin").rsplit('_').next().unwrap_or("");
         let n: u32 = n_str
             .parse()
@@ -327,13 +344,21 @@ fn cmd_receive(seed: u64) -> Result<()> {
         return Ok(());
     }
     for (seq, path) in &replies {
+        // One-shot AppData per reply so each decrypts at its own seq_in,
+        // tolerating missing intermediate replies.
+        let mut conn =
+            TlsConnection::<AppData<Aes128GcmSha256>, RustCrypto, RustCrypto>::from_app_secrets(
+                c_ap_ts.clone(),
+                s_ap_ts.clone(),
+                0,
+                *seq as u64,
+            )
+            .map_err(|e| format!("AppData::from_app_secrets: {e:?}"))?;
         let record = fs::read(path)?;
         let mut pt_buf = vec![0u8; record.len()];
-        let inner = s_ap_keys
-            .decrypt_record::<krabitls::RustCrypto>(&record, *seq as u64, &mut pt_buf)
+        let (content, _ct) = conn
+            .decrypt_record(&record, &mut pt_buf)
             .map_err(|e| format!("decrypt {}: {:?}", path.display(), e))?;
-        let (content, _ct) = krabitls::split_inner_plaintext(inner)
-            .map_err(|e| format!("inner plaintext: {:?}", e))?;
         let text = core::str::from_utf8(content).unwrap_or("<not utf-8>");
         println!("seq {}: {}", seq, text);
     }
@@ -341,78 +366,58 @@ fn cmd_receive(seed: u64) -> Result<()> {
 }
 
 // =====================================================================
-// Session-secret recomputation
-//
-// Everything needed for the current session can be derived from (priv_key,
-// packets-on-disk). No state file required. Cheap enough to re-do on every
-// CLI call.
+// Session-secret recomputation (fallback when session.bin is absent)
 // =====================================================================
 
-struct SessionSecrets {
-    c_hs_ts: krabitls::newtype::Secret,
-    /// SHA-256(CH || SH || EE || Cert || CertVerify || ServerFinished).
-    transcript_hash_through_server_finished: krabitls::newtype::TranscriptDigest,
-    c_ap_ts: krabitls::newtype::Secret,
-    s_ap_ts: krabitls::newtype::Secret,
-}
-
-fn compute_session_secrets(priv_bytes: &[u8; 32]) -> Result<SessionSecrets> {
-    use krabitls::{
-        Aes128GcmSha256, DerCert, RecordKeys, RustCrypto, TranscriptHash,
-        application_traffic_secrets, handshake_secret, handshake_traffic_secrets, master_secret,
-        parse_server_hello, split_inner_plaintext, verify_server_flight,
-    };
-
-    let ch_bytes = read_packet(|d, _n| d == "c2s" && _n.contains("ClientHello"))?;
+/// Re-run the full handshake (CH+SH+sf already on disk) to recover the app
+/// traffic secrets. Called only when `state/session.bin` is missing.
+fn renegotiate_app_secrets(
+    priv_bytes: &[u8; 32],
+) -> Result<(krabitls::newtype::Secret, krabitls::newtype::Secret)> {
+    let ch_bytes = read_packet(|d, n| d == "c2s" && n.contains("ClientHello"))?;
     let sh_bytes = read_packet(|d, n| d == "s2c" && n.contains("ServerHello"))?;
     let sf_bytes = read_packet(|d, n| d == "s2c" && n.contains("ServerFlight"))?;
 
-    let sh = parse_server_hello(&sh_bytes).map_err(|e| format!("parse_server_hello: {:?}", e))?;
+    if ch_bytes.len() < 43 {
+        return Err("on-disk ClientHello too short to extract random".into());
+    }
+    let mut random = [0u8; 32];
+    random.copy_from_slice(&ch_bytes[11..43]);
+    let pub_bytes = ed25519_heapless::x25519_base::<Bn>(priv_bytes);
 
-    let dhe = ed25519_heapless::x25519::<Bn>(priv_bytes, sh.x25519_share);
-    let hs =
-        handshake_secret::<RustCrypto>(&dhe).map_err(|e| format!("handshake_secret: {:?}", e))?;
-    let mut transcript = TranscriptHash::<RustCrypto>::new();
-    transcript
-        .update_record(&ch_bytes)
-        .map_err(|e| format!("transcript update_record(ch): {:?}", e))?;
-    transcript
-        .update_record(&sh_bytes)
-        .map_err(|e| format!("transcript update_record(sh): {:?}", e))?;
-    let (c_hs_ts, s_hs_ts) = handshake_traffic_secrets::<RustCrypto>(&hs, &transcript.snapshot())
-        .map_err(|e| format!("handshake_traffic_secrets: {:?}", e))?;
-    let s_hs_keys = RecordKeys::<Aes128GcmSha256>::derive::<RustCrypto>(&s_hs_ts)
-        .map_err(|e| format!("RecordKeys::derive (s_hs): {:?}", e))?;
+    let conn = TlsConnection::<Init, RustCrypto, RustCrypto>::new(
+        random,
+        krabitls::ZeroBuf::<32>::new(*priv_bytes),
+    );
+    let mut sink = [0u8; krabitls::CLIENT_HELLO_LEN];
+    let conn = {
+        let mut cursor: &mut [u8] = &mut sink;
+        conn.write_client_hello(&mut cursor, &pub_bytes, None)
+            .map_err(|e| format!("write_client_hello: {e:?}"))?
+    };
+    let conn = conn
+        .read_server_hello(&sh_bytes)
+        .map_err(|e| format!("read_server_hello: {e:?}"))?
+        .assume_aes_128_gcm()
+        .map_err(|e| format!("assume_aes_128_gcm: {e:?}"))?;
 
-    let mut pt_buf = vec![0u8; sf_bytes.len()];
-    let pt = s_hs_keys
-        .decrypt_record::<RustCrypto>(&sf_bytes, 0, &mut pt_buf)
-        .map_err(|e| format!("decrypt server flight: {:?}", e))?;
-    let (content, _ct) =
-        split_inner_plaintext(pt).map_err(|e| format!("inner plaintext: {:?}", e))?;
-    verify_server_flight::<RustCrypto, DerCert, RustCrypto>(
-        &mut transcript,
-        content,
-        &s_hs_ts,
-        true,
-    )
-    .map_err(|e| format!("verify_server_flight: {:?}", e))?;
-    let th_through_sf = transcript.snapshot();
-
-    let ms = master_secret::<RustCrypto>(&hs).map_err(|e| format!("master_secret: {:?}", e))?;
-    let (c_ap_ts, s_ap_ts) = application_traffic_secrets::<RustCrypto>(&ms, &th_through_sf)
-        .map_err(|e| format!("application_traffic_secrets: {:?}", e))?;
-
-    Ok(SessionSecrets {
-        c_hs_ts,
-        transcript_hash_through_server_finished: th_through_sf,
-        c_ap_ts,
-        s_ap_ts,
-    })
+    let mut reassembler: ServerFlightReassembler<FLIGHT_CAP> = ServerFlightReassembler::new();
+    let mut pt = vec![0u8; sf_bytes.len()];
+    let mut conn = conn;
+    conn.feed_server_record(&sf_bytes, &mut reassembler, &mut pt)
+        .map_err(|e| format!("feed_server_record: {e:?}"))?;
+    let conn = conn
+        .finalize_server_flight::<FLIGHT_CAP, DerCert, RustCrypto>(
+            &reassembler,
+            VerifyMode::SelfSigned,
+        )
+        .map_err(|e| format!("finalize_server_flight: {e:?}"))?;
+    conn.derive_app_secrets()
+        .map_err(|e| format!("derive_app_secrets: {e:?}").into())
 }
 
 // =====================================================================
-// Session-state file (`state/session.bin`) — see SESSION_STATE_FILE doc.
+// Session-state file (`state/session.bin`)
 // =====================================================================
 
 fn write_session_state(
@@ -427,10 +432,7 @@ fn write_session_state(
     Ok(())
 }
 
-/// Read the persisted post-handshake app-traffic secrets. Returns `None`
-/// if the state file isn't present (e.g. `--conn-negotiate` hasn't run
-/// yet, or the user `--reset`-ed). Returns an error if the file exists
-/// but is the wrong size (schema mismatch — caller should re-negotiate).
+/// Persisted `(c_ap_ts, s_ap_ts)`; `None` if no prior `--conn-negotiate`.
 fn load_session_state() -> Result<Option<(krabitls::newtype::Secret, krabitls::newtype::Secret)>> {
     let path = Path::new(SESSION_STATE_FILE);
     if !path.exists() {
@@ -514,18 +516,9 @@ fn packet_path(seq: u32, direction: &str, name: &str) -> PathBuf {
     p
 }
 
-/// Next per-AEAD-key sequence number under `c_ap_traffic_secret`. Derived
-/// from `max(seq in filename) + 1` across the existing `*_c2s_AppData_send_N.bin`
-/// records, NOT from the file count.
-///
-/// **Why max+1, not count.** AES-GCM nonces are `iv XOR seq`, so reusing a
-/// `(key, seq)` pair with two different plaintexts breaks the cipher (CTR
-/// keystream re-use → XOR-leaks plaintext, plus a single forged tag enables
-/// full GHASH key recovery). If we picked "count of files" and the user
-/// deleted any earlier record, the next `--send` would re-emit an already-
-/// used seq under the same `c_ap_key` from session.bin — silently
-/// catastrophic. Parsing the trailing `_N.bin` and taking the max+1 means
-/// `--send` keeps moving forward monotonically regardless of file deletes.
+/// Per-AEAD-key seq for next c2s app-data record. **max+1** (not count) so
+/// `(key, seq)` is monotonic even if the user deletes a prior file; reusing
+/// `(key, seq)` under AES-GCM breaks the cipher catastrophically.
 fn next_c2s_app_data_seq() -> Result<u64> {
     if !Path::new(PACKETS_DIR).exists() {
         return Ok(0);
@@ -535,8 +528,6 @@ fn next_c2s_app_data_seq() -> Result<u64> {
         let entry = entry?;
         let name = entry.file_name();
         let s = name.to_str().unwrap_or("");
-        // Filename shape: `NNN_c2s_AppData_send_{seq}.bin` where NNN is
-        // the global packet sequence and {seq} is the per-AEAD-key index.
         if !s.ends_with(".bin") {
             continue;
         }
