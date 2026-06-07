@@ -201,7 +201,11 @@ pub enum TranscriptError {
 
 impl core::fmt::Display for TranscriptError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str("record slice is shorter than the 5-byte TLS record header")
+        match self {
+            Self::RecordTooShort => {
+                f.write_str("record slice is shorter than the 5-byte TLS record header")
+            }
+        }
     }
 }
 

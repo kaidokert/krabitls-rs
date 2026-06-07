@@ -40,7 +40,9 @@ pub enum ReassemblyError {
 
 impl core::fmt::Display for ReassemblyError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str("server-flight reassembler capacity exceeded")
+        match self {
+            Self::Overflow => f.write_str("server-flight reassembler capacity exceeded"),
+        }
     }
 }
 
