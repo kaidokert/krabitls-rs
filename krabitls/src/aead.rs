@@ -154,9 +154,17 @@ where
 pub fn split_inner_plaintext(inner: &[u8]) -> Result<(&[u8], u8), DecryptError> {
     use subtle::{ConditionallySelectable, ConstantTimeEq};
 
+    // Upfront DoS / overflow guard. Without this a public caller could
+    // hand in a multi-GB slice and force a full unconditional scan, and
+    // the `(i + 1) as u32` cast below would wrap on `inner.len() > u32::MAX`
+    // — silently breaking the bounds check.
+    if inner.len() > TLS_CIPHERTEXT_MAX {
+        return Err(DecryptError::RecordTooLarge);
+    }
+
     // u32 so `conditional_select` works on a small type even when usize is 64-bit
-    // on the host; inner.len() is capped at TLS_PLAINTEXT_MAX + AEAD overhead,
-    // well under 2^32.
+    // on the host; inner.len() is now bounded by `TLS_CIPHERTEXT_MAX`, well
+    // under 2^32.
     let mut last_nonzero_plus_one: u32 = 0;
     let mut content_type: u8 = 0;
     for (i, &b) in inner.iter().enumerate() {
@@ -375,6 +383,17 @@ mod tests {
         assert_eq!(
             split_inner_plaintext(&inner),
             Err(DecryptError::EmptyInnerPlaintext)
+        );
+    }
+
+    #[test]
+    fn split_oversize_rejected_upfront() {
+        // Reject before iterating, so a malicious caller can't force a
+        // multi-GB scan and the `(i + 1) as u32` cast can't truncate.
+        let inner = vec![0xab; TLS_CIPHERTEXT_MAX + 1];
+        assert_eq!(
+            split_inner_plaintext(&inner),
+            Err(DecryptError::RecordTooLarge)
         );
     }
 
