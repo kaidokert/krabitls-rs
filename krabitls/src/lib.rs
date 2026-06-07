@@ -551,9 +551,60 @@ pub enum ParseError {
 
 impl core::fmt::Display for ParseError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        core::fmt::Debug::fmt(self, f)
+        match self {
+            Self::Truncated => f.write_str("buffer ended mid-field or length prefix overran"),
+            Self::UnexpectedContentType(b) => {
+                write!(
+                    f,
+                    "record content_type was 0x{b:02x}, expected handshake (22)"
+                )
+            }
+            Self::UnexpectedHandshakeType(b) => {
+                write!(f, "handshake type was 0x{b:02x}, expected server_hello (2)")
+            }
+            Self::UnexpectedLegacyVersion(v) => {
+                write!(f, "legacy_version was 0x{v:04x}, expected 0x0303")
+            }
+            Self::UnsupportedCipherSuite(v) => {
+                write!(f, "cipher suite 0x{v:04x} is outside the locked profile")
+            }
+            Self::UnexpectedCompressionMethod(b) => {
+                write!(f, "legacy_compression_method was 0x{b:02x}, expected 0")
+            }
+            Self::BadSupportedVersions => f.write_str(
+                "supported_versions extension missing, malformed, or did not pick TLS 1.3",
+            ),
+            Self::BadKeyShare => {
+                f.write_str("key_share extension missing, wrong group, or wrong key length")
+            }
+            Self::TrailingBytes => {
+                f.write_str("bytes left over after the structure said it was done")
+            }
+            Self::LengthMismatch => f.write_str("outer length did not match the body it framed"),
+            Self::UnknownExtension(v) => {
+                write!(
+                    f,
+                    "ServerHello carried an extension type 0x{v:04x} not offered in the ClientHello"
+                )
+            }
+            Self::DuplicateExtension(v) => {
+                write!(
+                    f,
+                    "extension type 0x{v:04x} appeared twice in the same extension block"
+                )
+            }
+            Self::UnexpectedSessionIdEcho => {
+                f.write_str("server echoed a non-empty legacy_session_id_echo")
+            }
+            Self::HelloRetryRequested => f.write_str("server requested HelloRetryRequest"),
+            Self::DowngradeDetected => {
+                f.write_str("ServerHello.random sentinel indicates a TLS-1.2-or-below downgrade")
+            }
+        }
     }
 }
+
+impl core::error::Error for ParseError {}
 
 /// Parse a complete TLS record carrying a `server_hello` handshake message.
 ///

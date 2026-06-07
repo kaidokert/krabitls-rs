@@ -35,6 +35,24 @@ impl From<HkdfLabelError> for ClientFinishedError {
     }
 }
 
+impl core::fmt::Display for ClientFinishedError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Encrypt(_) => f.write_str("record-layer encrypt step failed"),
+            Self::Hkdf(_) => f.write_str("HKDF-Expand-Label rejected a key-schedule derivation"),
+        }
+    }
+}
+
+impl core::error::Error for ClientFinishedError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::Encrypt(e) => Some(e),
+            Self::Hkdf(e) => Some(e),
+        }
+    }
+}
+
 /// Build the `Finished` handshake message bytes (`u8(20) || u24(32) || verify_data`)
 /// keyed by `c_hs_traffic_secret`. Held in a `ZeroBuf` so the inline verify_data wipes on drop.
 fn build_finished_plaintext<H: HkdfSha256>(

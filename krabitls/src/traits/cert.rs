@@ -118,3 +118,32 @@ pub enum CertParseError {
     #[cfg(feature = "rsa")]
     UnsupportedRsaKeySize,
 }
+
+impl core::fmt::Display for CertParseError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let s = match self {
+            Self::Malformed => "malformed cert DER",
+            Self::WrongPubkeyLength => "Ed25519 SubjectPublicKey was not 32 bytes",
+            Self::WrongSignatureLength => "cert signature length did not match the algorithm",
+            Self::BitStringHasUnusedBits => "BIT STRING had non-zero unused-bits prefix",
+            Self::TrailingBytes => "bytes left over after the outer SEQUENCE",
+            Self::WrongAlgorithmOid => "SubjectPublicKeyInfo named an unsupported algorithm OID",
+            Self::AlgorithmHasParameters => {
+                "AlgorithmIdentifier.parameters violated the per-algorithm rule"
+            }
+            Self::SignatureAlgorithmMismatch => {
+                "outer signatureAlgorithm did not match TBSCertificate.signature"
+            }
+            Self::UnsupportedCertVersion => "TBSCertificate.version was not v3",
+            #[cfg(feature = "rsa")]
+            Self::BadRsaPubkey => "RSA pubkey SPKI did not decode as SEQUENCE { INTEGER, INTEGER }",
+            #[cfg(feature = "rsa")]
+            Self::UnsupportedRsaKeySize => {
+                "RSA modulus length was not 128 B (RSA-1024) or 256 B (RSA-2048)"
+            }
+        };
+        f.write_str(s)
+    }
+}
+
+impl core::error::Error for CertParseError {}

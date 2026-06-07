@@ -73,6 +73,50 @@ impl From<CertParseError> for FlightError {
     }
 }
 
+impl core::fmt::Display for FlightError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Truncated => {
+                f.write_str("handshake header / body claimed more bytes than remained")
+            }
+            Self::TrailingBytes => {
+                f.write_str("trailing bytes after the four expected handshake messages")
+            }
+            Self::UnexpectedHandshakeType { expected, got } => {
+                write!(
+                    f,
+                    "handshake messages out of order: expected type 0x{expected:02x}, got 0x{got:02x}"
+                )
+            }
+            Self::BadCert(_) => f.write_str("cert DER parse failed"),
+            Self::CertSelfSignatureInvalid => f.write_str("cert self-signature did not verify"),
+            Self::UnexpectedSignatureScheme(v) => {
+                write!(f, "unexpected CertificateVerify signature_scheme 0x{v:04x}")
+            }
+            Self::WrongSignatureLength => {
+                f.write_str("CertificateVerify signature length did not match the scheme")
+            }
+            Self::CertVerifyInvalid => f.write_str("CertificateVerify signature did not verify"),
+            Self::FinishedWrongLength => {
+                f.write_str("Finished verify_data length was not 32 bytes")
+            }
+            Self::FinishedMacInvalid => f.write_str("Finished MAC did not match"),
+            Self::HkdfLabel(_) => f.write_str("HKDF label encoding failed"),
+            Self::InternalEncoding => f.write_str("internal encoding buffer overflowed"),
+        }
+    }
+}
+
+impl core::error::Error for FlightError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::BadCert(e) => Some(e),
+            Self::HkdfLabel(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
 /// Walk the 4-message server flight in the decrypted plaintext.
 ///
 /// Validates ordering (`EE -> Cert -> CV -> Finished`) and message framing,
