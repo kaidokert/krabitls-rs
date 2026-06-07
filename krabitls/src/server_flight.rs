@@ -499,10 +499,16 @@ pub struct ServerFlightVerified<'a> {
 }
 
 /// Verify the server flight and advance the caller's transcript.
+///
+/// `verify_cert_self_sig` controls whether the cert's outer signature is
+/// checked against its own pubkey. `true` for self-signed certs (controlled
+/// peers, captured fixtures); `false` for CA-issued certs where the caller
+/// establishes trust some other way (pin / SAN / out-of-band).
 pub fn verify_server_flight<'a, H: HkdfSha256, C: CertParser, E: Ed25519Verify>(
     transcript: &mut TranscriptHash<H>,
     plaintext: &'a [u8],
     s_hs_traffic_secret: &Secret,
+    verify_cert_self_sig: bool,
 ) -> Result<ServerFlightVerified<'a>, FlightError> {
     let flight = parse_server_flight(plaintext)?;
 
@@ -524,12 +530,14 @@ pub fn verify_server_flight<'a, H: HkdfSha256, C: CertParser, E: Ed25519Verify>(
         _ => None,
     };
 
-    verify_self_signed_cert_with_cache::<E>(
-        &ed_cache,
-        &cert_view,
-        #[cfg(feature = "rsa")]
-        rsa_cache.as_ref(),
-    )?;
+    if verify_cert_self_sig {
+        verify_self_signed_cert_with_cache::<E>(
+            &ed_cache,
+            &cert_view,
+            #[cfg(feature = "rsa")]
+            rsa_cache.as_ref(),
+        )?;
+    }
 
     transcript.update(flight.ee_full);
     transcript.update(flight.cert_full);

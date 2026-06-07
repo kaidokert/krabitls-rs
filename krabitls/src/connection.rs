@@ -1,13 +1,6 @@
-//! Typestate TLS 1.3 client handshake.
-//!
-//! Wraps the sans-io functions (`write_client_hello`,
-//! `parse_server_hello`, `verify_server_flight`,
-//! `RecordKeys::<S>::*`, …) behind a `TlsConnection<State, H, C>`
-//! carrier whose only legal next move is named by `State`. The
-//! sans-io functions stay `pub` for low-level callers; this module
-//! is the high-level API.
-//!
-//! Design notes live in `TYPESTATE_DESIGN.md` at the repo root.
+//! Typestate TLS 1.3 client. `TlsConnection<State, H, C>`'s only legal
+//! next move is the one named by `State` — wrong-method-for-state is a
+//! compile error. Design notes in `TYPESTATE_DESIGN.md`.
 
 use core::marker::PhantomData;
 
@@ -36,32 +29,19 @@ use crate::{
     split_inner_plaintext, verify_server_flight, write_client_hello,
 };
 
-/// Inner content type for TLS 1.3 alert records (RFC 8446 §5.1).
 const CT_ALERT: u8 = 0x15;
-/// TLS 1.3 close_notify alert body: AlertLevel::warning(1) ‖ close_notify(0).
 const CLOSE_NOTIFY_ALERT: [u8; 2] = [0x01, 0x00];
-
-/// Middlebox-compat ChangeCipherSpec content type; skipped without bumping
-/// the read sequence per RFC 8446 §5.1.
+/// Middlebox-compat ChangeCipherSpec — dropped without bumping seq_in.
 const CT_CHANGE_CIPHER_SPEC: u8 = 0x14;
 
-/// Fixed-width bigint used by `ed25519_heapless::x25519` for the X25519
-/// DH inside [`TlsConnection::read_server_hello`]. 512 bits = comfortable
-/// for the 256-bit X25519 field; matches what the rest of the crate uses.
 type Bn = fixed_bigint::FixedUInt<u32, 16, fixed_bigint::Ct>;
 
-/// Stack buffer for the outgoing ClientHello before it's forwarded to
-/// the caller's `Write` and fed into the transcript hash. Sized to fit
-/// the locked-profile CH plus a generous SNI hostname (255 chars + RFC
-/// overhead).
+/// Internal scratch for the outgoing ClientHello before it's forwarded
+/// to the caller's `Write`. Sized for the locked profile + a 255-char SNI.
 const CH_SCRATCH: usize = 512;
 
-/// Errors a [`TlsConnection`] transition may return.
-///
-/// `E` is the underlying `embedded_io::Write::Error` for transitions
-/// that produce records into a caller writer. Methods that don't write
-/// produce `ConnectionError<core::convert::Infallible>`, which is `From`-
-/// convertible to any `ConnectionError<E>`.
+/// `E` is the caller `Write::Error` for transitions that write records;
+/// non-write transitions yield `ConnectionError<Infallible>`.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum ConnectionError<E = core::convert::Infallible> {
     ClientHello(ClientHelloError<E>),
@@ -73,14 +53,7 @@ pub enum ConnectionError<E = core::convert::Infallible> {
     Transcript(TranscriptError),
     Reassembly(ReassemblyError),
     ClientFinished(ClientFinishedError),
-    /// ServerHello picked a suite that we didn't advertise or that
-    /// doesn't match the `assume_*` shortcut the caller used.
-    WrongSuite {
-        expected: u16,
-        got: u16,
-    },
-    /// `finalize_server_flight` was called before the reassembler had
-    /// reassembled a complete `Finished` message.
+    WrongSuite { expected: u16, got: u16 },
     IncompleteFlight,
 }
 
@@ -142,26 +115,18 @@ impl<E> From<ClientFinishedError> for ConnectionError<E> {
 // State markers
 // ============================================================================
 
-/// Initial state: the connection holds the caller's client random and
-/// the ephemeral X25519 private key, but no ClientHello has gone out
-/// yet. Only transition: [`TlsConnection::write_client_hello`].
+/// Initial state. Next: [`TlsConnection::write_client_hello`].
 pub struct Init {
     pub(crate) client_random: [u8; 32],
     pub(crate) x25519_priv: ZeroBuf<32>,
 }
 
-/// Post-ClientHello: waiting for the server's first record. The state
-/// keeps the same DH priv (we'll need it once we know the server's
-/// share) and a pre-positioned transcript over `CH`.
+/// Post-CH, waiting for ServerHello.
 pub struct WaitServerHello {
     pub(crate) x25519_priv: ZeroBuf<32>,
 }
 
-/// ServerHello parsed, DH complete, handshake key schedule derived,
-/// `s_hs` AEAD keys live. The connection knows the cipher suite `S` at
-/// this point. Transitions: feed records into a caller-supplied
-/// [`crate::reassembler::ServerFlightReassembler`], then finalize.
-#[allow(dead_code)] // fields wired in follow-up commits on this branch
+/// SH parsed, x25519 done, s_hs keys live, suite `S` now known.
 pub struct WaitServerFlight<S: CipherSuite> {
     pub(crate) hs: Secret,
     pub(crate) c_hs_ts: Secret,
@@ -170,27 +135,19 @@ pub struct WaitServerFlight<S: CipherSuite> {
     pub(crate) seq_in: u64,
 }
 
-/// Server flight verified (cert + CertificateVerify + Finished). The
-/// transcript is positioned through `CH ‖ SH ‖ EE ‖ Cert ‖ CV ‖ sFin`,
-/// ready to bind both the client Finished MAC and the application
-/// traffic secrets in a single transition.
+/// Server flight verified; transcript through sFin.
 pub struct ServerFlightDone<S: CipherSuite> {
     pub(crate) hs: Secret,
     pub(crate) c_hs_ts: Secret,
-    #[allow(dead_code)] // kept for symmetry; client side doesn't re-derive s_hs keys
+    #[allow(dead_code)] // client doesn't re-derive s_hs keys; kept for symmetry
     pub(crate) s_hs_ts: Secret,
     pub(crate) server_pubkey: ServerPubkeyOwned,
     pub(crate) _suite: PhantomData<S>,
 }
 
-/// Owned counterpart to [`ServerPubkey`]. `verify_server_flight` hands back
-/// a borrow into the reassembler buffer; we copy it into an owned form so
-/// the transition can outlive the borrow. RSA modulus is sized for the
-/// largest supported key (RSA-2048 = 256 bytes).
+/// Owned [`ServerPubkey`]. No-alloc forces the RSA variant inline (RSA-2048
+/// is 256B), so the size delta vs Ed25519's 32B is unavoidable.
 #[derive(Debug, Clone)]
-// no-alloc: can't box the RSA modulus, so the variants are unavoidably
-// asymmetric (32B Ed25519 vs ~268B RSA-2048). Living with the size delta
-// is the price of carrying both inline.
 #[allow(clippy::large_enum_variant)]
 pub enum ServerPubkeyOwned {
     Ed25519([u8; 32]),
@@ -208,8 +165,7 @@ impl ServerPubkeyOwned {
             #[cfg(feature = "rsa")]
             ServerPubkey::Rsa { modulus, exponent } => {
                 let mut v = heapless::Vec::new();
-                // Cert parser already rejected anything beyond RSA-2048,
-                // so the modulus is guaranteed to fit in the 256-byte cap.
+                // Cert parser caps RSA at 2048-bit / 256B.
                 v.extend_from_slice(modulus).expect("modulus fits in 256B");
                 Self::Rsa {
                     modulus: v,
@@ -219,9 +175,6 @@ impl ServerPubkeyOwned {
         }
     }
 
-    /// Borrow as a [`ServerPubkey`] view for callers that want to plug the
-    /// pubkey back into the sans-io layer (e.g., RSA app-data verify in a
-    /// post-handshake protocol).
     pub fn as_view(&self) -> ServerPubkey<'_> {
         match self {
             Self::Ed25519(pk) => ServerPubkey::ed25519(*pk),
@@ -234,20 +187,24 @@ impl ServerPubkeyOwned {
     }
 }
 
-/// Outcome of feeding one server-flight record into the reassembler.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum FlightStep {
-    /// More records expected before the flight is complete.
     Pending,
-    /// Reassembler holds a complete `Finished` — caller should next call
-    /// `finalize_server_flight`.
     Ready,
 }
 
-/// Steady state: handshake done, application traffic secrets live.
-/// Both `c_ap_keys` (for outbound records) and `s_ap_keys` (inbound)
-/// are RecordKeys-typed under the negotiated suite `S`. Per-direction
-/// record-layer sequence numbers tick under the AEAD nonce derivation.
+/// Cert outer-sig policy for [`TlsConnection::finalize_server_flight`].
+/// Placeholder until a richer `VerifyStrategy` trait lands chain walking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerifyMode {
+    /// Self-signed cert: verify outer sig with its own pubkey.
+    SelfSigned,
+    /// CA-issued cert: skip outer sig (caller trusts via pin / SAN / OOB).
+    /// CV + server Finished still verified.
+    TrustOnPin,
+}
+
+/// Steady state: app-traffic keys live for both directions.
 pub struct AppData<S: CipherSuite> {
     pub(crate) c_ap_keys: RecordKeys<S>,
     pub(crate) s_ap_keys: RecordKeys<S>,
@@ -259,14 +216,8 @@ pub struct AppData<S: CipherSuite> {
 // Carrier
 // ============================================================================
 
-/// Typestate TLS 1.3 client connection. The `State` parameter is the
-/// only thing the compiler cares about between transitions; methods
-/// are defined on `impl TlsConnection<SpecificState, …>` blocks so
-/// "calling the wrong method for this state" is a compile error.
-///
-/// `H` is the HKDF / SHA-256 backend (also drives the transcript hash);
-/// `C` is the AEAD backend. Both default to `RustCrypto` to keep
-/// embedded call sites short. Neither changes mid-connection.
+/// `H` = HKDF/SHA-256 + transcript backend; `C` = AEAD backend.
+/// Both default to `RustCrypto` and don't change mid-connection.
 pub struct TlsConnection<State, H = RustCrypto, C = RustCrypto>
 where
     H: HkdfSha256,
@@ -284,10 +235,7 @@ impl<H, C> TlsConnection<Init, H, C>
 where
     H: HkdfSha256,
 {
-    /// Construct a fresh connection with caller-supplied randomness +
-    /// X25519 ephemeral private key. Both come from the caller because
-    /// krabitls is sans-randomness — embedded targets typically have
-    /// hardware RNGs we don't want to plumb through here.
+    /// Both arguments are caller-supplied — krabitls is sans-randomness.
     pub fn new(client_random: [u8; 32], x25519_priv: ZeroBuf<32>) -> Self {
         Self {
             transcript: TranscriptHash::<H>::new(),
@@ -299,24 +247,18 @@ where
         }
     }
 
-    /// Serialize the ClientHello into `out`, feed the same bytes into
-    /// the transcript hash, and advance to [`WaitServerHello`].
+    /// Serialize CH into `out`, feed bytes into transcript, advance.
     pub fn write_client_hello<W: Write>(
         mut self,
         out: &mut W,
         x25519_pub: &[u8; 32],
         hostname: Option<&[u8]>,
     ) -> Result<TlsConnection<WaitServerHello, H, C>, ConnectionError<W::Error>> {
-        // Write into an internal scratch buffer so we can feed the
-        // exact wire bytes into the transcript hash before forwarding
-        // them to the caller's Writer. Sized to fit the locked-profile
-        // CH plus a generous SNI hostname.
+        // Internal scratch so we feed the exact wire bytes into the
+        // transcript before forwarding to the caller's Writer.
         let mut scratch = [0u8; CH_SCRATCH];
         let mut cursor: &mut [u8] = &mut scratch[..];
-        // Re-route the slice-cursor's own error to the user-facing IO
-        // error space: a `Full` here means our internal CH scratch
-        // wasn't big enough for the requested hostname, which is the
-        // user's `MessageTooLong` from their perspective.
+        // Cursor-Full means scratch wasn't big enough; surface as MessageTooLong.
         let n = write_client_hello(&mut cursor, &self.state.client_random, x25519_pub, hostname)
             .map_err(|e| match e {
                 ClientHelloError::HostnameTooLong => {
@@ -351,12 +293,8 @@ where
 // WaitServerHello -> NegotiatedSuite
 // ============================================================================
 
-/// Runtime-dispatch hop the [`TlsConnection::read_server_hello`]
-/// transition produces. The suite isn't known until SH is parsed; this
-/// enum lets the type-system pick up the resolved suite at one
-/// well-defined point. CLI callers match on it; embedded callers who
-/// pre-know their suite use one of the `assume_*` methods to skip the
-/// match and monomorphize directly.
+/// Runtime suite dispatch from [`TlsConnection::read_server_hello`].
+/// Embedded callers who pre-know the suite use `assume_*` to skip the match.
 pub enum NegotiatedSuite<H = RustCrypto, C = RustCrypto>
 where
     H: HkdfSha256,
@@ -370,12 +308,7 @@ impl<H, C> NegotiatedSuite<H, C>
 where
     H: HkdfSha256,
 {
-    /// Coerce to the AES-128-GCM-SHA256 variant. Returns
-    /// `Err(ConnectionError::WrongSuite)` if the server actually
-    /// negotiated something else.
-    ///
-    /// Use this on embedded targets that physically only carry AES code
-    /// so the chacha branch of the enum match never monomorphizes.
+    /// Skip the runtime suite match on AES-only embedded builds.
     pub fn assume_aes_128_gcm(
         self,
     ) -> Result<TlsConnection<WaitServerFlight<Aes128GcmSha256>, H, C>, ConnectionError> {
@@ -389,7 +322,6 @@ where
         }
     }
 
-    /// Coerce to the ChaCha20-Poly1305-SHA256 variant.
     #[cfg(feature = "chacha20")]
     pub fn assume_chacha20_poly1305(
         self,
@@ -409,22 +341,15 @@ impl<H, C> TlsConnection<WaitServerHello, H, C>
 where
     H: HkdfSha256,
 {
-    /// Parse the ServerHello record, run X25519 against the server's
-    /// `key_share`, derive the handshake secret and the
-    /// `(c_hs_ts, s_hs_ts)` traffic-secret pair, materialize the
-    /// `s_hs` AEAD keys, and advance to [`NegotiatedSuite`].
+    /// Parse SH, run x25519, derive handshake secrets, materialize s_hs keys.
     pub fn read_server_hello(
         mut self,
         sh_record: &[u8],
     ) -> Result<NegotiatedSuite<H, C>, ConnectionError> {
         let sh = parse_server_hello(sh_record)?;
-
-        // X25519 DH against the server's share — the connection holds
-        // the priv from Init; the server's share is in sh.
         let dhe = ed25519_heapless::x25519::<Bn>(&self.state.x25519_priv, sh.x25519_share);
 
-        // Feed the SH record into the transcript before deriving any
-        // secrets — handshake_traffic_secrets needs H(CH ‖ SH).
+        // SH into transcript first — handshake_traffic_secrets needs H(CH‖SH).
         self.transcript.update_record(sh_record)?;
         let th_ch_sh = self.transcript.snapshot();
 
@@ -472,10 +397,7 @@ where
 // WaitServerFlight -> ServerFlightDone
 // ============================================================================
 
-/// Shared body for `feed_server_record` across cipher suites. Generic over
-/// the decrypt closure so each suite's impl can call its own
-/// `RecordKeys::<S>::decrypt_record::<C>` without going through a trait
-/// object.
+/// Shared body for per-suite `feed_server_record`.
 fn feed_server_record_inner<const N: usize, F>(
     record: &[u8],
     seq_in: &mut u64,
@@ -490,7 +412,6 @@ where
         return Err(ConnectionError::Decrypt(DecryptError::Truncated));
     }
     match record[0] {
-        // Middlebox-compat CCS: drop without bumping seq_in. RFC 8446 §5.
         CT_CHANGE_CIPHER_SPEC => Ok(if reassembler.is_complete() {
             FlightStep::Ready
         } else {
@@ -523,13 +444,8 @@ where
     H: HkdfSha256,
     C: Aes128GcmAead,
 {
-    /// Decrypt one server-flight record into `scratch`, push its inner
-    /// handshake content into `reassembler`, and report whether the
-    /// reassembled flight is complete. `scratch` only needs to hold the
-    /// inner plaintext of one record (≤ 2^14 + 256 bytes by RFC).
-    ///
-    /// CCS records (sent by the server for middlebox compat) are dropped
-    /// without bumping the read sequence.
+    /// Decrypt one record, push into `reassembler`. Returns `Ready` when
+    /// the flight is complete. CCS records skipped without bumping seq_in.
     pub fn feed_server_record<const N: usize>(
         &mut self,
         record: &[u8],
@@ -545,18 +461,23 @@ where
         )
     }
 
-    /// Verify the reassembled server flight (cert + CertificateVerify +
-    /// server Finished) and advance to [`ServerFlightDone`]. The transcript
-    /// is positioned through sFin on success.
+    /// Verify the flight (CV + Finished, plus self-sig if [`VerifyMode::SelfSigned`])
+    /// and advance to [`ServerFlightDone`].
     pub fn finalize_server_flight<const N: usize, P: CertParser, E: Ed25519Verify>(
         mut self,
         reassembler: &ServerFlightReassembler<N>,
+        mode: VerifyMode,
     ) -> Result<TlsConnection<ServerFlightDone<Aes128GcmSha256>, H, C>, ConnectionError> {
         let plaintext = reassembler
             .flight_bytes()
             .ok_or(ConnectionError::IncompleteFlight)?;
-        let verified =
-            verify_server_flight::<H, P, E>(&mut self.transcript, plaintext, &self.state.s_hs_ts)?;
+        let verify_self_sig = matches!(mode, VerifyMode::SelfSigned);
+        let verified = verify_server_flight::<H, P, E>(
+            &mut self.transcript,
+            plaintext,
+            &self.state.s_hs_ts,
+            verify_self_sig,
+        )?;
         let server_pubkey = ServerPubkeyOwned::from_view(&verified.server_pubkey);
         Ok(TlsConnection {
             transcript: self.transcript,
@@ -596,13 +517,19 @@ where
     pub fn finalize_server_flight<const N: usize, P: CertParser, E: Ed25519Verify>(
         mut self,
         reassembler: &ServerFlightReassembler<N>,
+        mode: VerifyMode,
     ) -> Result<TlsConnection<ServerFlightDone<ChaCha20Poly1305Sha256>, H, C>, ConnectionError>
     {
         let plaintext = reassembler
             .flight_bytes()
             .ok_or(ConnectionError::IncompleteFlight)?;
-        let verified =
-            verify_server_flight::<H, P, E>(&mut self.transcript, plaintext, &self.state.s_hs_ts)?;
+        let verify_self_sig = matches!(mode, VerifyMode::SelfSigned);
+        let verified = verify_server_flight::<H, P, E>(
+            &mut self.transcript,
+            plaintext,
+            &self.state.s_hs_ts,
+            verify_self_sig,
+        )?;
         let server_pubkey = ServerPubkeyOwned::from_view(&verified.server_pubkey);
         Ok(TlsConnection {
             transcript: self.transcript,
@@ -622,23 +549,13 @@ where
 // ServerFlightDone -> AppData
 // ============================================================================
 
-/// Return of `finish_handshake_inner`: the client Finished record bytes
-/// (borrowed from the caller's `out_buf`) plus the freshly-derived
-/// client and server app-traffic AEAD key pairs.
+/// `(cf_record_bytes, c_ap_keys, s_ap_keys)` produced by `finish_handshake_inner`.
 type FinishHandshakeOut<'a, S> = (&'a [u8], RecordKeys<S>, RecordKeys<S>);
 
-/// Successful return of [`TlsConnection::finish_handshake`]: the client
-/// Finished record bytes borrowed from the caller's `out_buf`, paired
-/// with the AppData-state connection ready for record I/O.
+/// Successful return of [`TlsConnection::finish_handshake`].
 type FinishHandshakeOk<'a, S, H, C> = (&'a [u8], TlsConnection<AppData<S>, H, C>);
 
-/// Shared body for `finish_handshake` across cipher suites: derive `ms`,
-/// the client/server app-traffic secrets, build the client Finished
-/// record into `out_buf` under `c_hs_traffic_secret`, and return the
-/// final `RecordKeys<S>` pair for the AppData state.
-///
-/// Generic over the build/derive closures so each suite's impl block
-/// stays monomorphized.
+/// Shared body for per-suite `finish_handshake`.
 fn finish_handshake_inner<'a, S, H, BuildFn, DeriveFn>(
     hs: &Secret,
     c_hs_ts: &Secret,
@@ -658,9 +575,7 @@ where
     ) -> Result<&'a [u8], ClientFinishedError>,
     DeriveFn: Fn(&Secret) -> Result<RecordKeys<S>, HkdfLabelError>,
 {
-    // RFC 8446 §4.4.4: client Finished verify_data is keyed by
-    // c_hs_traffic_secret over TH(CH..server Finished). Encrypted under
-    // c_hs AEAD keys (seq 0 — first c->s record under that key).
+    // Seq 0 — first c->s record under c_hs AEAD keys.
     let record = build_client_finished(c_hs_ts, th_through_sfin, 0, out_buf)?;
 
     let ms = master_secret::<H>(hs)?;
@@ -675,12 +590,20 @@ where
     S: CipherSuite,
     H: HkdfSha256,
 {
-    /// Borrow the server's verified public key. The key is owned by the
-    /// connection (carried forward from `finalize_server_flight`); this
-    /// accessor returns a `ServerPubkey<'_>` view for callers that want
-    /// to feed it back into the sans-io layer.
     pub fn server_pubkey(&self) -> ServerPubkey<'_> {
         self.state.server_pubkey.as_view()
+    }
+
+    /// Server handshake-traffic secret. Exposed for replay-fixture capture
+    /// (persist with the encrypted flight + CH/SH; replay via
+    /// `WaitServerFlight::from_handshake_secrets`).
+    pub fn s_hs_traffic_secret(&self) -> &Secret {
+        &self.state.s_hs_ts
+    }
+
+    /// Client handshake-traffic secret. Same capture use case.
+    pub fn c_hs_traffic_secret(&self) -> &Secret {
+        &self.state.c_hs_ts
     }
 }
 
@@ -689,16 +612,9 @@ where
     H: HkdfSha256,
     C: Aes128GcmAead,
 {
-    /// Build the client Finished record into `out_buf` *without*
-    /// transitioning to [`AppData`]. The caller takes the record bytes;
-    /// the connection stays in `ServerFlightDone` so the test harness
-    /// can poll it again or drop it.
-    ///
-    /// `master_secret` and the application-traffic-secret derivation
-    /// chain are NOT touched, so an embedded replay harness that only
-    /// needs the client Finished doesn't pull those primitives into
-    /// `.text`. Production clients should call [`Self::finish_handshake`]
-    /// instead.
+    /// Build the client Finished record into `out_buf` without transitioning.
+    /// Skips the `ms` + app-traffic derivation; replay-harness use. Production
+    /// callers want [`Self::finish_handshake`] instead.
     pub fn build_client_finished<'a>(
         &self,
         out_buf: &'a mut [u8],
@@ -739,23 +655,19 @@ where
 // Replay entry points (feature = "replay")
 // ============================================================================
 //
-// Captured-fixture harnesses (e.g. the footprint demos) enter the typestate
-// at `WaitServerFlight<S>` with pre-derived handshake-traffic secrets, never
-// running x25519 or the early-key-schedule HKDF chain. Gated so production
-// builds don't see the constructor or pull the entry-point code into `.text`.
+// Captured-fixture harnesses enter at `WaitServerFlight<S>` with pre-derived
+// secrets, skipping x25519 + early HKDF. Gated so production binaries don't
+// see the constructor.
 
 #[cfg(feature = "replay")]
 impl<H, C> TlsConnection<WaitServerFlight<Aes128GcmSha256>, H, C>
 where
     H: HkdfSha256,
 {
-    /// Construct a `WaitServerFlight` connection from pre-derived
-    /// handshake-traffic secrets and a transcript positioned at
-    /// `H(CH ‖ SH)`. The `master_secret` slot is left as zeros — the
-    /// caller must only invoke [`Self::finalize_server_flight`] then
-    /// [`super::TlsConnection::build_client_finished`]; calling the
-    /// AppData-producing [`super::TlsConnection::finish_handshake`] on
-    /// a replay-state connection yields meaningless app traffic keys.
+    /// Enter `WaitServerFlight` with pre-derived secrets + transcript at
+    /// `H(CH‖SH)`. `hs` is zeroed — only `finalize_server_flight` +
+    /// `build_client_finished` are valid; `finish_handshake` produces
+    /// meaningless app keys on a replay connection.
     pub fn from_handshake_secrets(
         transcript: TranscriptHash<H>,
         c_hs_ts: Secret,
@@ -806,15 +718,8 @@ where
     H: HkdfSha256,
     C: Aes128GcmAead,
 {
-    /// Build the client Finished record into `out_buf` and advance to
-    /// [`AppData`]. The caller is responsible for writing the returned
-    /// bytes to the server. `out_buf` must be at least
-    /// [`crate::client_flight::CLIENT_FINISHED_LEN`] (58) bytes.
-    ///
-    /// `master_secret` and the application-traffic secrets are derived
-    /// from `handshake_secret` + `TH(CH..sFin)` in the same transition,
-    /// so by the time `AppData` is returned the handshake-traffic
-    /// material in `ServerFlightDone` has been dropped (and zeroed).
+    /// Build CF into `out_buf` (≥ 58 B), derive `ms` + app-traffic keys,
+    /// advance to [`AppData`]. Caller writes the returned record bytes.
     pub fn finish_handshake<'a>(
         self,
         out_buf: &'a mut [u8],
@@ -895,9 +800,8 @@ where
     H: HkdfSha256,
     C: Aes128GcmAead,
 {
-    /// Encrypt one record under the client app-traffic key and bump
-    /// `seq_out`. `content_type` is the TLS 1.3 *inner* content type
-    /// (`CT_APPLICATION_DATA` for app data, `CT_ALERT` for alerts).
+    /// Encrypt one record under `c_ap_keys` and bump seq_out. `content_type`
+    /// is the inner TLS 1.3 content type (`CT_APPLICATION_DATA` / `CT_ALERT`).
     pub fn encrypt_record<'a>(
         &mut self,
         content: &[u8],
@@ -914,9 +818,8 @@ where
         Ok(record)
     }
 
-    /// Decrypt one incoming record under the server app-traffic key and
-    /// bump `seq_in`. Returns the inner `(content, content_type)` so the
-    /// caller can dispatch on the inner content type.
+    /// Decrypt one record under `s_ap_keys`, return `(content, inner_ct)`,
+    /// bump seq_in.
     pub fn decrypt_record<'a>(
         &mut self,
         record: &[u8],
@@ -926,8 +829,7 @@ where
             .state
             .s_ap_keys
             .decrypt_record::<C>(record, self.state.seq_in, scratch)?;
-        // borrow split: split_inner_plaintext borrows `inner`; that
-        // borrow into `scratch` is released by the time we return.
+        // Borrow split: end split_inner_plaintext's borrow before reborrowing scratch.
         let (content_len, ct) = {
             let (content, ct) = split_inner_plaintext(inner)?;
             (content.len(), ct)
@@ -936,9 +838,7 @@ where
         Ok((&scratch[..content_len], ct))
     }
 
-    /// Build a TLS 1.3 close_notify alert record. Consumes the
-    /// connection — once close_notify is on the wire the keys must not
-    /// be reused.
+    /// Emit a close_notify alert record. Consumes the connection.
     pub fn close_notify(mut self, out_buf: &mut [u8]) -> Result<&[u8], ConnectionError> {
         self.encrypt_record(&CLOSE_NOTIFY_ALERT, CT_ALERT, out_buf)
     }
@@ -1127,7 +1027,10 @@ mod tests {
         assert_eq!(step, FlightStep::Ready);
 
         let done = conn
-            .finalize_server_flight::<512, DerCert, RustCrypto>(&reassembler)
+            .finalize_server_flight::<512, DerCert, RustCrypto>(
+                &reassembler,
+                VerifyMode::SelfSigned,
+            )
             .expect("finalize_server_flight");
         match &done.state.server_pubkey {
             ServerPubkeyOwned::Ed25519(pk) => assert_eq!(pk, &EXPECTED_SERVER_ID_PUB),
@@ -1159,7 +1062,10 @@ mod tests {
             .unwrap();
 
         let reassembler: ServerFlightReassembler<512> = ServerFlightReassembler::new();
-        let err = match conn.finalize_server_flight::<512, DerCert, RustCrypto>(&reassembler) {
+        let err = match conn.finalize_server_flight::<512, DerCert, RustCrypto>(
+            &reassembler,
+            VerifyMode::SelfSigned,
+        ) {
             Ok(_) => panic!("expected IncompleteFlight"),
             Err(e) => e,
         };
@@ -1251,7 +1157,10 @@ mod tests {
         conn.feed_server_record(&FIXTURE_PACKET_3, &mut reassembler, &mut scratch)
             .unwrap();
         let conn = conn
-            .finalize_server_flight::<512, DerCert, RustCrypto>(&reassembler)
+            .finalize_server_flight::<512, DerCert, RustCrypto>(
+                &reassembler,
+                VerifyMode::SelfSigned,
+            )
             .unwrap();
 
         let mut fin_buf = [0u8; 64];
@@ -1287,7 +1196,10 @@ mod tests {
         conn.feed_server_record(&FIXTURE_PACKET_3, &mut reassembler, &mut scratch)
             .unwrap();
         let conn = conn
-            .finalize_server_flight::<512, DerCert, RustCrypto>(&reassembler)
+            .finalize_server_flight::<512, DerCert, RustCrypto>(
+                &reassembler,
+                VerifyMode::SelfSigned,
+            )
             .unwrap();
 
         let mut fin_buf = [0u8; 64];
@@ -1330,7 +1242,10 @@ mod tests {
         conn.feed_server_record(&FIXTURE_PACKET_3, &mut reassembler, &mut scratch)
             .unwrap();
         let conn = conn
-            .finalize_server_flight::<512, DerCert, RustCrypto>(&reassembler)
+            .finalize_server_flight::<512, DerCert, RustCrypto>(
+                &reassembler,
+                VerifyMode::SelfSigned,
+            )
             .unwrap();
 
         // Pull the server pubkey *before* burning the borrow in finish_handshake.
@@ -1372,7 +1287,10 @@ mod tests {
         conn.feed_server_record(&FIXTURE_PACKET_3, &mut reassembler, &mut scratch)
             .unwrap();
         let conn = conn
-            .finalize_server_flight::<512, DerCert, RustCrypto>(&reassembler)
+            .finalize_server_flight::<512, DerCert, RustCrypto>(
+                &reassembler,
+                VerifyMode::SelfSigned,
+            )
             .unwrap();
         let mut fin_buf = [0u8; 64];
         let (_fin, conn) = conn.finish_handshake(&mut fin_buf).unwrap();

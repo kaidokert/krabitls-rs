@@ -31,7 +31,7 @@ pub use backends::{RsaVerifierKey, RsaVerifyError};
 pub use client_flight::{CLIENT_FINISHED_LEN, ClientFinishedError};
 pub use connection::{
     AppData, ConnectionError, FlightStep, Init, NegotiatedSuite, ServerFlightDone,
-    ServerPubkeyOwned, TlsConnection, WaitServerFlight, WaitServerHello,
+    ServerPubkeyOwned, TlsConnection, VerifyMode, WaitServerFlight, WaitServerHello,
 };
 pub use hkdf::{
     EMPTY_TRANSCRIPT_HASH, HkdfLabelError, TranscriptError, TranscriptHash,
@@ -1565,6 +1565,7 @@ mod tests {
             &mut transcript,
             content,
             &make_fixture_s_hs_traffic_secret(),
+            true,
         )
         .expect("verify_server_flight");
         assert_eq!(
@@ -1619,6 +1620,7 @@ mod tests {
             &mut transcript,
             content,
             &make_fixture_s_hs_traffic_secret(),
+            true,
         )
         .unwrap_err();
         assert_eq!(err, FlightError::CertSelfSignatureInvalid);
@@ -1760,6 +1762,7 @@ mod tests {
             &mut transcript,
             &tampered[..content.len()],
             &make_fixture_s_hs_traffic_secret(),
+            true,
         )
         .unwrap_err();
         assert_eq!(err, FlightError::FinishedMacInvalid);
@@ -1810,6 +1813,7 @@ mod tests {
             &mut transcript,
             content,
             &make_fixture_s_hs_traffic_secret(),
+            true,
         )
         .unwrap();
         let ms = master_secret::<RustCrypto>(&make_fixture_handshake_secret()).unwrap();
@@ -1884,6 +1888,7 @@ mod tests {
             &mut transcript,
             content,
             &make_fixture_s_hs_traffic_secret(),
+            true,
         )
         .unwrap();
 
@@ -1920,6 +1925,7 @@ mod tests {
             &mut transcript,
             content,
             &make_fixture_s_hs_traffic_secret(),
+            true,
         )
         .unwrap();
 
@@ -2215,6 +2221,7 @@ mod tests {
                 &mut transcript,
                 content,
                 &s_hs_ts,
+                true,
             )
             .expect("verify RSA server flight");
         }

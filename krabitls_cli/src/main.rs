@@ -390,8 +390,13 @@ fn compute_session_secrets(priv_bytes: &[u8; 32]) -> Result<SessionSecrets> {
         .map_err(|e| format!("decrypt server flight: {:?}", e))?;
     let (content, _ct) =
         split_inner_plaintext(pt).map_err(|e| format!("inner plaintext: {:?}", e))?;
-    verify_server_flight::<RustCrypto, DerCert, RustCrypto>(&mut transcript, content, &s_hs_ts)
-        .map_err(|e| format!("verify_server_flight: {:?}", e))?;
+    verify_server_flight::<RustCrypto, DerCert, RustCrypto>(
+        &mut transcript,
+        content,
+        &s_hs_ts,
+        true,
+    )
+    .map_err(|e| format!("verify_server_flight: {:?}", e))?;
     let th_through_sf = transcript.snapshot();
 
     let ms = master_secret::<RustCrypto>(&hs).map_err(|e| format!("master_secret: {:?}", e))?;
