@@ -17,11 +17,13 @@ use embedded_io::Write;
 use crate::aead::ChaCha20Poly1305Sha256;
 use crate::aead::{Aes128GcmSha256, CipherSuite, RecordKeys};
 use crate::backends::RustCrypto;
+use crate::client_flight::ClientFinishedError;
 #[cfg(feature = "chacha20")]
 use crate::consts::CIPHER_CHACHA20_POLY1305_SHA256;
 use crate::consts::{CIPHER_AES_128_GCM_SHA256, CT_APPLICATION_DATA, CT_HANDSHAKE};
 use crate::hkdf::{
-    HkdfLabelError, TranscriptError, TranscriptHash, handshake_secret, handshake_traffic_secrets,
+    HkdfLabelError, TranscriptError, TranscriptHash, application_traffic_secrets, handshake_secret,
+    handshake_traffic_secrets, master_secret,
 };
 use crate::newtype::{Secret, ZeroBuf};
 use crate::reassembler::{ReassemblyError, ServerFlightReassembler};
@@ -33,6 +35,11 @@ use crate::{
     ClientHelloError, DecryptError, EncryptError, FlightError, ParseError, parse_server_hello,
     split_inner_plaintext, verify_server_flight, write_client_hello,
 };
+
+/// Inner content type for TLS 1.3 alert records (RFC 8446 §5.1).
+const CT_ALERT: u8 = 0x15;
+/// TLS 1.3 close_notify alert body: AlertLevel::warning(1) ‖ close_notify(0).
+const CLOSE_NOTIFY_ALERT: [u8; 2] = [0x01, 0x00];
 
 /// Middlebox-compat ChangeCipherSpec content type; skipped without bumping
 /// the read sequence per RFC 8446 §5.1.
@@ -65,6 +72,7 @@ pub enum ConnectionError<E = core::convert::Infallible> {
     Encrypt(EncryptError),
     Transcript(TranscriptError),
     Reassembly(ReassemblyError),
+    ClientFinished(ClientFinishedError),
     /// ServerHello picked a suite that we didn't advertise or that
     /// doesn't match the `assume_*` shortcut the caller used.
     WrongSuite {
@@ -124,6 +132,12 @@ impl<E> From<ReassemblyError> for ConnectionError<E> {
     }
 }
 
+impl<E> From<ClientFinishedError> for ConnectionError<E> {
+    fn from(e: ClientFinishedError) -> Self {
+        Self::ClientFinished(e)
+    }
+}
+
 // ============================================================================
 // State markers
 // ============================================================================
@@ -160,10 +174,10 @@ pub struct WaitServerFlight<S: CipherSuite> {
 /// transcript is positioned through `CH ‖ SH ‖ EE ‖ Cert ‖ CV ‖ sFin`,
 /// ready to bind both the client Finished MAC and the application
 /// traffic secrets in a single transition.
-#[allow(dead_code)] // fields wired in follow-up commits on this branch
 pub struct ServerFlightDone<S: CipherSuite> {
     pub(crate) hs: Secret,
     pub(crate) c_hs_ts: Secret,
+    #[allow(dead_code)] // kept for symmetry; client side doesn't re-derive s_hs keys
     pub(crate) s_hs_ts: Secret,
     pub(crate) server_pubkey: ServerPubkeyOwned,
     pub(crate) _suite: PhantomData<S>,
@@ -234,7 +248,6 @@ pub enum FlightStep {
 /// Both `c_ap_keys` (for outbound records) and `s_ap_keys` (inbound)
 /// are RecordKeys-typed under the negotiated suite `S`. Per-direction
 /// record-layer sequence numbers tick under the AEAD nonce derivation.
-#[allow(dead_code)] // fields wired in follow-up commits on this branch
 pub struct AppData<S: CipherSuite> {
     pub(crate) c_ap_keys: RecordKeys<S>,
     pub(crate) s_ap_keys: RecordKeys<S>,
@@ -606,6 +619,259 @@ where
 }
 
 // ============================================================================
+// ServerFlightDone -> AppData
+// ============================================================================
+
+/// Return of `finish_handshake_inner`: the client Finished record bytes
+/// (borrowed from the caller's `out_buf`) plus the freshly-derived
+/// client and server app-traffic AEAD key pairs.
+type FinishHandshakeOut<'a, S> = (&'a [u8], RecordKeys<S>, RecordKeys<S>);
+
+/// Successful return of [`TlsConnection::finish_handshake`]: the client
+/// Finished record bytes borrowed from the caller's `out_buf`, paired
+/// with the AppData-state connection ready for record I/O.
+type FinishHandshakeOk<'a, S, H, C> = (&'a [u8], TlsConnection<AppData<S>, H, C>);
+
+/// Shared body for `finish_handshake` across cipher suites: derive `ms`,
+/// the client/server app-traffic secrets, build the client Finished
+/// record into `out_buf` under `c_hs_traffic_secret`, and return the
+/// final `RecordKeys<S>` pair for the AppData state.
+///
+/// Generic over the build/derive closures so each suite's impl block
+/// stays monomorphized.
+fn finish_handshake_inner<'a, S, H, BuildFn, DeriveFn>(
+    hs: &Secret,
+    c_hs_ts: &Secret,
+    th_through_sfin: &crate::newtype::TranscriptDigest,
+    out_buf: &'a mut [u8],
+    build_client_finished: BuildFn,
+    derive_record_keys: DeriveFn,
+) -> Result<FinishHandshakeOut<'a, S>, ConnectionError>
+where
+    S: CipherSuite,
+    H: HkdfSha256,
+    BuildFn: FnOnce(
+        &Secret,
+        &crate::newtype::TranscriptDigest,
+        u64,
+        &'a mut [u8],
+    ) -> Result<&'a [u8], ClientFinishedError>,
+    DeriveFn: Fn(&Secret) -> Result<RecordKeys<S>, HkdfLabelError>,
+{
+    // RFC 8446 §4.4.4: client Finished verify_data is keyed by
+    // c_hs_traffic_secret over TH(CH..server Finished). Encrypted under
+    // c_hs AEAD keys (seq 0 — first c->s record under that key).
+    let record = build_client_finished(c_hs_ts, th_through_sfin, 0, out_buf)?;
+
+    let ms = master_secret::<H>(hs)?;
+    let (c_ap_ts, s_ap_ts) = application_traffic_secrets::<H>(&ms, th_through_sfin)?;
+    let c_ap_keys = derive_record_keys(&c_ap_ts)?;
+    let s_ap_keys = derive_record_keys(&s_ap_ts)?;
+    Ok((record, c_ap_keys, s_ap_keys))
+}
+
+impl<S, H, C> TlsConnection<ServerFlightDone<S>, H, C>
+where
+    S: CipherSuite,
+    H: HkdfSha256,
+{
+    /// Borrow the server's verified public key. The key is owned by the
+    /// connection (carried forward from `finalize_server_flight`); this
+    /// accessor returns a `ServerPubkey<'_>` view for callers that want
+    /// to feed it back into the sans-io layer.
+    pub fn server_pubkey(&self) -> ServerPubkey<'_> {
+        self.state.server_pubkey.as_view()
+    }
+}
+
+impl<H, C> TlsConnection<ServerFlightDone<Aes128GcmSha256>, H, C>
+where
+    H: HkdfSha256,
+    C: Aes128GcmAead,
+{
+    /// Build the client Finished record into `out_buf` and advance to
+    /// [`AppData`]. The caller is responsible for writing the returned
+    /// bytes to the server. `out_buf` must be at least
+    /// [`crate::client_flight::CLIENT_FINISHED_LEN`] (58) bytes.
+    ///
+    /// `master_secret` and the application-traffic secrets are derived
+    /// from `handshake_secret` + `TH(CH..sFin)` in the same transition,
+    /// so by the time `AppData` is returned the handshake-traffic
+    /// material in `ServerFlightDone` has been dropped (and zeroed).
+    pub fn finish_handshake<'a>(
+        self,
+        out_buf: &'a mut [u8],
+    ) -> Result<FinishHandshakeOk<'a, Aes128GcmSha256, H, C>, ConnectionError> {
+        let th = self.transcript.snapshot();
+        let (record, c_ap_keys, s_ap_keys) = finish_handshake_inner::<Aes128GcmSha256, H, _, _>(
+            &self.state.hs,
+            &self.state.c_hs_ts,
+            &th,
+            out_buf,
+            |secret, th, seq, buf| {
+                RecordKeys::<Aes128GcmSha256>::build_client_finished::<H, C>(secret, th, seq, buf)
+            },
+            RecordKeys::<Aes128GcmSha256>::derive::<H>,
+        )?;
+        Ok((
+            record,
+            TlsConnection {
+                transcript: self.transcript,
+                state: AppData {
+                    c_ap_keys,
+                    s_ap_keys,
+                    seq_out: 0,
+                    seq_in: 0,
+                },
+                _crypto: PhantomData,
+            },
+        ))
+    }
+}
+
+#[cfg(feature = "chacha20")]
+impl<H, C> TlsConnection<ServerFlightDone<ChaCha20Poly1305Sha256>, H, C>
+where
+    H: HkdfSha256,
+    C: ChaCha20Poly1305Aead,
+{
+    pub fn finish_handshake<'a>(
+        self,
+        out_buf: &'a mut [u8],
+    ) -> Result<FinishHandshakeOk<'a, ChaCha20Poly1305Sha256, H, C>, ConnectionError> {
+        let th = self.transcript.snapshot();
+        let (record, c_ap_keys, s_ap_keys) =
+            finish_handshake_inner::<ChaCha20Poly1305Sha256, H, _, _>(
+                &self.state.hs,
+                &self.state.c_hs_ts,
+                &th,
+                out_buf,
+                |secret, th, seq, buf| {
+                    RecordKeys::<ChaCha20Poly1305Sha256>::build_client_finished::<H, C>(
+                        secret, th, seq, buf,
+                    )
+                },
+                RecordKeys::<ChaCha20Poly1305Sha256>::derive::<H>,
+            )?;
+        Ok((
+            record,
+            TlsConnection {
+                transcript: self.transcript,
+                state: AppData {
+                    c_ap_keys,
+                    s_ap_keys,
+                    seq_out: 0,
+                    seq_in: 0,
+                },
+                _crypto: PhantomData,
+            },
+        ))
+    }
+}
+
+// ============================================================================
+// AppData: encrypt_record / decrypt_record / close_notify
+// ============================================================================
+
+impl<H, C> TlsConnection<AppData<Aes128GcmSha256>, H, C>
+where
+    H: HkdfSha256,
+    C: Aes128GcmAead,
+{
+    /// Encrypt one record under the client app-traffic key and bump
+    /// `seq_out`. `content_type` is the TLS 1.3 *inner* content type
+    /// (`CT_APPLICATION_DATA` for app data, `CT_ALERT` for alerts).
+    pub fn encrypt_record<'a>(
+        &mut self,
+        content: &[u8],
+        content_type: u8,
+        out_buf: &'a mut [u8],
+    ) -> Result<&'a [u8], ConnectionError> {
+        let record = self.state.c_ap_keys.encrypt_record::<C>(
+            content,
+            content_type,
+            self.state.seq_out,
+            out_buf,
+        )?;
+        self.state.seq_out += 1;
+        Ok(record)
+    }
+
+    /// Decrypt one incoming record under the server app-traffic key and
+    /// bump `seq_in`. Returns the inner `(content, content_type)` so the
+    /// caller can dispatch on the inner content type.
+    pub fn decrypt_record<'a>(
+        &mut self,
+        record: &[u8],
+        scratch: &'a mut [u8],
+    ) -> Result<(&'a [u8], u8), ConnectionError> {
+        let inner = self
+            .state
+            .s_ap_keys
+            .decrypt_record::<C>(record, self.state.seq_in, scratch)?;
+        // borrow split: split_inner_plaintext borrows `inner`; that
+        // borrow into `scratch` is released by the time we return.
+        let (content_len, ct) = {
+            let (content, ct) = split_inner_plaintext(inner)?;
+            (content.len(), ct)
+        };
+        self.state.seq_in += 1;
+        Ok((&scratch[..content_len], ct))
+    }
+
+    /// Build a TLS 1.3 close_notify alert record. Consumes the
+    /// connection — once close_notify is on the wire the keys must not
+    /// be reused.
+    pub fn close_notify(mut self, out_buf: &mut [u8]) -> Result<&[u8], ConnectionError> {
+        self.encrypt_record(&CLOSE_NOTIFY_ALERT, CT_ALERT, out_buf)
+    }
+}
+
+#[cfg(feature = "chacha20")]
+impl<H, C> TlsConnection<AppData<ChaCha20Poly1305Sha256>, H, C>
+where
+    H: HkdfSha256,
+    C: ChaCha20Poly1305Aead,
+{
+    pub fn encrypt_record<'a>(
+        &mut self,
+        content: &[u8],
+        content_type: u8,
+        out_buf: &'a mut [u8],
+    ) -> Result<&'a [u8], ConnectionError> {
+        let record = self.state.c_ap_keys.encrypt_record::<C>(
+            content,
+            content_type,
+            self.state.seq_out,
+            out_buf,
+        )?;
+        self.state.seq_out += 1;
+        Ok(record)
+    }
+
+    pub fn decrypt_record<'a>(
+        &mut self,
+        record: &[u8],
+        scratch: &'a mut [u8],
+    ) -> Result<(&'a [u8], u8), ConnectionError> {
+        let inner = self
+            .state
+            .s_ap_keys
+            .decrypt_record::<C>(record, self.state.seq_in, scratch)?;
+        let (content_len, ct) = {
+            let (content, ct) = split_inner_plaintext(inner)?;
+            (content.len(), ct)
+        };
+        self.state.seq_in += 1;
+        Ok((&scratch[..content_len], ct))
+    }
+
+    pub fn close_notify(mut self, out_buf: &mut [u8]) -> Result<&[u8], ConnectionError> {
+        self.encrypt_record(&CLOSE_NOTIFY_ALERT, CT_ALERT, out_buf)
+    }
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -821,6 +1087,189 @@ mod tests {
             .unwrap();
         assert_eq!(step, FlightStep::Ready);
         assert_eq!(conn.state.seq_in, 1);
+    }
+
+    /// packets/004 — the byte-attested client Finished record under the
+    /// seed-0 keys. 58 bytes (= [`CLIENT_FINISHED_LEN`]).
+    const FIXTURE_PACKET_4: [u8; 58] = crate::hex_decode(include_str!(
+        "../../testdata/packets/004_c2s_ClientFinished_encrypted.hex"
+    ));
+    /// packets/005 — first client app-data record under the seed-0 c_ap key.
+    const FIXTURE_PACKET_5: [u8; 52] = crate::hex_decode(include_str!(
+        "../../testdata/packets/005_c2s_AppData_send_0.hex"
+    ));
+    /// packets/006 — first server app-data record under the seed-0 s_ap key.
+    const FIXTURE_PACKET_6: [u8; 48] = crate::hex_decode(include_str!(
+        "../../testdata/packets/006_s2c_AppData_reply_0.hex"
+    ));
+    /// Plaintext the seed-0 client sent in packet 5.
+    const PACKET_5_PLAINTEXT: &[u8] = b"hello from the embedded client";
+    /// Plaintext the seed-0 server sent in packet 6 (includes a UTF-8 em-dash).
+    const PACKET_6_PLAINTEXT: &[u8] = b"hello back \xe2\x80\x94 server here";
+
+    /// Drive the typestate through `Init → AppData` and assert that
+    /// `finish_handshake` lays down the exact byte sequence the
+    /// Python fixture captured in `packets/004_c2s_ClientFinished_encrypted.hex`.
+    #[cfg(not(feature = "chacha20"))]
+    #[test]
+    fn finish_handshake_byte_identical_client_finished() {
+        use crate::backends::DerCert;
+        use crate::reassembler::ServerFlightReassembler;
+
+        let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
+        let conn: TlsConnection<Init, RustCrypto, RustCrypto> =
+            TlsConnection::new(FIXTURE_RANDOM, priv_zb);
+        let mut out = [0u8; 256];
+        let mut cursor: &mut [u8] = &mut out[..];
+        let conn = conn
+            .write_client_hello(&mut cursor, &FIXTURE_X25519_PUB, None)
+            .unwrap();
+        let mut conn = conn
+            .read_server_hello(&FIXTURE_SERVER_HELLO)
+            .unwrap()
+            .assume_aes_128_gcm()
+            .unwrap();
+        let mut reassembler: ServerFlightReassembler<512> = ServerFlightReassembler::new();
+        let mut scratch = [0u8; 400];
+        conn.feed_server_record(&FIXTURE_PACKET_3, &mut reassembler, &mut scratch)
+            .unwrap();
+        let conn = conn
+            .finalize_server_flight::<512, DerCert, RustCrypto>(&reassembler)
+            .unwrap();
+
+        let mut fin_buf = [0u8; 64];
+        let (fin_record, _conn) = conn.finish_handshake(&mut fin_buf).unwrap();
+        assert_eq!(fin_record, &FIXTURE_PACKET_4[..]);
+    }
+
+    /// Full pipeline through `AppData::encrypt_record`: the same plaintext
+    /// the Python seed-0 cli.py sent encrypts to the same bytes captured
+    /// in `packets/005`.
+    #[cfg(not(feature = "chacha20"))]
+    #[test]
+    fn app_data_encrypt_record_byte_identical_packet_5() {
+        use crate::backends::DerCert;
+        use crate::consts::CT_APPLICATION_DATA;
+        use crate::reassembler::ServerFlightReassembler;
+
+        let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
+        let conn: TlsConnection<Init, RustCrypto, RustCrypto> =
+            TlsConnection::new(FIXTURE_RANDOM, priv_zb);
+        let mut ch_buf = [0u8; 256];
+        let mut cursor: &mut [u8] = &mut ch_buf[..];
+        let conn = conn
+            .write_client_hello(&mut cursor, &FIXTURE_X25519_PUB, None)
+            .unwrap();
+        let mut conn = conn
+            .read_server_hello(&FIXTURE_SERVER_HELLO)
+            .unwrap()
+            .assume_aes_128_gcm()
+            .unwrap();
+        let mut reassembler: ServerFlightReassembler<512> = ServerFlightReassembler::new();
+        let mut scratch = [0u8; 400];
+        conn.feed_server_record(&FIXTURE_PACKET_3, &mut reassembler, &mut scratch)
+            .unwrap();
+        let conn = conn
+            .finalize_server_flight::<512, DerCert, RustCrypto>(&reassembler)
+            .unwrap();
+
+        let mut fin_buf = [0u8; 64];
+        let (_fin, mut conn) = conn.finish_handshake(&mut fin_buf).unwrap();
+
+        // First c->s app-data record uses seq_out = 0.
+        let mut rec_buf = [0u8; 80];
+        let rec = conn
+            .encrypt_record(PACKET_5_PLAINTEXT, CT_APPLICATION_DATA, &mut rec_buf)
+            .unwrap();
+        assert_eq!(rec, &FIXTURE_PACKET_5[..]);
+        assert_eq!(conn.state.seq_out, 1);
+    }
+
+    /// Full pipeline through `AppData::decrypt_record`: the captured
+    /// server reply in `packets/006` round-trips back to the original
+    /// plaintext.
+    #[cfg(not(feature = "chacha20"))]
+    #[test]
+    fn app_data_decrypt_record_round_trips_packet_6() {
+        use crate::backends::DerCert;
+        use crate::consts::CT_APPLICATION_DATA;
+        use crate::reassembler::ServerFlightReassembler;
+
+        let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
+        let conn: TlsConnection<Init, RustCrypto, RustCrypto> =
+            TlsConnection::new(FIXTURE_RANDOM, priv_zb);
+        let mut ch_buf = [0u8; 256];
+        let mut cursor: &mut [u8] = &mut ch_buf[..];
+        let conn = conn
+            .write_client_hello(&mut cursor, &FIXTURE_X25519_PUB, None)
+            .unwrap();
+        let mut conn = conn
+            .read_server_hello(&FIXTURE_SERVER_HELLO)
+            .unwrap()
+            .assume_aes_128_gcm()
+            .unwrap();
+        let mut reassembler: ServerFlightReassembler<512> = ServerFlightReassembler::new();
+        let mut scratch = [0u8; 400];
+        conn.feed_server_record(&FIXTURE_PACKET_3, &mut reassembler, &mut scratch)
+            .unwrap();
+        let conn = conn
+            .finalize_server_flight::<512, DerCert, RustCrypto>(&reassembler)
+            .unwrap();
+
+        // Pull the server pubkey *before* burning the borrow in finish_handshake.
+        assert!(matches!(conn.server_pubkey(), ServerPubkey::Ed25519(_, _)));
+
+        let mut fin_buf = [0u8; 64];
+        let (_fin, mut conn) = conn.finish_handshake(&mut fin_buf).unwrap();
+
+        let mut pt = [0u8; 64];
+        let (content, ct) = conn.decrypt_record(&FIXTURE_PACKET_6, &mut pt).unwrap();
+        assert_eq!(ct, CT_APPLICATION_DATA);
+        assert_eq!(content, PACKET_6_PLAINTEXT);
+        assert_eq!(conn.state.seq_in, 1);
+    }
+
+    /// `close_notify` encrypts the standard `[0x01, 0x00]` alert under
+    /// the next outbound sequence and consumes the connection.
+    #[cfg(not(feature = "chacha20"))]
+    #[test]
+    fn close_notify_emits_encrypted_alert_record() {
+        use crate::backends::DerCert;
+        use crate::reassembler::ServerFlightReassembler;
+
+        let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
+        let conn: TlsConnection<Init, RustCrypto, RustCrypto> =
+            TlsConnection::new(FIXTURE_RANDOM, priv_zb);
+        let mut ch_buf = [0u8; 256];
+        let mut cursor: &mut [u8] = &mut ch_buf[..];
+        let conn = conn
+            .write_client_hello(&mut cursor, &FIXTURE_X25519_PUB, None)
+            .unwrap();
+        let mut conn = conn
+            .read_server_hello(&FIXTURE_SERVER_HELLO)
+            .unwrap()
+            .assume_aes_128_gcm()
+            .unwrap();
+        let mut reassembler: ServerFlightReassembler<512> = ServerFlightReassembler::new();
+        let mut scratch = [0u8; 400];
+        conn.feed_server_record(&FIXTURE_PACKET_3, &mut reassembler, &mut scratch)
+            .unwrap();
+        let conn = conn
+            .finalize_server_flight::<512, DerCert, RustCrypto>(&reassembler)
+            .unwrap();
+        let mut fin_buf = [0u8; 64];
+        let (_fin, conn) = conn.finish_handshake(&mut fin_buf).unwrap();
+
+        let mut alert_buf = [0u8; 64];
+        let alert = conn.close_notify(&mut alert_buf).unwrap();
+        // Outer record framing: application_data, TLS 1.2 record version,
+        // body = AEAD(plaintext = 2B alert + 1B inner_ct + tag).
+        assert_eq!(alert[0], CT_APPLICATION_DATA);
+        assert_eq!(&alert[1..3], &[0x03, 0x03]);
+        let body_len = u16::from_be_bytes([alert[3], alert[4]]) as usize;
+        // 2-byte alert content + 1-byte inner content_type + 16-byte tag.
+        assert_eq!(body_len, 2 + 1 + 16);
+        assert_eq!(alert.len(), 5 + body_len);
     }
 
     /// Verify that `assume_aes_128_gcm` succeeds when the suite really
