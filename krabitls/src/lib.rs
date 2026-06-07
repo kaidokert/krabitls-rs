@@ -16,29 +16,28 @@ pub mod reassembler;
 pub mod server_flight;
 pub mod traits;
 
-pub use aead::{
-    DecryptError, EncryptError, aead_nonce, decrypt_record, encrypt_record, split_inner_plaintext,
-};
 #[cfg(feature = "chacha20")]
-pub use aead::{decrypt_record_chacha, encrypt_record_chacha};
+pub use aead::ChaCha20Poly1305Sha256;
+pub use aead::{
+    Aes128GcmSha256, CipherSuite, DecryptError, EncryptError, RecordKeys, aead_nonce,
+    split_inner_plaintext,
+};
 #[cfg(feature = "jedisct")]
 pub use backends::JedisctCrypto;
 pub use backends::{DerCert, RustCrypto};
 #[cfg(feature = "rsa")]
 pub use backends::{RsaVerifierKey, RsaVerifyError};
-#[cfg(feature = "chacha20")]
-pub use client_flight::build_client_finished_chacha;
-pub use client_flight::{CLIENT_FINISHED_LEN, ClientFinishedError, build_client_finished};
-#[cfg(feature = "chacha20")]
-pub use hkdf::traffic_keys_chacha;
+pub use client_flight::{CLIENT_FINISHED_LEN, ClientFinishedError};
 pub use hkdf::{
     EMPTY_TRANSCRIPT_HASH, HkdfLabelError, TranscriptError, TranscriptHash,
     application_traffic_secrets, derive_secret, early_secret, finished_mac, handshake_secret,
-    handshake_traffic_secrets, hkdf_expand_label, master_secret, traffic_keys,
+    handshake_traffic_secrets, hkdf_expand_label, master_secret,
 };
 #[cfg(feature = "validity")]
 pub use identity::{ValidityError, verify_validity};
-pub use newtype::{AeadIv, AeadKey, AeadKey32, Secret, TranscriptDigest, ZeroBuf};
+#[cfg(feature = "chacha20")]
+pub use newtype::AeadKey32;
+pub use newtype::{AeadIv, AeadKey, Secret, TranscriptDigest, ZeroBuf};
 pub use server_flight::{
     FlightError, ServerFlightVerified, ServerFlightView, ServerPubkey, extract_cert_der,
     parse_server_flight, verify_certificate_verify, verify_self_signed_cert,
@@ -812,6 +811,12 @@ impl<'a> Reader<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::aead::{decrypt_record, encrypt_record};
+    #[cfg(feature = "chacha20")]
+    use crate::aead::{decrypt_record_chacha, encrypt_record_chacha};
+    use crate::hkdf::traffic_keys;
+    #[cfg(feature = "chacha20")]
+    use crate::newtype::AeadKey32;
     use crate::newtype::{AeadIv, AeadKey, Secret, TranscriptDigest};
     use embedded_io::SliceWriteError;
 
@@ -1877,13 +1882,14 @@ mod tests {
 
         // Now build the client Finished record and compare to fixture's packet 4.
         let mut out = [0u8; 64];
-        let record = build_client_finished::<RustCrypto, RustCrypto>(
-            &make_fixture_c_hs_traffic_secret(),
-            &transcript.snapshot(),
-            0, // first record under c_hs_traffic_secret
-            &mut out,
-        )
-        .unwrap();
+        let record =
+            RecordKeys::<Aes128GcmSha256>::build_client_finished::<RustCrypto, RustCrypto>(
+                &make_fixture_c_hs_traffic_secret(),
+                &transcript.snapshot(),
+                0, // first record under c_hs_traffic_secret
+                &mut out,
+            )
+            .unwrap();
         assert_eq!(record.len(), CLIENT_FINISHED_LEN);
         assert_eq!(record, &FIXTURE_PACKET_4[..]);
     }

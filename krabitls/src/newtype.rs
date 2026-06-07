@@ -117,12 +117,16 @@ impl core::fmt::Debug for AeadKey {
     }
 }
 
+#[cfg(feature = "chacha20")]
 secret_newtype! {
-    /// 32-byte ChaCha20-Poly1305 key. Output of [`crate::traffic_keys_chacha`].
-    /// Not `Copy`; zeroes on drop.
+    /// 32-byte ChaCha20-Poly1305 key. Wired as
+    /// `RecordKeys<ChaCha20Poly1305Sha256>::key`; surfaced publicly so
+    /// callers can name the type behind the suite's `CipherSuite::Key`
+    /// associated type (parallel to [`AeadKey`] for AES-128-GCM).
     AeadKey32(32)
 }
 
+#[cfg(feature = "chacha20")]
 impl core::fmt::Debug for AeadKey32 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str("AeadKey32([redacted; 32])")

@@ -1,12 +1,10 @@
 //! Build the client's encrypted TLS 1.3 Finished record.
 
 #[cfg(feature = "chacha20")]
-use crate::aead::encrypt_record_chacha;
-use crate::aead::{EncryptError, encrypt_record};
+use crate::aead::ChaCha20Poly1305Sha256;
+use crate::aead::{Aes128GcmSha256, EncryptError, RecordKeys};
 use crate::consts::CT_HANDSHAKE;
-#[cfg(feature = "chacha20")]
-use crate::hkdf::traffic_keys_chacha;
-use crate::hkdf::{HkdfLabelError, finished_mac, traffic_keys};
+use crate::hkdf::{HkdfLabelError, finished_mac};
 use crate::newtype::{Secret, TranscriptDigest, ZeroBuf};
 #[cfg(feature = "chacha20")]
 use crate::traits::ChaCha20Poly1305Aead;
@@ -68,38 +66,44 @@ fn build_finished_plaintext<H: HkdfSha256>(
     Ok(finished_msg)
 }
 
-/// Build the client `Finished` record.
-pub fn build_client_finished<'a, H: HkdfSha256, A: Aes128GcmAead>(
-    c_hs_traffic_secret: &Secret,
-    transcript_hash_through_server_finished: &TranscriptDigest,
-    seq: u64,
-    out_buf: &'a mut [u8],
-) -> Result<&'a [u8], ClientFinishedError> {
-    let finished_msg = build_finished_plaintext::<H>(
-        c_hs_traffic_secret,
-        transcript_hash_through_server_finished,
-    )?;
-    let (key, iv) = traffic_keys::<H>(c_hs_traffic_secret)?;
-    let record = encrypt_record::<A>(&finished_msg[..], CT_HANDSHAKE, &key, &iv, seq, out_buf)?;
-    Ok(record)
+impl RecordKeys<Aes128GcmSha256> {
+    /// Build the client `Finished` record under AES-128-GCM-SHA256.
+    /// Derives the encryption keys from `c_hs_traffic_secret` and emits the
+    /// AEAD-sealed handshake record. Associated function: no existing
+    /// `RecordKeys` instance is required at the call site.
+    pub fn build_client_finished<'a, H: HkdfSha256, C: Aes128GcmAead>(
+        c_hs_traffic_secret: &Secret,
+        transcript_hash_through_server_finished: &TranscriptDigest,
+        seq: u64,
+        out_buf: &'a mut [u8],
+    ) -> Result<&'a [u8], ClientFinishedError> {
+        let finished_msg = build_finished_plaintext::<H>(
+            c_hs_traffic_secret,
+            transcript_hash_through_server_finished,
+        )?;
+        let keys = Self::derive::<H>(c_hs_traffic_secret)?;
+        let record = keys.encrypt_record::<C>(&finished_msg[..], CT_HANDSHAKE, seq, out_buf)?;
+        Ok(record)
+    }
 }
 
-/// `build_client_finished` for the `TLS_CHACHA20_POLY1305_SHA256` suite.
 #[cfg(feature = "chacha20")]
-pub fn build_client_finished_chacha<'a, H: HkdfSha256, C: ChaCha20Poly1305Aead>(
-    c_hs_traffic_secret: &Secret,
-    transcript_hash_through_server_finished: &TranscriptDigest,
-    seq: u64,
-    out_buf: &'a mut [u8],
-) -> Result<&'a [u8], ClientFinishedError> {
-    let finished_msg = build_finished_plaintext::<H>(
-        c_hs_traffic_secret,
-        transcript_hash_through_server_finished,
-    )?;
-    let (key, iv) = traffic_keys_chacha::<H>(c_hs_traffic_secret)?;
-    let record =
-        encrypt_record_chacha::<C>(&finished_msg[..], CT_HANDSHAKE, &key, &iv, seq, out_buf)?;
-    Ok(record)
+impl RecordKeys<ChaCha20Poly1305Sha256> {
+    /// Build the client `Finished` record under ChaCha20-Poly1305-SHA256.
+    pub fn build_client_finished<'a, H: HkdfSha256, C: ChaCha20Poly1305Aead>(
+        c_hs_traffic_secret: &Secret,
+        transcript_hash_through_server_finished: &TranscriptDigest,
+        seq: u64,
+        out_buf: &'a mut [u8],
+    ) -> Result<&'a [u8], ClientFinishedError> {
+        let finished_msg = build_finished_plaintext::<H>(
+            c_hs_traffic_secret,
+            transcript_hash_through_server_finished,
+        )?;
+        let keys = Self::derive::<H>(c_hs_traffic_secret)?;
+        let record = keys.encrypt_record::<C>(&finished_msg[..], CT_HANDSHAKE, seq, out_buf)?;
+        Ok(record)
+    }
 }
 
 /// Exact serialized size of `build_client_finished`'s output.
