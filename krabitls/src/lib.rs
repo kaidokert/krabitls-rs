@@ -244,16 +244,36 @@ trait WriteExt: Write {
         self.write_all(&n.to_be_bytes())
     }
 
-    /// Writes the low 3 bytes of `n` big-endian. Caller is responsible for
-    /// ensuring `n < 2^24`; this is debug-asserted but not checked in release.
-    fn write_u24(&mut self, n: u32) -> Result<(), Self::Error> {
-        debug_assert!(n < (1u32 << 24), "value 0x{:x} does not fit in 24 bits", n);
+    /// Writes the low 3 bytes of `n` big-endian. Returns
+    /// [`Write24Error::Overflow`] if `n >= 2^24`. Checked in both debug
+    /// and release — a silently truncated handshake length would corrupt
+    /// the TLS framing.
+    fn write_u24(&mut self, n: u32) -> Result<(), Write24Error<Self::Error>> {
+        if n >= (1u32 << 24) {
+            return Err(Write24Error::Overflow);
+        }
         let bytes = n.to_be_bytes();
-        self.write_all(&bytes[1..])
+        self.write_all(&bytes[1..])?;
+        Ok(())
     }
 }
 
 impl<W: Write + ?Sized> WriteExt for W {}
+
+/// Error returned by [`WriteExt::write_u24`].
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum Write24Error<E> {
+    /// `n >= 2^24` — cannot be encoded as a 24-bit big-endian field.
+    Overflow,
+    /// The underlying writer returned an error.
+    Write(E),
+}
+
+impl<E> From<E> for Write24Error<E> {
+    fn from(e: E) -> Self {
+        Self::Write(e)
+    }
+}
 
 /// TLS 1.3 plaintext fragment maximum (RFC 8446 §5.1). The record body of
 /// a ClientHello must not exceed this; `write_client_hello` enforces it.
@@ -270,6 +290,13 @@ pub enum ClientHelloError<E> {
     /// fragment limit (RFC 8446 §5.1). In practice this can only fire from
     /// a very long hostname; the rest of the message is fixed-size.
     MessageTooLong,
+    /// A length field overflowed its wire-format encoding (currently only
+    /// `u24` for the handshake body length). Not reachable from
+    /// [`write_client_hello`] given the existing `u16`-typed
+    /// `body_len` and `MessageTooLong` precheck — kept as a real error
+    /// rather than a silent debug-only assert so a future refactor can't
+    /// regress to truncated framing.
+    IntegerOverflow,
     /// The underlying writer returned an error.
     Write(E),
 }
@@ -277,6 +304,15 @@ pub enum ClientHelloError<E> {
 impl<E> From<E> for ClientHelloError<E> {
     fn from(e: E) -> Self {
         Self::Write(e)
+    }
+}
+
+impl<E> From<Write24Error<E>> for ClientHelloError<E> {
+    fn from(e: Write24Error<E>) -> Self {
+        match e {
+            Write24Error::Overflow => Self::IntegerOverflow,
+            Write24Error::Write(e) => Self::Write(e),
+        }
     }
 }
 
@@ -784,6 +820,21 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err, ClientHelloError::MessageTooLong);
+    }
+
+    #[test]
+    fn write_u24_rejects_overflow() {
+        // Not reachable from `write_client_hello` (body_len is u16-typed), but
+        // the trait method needs to be safe against future callers passing a
+        // u32 that doesn't fit in 3 bytes.
+        let mut buf = [0u8; 3];
+        let mut cursor: &mut [u8] = &mut buf;
+        let err = cursor.write_u24(1u32 << 24).unwrap_err();
+        assert_eq!(err, Write24Error::Overflow);
+
+        let mut cursor: &mut [u8] = &mut buf;
+        cursor.write_u24((1u32 << 24) - 1).unwrap();
+        assert_eq!(buf, [0xff, 0xff, 0xff]);
     }
 
     #[test]
