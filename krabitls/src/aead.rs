@@ -138,18 +138,41 @@ where
 }
 
 /// Split TLS 1.3 inner plaintext into content and content type.
+///
+/// The trailing-zero padding (RFC 8446 §5.4) is meant to hide the true
+/// payload length from a network observer. A naive `while end > 0 &&
+/// inner[end - 1] == 0` scan short-circuits at the first non-zero from the
+/// end, so its run-time leaks the exact padding length — physically
+/// defeating the padding. We iterate every byte of `inner` unconditionally
+/// and use `subtle`'s conditional-select primitives to remember the
+/// position of the most recent non-zero byte without branching on its
+/// value.
+///
+/// The post-loop bounds and emptiness checks branch on the final
+/// content_type-position, but that value is the public protocol-level
+/// outcome (record-too-large / empty-record), not the padding length.
 pub fn split_inner_plaintext(inner: &[u8]) -> Result<(&[u8], u8), DecryptError> {
-    let mut end = inner.len();
-    while end > 0 && inner[end - 1] == 0 {
-        end -= 1;
+    use subtle::{ConditionallySelectable, ConstantTimeEq};
+
+    // u32 so `conditional_select` works on a small type even when usize is 64-bit
+    // on the host; inner.len() is capped at TLS_PLAINTEXT_MAX + AEAD overhead,
+    // well under 2^32.
+    let mut last_nonzero_plus_one: u32 = 0;
+    let mut content_type: u8 = 0;
+    for (i, &b) in inner.iter().enumerate() {
+        let is_nonzero = !b.ct_eq(&0u8);
+        last_nonzero_plus_one =
+            u32::conditional_select(&last_nonzero_plus_one, &((i + 1) as u32), is_nonzero);
+        content_type = u8::conditional_select(&content_type, &b, is_nonzero);
     }
+
+    let end = last_nonzero_plus_one as usize;
     if end == 0 {
         return Err(DecryptError::EmptyInnerPlaintext);
     }
     if end - 1 > TLS_PLAINTEXT_MAX {
         return Err(DecryptError::RecordTooLarge);
     }
-    let content_type = inner[end - 1];
     Ok((&inner[..end - 1], content_type))
 }
 
@@ -313,4 +336,55 @@ pub enum DecryptError {
     AeadFailed,
     /// `TLSInnerPlaintext` was all zeros — has no `content_type` byte.
     EmptyInnerPlaintext,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn split_no_padding() {
+        // [content..., content_type] with no trailing zeros.
+        let inner = b"hello\x17"; // 0x17 = application_data
+        let (content, ct) = split_inner_plaintext(inner).unwrap();
+        assert_eq!(content, b"hello");
+        assert_eq!(ct, 0x17);
+    }
+
+    #[test]
+    fn split_strips_trailing_zeros() {
+        // [content..., content_type, 0, 0, 0]
+        let inner = b"hello\x17\x00\x00\x00";
+        let (content, ct) = split_inner_plaintext(inner).unwrap();
+        assert_eq!(content, b"hello");
+        assert_eq!(ct, 0x17);
+    }
+
+    #[test]
+    fn split_empty_inner_rejected() {
+        assert_eq!(
+            split_inner_plaintext(&[]),
+            Err(DecryptError::EmptyInnerPlaintext)
+        );
+    }
+
+    #[test]
+    fn split_all_zero_inner_rejected() {
+        // All-zero plaintext = padding with no content_type.
+        let inner = [0u8; 16];
+        assert_eq!(
+            split_inner_plaintext(&inner),
+            Err(DecryptError::EmptyInnerPlaintext)
+        );
+    }
+
+    #[test]
+    fn split_zero_then_nonzero_keeps_zero_as_content() {
+        // Padding only strips from the END. A zero byte in the middle is
+        // legitimate content (e.g. a binary protocol with a null byte).
+        let inner = b"\x00\x00\xab\x17"; // content_type 0x17, content [0, 0, 0xab]
+        let (content, ct) = split_inner_plaintext(inner).unwrap();
+        assert_eq!(content, b"\x00\x00\xab");
+        assert_eq!(ct, 0x17);
+    }
 }
