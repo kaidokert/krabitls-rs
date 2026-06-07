@@ -245,11 +245,11 @@ trait WriteExt: Write {
     }
 
     /// Writes the low 3 bytes of `n` big-endian. Returns
-    /// [`Write24Error::Overflow`] if `n >= 2^24`. Checked in both debug
-    /// and release — a silently truncated handshake length would corrupt
-    /// the TLS framing.
+    /// [`Write24Error::Overflow`] if `n > 0xFF_FFFF`. Checked in both
+    /// debug and release — a silently truncated handshake length would
+    /// corrupt the TLS framing.
     fn write_u24(&mut self, n: u32) -> Result<(), Write24Error<Self::Error>> {
-        if n >= (1u32 << 24) {
+        if n > 0xFF_FFFF {
             return Err(Write24Error::Overflow);
         }
         let bytes = n.to_be_bytes();
@@ -263,7 +263,7 @@ impl<W: Write + ?Sized> WriteExt for W {}
 /// Error returned by [`WriteExt::write_u24`].
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Write24Error<E> {
-    /// `n >= 2^24` — cannot be encoded as a 24-bit big-endian field.
+    /// `n > 0xFF_FFFF` — cannot be encoded as a 24-bit big-endian field.
     Overflow,
     /// The underlying writer returned an error.
     Write(E),
@@ -272,6 +272,24 @@ pub enum Write24Error<E> {
 impl<E> From<E> for Write24Error<E> {
     fn from(e: E) -> Self {
         Self::Write(e)
+    }
+}
+
+impl<E: core::fmt::Display> core::fmt::Display for Write24Error<E> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Overflow => f.write_str("value does not fit in 24 bits"),
+            Self::Write(e) => write!(f, "writer error: {e}"),
+        }
+    }
+}
+
+impl<E: core::error::Error + 'static> core::error::Error for Write24Error<E> {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::Overflow => None,
+            Self::Write(e) => Some(e),
+        }
     }
 }
 
@@ -312,6 +330,30 @@ impl<E> From<Write24Error<E>> for ClientHelloError<E> {
         match e {
             Write24Error::Overflow => Self::IntegerOverflow,
             Write24Error::Write(e) => Self::Write(e),
+        }
+    }
+}
+
+impl<E: core::fmt::Display> core::fmt::Display for ClientHelloError<E> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::HostnameTooLong => f.write_str("hostname exceeds the u16 SNI length cap"),
+            Self::MessageTooLong => {
+                f.write_str("ClientHello body exceeds the 2^14 plaintext fragment cap")
+            }
+            Self::IntegerOverflow => {
+                f.write_str("a length field overflowed its wire-format encoding")
+            }
+            Self::Write(e) => write!(f, "writer error: {e}"),
+        }
+    }
+}
+
+impl<E: core::error::Error + 'static> core::error::Error for ClientHelloError<E> {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::Write(e) => Some(e),
+            _ => None,
         }
     }
 }
@@ -823,17 +865,29 @@ mod tests {
     }
 
     #[test]
+    fn error_types_display() {
+        // Round-trip Display through `format!` to catch any breakage in the
+        // trait impls. `std` is available under cfg(test) so `format!` works.
+        let e: Write24Error<SliceWriteError> = Write24Error::Overflow;
+        assert!(format!("{e}").contains("24"));
+        let e: ClientHelloError<SliceWriteError> = ClientHelloError::HostnameTooLong;
+        assert!(format!("{e}").contains("hostname"));
+        let e: ClientHelloError<SliceWriteError> = ClientHelloError::IntegerOverflow;
+        assert!(format!("{e}").to_lowercase().contains("overflow"));
+    }
+
+    #[test]
     fn write_u24_rejects_overflow() {
         // Not reachable from `write_client_hello` (body_len is u16-typed), but
         // the trait method needs to be safe against future callers passing a
         // u32 that doesn't fit in 3 bytes.
         let mut buf = [0u8; 3];
         let mut cursor: &mut [u8] = &mut buf;
-        let err = cursor.write_u24(1u32 << 24).unwrap_err();
+        let err = cursor.write_u24(0x100_0000).unwrap_err();
         assert_eq!(err, Write24Error::Overflow);
 
         let mut cursor: &mut [u8] = &mut buf;
-        cursor.write_u24((1u32 << 24) - 1).unwrap();
+        cursor.write_u24(0xFF_FFFF).unwrap();
         assert_eq!(buf, [0xff, 0xff, 0xff]);
     }
 
