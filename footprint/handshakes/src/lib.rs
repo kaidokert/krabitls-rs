@@ -10,11 +10,13 @@
 use core::cell::RefCell;
 use critical_section::Mutex;
 
+#[cfg(feature = "chacha20")]
+use krabitls::ChaCha20Poly1305Sha256;
 use krabitls::newtype::Secret;
 use krabitls::{
-    CLIENT_FINISHED_LEN, CertParser, CertView, DerCert, RustCrypto, TranscriptHash, ZeroBuf,
-    build_client_finished, decrypt_record, extract_cert_der, parse_server_flight,
-    split_inner_plaintext, traffic_keys, verify_certificate_verify, verify_server_finished,
+    Aes128GcmSha256, CLIENT_FINISHED_LEN, CertParser, CertView, DerCert, RecordKeys, RustCrypto,
+    TranscriptHash, ZeroBuf, extract_cert_der, parse_server_flight, split_inner_plaintext,
+    verify_certificate_verify, verify_server_finished,
 };
 
 /// Per-record decrypt scratch. Sized to fit the largest TLS record body
@@ -100,7 +102,8 @@ pub fn run_aes_ed25519() -> Result<(), ()> {
 
         let s_hs_ts: Secret = Secret::new(ZeroBuf::<32>::new(S_HS_TS));
         let c_hs_ts: Secret = Secret::new(ZeroBuf::<32>::new(C_HS_TS));
-        let (s_hs_key, s_hs_iv) = traffic_keys::<RustCrypto>(&s_hs_ts).map_err(|_| ())?;
+        let s_hs_keys =
+            RecordKeys::<Aes128GcmSha256>::derive::<RustCrypto>(&s_hs_ts).map_err(|_| ())?;
 
         let mut flight_len = 0usize;
         let mut pos = 0usize;
@@ -116,9 +119,9 @@ pub fn run_aes_ed25519() -> Result<(), ()> {
             }
             let record = &FLIGHT_ENC[pos..end];
 
-            let pt_slice =
-                decrypt_record::<RustCrypto>(record, &s_hs_key, &s_hs_iv, seq, plaintext)
-                    .map_err(|_| ())?;
+            let pt_slice = s_hs_keys
+                .decrypt_record::<RustCrypto>(record, seq, plaintext)
+                .map_err(|_| ())?;
             let (content, _ct) = split_inner_plaintext(pt_slice).map_err(|_| ())?;
 
             if flight_len + content.len() > flight.len() {
@@ -153,13 +156,14 @@ pub fn run_aes_ed25519() -> Result<(), ()> {
         let th_through_finished = transcript.snapshot();
 
         let mut cf_out = [0u8; 80];
-        let record = build_client_finished::<RustCrypto, RustCrypto>(
-            &c_hs_ts,
-            &th_through_finished,
-            0,
-            &mut cf_out,
-        )
-        .map_err(|_| ())?;
+        let record =
+            RecordKeys::<Aes128GcmSha256>::build_client_finished::<RustCrypto, RustCrypto>(
+                &c_hs_ts,
+                &th_through_finished,
+                0,
+                &mut cf_out,
+            )
+            .map_err(|_| ())?;
         if record.len() != CLIENT_FINISHED_LEN || record != &C_FINISHED[..] {
             return Err(());
         }
@@ -197,7 +201,8 @@ mod jedisct_path {
 
             let s_hs_ts: Secret = Secret::new(ZeroBuf::<32>::new(S_HS_TS));
             let c_hs_ts: Secret = Secret::new(ZeroBuf::<32>::new(C_HS_TS));
-            let (s_hs_key, s_hs_iv) = traffic_keys::<JedisctCrypto>(&s_hs_ts).map_err(|_| ())?;
+            let s_hs_keys =
+                RecordKeys::<Aes128GcmSha256>::derive::<JedisctCrypto>(&s_hs_ts).map_err(|_| ())?;
 
             let mut flight_len = 0usize;
             let mut pos = 0usize;
@@ -214,9 +219,9 @@ mod jedisct_path {
                 }
                 let record = &FLIGHT_ENC[pos..end];
 
-                let pt_slice =
-                    decrypt_record::<RustCrypto>(record, &s_hs_key, &s_hs_iv, seq, plaintext)
-                        .map_err(|_| ())?;
+                let pt_slice = s_hs_keys
+                    .decrypt_record::<RustCrypto>(record, seq, plaintext)
+                    .map_err(|_| ())?;
                 let (content, _ct) = split_inner_plaintext(pt_slice).map_err(|_| ())?;
 
                 if flight_len + content.len() > flight.len() {
@@ -251,12 +256,10 @@ mod jedisct_path {
             let th_through_finished = transcript.snapshot();
 
             let mut cf_out = [0u8; 80];
-            let record = build_client_finished::<JedisctCrypto, RustCrypto>(
-                &c_hs_ts,
-                &th_through_finished,
-                0,
-                &mut cf_out,
-            )
+            let record = RecordKeys::<Aes128GcmSha256>::build_client_finished::<
+                JedisctCrypto,
+                RustCrypto,
+            >(&c_hs_ts, &th_through_finished, 0, &mut cf_out)
             .map_err(|_| ())?;
             if record.len() != CLIENT_FINISHED_LEN || record != &C_FINISHED[..] {
                 return Err(());
@@ -284,7 +287,6 @@ pub fn baseline_aes_ed25519_jedisct() -> bool {
 mod chacha_path {
     use super::*;
     use fixture_chacha_ed25519::*;
-    use krabitls::{build_client_finished_chacha, decrypt_record_chacha, traffic_keys_chacha};
 
     pub fn run() -> Result<(), ()> {
         with_buffers(|plaintext, flight| {
@@ -294,8 +296,8 @@ mod chacha_path {
 
             let s_hs_ts: Secret = Secret::new(ZeroBuf::<32>::new(S_HS_TS));
             let c_hs_ts: Secret = Secret::new(ZeroBuf::<32>::new(C_HS_TS));
-            let (s_hs_key, s_hs_iv) =
-                traffic_keys_chacha::<RustCrypto>(&s_hs_ts).map_err(|_| ())?;
+            let s_hs_keys = RecordKeys::<ChaCha20Poly1305Sha256>::derive::<RustCrypto>(&s_hs_ts)
+                .map_err(|_| ())?;
 
             let mut flight_len = 0usize;
             let mut pos = 0usize;
@@ -312,10 +314,9 @@ mod chacha_path {
                 }
                 let record = &FLIGHT_ENC[pos..end];
 
-                let pt_slice = decrypt_record_chacha::<RustCrypto>(
-                    record, &s_hs_key, &s_hs_iv, seq, plaintext,
-                )
-                .map_err(|_| ())?;
+                let pt_slice = s_hs_keys
+                    .decrypt_record::<RustCrypto>(record, seq, plaintext)
+                    .map_err(|_| ())?;
                 let (content, _ct) = split_inner_plaintext(pt_slice).map_err(|_| ())?;
 
                 if flight_len + content.len() > flight.len() {
@@ -350,12 +351,10 @@ mod chacha_path {
             let th_through_finished = transcript.snapshot();
 
             let mut cf_out = [0u8; 80];
-            let record = build_client_finished_chacha::<RustCrypto, RustCrypto>(
-                &c_hs_ts,
-                &th_through_finished,
-                0,
-                &mut cf_out,
-            )
+            let record = RecordKeys::<ChaCha20Poly1305Sha256>::build_client_finished::<
+                RustCrypto,
+                RustCrypto,
+            >(&c_hs_ts, &th_through_finished, 0, &mut cf_out)
             .map_err(|_| ())?;
             if record.len() != CLIENT_FINISHED_LEN || record != &C_FINISHED[..] {
                 return Err(());
@@ -403,7 +402,8 @@ mod rsa_path {
 
             let s_hs_ts: Secret = Secret::new(ZeroBuf::<32>::new(S_HS_TS));
             let c_hs_ts: Secret = Secret::new(ZeroBuf::<32>::new(C_HS_TS));
-            let (s_hs_key, s_hs_iv) = traffic_keys::<RustCrypto>(&s_hs_ts).map_err(|_| ())?;
+            let s_hs_keys =
+                RecordKeys::<Aes128GcmSha256>::derive::<RustCrypto>(&s_hs_ts).map_err(|_| ())?;
 
             let mut flight_len = 0usize;
             let mut pos = 0usize;
@@ -420,9 +420,9 @@ mod rsa_path {
                 }
                 let record = &FLIGHT_ENC[pos..end];
 
-                let pt_slice =
-                    decrypt_record::<RustCrypto>(record, &s_hs_key, &s_hs_iv, seq, plaintext)
-                        .map_err(|_| ())?;
+                let pt_slice = s_hs_keys
+                    .decrypt_record::<RustCrypto>(record, seq, plaintext)
+                    .map_err(|_| ())?;
                 let (content, _ct) = split_inner_plaintext(pt_slice).map_err(|_| ())?;
 
                 if flight_len + content.len() > flight.len() {
@@ -457,12 +457,10 @@ mod rsa_path {
             let th_through_finished = transcript.snapshot();
 
             let mut cf_out = [0u8; 80];
-            let record = build_client_finished::<RustCrypto, RustCrypto>(
-                &c_hs_ts,
-                &th_through_finished,
-                0,
-                &mut cf_out,
-            )
+            let record = RecordKeys::<Aes128GcmSha256>::build_client_finished::<
+                RustCrypto,
+                RustCrypto,
+            >(&c_hs_ts, &th_through_finished, 0, &mut cf_out)
             .map_err(|_| ())?;
             if record.len() != CLIENT_FINISHED_LEN || record != &C_FINISHED[..] {
                 return Err(());

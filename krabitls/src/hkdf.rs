@@ -246,7 +246,7 @@ pub fn handshake_traffic_secrets<H: HkdfSha256>(
 
 /// Derive the `(key, iv)` pair for AES-128-GCM from a traffic secret per
 /// RFC 8446 §7.3. Key is 16 bytes, IV is 12 bytes (the AEAD nonce size).
-pub fn traffic_keys<H: HkdfSha256>(
+pub(crate) fn traffic_keys<H: HkdfSha256>(
     traffic_secret: &Secret,
 ) -> Result<(AeadKey, AeadIv), HkdfLabelError> {
     // Wrap the temp stack buffers so they auto-zero when the bindings
@@ -260,7 +260,7 @@ pub fn traffic_keys<H: HkdfSha256>(
 
 /// `traffic_keys` for `TLS_CHACHA20_POLY1305_SHA256`. 32-byte key, 12-byte IV.
 #[cfg(feature = "chacha20")]
-pub fn traffic_keys_chacha<H: HkdfSha256>(
+pub(crate) fn traffic_keys_chacha<H: HkdfSha256>(
     traffic_secret: &Secret,
 ) -> Result<(AeadKey32, AeadIv), HkdfLabelError> {
     let mut key = ZeroBuf::<32>::new([0; 32]);

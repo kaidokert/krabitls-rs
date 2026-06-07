@@ -228,7 +228,10 @@ fn cmd_conn_negotiate(seed: u64) -> Result<()> {
     let session = compute_session_secrets(&priv_bytes)?;
 
     let mut out = [0u8; krabitls::CLIENT_FINISHED_LEN];
-    let record = krabitls::build_client_finished::<krabitls::RustCrypto, krabitls::RustCrypto>(
+    let record = krabitls::RecordKeys::<krabitls::Aes128GcmSha256>::build_client_finished::<
+        krabitls::RustCrypto,
+        krabitls::RustCrypto,
+    >(
         &session.c_hs_ts,
         &session.transcript_hash_through_server_finished,
         0, // first record under c_hs_traffic_secret
@@ -260,22 +263,22 @@ fn cmd_send(seed: u64, text: &str) -> Result<()> {
             compute_session_secrets(&priv_bytes)?.c_ap_ts
         }
     };
-    let (c_ap_key, c_ap_iv) = krabitls::traffic_keys::<krabitls::RustCrypto>(&c_ap_ts)
-        .map_err(|e| format!("traffic_keys (c_ap): {:?}", e))?;
+    let c_ap_keys =
+        krabitls::RecordKeys::<krabitls::Aes128GcmSha256>::derive::<krabitls::RustCrypto>(&c_ap_ts)
+            .map_err(|e| format!("RecordKeys::derive (c_ap): {:?}", e))?;
 
     // Per-AEAD-key sequence number: # of c2s app-data records already on disk.
     let ap_seq = next_c2s_app_data_seq()?;
 
     let mut out = vec![0u8; text.len() + 32]; // header(5) + content + content_type(1) + tag(16) padding
-    let record = krabitls::encrypt_record::<krabitls::RustCrypto>(
-        text.as_bytes(),
-        krabitls::consts::CT_APPLICATION_DATA,
-        &c_ap_key,
-        &c_ap_iv,
-        ap_seq,
-        &mut out,
-    )
-    .map_err(|e| format!("encrypt_record: {:?}", e))?;
+    let record = c_ap_keys
+        .encrypt_record::<krabitls::RustCrypto>(
+            text.as_bytes(),
+            krabitls::consts::CT_APPLICATION_DATA,
+            ap_seq,
+            &mut out,
+        )
+        .map_err(|e| format!("encrypt_record: {:?}", e))?;
 
     let seq = next_packet_seq()?;
     let path = packet_path(seq, "c2s", &format!("AppData_send_{}", ap_seq));
@@ -296,8 +299,9 @@ fn cmd_receive(seed: u64) -> Result<()> {
             compute_session_secrets(&priv_bytes)?.s_ap_ts
         }
     };
-    let (s_ap_key, s_ap_iv) = krabitls::traffic_keys::<krabitls::RustCrypto>(&s_ap_ts)
-        .map_err(|e| format!("traffic_keys (s_ap): {:?}", e))?;
+    let s_ap_keys =
+        krabitls::RecordKeys::<krabitls::Aes128GcmSha256>::derive::<krabitls::RustCrypto>(&s_ap_ts)
+            .map_err(|e| format!("RecordKeys::derive (s_ap): {:?}", e))?;
 
     // Walk all s2c AppData_reply files in seq order. The trailing "_N" in
     // the filename is the per-AEAD-key sequence number for s_ap.
@@ -325,14 +329,9 @@ fn cmd_receive(seed: u64) -> Result<()> {
     for (seq, path) in &replies {
         let record = fs::read(path)?;
         let mut pt_buf = vec![0u8; record.len()];
-        let inner = krabitls::decrypt_record::<krabitls::RustCrypto>(
-            &record,
-            &s_ap_key,
-            &s_ap_iv,
-            *seq as u64,
-            &mut pt_buf,
-        )
-        .map_err(|e| format!("decrypt {}: {:?}", path.display(), e))?;
+        let inner = s_ap_keys
+            .decrypt_record::<krabitls::RustCrypto>(&record, *seq as u64, &mut pt_buf)
+            .map_err(|e| format!("decrypt {}: {:?}", path.display(), e))?;
         let (content, _ct) = krabitls::split_inner_plaintext(inner)
             .map_err(|e| format!("inner plaintext: {:?}", e))?;
         let text = core::str::from_utf8(content).unwrap_or("<not utf-8>");
@@ -359,9 +358,9 @@ struct SessionSecrets {
 
 fn compute_session_secrets(priv_bytes: &[u8; 32]) -> Result<SessionSecrets> {
     use krabitls::{
-        DerCert, RustCrypto, TranscriptHash, application_traffic_secrets, decrypt_record,
-        handshake_secret, handshake_traffic_secrets, master_secret, parse_server_hello,
-        split_inner_plaintext, traffic_keys, verify_server_flight,
+        Aes128GcmSha256, DerCert, RecordKeys, RustCrypto, TranscriptHash,
+        application_traffic_secrets, handshake_secret, handshake_traffic_secrets, master_secret,
+        parse_server_hello, split_inner_plaintext, verify_server_flight,
     };
 
     let ch_bytes = read_packet(|d, _n| d == "c2s" && _n.contains("ClientHello"))?;
@@ -382,11 +381,12 @@ fn compute_session_secrets(priv_bytes: &[u8; 32]) -> Result<SessionSecrets> {
         .map_err(|e| format!("transcript update_record(sh): {:?}", e))?;
     let (c_hs_ts, s_hs_ts) = handshake_traffic_secrets::<RustCrypto>(&hs, &transcript.snapshot())
         .map_err(|e| format!("handshake_traffic_secrets: {:?}", e))?;
-    let (s_hs_key, s_hs_iv) =
-        traffic_keys::<RustCrypto>(&s_hs_ts).map_err(|e| format!("traffic_keys: {:?}", e))?;
+    let s_hs_keys = RecordKeys::<Aes128GcmSha256>::derive::<RustCrypto>(&s_hs_ts)
+        .map_err(|e| format!("RecordKeys::derive (s_hs): {:?}", e))?;
 
     let mut pt_buf = vec![0u8; sf_bytes.len()];
-    let pt = decrypt_record::<RustCrypto>(&sf_bytes, &s_hs_key, &s_hs_iv, 0, &mut pt_buf)
+    let pt = s_hs_keys
+        .decrypt_record::<RustCrypto>(&sf_bytes, 0, &mut pt_buf)
         .map_err(|e| format!("decrypt server flight: {:?}", e))?;
     let (content, _ct) =
         split_inner_plaintext(pt).map_err(|e| format!("inner plaintext: {:?}", e))?;

@@ -39,7 +39,8 @@ pub fn aead_nonce(iv: &AeadIv, seq: u64) -> ZeroBuf<12> {
 /// slice of `plaintext_buf` containing the plaintext (which is then a
 /// `TLSInnerPlaintext`; call [`split_inner_plaintext`] to peel off the
 /// content_type byte and trailing zero padding).
-pub fn decrypt_record<'a, A: Aes128GcmAead>(
+#[cfg(test)]
+pub(crate) fn decrypt_record<'a, A: Aes128GcmAead>(
     record: &[u8],
     key: &AeadKey,
     iv: &AeadIv,
@@ -52,8 +53,8 @@ pub fn decrypt_record<'a, A: Aes128GcmAead>(
 }
 
 /// `decrypt_record` for the `TLS_CHACHA20_POLY1305_SHA256` suite.
-#[cfg(feature = "chacha20")]
-pub fn decrypt_record_chacha<'a, C: ChaCha20Poly1305Aead>(
+#[cfg(all(test, feature = "chacha20"))]
+pub(crate) fn decrypt_record_chacha<'a, C: ChaCha20Poly1305Aead>(
     record: &[u8],
     key: &AeadKey32,
     iv: &AeadIv,
@@ -185,7 +186,8 @@ pub fn split_inner_plaintext(inner: &[u8]) -> Result<(&[u8], u8), DecryptError> 
 }
 
 /// Encrypt one TLS 1.3 inner plaintext into an application_data record.
-pub fn encrypt_record<'a, A: Aes128GcmAead>(
+#[cfg(test)]
+pub(crate) fn encrypt_record<'a, A: Aes128GcmAead>(
     content: &[u8],
     content_type: u8,
     key: &AeadKey,
@@ -204,8 +206,8 @@ pub fn encrypt_record<'a, A: Aes128GcmAead>(
 }
 
 /// `encrypt_record` for the `TLS_CHACHA20_POLY1305_SHA256` suite.
-#[cfg(feature = "chacha20")]
-pub fn encrypt_record_chacha<'a, C: ChaCha20Poly1305Aead>(
+#[cfg(all(test, feature = "chacha20"))]
+pub(crate) fn encrypt_record_chacha<'a, C: ChaCha20Poly1305Aead>(
     content: &[u8],
     content_type: u8,
     key: &AeadKey32,
@@ -293,6 +295,146 @@ where
 }
 
 const AEAD_TAG_LEN: usize = 16;
+
+mod sealed {
+    pub trait Sealed {}
+}
+
+/// TLS 1.3 cipher suite marker — picked by the *caller* at compile time
+/// where possible (embedded targets that know the suite from `sh.cipher_suite`
+/// already), via a top-level local dispatch in the CLI where not.
+///
+/// Sealed: only the two suites krabitls's locked profile speaks
+/// (`Aes128GcmSha256` and, with `feature = "chacha20"`,
+/// `ChaCha20Poly1305Sha256`) implement it. This lets [`RecordKeys<S>`] be
+/// a single generic type whose monomorphizations carry only the AEAD
+/// code for the suite the binary actually uses.
+pub trait CipherSuite: sealed::Sealed {
+    /// Wire-format suite ID per RFC 8446 §B.4.
+    const ID: u16;
+    /// The AEAD key newtype for this suite (16 B for AES, 32 B for ChaCha).
+    type Key;
+}
+
+/// `TLS_AES_128_GCM_SHA256` (`0x1301`) — the mandatory TLS 1.3 suite.
+pub struct Aes128GcmSha256;
+impl sealed::Sealed for Aes128GcmSha256 {}
+impl CipherSuite for Aes128GcmSha256 {
+    const ID: u16 = crate::consts::CIPHER_AES_128_GCM_SHA256;
+    type Key = AeadKey;
+}
+
+/// `TLS_CHACHA20_POLY1305_SHA256` (`0x1303`). Gated on `feature = "chacha20"`.
+#[cfg(feature = "chacha20")]
+pub struct ChaCha20Poly1305Sha256;
+#[cfg(feature = "chacha20")]
+impl sealed::Sealed for ChaCha20Poly1305Sha256 {}
+#[cfg(feature = "chacha20")]
+impl CipherSuite for ChaCha20Poly1305Sha256 {
+    const ID: u16 = crate::consts::CIPHER_CHACHA20_POLY1305_SHA256;
+    type Key = AeadKey32;
+}
+
+/// Suite-typed record-layer key + IV pair.
+///
+/// `RecordKeys<Aes128GcmSha256>` and `RecordKeys<ChaCha20Poly1305Sha256>`
+/// are *distinct types*. Methods live in per-suite `impl` blocks, so a
+/// binary that only ever instantiates one of them carries no code for the
+/// other (LTO has nothing to prove — the unused suite's `impl` block was
+/// never monomorphized). Callers who don't know the suite until runtime
+/// (the network CLI) dispatch with a thin local enum that wraps the
+/// per-suite `RecordKeys<S>` types.
+pub struct RecordKeys<S: CipherSuite> {
+    pub key: S::Key,
+    pub iv: AeadIv,
+}
+
+impl RecordKeys<Aes128GcmSha256> {
+    /// Derive the AES-128-GCM `(key, iv)` from a traffic secret (RFC 8446 §7.3).
+    pub fn derive<H: crate::traits::HkdfSha256>(
+        traffic_secret: &crate::newtype::Secret,
+    ) -> Result<Self, crate::hkdf::HkdfLabelError> {
+        let (key, iv) = crate::hkdf::traffic_keys::<H>(traffic_secret)?;
+        Ok(Self { key, iv })
+    }
+
+    /// Decrypt one `application_data` record under this suite's AEAD.
+    pub fn decrypt_record<'a, C: Aes128GcmAead>(
+        &self,
+        record: &[u8],
+        seq: u64,
+        plaintext_buf: &'a mut [u8],
+    ) -> Result<&'a [u8], DecryptError> {
+        decrypt_record_with(
+            record,
+            &self.iv,
+            seq,
+            plaintext_buf,
+            |nonce, aad, pt, tag| C::decrypt(self.key.as_zeroizing(), nonce, aad, pt, tag),
+        )
+    }
+
+    /// Encrypt one inner plaintext into an `application_data` record.
+    pub fn encrypt_record<'a, C: Aes128GcmAead>(
+        &self,
+        content: &[u8],
+        content_type: u8,
+        seq: u64,
+        out_buf: &'a mut [u8],
+    ) -> Result<&'a [u8], EncryptError> {
+        encrypt_record_with(
+            content,
+            content_type,
+            &self.iv,
+            seq,
+            out_buf,
+            |nonce, aad, buf| C::encrypt(self.key.as_zeroizing(), nonce, aad, buf),
+        )
+    }
+}
+
+#[cfg(feature = "chacha20")]
+impl RecordKeys<ChaCha20Poly1305Sha256> {
+    /// Derive the ChaCha20-Poly1305 `(key, iv)` from a traffic secret (RFC 8446 §7.3).
+    pub fn derive<H: crate::traits::HkdfSha256>(
+        traffic_secret: &crate::newtype::Secret,
+    ) -> Result<Self, crate::hkdf::HkdfLabelError> {
+        let (key, iv) = crate::hkdf::traffic_keys_chacha::<H>(traffic_secret)?;
+        Ok(Self { key, iv })
+    }
+
+    pub fn decrypt_record<'a, C: ChaCha20Poly1305Aead>(
+        &self,
+        record: &[u8],
+        seq: u64,
+        plaintext_buf: &'a mut [u8],
+    ) -> Result<&'a [u8], DecryptError> {
+        decrypt_record_with(
+            record,
+            &self.iv,
+            seq,
+            plaintext_buf,
+            |nonce, aad, pt, tag| C::decrypt(self.key.as_zeroizing(), nonce, aad, pt, tag),
+        )
+    }
+
+    pub fn encrypt_record<'a, C: ChaCha20Poly1305Aead>(
+        &self,
+        content: &[u8],
+        content_type: u8,
+        seq: u64,
+        out_buf: &'a mut [u8],
+    ) -> Result<&'a [u8], EncryptError> {
+        encrypt_record_with(
+            content,
+            content_type,
+            &self.iv,
+            seq,
+            out_buf,
+            |nonce, aad, buf| C::encrypt(self.key.as_zeroizing(), nonce, aad, buf),
+        )
+    }
+}
 
 /// TLS 1.3 `TLSPlaintext.length` cap (RFC 8446 §5.1 / §5.4): the
 /// inner-plaintext content (before the `content_type` byte and any

@@ -48,20 +48,18 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 #[cfg(feature = "chacha20")]
+use krabitls::ChaCha20Poly1305Sha256;
+use krabitls::CipherSuite;
+#[cfg(feature = "chacha20")]
 use krabitls::consts::CIPHER_CHACHA20_POLY1305_SHA256;
 use krabitls::consts::{CIPHER_AES_128_GCM_SHA256, CT_HANDSHAKE};
 use krabitls::reassembler::ServerFlightReassembler;
 use krabitls::{
-    AeadIv, AeadKey, CertParser, CertView, DecryptError, DerCert, EncryptError, RustCrypto, Secret,
-    TranscriptDigest, TranscriptHash, application_traffic_secrets, build_client_finished,
-    decrypt_record, encrypt_record, extract_cert_der, handshake_secret, handshake_traffic_secrets,
-    master_secret, parse_server_flight, parse_server_hello, split_inner_plaintext, traffic_keys,
-    verify_certificate_verify, verify_server_finished, write_client_hello,
-};
-#[cfg(feature = "chacha20")]
-use krabitls::{
-    AeadKey32, build_client_finished_chacha, decrypt_record_chacha, encrypt_record_chacha,
-    traffic_keys_chacha,
+    Aes128GcmSha256, CertParser, CertView, DecryptError, DerCert, EncryptError, RecordKeys,
+    RustCrypto, Secret, TranscriptDigest, TranscriptHash, application_traffic_secrets,
+    extract_cert_der, handshake_secret, handshake_traffic_secrets, master_secret,
+    parse_server_flight, parse_server_hello, split_inner_plaintext, verify_certificate_verify,
+    verify_server_finished, write_client_hello,
 };
 use log::{debug, error, info, warn};
 
@@ -84,27 +82,28 @@ fn cipher_suite_name(suite: u16) -> &'static str {
     }
 }
 
-/// Negotiated AEAD keys + IV. Branches at runtime on the cipher suite.
+/// Negotiated record-layer keys, runtime-dispatched on the cipher suite.
+/// Wraps the lib's per-suite `RecordKeys<S>` types so each variant carries
+/// the suite-specific key length without dragging the other suite into
+/// the dispatch surface.
 enum AeadKeys {
-    Aes(AeadKey, AeadIv),
+    Aes(RecordKeys<Aes128GcmSha256>),
     #[cfg(feature = "chacha20")]
-    Chacha(AeadKey32, AeadIv),
+    Chacha(RecordKeys<ChaCha20Poly1305Sha256>),
 }
 
 impl AeadKeys {
     fn derive(cipher_suite: u16, traffic_secret: &Secret) -> Result<Self> {
         match cipher_suite {
-            CIPHER_AES_128_GCM_SHA256 => {
-                let (k, iv) = traffic_keys::<RustCrypto>(traffic_secret)
-                    .map_err(|e| format!("traffic_keys: {:?}", e))?;
-                Ok(AeadKeys::Aes(k, iv))
-            }
+            Aes128GcmSha256::ID => Ok(AeadKeys::Aes(
+                RecordKeys::<Aes128GcmSha256>::derive::<RustCrypto>(traffic_secret)
+                    .map_err(krabitls_err("RecordKeys::<Aes>::derive"))?,
+            )),
             #[cfg(feature = "chacha20")]
-            CIPHER_CHACHA20_POLY1305_SHA256 => {
-                let (k, iv) = traffic_keys_chacha::<RustCrypto>(traffic_secret)
-                    .map_err(|e| format!("traffic_keys_chacha: {:?}", e))?;
-                Ok(AeadKeys::Chacha(k, iv))
-            }
+            CIPHER_CHACHA20_POLY1305_SHA256 => Ok(AeadKeys::Chacha(
+                RecordKeys::<ChaCha20Poly1305Sha256>::derive::<RustCrypto>(traffic_secret)
+                    .map_err(krabitls_err("RecordKeys::<ChaCha>::derive"))?,
+            )),
             other => Err(format!("unexpected cipher_suite 0x{other:04x}").into()),
         }
     }
@@ -116,11 +115,9 @@ impl AeadKeys {
         plaintext_buf: &'a mut [u8],
     ) -> std::result::Result<&'a [u8], DecryptError> {
         match self {
-            AeadKeys::Aes(k, iv) => decrypt_record::<RustCrypto>(record, k, iv, seq, plaintext_buf),
+            AeadKeys::Aes(keys) => keys.decrypt_record::<RustCrypto>(record, seq, plaintext_buf),
             #[cfg(feature = "chacha20")]
-            AeadKeys::Chacha(k, iv) => {
-                decrypt_record_chacha::<RustCrypto>(record, k, iv, seq, plaintext_buf)
-            }
+            AeadKeys::Chacha(keys) => keys.decrypt_record::<RustCrypto>(record, seq, plaintext_buf),
         }
     }
 
@@ -132,12 +129,12 @@ impl AeadKeys {
         out_buf: &'a mut [u8],
     ) -> std::result::Result<&'a [u8], EncryptError> {
         match self {
-            AeadKeys::Aes(k, iv) => {
-                encrypt_record::<RustCrypto>(content, content_type, k, iv, seq, out_buf)
+            AeadKeys::Aes(keys) => {
+                keys.encrypt_record::<RustCrypto>(content, content_type, seq, out_buf)
             }
             #[cfg(feature = "chacha20")]
-            AeadKeys::Chacha(k, iv) => {
-                encrypt_record_chacha::<RustCrypto>(content, content_type, k, iv, seq, out_buf)
+            AeadKeys::Chacha(keys) => {
+                keys.encrypt_record::<RustCrypto>(content, content_type, seq, out_buf)
             }
         }
     }
@@ -152,21 +149,21 @@ fn build_cf_dispatch<'a>(
     out: &'a mut [u8],
 ) -> Result<&'a [u8]> {
     match cipher_suite {
-        CIPHER_AES_128_GCM_SHA256 => build_client_finished::<RustCrypto, RustCrypto>(
-            c_hs_traffic_secret,
-            transcript_hash,
-            seq,
-            out,
-        )
-        .map_err(krabitls_err("build_client_finished")),
+        Aes128GcmSha256::ID => RecordKeys::<Aes128GcmSha256>::build_client_finished::<
+            RustCrypto,
+            RustCrypto,
+        >(c_hs_traffic_secret, transcript_hash, seq, out)
+        .map_err(krabitls_err("build_client_finished (AES)")),
         #[cfg(feature = "chacha20")]
-        CIPHER_CHACHA20_POLY1305_SHA256 => build_client_finished_chacha::<RustCrypto, RustCrypto>(
-            c_hs_traffic_secret,
-            transcript_hash,
-            seq,
-            out,
-        )
-        .map_err(krabitls_err("build_client_finished_chacha")),
+        CIPHER_CHACHA20_POLY1305_SHA256 => {
+            RecordKeys::<ChaCha20Poly1305Sha256>::build_client_finished::<RustCrypto, RustCrypto>(
+                c_hs_traffic_secret,
+                transcript_hash,
+                seq,
+                out,
+            )
+            .map_err(krabitls_err("build_client_finished (ChaCha)"))
+        }
         other => Err(format!("unexpected cipher_suite 0x{other:04x}").into()),
     }
 }
