@@ -35,6 +35,8 @@ pub use hkdf::{
 };
 #[cfg(feature = "validity")]
 pub use identity::{ValidityError, verify_validity};
+#[cfg(feature = "chacha20")]
+pub use newtype::AeadKey32;
 pub use newtype::{AeadIv, AeadKey, Secret, TranscriptDigest, ZeroBuf};
 pub use server_flight::{
     FlightError, ServerFlightVerified, ServerFlightView, ServerPubkey, extract_cert_der,

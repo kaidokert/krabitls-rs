@@ -117,25 +117,21 @@ impl core::fmt::Debug for AeadKey {
     }
 }
 
-// 32-byte ChaCha20-Poly1305 key. Wired internally as
-// `RecordKeys<ChaCha20Poly1305Sha256>::key`; not part of the public
-// surface — callers shouldn't have to know whether the negotiated suite
-// uses a 16- or 32-byte key.
 #[cfg(feature = "chacha20")]
-mod chacha_key {
-    use super::ZeroBuf;
-    secret_newtype! {
-        /// 32-byte ChaCha20-Poly1305 key.
-        AeadKey32(32)
-    }
-    impl core::fmt::Debug for AeadKey32 {
-        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-            f.write_str("AeadKey32([redacted; 32])")
-        }
+secret_newtype! {
+    /// 32-byte ChaCha20-Poly1305 key. Wired as
+    /// `RecordKeys<ChaCha20Poly1305Sha256>::key`; surfaced publicly so
+    /// callers can name the type behind the suite's `CipherSuite::Key`
+    /// associated type (parallel to [`AeadKey`] for AES-128-GCM).
+    AeadKey32(32)
+}
+
+#[cfg(feature = "chacha20")]
+impl core::fmt::Debug for AeadKey32 {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("AeadKey32([redacted; 32])")
     }
 }
-#[cfg(feature = "chacha20")]
-pub(crate) use chacha_key::AeadKey32;
 
 secret_newtype! {
     /// 12-byte AEAD IV. Output of [`crate::traffic_keys`]; XOR'd with the
