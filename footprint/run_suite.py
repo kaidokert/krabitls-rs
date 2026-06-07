@@ -53,7 +53,20 @@ SIZE_TOOL = find_llvm_size()
 
 
 def run_cmd(args, cwd=None, timeout=TIMEOUT_RUN):
-    return subprocess.run(args, capture_output=True, text=True, timeout=timeout, cwd=cwd)
+    try:
+        return subprocess.run(
+            args, capture_output=True, text=True, timeout=timeout, cwd=cwd
+        )
+    except subprocess.TimeoutExpired as e:
+        # Mark the row as failed instead of crashing the whole suite — one
+        # hung example shouldn't take out every measurement after it.
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=124,
+            stdout=e.stdout.decode("utf-8", errors="replace") if e.stdout else "",
+            stderr=(e.stderr.decode("utf-8", errors="replace") if e.stderr else "")
+            + f"\nTIMEOUT after {timeout}s: {' '.join(args)}",
+        )
 
 
 def cargo_features_arg(features):

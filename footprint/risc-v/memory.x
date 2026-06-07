@@ -22,3 +22,17 @@ REGION_ALIAS("REGION_HEAP", RAM);
 REGION_ALIAS("REGION_STACK", RAM);
 
 _ram_length = LENGTH(RAM);
+
+/* riscv-rt's link.x places `.eh_frame` / `.eh_frame_hdr` as `(INFO)` sections
+ * with no anchor region; lld defaults them to address 0, so PCREL32 fixups
+ * from `.text` at 0x80000000 overflow as soon as the binary grows past a few
+ * KiB. We ship with `panic = "abort"` and don't unwind, so discard the input
+ * sections outright. `-T memory.x` is parsed before `-T link.x`, so this
+ * `/DISCARD/` claims the `.eh_frame*` inputs first. */
+SECTIONS {
+    /DISCARD/ : {
+        *(.eh_frame)
+        *(.eh_frame.*)
+        *(.eh_frame_hdr)
+    }
+}

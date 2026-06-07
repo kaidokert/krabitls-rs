@@ -24,10 +24,10 @@ pub const RECORD_BUF_CAP: usize = 8 * 1024;
 /// Flight-accumulator scratch.
 pub const FLIGHT_BUF_CAP: usize = 8 * 1024;
 
-static RECORD_BUF: Mutex<RefCell<Option<[u8; RECORD_BUF_CAP]>>> =
-    Mutex::new(RefCell::new(Some([0u8; RECORD_BUF_CAP])));
-static FLIGHT_BUF: Mutex<RefCell<Option<[u8; FLIGHT_BUF_CAP]>>> =
-    Mutex::new(RefCell::new(Some([0u8; FLIGHT_BUF_CAP])));
+static RECORD_BUF: Mutex<RefCell<[u8; RECORD_BUF_CAP]>> =
+    Mutex::new(RefCell::new([0u8; RECORD_BUF_CAP]));
+static FLIGHT_BUF: Mutex<RefCell<[u8; FLIGHT_BUF_CAP]>> =
+    Mutex::new(RefCell::new([0u8; FLIGHT_BUF_CAP]));
 
 /// Lend out the static scratch buffers under a critical section. The TLS
 /// handshake runs entirely inside the closure; the buffers never land on
@@ -38,9 +38,7 @@ pub fn with_buffers<R>(
     critical_section::with(|cs| {
         let mut record = RECORD_BUF.borrow(cs).borrow_mut();
         let mut flight = FLIGHT_BUF.borrow(cs).borrow_mut();
-        let record_ref = record.as_mut().expect("RECORD_BUF taken");
-        let flight_ref = flight.as_mut().expect("FLIGHT_BUF taken");
-        f(record_ref, flight_ref)
+        f(&mut record, &mut flight)
     })
 }
 
