@@ -689,6 +689,123 @@ where
     H: HkdfSha256,
     C: Aes128GcmAead,
 {
+    /// Build the client Finished record into `out_buf` *without*
+    /// transitioning to [`AppData`]. The caller takes the record bytes;
+    /// the connection stays in `ServerFlightDone` so the test harness
+    /// can poll it again or drop it.
+    ///
+    /// `master_secret` and the application-traffic-secret derivation
+    /// chain are NOT touched, so an embedded replay harness that only
+    /// needs the client Finished doesn't pull those primitives into
+    /// `.text`. Production clients should call [`Self::finish_handshake`]
+    /// instead.
+    pub fn build_client_finished<'a>(
+        &self,
+        out_buf: &'a mut [u8],
+    ) -> Result<&'a [u8], ConnectionError> {
+        let th = self.transcript.snapshot();
+        let record = RecordKeys::<Aes128GcmSha256>::build_client_finished::<H, C>(
+            &self.state.c_hs_ts,
+            &th,
+            0,
+            out_buf,
+        )?;
+        Ok(record)
+    }
+}
+
+#[cfg(feature = "chacha20")]
+impl<H, C> TlsConnection<ServerFlightDone<ChaCha20Poly1305Sha256>, H, C>
+where
+    H: HkdfSha256,
+    C: ChaCha20Poly1305Aead,
+{
+    pub fn build_client_finished<'a>(
+        &self,
+        out_buf: &'a mut [u8],
+    ) -> Result<&'a [u8], ConnectionError> {
+        let th = self.transcript.snapshot();
+        let record = RecordKeys::<ChaCha20Poly1305Sha256>::build_client_finished::<H, C>(
+            &self.state.c_hs_ts,
+            &th,
+            0,
+            out_buf,
+        )?;
+        Ok(record)
+    }
+}
+
+// ============================================================================
+// Replay entry points (feature = "replay")
+// ============================================================================
+//
+// Captured-fixture harnesses (e.g. the footprint demos) enter the typestate
+// at `WaitServerFlight<S>` with pre-derived handshake-traffic secrets, never
+// running x25519 or the early-key-schedule HKDF chain. Gated so production
+// builds don't see the constructor or pull the entry-point code into `.text`.
+
+#[cfg(feature = "replay")]
+impl<H, C> TlsConnection<WaitServerFlight<Aes128GcmSha256>, H, C>
+where
+    H: HkdfSha256,
+{
+    /// Construct a `WaitServerFlight` connection from pre-derived
+    /// handshake-traffic secrets and a transcript positioned at
+    /// `H(CH ‖ SH)`. The `master_secret` slot is left as zeros — the
+    /// caller must only invoke [`Self::finalize_server_flight`] then
+    /// [`super::TlsConnection::build_client_finished`]; calling the
+    /// AppData-producing [`super::TlsConnection::finish_handshake`] on
+    /// a replay-state connection yields meaningless app traffic keys.
+    pub fn from_handshake_secrets(
+        transcript: TranscriptHash<H>,
+        c_hs_ts: Secret,
+        s_hs_ts: Secret,
+    ) -> Result<Self, ConnectionError> {
+        let s_hs_keys = RecordKeys::<Aes128GcmSha256>::derive::<H>(&s_hs_ts)?;
+        Ok(Self {
+            transcript,
+            state: WaitServerFlight {
+                hs: Secret::from([0u8; 32]),
+                c_hs_ts,
+                s_hs_ts,
+                s_hs_keys,
+                seq_in: 0,
+            },
+            _crypto: PhantomData,
+        })
+    }
+}
+
+#[cfg(all(feature = "replay", feature = "chacha20"))]
+impl<H, C> TlsConnection<WaitServerFlight<ChaCha20Poly1305Sha256>, H, C>
+where
+    H: HkdfSha256,
+{
+    pub fn from_handshake_secrets(
+        transcript: TranscriptHash<H>,
+        c_hs_ts: Secret,
+        s_hs_ts: Secret,
+    ) -> Result<Self, ConnectionError> {
+        let s_hs_keys = RecordKeys::<ChaCha20Poly1305Sha256>::derive::<H>(&s_hs_ts)?;
+        Ok(Self {
+            transcript,
+            state: WaitServerFlight {
+                hs: Secret::from([0u8; 32]),
+                c_hs_ts,
+                s_hs_ts,
+                s_hs_keys,
+                seq_in: 0,
+            },
+            _crypto: PhantomData,
+        })
+    }
+}
+
+impl<H, C> TlsConnection<ServerFlightDone<Aes128GcmSha256>, H, C>
+where
+    H: HkdfSha256,
+    C: Aes128GcmAead,
+{
     /// Build the client Finished record into `out_buf` and advance to
     /// [`AppData`]. The caller is responsible for writing the returned
     /// bytes to the server. `out_buf` must be at least

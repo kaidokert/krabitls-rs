@@ -29,6 +29,10 @@ pub use backends::{DerCert, RustCrypto};
 #[cfg(feature = "rsa")]
 pub use backends::{RsaVerifierKey, RsaVerifyError};
 pub use client_flight::{CLIENT_FINISHED_LEN, ClientFinishedError};
+pub use connection::{
+    AppData, ConnectionError, FlightStep, Init, NegotiatedSuite, ServerFlightDone,
+    ServerPubkeyOwned, TlsConnection, WaitServerFlight, WaitServerHello,
+};
 pub use hkdf::{
     EMPTY_TRANSCRIPT_HASH, HkdfLabelError, TranscriptError, TranscriptHash,
     application_traffic_secrets, derive_secret, early_secret, finished_mac, handshake_secret,

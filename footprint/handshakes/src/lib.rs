@@ -6,6 +6,12 @@
 //! 16 KiB scratch (record + flight buffers) lives in `.bss` via
 //! [`with_buffers`] so the demo crates' stack measurement isolates the
 //! crypto + protocol cost.
+//!
+//! The handshake is driven through [`krabitls::TlsConnection`] entered at
+//! `WaitServerFlight` via the `replay` feature — captured fixtures expose
+//! pre-derived handshake-traffic secrets, so x25519 + the early HKDF chain
+//! never reach `.text` and the historical M3 footprint numbers are
+//! preserved.
 
 use core::cell::RefCell;
 use critical_section::Mutex;
@@ -13,35 +19,66 @@ use critical_section::Mutex;
 #[cfg(feature = "chacha20")]
 use krabitls::ChaCha20Poly1305Sha256;
 use krabitls::newtype::Secret;
+use krabitls::reassembler::ServerFlightReassembler;
 use krabitls::{
-    Aes128GcmSha256, CLIENT_FINISHED_LEN, CertParser, CertView, DerCert, RecordKeys, RustCrypto,
-    TranscriptHash, ZeroBuf, extract_cert_der, parse_server_flight, split_inner_plaintext,
-    verify_certificate_verify, verify_server_finished,
+    Aes128GcmSha256, DerCert, RustCrypto, ServerPubkey, TlsConnection, TranscriptHash,
+    WaitServerFlight, ZeroBuf,
 };
 
 /// Per-record decrypt scratch. Sized to fit the largest TLS record body
 /// the replay drives (RSA-2048 captured server flight runs ~6.3 KiB).
 pub const RECORD_BUF_CAP: usize = 8 * 1024;
 
-/// Flight-accumulator scratch.
+/// Flight-accumulator capacity (bytes). The reassembler owns this buffer
+/// internally — sized to hold the largest reassembled server flight the
+/// replays drive.
 pub const FLIGHT_BUF_CAP: usize = 8 * 1024;
 
 static RECORD_BUF: Mutex<RefCell<[u8; RECORD_BUF_CAP]>> =
     Mutex::new(RefCell::new([0u8; RECORD_BUF_CAP]));
-static FLIGHT_BUF: Mutex<RefCell<[u8; FLIGHT_BUF_CAP]>> =
-    Mutex::new(RefCell::new([0u8; FLIGHT_BUF_CAP]));
+static REASSEMBLER: Mutex<RefCell<ServerFlightReassembler<FLIGHT_BUF_CAP>>> =
+    Mutex::new(RefCell::new(ServerFlightReassembler::new()));
 
 /// Lend out the static scratch buffers under a critical section. The TLS
-/// handshake runs entirely inside the closure; the buffers never land on
-/// the stack.
+/// handshake runs entirely inside the closure; neither the per-record
+/// plaintext buffer nor the reassembler's accumulator land on the stack.
+/// The reassembler is `clear()`-ed before the closure runs so consecutive
+/// `run_*` calls don't accidentally share state.
 pub fn with_buffers<R>(
-    f: impl FnOnce(&mut [u8; RECORD_BUF_CAP], &mut [u8; FLIGHT_BUF_CAP]) -> R,
+    f: impl FnOnce(&mut [u8; RECORD_BUF_CAP], &mut ServerFlightReassembler<FLIGHT_BUF_CAP>) -> R,
 ) -> R {
     critical_section::with(|cs| {
         let mut record = RECORD_BUF.borrow(cs).borrow_mut();
-        let mut flight = FLIGHT_BUF.borrow(cs).borrow_mut();
-        f(&mut record, &mut flight)
+        let mut reassembler = REASSEMBLER.borrow(cs).borrow_mut();
+        reassembler.clear();
+        f(&mut record, &mut reassembler)
     })
+}
+
+/// Walk `flight_enc` (back-to-back TLS records) and call `feed` with each
+/// 5-byte-header-plus-body slice. The TLS record framing isn't typestate-
+/// specific — the caller upstairs supplies its own driver/decryptor.
+fn for_each_record<E>(
+    flight_enc: &[u8],
+    mut feed: impl FnMut(&[u8]) -> Result<(), E>,
+) -> Result<(), E>
+where
+    E: From<()>,
+{
+    let mut pos = 0;
+    while pos < flight_enc.len() {
+        if flight_enc.len() < pos + 5 {
+            return Err(().into());
+        }
+        let body_len = u16::from_be_bytes([flight_enc[pos + 3], flight_enc[pos + 4]]) as usize;
+        let end = pos + 5 + body_len;
+        if flight_enc.len() < end {
+            return Err(().into());
+        }
+        feed(&flight_enc[pos..end])?;
+        pos = end;
+    }
+    Ok(())
 }
 
 mod fixture_aes_ed25519 {
@@ -95,76 +132,38 @@ mod fixture_aes_rsa2048 {
 /// a local openssl s_server.
 pub fn run_aes_ed25519() -> Result<(), ()> {
     use fixture_aes_ed25519::*;
-    with_buffers(|plaintext, flight| {
+    with_buffers(|plaintext, reassembler| {
         let mut transcript = TranscriptHash::<RustCrypto>::new();
         transcript.update_record(&CH).map_err(|_| ())?;
         transcript.update_record(&SH).map_err(|_| ())?;
 
-        let s_hs_ts: Secret = Secret::new(ZeroBuf::<32>::new(S_HS_TS));
-        let c_hs_ts: Secret = Secret::new(ZeroBuf::<32>::new(C_HS_TS));
-        let s_hs_keys =
-            RecordKeys::<Aes128GcmSha256>::derive::<RustCrypto>(&s_hs_ts).map_err(|_| ())?;
+        let mut conn = <TlsConnection<
+            WaitServerFlight<Aes128GcmSha256>,
+            RustCrypto,
+            RustCrypto,
+        >>::from_handshake_secrets(
+            transcript,
+            Secret::new(ZeroBuf::<32>::new(C_HS_TS)),
+            Secret::new(ZeroBuf::<32>::new(S_HS_TS)),
+        )
+        .map_err(|_| ())?;
 
-        let mut flight_len = 0usize;
-        let mut pos = 0usize;
-        let mut seq: u64 = 0;
-        while pos < FLIGHT_ENC.len() {
-            if FLIGHT_ENC.len() < pos + 5 {
-                return Err(());
-            }
-            let body_len = u16::from_be_bytes([FLIGHT_ENC[pos + 3], FLIGHT_ENC[pos + 4]]) as usize;
-            let end = pos + 5 + body_len;
-            if FLIGHT_ENC.len() < end {
-                return Err(());
-            }
-            let record = &FLIGHT_ENC[pos..end];
+        for_each_record(&FLIGHT_ENC, |record| {
+            conn.feed_server_record(record, reassembler, &mut plaintext[..])
+                .map(|_| ())
+                .map_err(|_| ())
+        })?;
 
-            let pt_slice = s_hs_keys
-                .decrypt_record::<RustCrypto>(record, seq, plaintext)
-                .map_err(|_| ())?;
-            let (content, _ct) = split_inner_plaintext(pt_slice).map_err(|_| ())?;
-
-            if flight_len + content.len() > flight.len() {
-                return Err(());
-            }
-            flight[flight_len..flight_len + content.len()].copy_from_slice(content);
-            flight_len += content.len();
-
-            pos = end;
-            seq += 1;
-        }
-
-        let parsed = parse_server_flight(&flight[..flight_len]).map_err(|_| ())?;
-        let cert_der = extract_cert_der(parsed.cert_body).map_err(|_| ())?;
-        let view = <DerCert as CertParser>::parse(cert_der).map_err(|_| ())?;
-        if !matches!(view, CertView::Ed25519 { .. }) {
+        let conn = conn
+            .finalize_server_flight::<FLIGHT_BUF_CAP, DerCert, RustCrypto>(reassembler)
+            .map_err(|_| ())?;
+        if !matches!(conn.server_pubkey(), ServerPubkey::Ed25519(_, _)) {
             return Err(());
         }
 
-        transcript.update(parsed.ee_full);
-        transcript.update(parsed.cert_full);
-        let th_after_cert = transcript.snapshot();
-        verify_certificate_verify::<RustCrypto>(&view, &th_after_cert, parsed.cv_body)
-            .map_err(|_| ())?;
-
-        transcript.update(parsed.cv_full);
-        let th_after_cv = transcript.snapshot();
-        verify_server_finished::<RustCrypto>(&s_hs_ts, &th_after_cv, parsed.fin_body)
-            .map_err(|_| ())?;
-
-        transcript.update(parsed.fin_full);
-        let th_through_finished = transcript.snapshot();
-
         let mut cf_out = [0u8; 80];
-        let record =
-            RecordKeys::<Aes128GcmSha256>::build_client_finished::<RustCrypto, RustCrypto>(
-                &c_hs_ts,
-                &th_through_finished,
-                0,
-                &mut cf_out,
-            )
-            .map_err(|_| ())?;
-        if record.len() != CLIENT_FINISHED_LEN || record != &C_FINISHED[..] {
+        let record = conn.build_client_finished(&mut cf_out).map_err(|_| ())?;
+        if record != &C_FINISHED[..] {
             return Err(());
         }
         Ok(())
@@ -194,74 +193,38 @@ mod jedisct_path {
     use krabitls::JedisctCrypto;
 
     pub fn run() -> Result<(), ()> {
-        with_buffers(|plaintext, flight| {
+        with_buffers(|plaintext, reassembler| {
             let mut transcript = TranscriptHash::<JedisctCrypto>::new();
             transcript.update_record(&CH).map_err(|_| ())?;
             transcript.update_record(&SH).map_err(|_| ())?;
 
-            let s_hs_ts: Secret = Secret::new(ZeroBuf::<32>::new(S_HS_TS));
-            let c_hs_ts: Secret = Secret::new(ZeroBuf::<32>::new(C_HS_TS));
-            let s_hs_keys =
-                RecordKeys::<Aes128GcmSha256>::derive::<JedisctCrypto>(&s_hs_ts).map_err(|_| ())?;
+            let mut conn = <TlsConnection<
+                WaitServerFlight<Aes128GcmSha256>,
+                JedisctCrypto,
+                RustCrypto,
+            >>::from_handshake_secrets(
+                transcript,
+                Secret::new(ZeroBuf::<32>::new(C_HS_TS)),
+                Secret::new(ZeroBuf::<32>::new(S_HS_TS)),
+            )
+            .map_err(|_| ())?;
 
-            let mut flight_len = 0usize;
-            let mut pos = 0usize;
-            let mut seq: u64 = 0;
-            while pos < FLIGHT_ENC.len() {
-                if FLIGHT_ENC.len() < pos + 5 {
-                    return Err(());
-                }
-                let body_len =
-                    u16::from_be_bytes([FLIGHT_ENC[pos + 3], FLIGHT_ENC[pos + 4]]) as usize;
-                let end = pos + 5 + body_len;
-                if FLIGHT_ENC.len() < end {
-                    return Err(());
-                }
-                let record = &FLIGHT_ENC[pos..end];
+            for_each_record(&FLIGHT_ENC, |record| {
+                conn.feed_server_record(record, reassembler, &mut plaintext[..])
+                    .map(|_| ())
+                    .map_err(|_| ())
+            })?;
 
-                let pt_slice = s_hs_keys
-                    .decrypt_record::<RustCrypto>(record, seq, plaintext)
-                    .map_err(|_| ())?;
-                let (content, _ct) = split_inner_plaintext(pt_slice).map_err(|_| ())?;
-
-                if flight_len + content.len() > flight.len() {
-                    return Err(());
-                }
-                flight[flight_len..flight_len + content.len()].copy_from_slice(content);
-                flight_len += content.len();
-
-                pos = end;
-                seq += 1;
-            }
-
-            let parsed = parse_server_flight(&flight[..flight_len]).map_err(|_| ())?;
-            let cert_der = extract_cert_der(parsed.cert_body).map_err(|_| ())?;
-            let view = <DerCert as CertParser>::parse(cert_der).map_err(|_| ())?;
-            if !matches!(view, CertView::Ed25519 { .. }) {
+            let conn = conn
+                .finalize_server_flight::<FLIGHT_BUF_CAP, DerCert, RustCrypto>(reassembler)
+                .map_err(|_| ())?;
+            if !matches!(conn.server_pubkey(), ServerPubkey::Ed25519(_, _)) {
                 return Err(());
             }
 
-            transcript.update(parsed.ee_full);
-            transcript.update(parsed.cert_full);
-            let th_after_cert = transcript.snapshot();
-            verify_certificate_verify::<RustCrypto>(&view, &th_after_cert, parsed.cv_body)
-                .map_err(|_| ())?;
-
-            transcript.update(parsed.cv_full);
-            let th_after_cv = transcript.snapshot();
-            verify_server_finished::<JedisctCrypto>(&s_hs_ts, &th_after_cv, parsed.fin_body)
-                .map_err(|_| ())?;
-
-            transcript.update(parsed.fin_full);
-            let th_through_finished = transcript.snapshot();
-
             let mut cf_out = [0u8; 80];
-            let record = RecordKeys::<Aes128GcmSha256>::build_client_finished::<
-                JedisctCrypto,
-                RustCrypto,
-            >(&c_hs_ts, &th_through_finished, 0, &mut cf_out)
-            .map_err(|_| ())?;
-            if record.len() != CLIENT_FINISHED_LEN || record != &C_FINISHED[..] {
+            let record = conn.build_client_finished(&mut cf_out).map_err(|_| ())?;
+            if record != &C_FINISHED[..] {
                 return Err(());
             }
             Ok(())
@@ -289,74 +252,38 @@ mod chacha_path {
     use fixture_chacha_ed25519::*;
 
     pub fn run() -> Result<(), ()> {
-        with_buffers(|plaintext, flight| {
+        with_buffers(|plaintext, reassembler| {
             let mut transcript = TranscriptHash::<RustCrypto>::new();
             transcript.update_record(&CH).map_err(|_| ())?;
             transcript.update_record(&SH).map_err(|_| ())?;
 
-            let s_hs_ts: Secret = Secret::new(ZeroBuf::<32>::new(S_HS_TS));
-            let c_hs_ts: Secret = Secret::new(ZeroBuf::<32>::new(C_HS_TS));
-            let s_hs_keys = RecordKeys::<ChaCha20Poly1305Sha256>::derive::<RustCrypto>(&s_hs_ts)
+            let mut conn = <TlsConnection<
+                WaitServerFlight<ChaCha20Poly1305Sha256>,
+                RustCrypto,
+                RustCrypto,
+            >>::from_handshake_secrets(
+                transcript,
+                Secret::new(ZeroBuf::<32>::new(C_HS_TS)),
+                Secret::new(ZeroBuf::<32>::new(S_HS_TS)),
+            )
+            .map_err(|_| ())?;
+
+            for_each_record(&FLIGHT_ENC, |record| {
+                conn.feed_server_record(record, reassembler, &mut plaintext[..])
+                    .map(|_| ())
+                    .map_err(|_| ())
+            })?;
+
+            let conn = conn
+                .finalize_server_flight::<FLIGHT_BUF_CAP, DerCert, RustCrypto>(reassembler)
                 .map_err(|_| ())?;
-
-            let mut flight_len = 0usize;
-            let mut pos = 0usize;
-            let mut seq: u64 = 0;
-            while pos < FLIGHT_ENC.len() {
-                if FLIGHT_ENC.len() < pos + 5 {
-                    return Err(());
-                }
-                let body_len =
-                    u16::from_be_bytes([FLIGHT_ENC[pos + 3], FLIGHT_ENC[pos + 4]]) as usize;
-                let end = pos + 5 + body_len;
-                if FLIGHT_ENC.len() < end {
-                    return Err(());
-                }
-                let record = &FLIGHT_ENC[pos..end];
-
-                let pt_slice = s_hs_keys
-                    .decrypt_record::<RustCrypto>(record, seq, plaintext)
-                    .map_err(|_| ())?;
-                let (content, _ct) = split_inner_plaintext(pt_slice).map_err(|_| ())?;
-
-                if flight_len + content.len() > flight.len() {
-                    return Err(());
-                }
-                flight[flight_len..flight_len + content.len()].copy_from_slice(content);
-                flight_len += content.len();
-
-                pos = end;
-                seq += 1;
-            }
-
-            let parsed = parse_server_flight(&flight[..flight_len]).map_err(|_| ())?;
-            let cert_der = extract_cert_der(parsed.cert_body).map_err(|_| ())?;
-            let view = <DerCert as CertParser>::parse(cert_der).map_err(|_| ())?;
-            if !matches!(view, CertView::Ed25519 { .. }) {
+            if !matches!(conn.server_pubkey(), ServerPubkey::Ed25519(_, _)) {
                 return Err(());
             }
 
-            transcript.update(parsed.ee_full);
-            transcript.update(parsed.cert_full);
-            let th_after_cert = transcript.snapshot();
-            verify_certificate_verify::<RustCrypto>(&view, &th_after_cert, parsed.cv_body)
-                .map_err(|_| ())?;
-
-            transcript.update(parsed.cv_full);
-            let th_after_cv = transcript.snapshot();
-            verify_server_finished::<RustCrypto>(&s_hs_ts, &th_after_cv, parsed.fin_body)
-                .map_err(|_| ())?;
-
-            transcript.update(parsed.fin_full);
-            let th_through_finished = transcript.snapshot();
-
             let mut cf_out = [0u8; 80];
-            let record = RecordKeys::<ChaCha20Poly1305Sha256>::build_client_finished::<
-                RustCrypto,
-                RustCrypto,
-            >(&c_hs_ts, &th_through_finished, 0, &mut cf_out)
-            .map_err(|_| ())?;
-            if record.len() != CLIENT_FINISHED_LEN || record != &C_FINISHED[..] {
+            let record = conn.build_client_finished(&mut cf_out).map_err(|_| ())?;
+            if record != &C_FINISHED[..] {
                 return Err(());
             }
             Ok(())
@@ -395,74 +322,38 @@ mod rsa_path {
     use fixture_aes_rsa2048::*;
 
     pub fn run() -> Result<(), ()> {
-        with_buffers(|plaintext, flight| {
+        with_buffers(|plaintext, reassembler| {
             let mut transcript = TranscriptHash::<RustCrypto>::new();
             transcript.update_record(&CH).map_err(|_| ())?;
             transcript.update_record(&SH).map_err(|_| ())?;
 
-            let s_hs_ts: Secret = Secret::new(ZeroBuf::<32>::new(S_HS_TS));
-            let c_hs_ts: Secret = Secret::new(ZeroBuf::<32>::new(C_HS_TS));
-            let s_hs_keys =
-                RecordKeys::<Aes128GcmSha256>::derive::<RustCrypto>(&s_hs_ts).map_err(|_| ())?;
+            let mut conn = <TlsConnection<
+                WaitServerFlight<Aes128GcmSha256>,
+                RustCrypto,
+                RustCrypto,
+            >>::from_handshake_secrets(
+                transcript,
+                Secret::new(ZeroBuf::<32>::new(C_HS_TS)),
+                Secret::new(ZeroBuf::<32>::new(S_HS_TS)),
+            )
+            .map_err(|_| ())?;
 
-            let mut flight_len = 0usize;
-            let mut pos = 0usize;
-            let mut seq: u64 = 0;
-            while pos < FLIGHT_ENC.len() {
-                if FLIGHT_ENC.len() < pos + 5 {
-                    return Err(());
-                }
-                let body_len =
-                    u16::from_be_bytes([FLIGHT_ENC[pos + 3], FLIGHT_ENC[pos + 4]]) as usize;
-                let end = pos + 5 + body_len;
-                if FLIGHT_ENC.len() < end {
-                    return Err(());
-                }
-                let record = &FLIGHT_ENC[pos..end];
+            for_each_record(&FLIGHT_ENC, |record| {
+                conn.feed_server_record(record, reassembler, &mut plaintext[..])
+                    .map(|_| ())
+                    .map_err(|_| ())
+            })?;
 
-                let pt_slice = s_hs_keys
-                    .decrypt_record::<RustCrypto>(record, seq, plaintext)
-                    .map_err(|_| ())?;
-                let (content, _ct) = split_inner_plaintext(pt_slice).map_err(|_| ())?;
-
-                if flight_len + content.len() > flight.len() {
-                    return Err(());
-                }
-                flight[flight_len..flight_len + content.len()].copy_from_slice(content);
-                flight_len += content.len();
-
-                pos = end;
-                seq += 1;
-            }
-
-            let parsed = parse_server_flight(&flight[..flight_len]).map_err(|_| ())?;
-            let cert_der = extract_cert_der(parsed.cert_body).map_err(|_| ())?;
-            let view = <DerCert as CertParser>::parse(cert_der).map_err(|_| ())?;
-            if !matches!(view, CertView::Rsa { .. }) {
+            let conn = conn
+                .finalize_server_flight::<FLIGHT_BUF_CAP, DerCert, RustCrypto>(reassembler)
+                .map_err(|_| ())?;
+            if !matches!(conn.server_pubkey(), ServerPubkey::Rsa { .. }) {
                 return Err(());
             }
 
-            transcript.update(parsed.ee_full);
-            transcript.update(parsed.cert_full);
-            let th_after_cert = transcript.snapshot();
-            verify_certificate_verify::<RustCrypto>(&view, &th_after_cert, parsed.cv_body)
-                .map_err(|_| ())?;
-
-            transcript.update(parsed.cv_full);
-            let th_after_cv = transcript.snapshot();
-            verify_server_finished::<RustCrypto>(&s_hs_ts, &th_after_cv, parsed.fin_body)
-                .map_err(|_| ())?;
-
-            transcript.update(parsed.fin_full);
-            let th_through_finished = transcript.snapshot();
-
             let mut cf_out = [0u8; 80];
-            let record = RecordKeys::<Aes128GcmSha256>::build_client_finished::<
-                RustCrypto,
-                RustCrypto,
-            >(&c_hs_ts, &th_through_finished, 0, &mut cf_out)
-            .map_err(|_| ())?;
-            if record.len() != CLIENT_FINISHED_LEN || record != &C_FINISHED[..] {
+            let record = conn.build_client_finished(&mut cf_out).map_err(|_| ())?;
+            if record != &C_FINISHED[..] {
                 return Err(());
             }
             Ok(())
