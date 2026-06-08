@@ -96,10 +96,8 @@ impl<const N: usize> ServerFlightReassembler<N> {
             // 24-bit handshake-message length. Decode as `u32` (24 bits don't
             // fit a 16-bit `usize`) and bail out on conversion failure rather
             // than silently truncating on 16-bit targets.
-            let len = usize::try_from(
-                ((buf[i + 1] as u32) << 16) | ((buf[i + 2] as u32) << 8) | (buf[i + 3] as u32),
-            )
-            .ok()?;
+            let len = usize::try_from(u32::from_be_bytes([0, buf[i + 1], buf[i + 2], buf[i + 3]]))
+                .ok()?;
             // Rewrite of `i + 4 + len > buf.len()` to avoid overflow on
             // 16-bit `usize`: the loop guarantees `i + 4 <= buf.len()`,
             // so `buf.len() - i - 4` can't underflow.

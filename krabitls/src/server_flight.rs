@@ -269,7 +269,7 @@ pub fn extract_cert_der(cert_body: &[u8]) -> Result<&[u8], FlightError> {
 /// Read a big-endian 24-bit length without truncating on 16-bit targets.
 fn read_u24(b: &[u8]) -> u32 {
     debug_assert!(b.len() == 3);
-    ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | (b[2] as u32)
+    u32::from_be_bytes([0, b[0], b[1], b[2]])
 }
 
 /// Parse + verify a self-signed cert in one shot. Test-only helper.
@@ -448,15 +448,15 @@ pub(crate) fn verify_server_finished<H: HkdfSha256>(
     )
     .map_err(FlightError::HkdfLabel)?;
     let expected = H::extract(&finished_key[..], transcript_hash_ch_through_cv.as_bytes());
-    // Avoid early-exit on the first mismatching byte.
-    let mut diff = 0u8;
-    for i in 0..32 {
-        diff |= expected[i] ^ finished_body[i];
+    // `subtle::ct_eq` is the canonical CT primitive. A hand-rolled `diff |=`
+    // loop is legal for LLVM to vectorize / lower to `memcmp`, which would
+    // destroy the constant-time property.
+    use subtle::ConstantTimeEq;
+    if bool::from(expected.as_slice().ct_eq(finished_body)) {
+        Ok(())
+    } else {
+        Err(FlightError::FinishedMacInvalid)
     }
-    if diff != 0 {
-        return Err(FlightError::FinishedMacInvalid);
-    }
-    Ok(())
 }
 
 /// The server public key carried by the verified certificate.
