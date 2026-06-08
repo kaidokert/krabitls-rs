@@ -272,12 +272,20 @@ fn classify_spki_algorithm(alg_id_bytes: &[u8]) -> Result<SpkiKind, CertParseErr
 }
 
 /// Classify a `Certificate.signatureAlgorithm` AlgorithmIdentifier as one
-/// of the RSA padding schemes we accept on cert outer signatures. Only the
-/// OID is checked; PSS parameters are not introspected — `verify_pss_sha256`
+/// of the RSA padding schemes we accept on cert outer signatures. Returns
+/// `Ok(None)` for unrecognized OIDs so CA-issued RSA leaves signed by a
+/// non-RSA issuer (or RSA-SHA384, etc.) still parse — self-sig verify
+/// rejects `None` at verify time, but [`crate::VerifyMode::TrustOnPin`]
+/// never reaches that check. `Err` only on malformed DER framing.
+///
+/// PKCS#1-v1.5 params validated as explicit `NULL` per RFC 4055 §5; PSS
+/// params (when present) are not introspected here — `verify_pss_sha256`
 /// hard-codes the SHA-256 + MGF1-SHA-256 + 32-byte-salt shape and rejects
-/// anything else at verify time.
+/// mismatched signatures at verify time.
 #[cfg(feature = "rsa")]
-fn classify_rsa_outer_sig_alg(alg_id_bytes: &[u8]) -> Result<RsaCertSigAlg, CertParseError> {
+fn classify_rsa_outer_sig_alg(
+    alg_id_bytes: &[u8],
+) -> Result<Option<RsaCertSigAlg>, CertParseError> {
     let map_err = |_| CertParseError::Malformed;
     let any = AnyRef::try_from(alg_id_bytes).map_err(map_err)?;
     if any.header().tag() != Tag::Sequence {
@@ -287,12 +295,23 @@ fn classify_rsa_outer_sig_alg(alg_id_bytes: &[u8]) -> Result<RsaCertSigAlg, Cert
     let oid = ObjectIdentifier::decode(&mut r).map_err(map_err)?;
     #[cfg(not(feature = "rsa_pss_only"))]
     if oid == SHA256_WITH_RSA_OID {
-        return Ok(RsaCertSigAlg::Pkcs1v15Sha256);
+        require_explicit_null_params(&mut r)?;
+        return Ok(Some(RsaCertSigAlg::Pkcs1v15Sha256));
     }
     if oid == RSASSA_PSS_OID {
-        Ok(RsaCertSigAlg::PssSha256)
+        // PSS params SEQUENCE may be present (sha256/mgf1/salt=32) or
+        // absent (RFC defaults). Either is OK at parse time; verify-time
+        // shape mismatch is caught by `verify_pss_sha256`. Reject only
+        // truly malformed DER: well-formed param TLV followed by nothing.
+        if !r.is_finished() {
+            let _ = AnyRef::decode(&mut r).map_err(map_err)?;
+            if !r.is_finished() {
+                return Err(CertParseError::Malformed);
+            }
+        }
+        Ok(Some(RsaCertSigAlg::PssSha256))
     } else {
-        Err(CertParseError::WrongAlgorithmOid)
+        Ok(None)
     }
 }
 

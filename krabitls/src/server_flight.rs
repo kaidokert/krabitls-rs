@@ -314,8 +314,12 @@ pub fn verify_self_signed_cert_with_cache<E: Ed25519Verify>(
             ..
         } => {
             use crate::traits::cert::RsaCertSigAlg;
+            // `outer_sig_alg = None` means the cert's outer signatureAlgorithm
+            // isn't one we know how to verify (e.g. RSA leaf signed by an
+            // ECDSA issuer). Self-sig verify can't proceed.
+            let alg = outer_sig_alg.ok_or(FlightError::CertSelfSignatureInvalid)?;
             if let Some(rk) = rsa_cache {
-                match outer_sig_alg {
+                match alg {
                     #[cfg(not(feature = "rsa_pss_only"))]
                     RsaCertSigAlg::Pkcs1v15Sha256 => rk
                         .verify_pkcs1v15_sha256(tbs, signature)
@@ -325,7 +329,7 @@ pub fn verify_self_signed_cert_with_cache<E: Ed25519Verify>(
                         .map_err(|_| FlightError::CertSelfSignatureInvalid)?,
                 }
             } else {
-                match outer_sig_alg {
+                match alg {
                     #[cfg(not(feature = "rsa_pss_only"))]
                     RsaCertSigAlg::Pkcs1v15Sha256 => {
                         crate::backends::rsa_verify::verify_pkcs1v15_sha256(

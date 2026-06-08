@@ -28,10 +28,17 @@ pub enum CertView<'a> {
         /// TBSCertificate bytes the cert's signature was computed over.
         tbs: &'a [u8],
         /// RSA signature bytes (size equals the RSA modulus); padding/hash
-        /// scheme identified by `outer_sig_alg`.
+        /// scheme identified by `outer_sig_alg` (or `None` if the outer
+        /// algorithm isn't one krabitls recognizes — see field below).
         signature: &'a [u8],
-        /// Padding scheme used to sign `tbs`.
-        outer_sig_alg: RsaCertSigAlg,
+        /// Padding scheme used to sign `tbs`, or `None` if the cert's outer
+        /// signatureAlgorithm OID isn't `sha256WithRSAEncryption` /
+        /// `rsassa-pss`. Real-world chains often have RSA leaves signed by
+        /// an issuer using ECDSA / RSA-SHA384 / etc.; parser stays
+        /// permissive so those certs reach `verify_certificate_verify` for
+        /// CV-only checks. Self-sig verify (under
+        /// [`crate::VerifyMode::SelfSigned`]) errors on `None`.
+        outer_sig_alg: Option<RsaCertSigAlg>,
         /// RSA modulus, big-endian. Length is the RSA key size in bytes:
         /// 128 for RSA-1024, 256 for RSA-2048, etc.
         modulus: &'a [u8],
