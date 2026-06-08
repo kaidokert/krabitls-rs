@@ -31,8 +31,9 @@ pub use backends::{DerCert, RustCrypto};
 pub use backends::{RsaVerifierKey, RsaVerifyError};
 pub use client_flight::{CLIENT_FINISHED_LEN, ClientFinishedError};
 pub use connection::{
-    AppData, ConnectionError, FlightStep, Init, NegotiatedSuite, ServerFlightDone,
-    ServerPubkeyOwned, TlsConnection, VerifyMode, WaitServerFlight, WaitServerHello,
+    AppData, ConnectionError, FlightStep, HandshakeMode, Init, Live, NegotiatedSuite, Replay,
+    ServerFlightDone, ServerPubkeyOwned, TlsConnection, VerifyMode, WaitServerFlight,
+    WaitServerHello,
 };
 pub use hkdf::{HkdfLabelError, TranscriptError, TranscriptHash};
 // Lib-test convenience re-exports — internal helpers reachable via `crate::foo`
@@ -575,6 +576,10 @@ pub enum ParseError {
     /// TLS 1.2 or below. A real TLS 1.3 server speaking only TLS 1.3 will never
     /// emit this; if we see it, the connection is being downgraded.
     DowngradeDetected,
+    /// X25519 shared secret was the all-zero value. RFC 8446 §7.4.2.1 says the
+    /// client MUST abort with `illegal_parameter`. Typically means a low-order
+    /// server key_share.
+    DhAllZero,
 }
 
 impl core::fmt::Display for ParseError {
@@ -627,6 +632,9 @@ impl core::fmt::Display for ParseError {
             Self::HelloRetryRequested => f.write_str("server requested HelloRetryRequest"),
             Self::DowngradeDetected => {
                 f.write_str("ServerHello.random sentinel indicates a TLS-1.2-or-below downgrade")
+            }
+            Self::DhAllZero => {
+                f.write_str("X25519 shared secret was the all-zero value (low-order point)")
             }
         }
     }

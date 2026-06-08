@@ -113,6 +113,43 @@ impl<E> From<ClientFinishedError> for ConnectionError<E> {
     }
 }
 
+impl<E: core::fmt::Display> core::fmt::Display for ConnectionError<E> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::ClientHello(e) => write!(f, "ClientHello: {e}"),
+            Self::Parse(e) => write!(f, "parse: {e}"),
+            Self::Hkdf(e) => write!(f, "HKDF: {e}"),
+            Self::Flight(e) => write!(f, "server flight: {e}"),
+            Self::Decrypt(e) => write!(f, "decrypt: {e}"),
+            Self::Encrypt(e) => write!(f, "encrypt: {e}"),
+            Self::Transcript(e) => write!(f, "transcript: {e}"),
+            Self::Reassembly(e) => write!(f, "reassembly: {e}"),
+            Self::ClientFinished(e) => write!(f, "ClientFinished: {e}"),
+            Self::WrongSuite { expected, got } => write!(
+                f,
+                "cipher suite mismatch: expected 0x{expected:04x}, got 0x{got:04x}"
+            ),
+            Self::IncompleteFlight => f.write_str("server flight reassembly incomplete"),
+        }
+    }
+}
+
+impl<E: core::fmt::Debug + core::fmt::Display> core::error::Error for ConnectionError<E> {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::Parse(e) => Some(e),
+            Self::Hkdf(e) => Some(e),
+            Self::Flight(e) => Some(e),
+            Self::Decrypt(e) => Some(e),
+            Self::Encrypt(e) => Some(e),
+            Self::Transcript(e) => Some(e),
+            Self::Reassembly(e) => Some(e),
+            Self::ClientFinished(e) => Some(e),
+            Self::ClientHello(_) | Self::WrongSuite { .. } | Self::IncompleteFlight => None,
+        }
+    }
+}
+
 // ============================================================================
 // State markers
 // ============================================================================
@@ -128,23 +165,45 @@ pub struct WaitServerHello {
     pub(crate) x25519_priv: ZeroBuf<32>,
 }
 
+mod sealed {
+    pub trait Sealed {}
+}
+
+/// Sealed marker discriminating live-handshake vs replay-derived `WaitServerFlight`
+/// / `ServerFlightDone`. Replay-derived states have a zeroed `hs`, so the
+/// post-handshake `finish_handshake` / `derive_app_secrets` transitions only impl
+/// for [`Live`].
+pub trait HandshakeMode: sealed::Sealed {}
+
+/// Live handshake: `hs` is the real DH-derived handshake secret.
+pub struct Live;
+/// Replay-derived: `hs` is zeroed; only `finalize_server_flight` +
+/// `build_client_finished` produce meaningful output.
+pub struct Replay;
+impl sealed::Sealed for Live {}
+impl sealed::Sealed for Replay {}
+impl HandshakeMode for Live {}
+impl HandshakeMode for Replay {}
+
 /// SH parsed, x25519 done, s_hs keys live, suite `S` now known.
-pub struct WaitServerFlight<S: CipherSuite> {
+pub struct WaitServerFlight<S: CipherSuite, M: HandshakeMode = Live> {
     pub(crate) hs: Secret,
     pub(crate) c_hs_ts: Secret,
     pub(crate) s_hs_ts: Secret,
     pub(crate) s_hs_keys: RecordKeys<S>,
     pub(crate) seq_in: u64,
+    pub(crate) _mode: PhantomData<M>,
 }
 
 /// Server flight verified; transcript through sFin.
-pub struct ServerFlightDone<S: CipherSuite> {
+pub struct ServerFlightDone<S: CipherSuite, M: HandshakeMode = Live> {
     pub(crate) hs: Secret,
     pub(crate) c_hs_ts: Secret,
     #[allow(dead_code)] // client doesn't re-derive s_hs keys; kept for symmetry
     pub(crate) s_hs_ts: Secret,
     pub(crate) server_pubkey: ServerPubkeyOwned,
     pub(crate) _suite: PhantomData<S>,
+    pub(crate) _mode: PhantomData<M>,
 }
 
 /// Owned [`ServerPubkey`]. No-alloc forces the RSA variant inline (RSA-2048
@@ -161,18 +220,18 @@ pub enum ServerPubkeyOwned {
 }
 
 impl ServerPubkeyOwned {
-    fn from_view(view: &ServerPubkey<'_>) -> Self {
+    fn from_view(view: &ServerPubkey<'_>) -> Result<Self, FlightError> {
         match view {
-            ServerPubkey::Ed25519(pk, _) => Self::Ed25519(*pk),
+            ServerPubkey::Ed25519(pk, _) => Ok(Self::Ed25519(*pk)),
             #[cfg(feature = "rsa")]
             ServerPubkey::Rsa { modulus, exponent } => {
                 let mut v = heapless::Vec::new();
-                // Cert parser caps RSA at 2048-bit / 256B.
-                v.extend_from_slice(modulus).expect("modulus fits in 256B");
-                Self::Rsa {
+                v.extend_from_slice(modulus)
+                    .map_err(|_| FlightError::InternalEncoding)?;
+                Ok(Self::Rsa {
                     modulus: v,
                     exponent: *exponent,
-                }
+                })
             }
         }
     }
@@ -291,6 +350,30 @@ where
     }
 }
 
+#[cfg(feature = "replay")]
+impl<H, C> TlsConnection<WaitServerHello, H, C>
+where
+    H: HkdfSha256,
+{
+    /// Replay entry: feed a captured ClientHello *record* into a fresh
+    /// transcript and hand back `WaitServerHello`. Avoids reconstructing CH
+    /// via `write_client_hello` (which may not be byte-identical to what was
+    /// actually sent — extension ordering, future CH-shape drift). Caller
+    /// passes the same `x25519_priv` whose pub appeared in that CH.
+    pub fn from_client_hello_record(
+        ch_record: &[u8],
+        x25519_priv: ZeroBuf<32>,
+    ) -> Result<Self, ConnectionError> {
+        let mut transcript = TranscriptHash::<H>::new();
+        transcript.update_record(ch_record)?;
+        Ok(Self {
+            transcript,
+            state: WaitServerHello { x25519_priv },
+            _crypto: PhantomData,
+        })
+    }
+}
+
 // ============================================================================
 // WaitServerHello -> NegotiatedSuite
 // ============================================================================
@@ -348,8 +431,18 @@ where
         mut self,
         sh_record: &[u8],
     ) -> Result<NegotiatedSuite<H, C>, ConnectionError> {
+        use subtle::ConstantTimeEq;
+
         let sh = parse_server_hello(sh_record)?;
-        let dhe = ed25519_heapless::x25519::<Bn>(&self.state.x25519_priv, sh.x25519_share);
+        let dhe = zeroize::Zeroizing::new(ed25519_heapless::x25519::<Bn>(
+            &self.state.x25519_priv,
+            sh.x25519_share,
+        ));
+        // RFC 8446 §7.4.2.1: all-zero DH output (low-order server share)
+        // MUST abort with `illegal_parameter`.
+        if bool::from(dhe.ct_eq(&[0u8; 32])) {
+            return Err(ConnectionError::Parse(ParseError::DhAllZero));
+        }
 
         // SH into transcript first — handshake_traffic_secrets needs H(CH‖SH).
         self.transcript.update_record(sh_record)?;
@@ -369,6 +462,7 @@ where
                         s_hs_ts,
                         s_hs_keys,
                         seq_in: 0,
+                        _mode: PhantomData,
                     },
                     _crypto: PhantomData,
                 }))
@@ -384,6 +478,7 @@ where
                         s_hs_ts,
                         s_hs_keys,
                         seq_in: 0,
+                        _mode: PhantomData,
                     },
                     _crypto: PhantomData,
                 }))
@@ -441,10 +536,11 @@ where
     }
 }
 
-impl<H, C> TlsConnection<WaitServerFlight<Aes128GcmSha256>, H, C>
+impl<H, C, M> TlsConnection<WaitServerFlight<Aes128GcmSha256, M>, H, C>
 where
     H: HkdfSha256,
     C: Aes128GcmAead,
+    M: HandshakeMode,
 {
     /// Decrypt one record, push into `reassembler`. Returns `Ready` when
     /// the flight is complete. CCS records skipped without bumping seq_in.
@@ -469,7 +565,7 @@ where
         mut self,
         reassembler: &ServerFlightReassembler<N>,
         mode: VerifyMode,
-    ) -> Result<TlsConnection<ServerFlightDone<Aes128GcmSha256>, H, C>, ConnectionError> {
+    ) -> Result<TlsConnection<ServerFlightDone<Aes128GcmSha256, M>, H, C>, ConnectionError> {
         let plaintext = reassembler
             .flight_bytes()
             .ok_or(ConnectionError::IncompleteFlight)?;
@@ -480,7 +576,7 @@ where
             &self.state.s_hs_ts,
             verify_self_sig,
         )?;
-        let server_pubkey = ServerPubkeyOwned::from_view(&verified.server_pubkey);
+        let server_pubkey = ServerPubkeyOwned::from_view(&verified.server_pubkey)?;
         Ok(TlsConnection {
             transcript: self.transcript,
             state: ServerFlightDone {
@@ -489,6 +585,7 @@ where
                 s_hs_ts: self.state.s_hs_ts,
                 server_pubkey,
                 _suite: PhantomData,
+                _mode: PhantomData,
             },
             _crypto: PhantomData,
         })
@@ -496,10 +593,11 @@ where
 }
 
 #[cfg(feature = "chacha20")]
-impl<H, C> TlsConnection<WaitServerFlight<ChaCha20Poly1305Sha256>, H, C>
+impl<H, C, M> TlsConnection<WaitServerFlight<ChaCha20Poly1305Sha256, M>, H, C>
 where
     H: HkdfSha256,
     C: ChaCha20Poly1305Aead,
+    M: HandshakeMode,
 {
     pub fn feed_server_record<const N: usize>(
         &mut self,
@@ -520,7 +618,7 @@ where
         mut self,
         reassembler: &ServerFlightReassembler<N>,
         mode: VerifyMode,
-    ) -> Result<TlsConnection<ServerFlightDone<ChaCha20Poly1305Sha256>, H, C>, ConnectionError>
+    ) -> Result<TlsConnection<ServerFlightDone<ChaCha20Poly1305Sha256, M>, H, C>, ConnectionError>
     {
         let plaintext = reassembler
             .flight_bytes()
@@ -532,7 +630,7 @@ where
             &self.state.s_hs_ts,
             verify_self_sig,
         )?;
-        let server_pubkey = ServerPubkeyOwned::from_view(&verified.server_pubkey);
+        let server_pubkey = ServerPubkeyOwned::from_view(&verified.server_pubkey)?;
         Ok(TlsConnection {
             transcript: self.transcript,
             state: ServerFlightDone {
@@ -541,6 +639,7 @@ where
                 s_hs_ts: self.state.s_hs_ts,
                 server_pubkey,
                 _suite: PhantomData,
+                _mode: PhantomData,
             },
             _crypto: PhantomData,
         })
@@ -587,10 +686,11 @@ where
     Ok((record, c_ap_keys, s_ap_keys))
 }
 
-impl<S, H, C> TlsConnection<ServerFlightDone<S>, H, C>
+impl<S, H, C, M> TlsConnection<ServerFlightDone<S, M>, H, C>
 where
     S: CipherSuite,
     H: HkdfSha256,
+    M: HandshakeMode,
 {
     pub fn server_pubkey(&self) -> ServerPubkey<'_> {
         self.state.server_pubkey.as_view()
@@ -605,10 +705,17 @@ where
     pub fn c_hs_traffic_secret(&self) -> &Secret {
         &self.state.c_hs_ts
     }
+}
 
+impl<S, H, C> TlsConnection<ServerFlightDone<S, Live>, H, C>
+where
+    S: CipherSuite,
+    H: HkdfSha256,
+{
     /// Derive the `(c_ap, s_ap)` traffic secrets without transitioning into
     /// AppData. For replay tools that persist secrets across invocations and
-    /// re-enter AppData via [`TlsConnection::from_app_secrets`].
+    /// re-enter AppData via [`TlsConnection::from_app_secrets`]. `Live`-only
+    /// because the replay path's `hs` is zeroed.
     #[cfg(feature = "replay")]
     pub fn derive_app_secrets(&self) -> Result<(Secret, Secret), ConnectionError> {
         let th = self.transcript.snapshot();
@@ -617,10 +724,11 @@ where
     }
 }
 
-impl<H, C> TlsConnection<ServerFlightDone<Aes128GcmSha256>, H, C>
+impl<H, C, M> TlsConnection<ServerFlightDone<Aes128GcmSha256, M>, H, C>
 where
     H: HkdfSha256,
     C: Aes128GcmAead,
+    M: HandshakeMode,
 {
     /// Build the client Finished record into `out_buf` without transitioning.
     /// Skips the `ms` + app-traffic derivation; replay-harness use. Production
@@ -641,10 +749,11 @@ where
 }
 
 #[cfg(feature = "chacha20")]
-impl<H, C> TlsConnection<ServerFlightDone<ChaCha20Poly1305Sha256>, H, C>
+impl<H, C, M> TlsConnection<ServerFlightDone<ChaCha20Poly1305Sha256, M>, H, C>
 where
     H: HkdfSha256,
     C: ChaCha20Poly1305Aead,
+    M: HandshakeMode,
 {
     pub fn build_client_finished<'a>(
         &self,
@@ -670,14 +779,14 @@ where
 // see the constructor.
 
 #[cfg(feature = "replay")]
-impl<H, C> TlsConnection<WaitServerFlight<Aes128GcmSha256>, H, C>
+impl<H, C> TlsConnection<WaitServerFlight<Aes128GcmSha256, Replay>, H, C>
 where
     H: HkdfSha256,
 {
-    /// Enter `WaitServerFlight` with pre-derived secrets + transcript at
-    /// `H(CH‖SH)`. `hs` is zeroed — only `finalize_server_flight` +
-    /// `build_client_finished` are valid; `finish_handshake` produces
-    /// meaningless app keys on a replay connection.
+    /// Enter `WaitServerFlight<S, Replay>` with pre-derived secrets + transcript
+    /// at `H(CH‖SH)`. `hs` is zeroed; lands on `ServerFlightDone<S, Replay>` after
+    /// `finalize_server_flight`, where only `build_client_finished` is in scope —
+    /// `finish_handshake` / `derive_app_secrets` are typestate-unreachable.
     pub fn from_handshake_secrets(
         transcript: TranscriptHash<H>,
         c_hs_ts: Secret,
@@ -692,6 +801,7 @@ where
                 s_hs_ts,
                 s_hs_keys,
                 seq_in: 0,
+                _mode: PhantomData,
             },
             _crypto: PhantomData,
         })
@@ -699,7 +809,7 @@ where
 }
 
 #[cfg(all(feature = "replay", feature = "chacha20"))]
-impl<H, C> TlsConnection<WaitServerFlight<ChaCha20Poly1305Sha256>, H, C>
+impl<H, C> TlsConnection<WaitServerFlight<ChaCha20Poly1305Sha256, Replay>, H, C>
 where
     H: HkdfSha256,
 {
@@ -717,6 +827,7 @@ where
                 s_hs_ts,
                 s_hs_keys,
                 seq_in: 0,
+                _mode: PhantomData,
             },
             _crypto: PhantomData,
         })
@@ -777,13 +888,15 @@ where
     }
 }
 
-impl<H, C> TlsConnection<ServerFlightDone<Aes128GcmSha256>, H, C>
+impl<H, C> TlsConnection<ServerFlightDone<Aes128GcmSha256, Live>, H, C>
 where
     H: HkdfSha256,
     C: Aes128GcmAead,
 {
     /// Build CF into `out_buf` (≥ 58 B), derive `ms` + app-traffic keys,
     /// advance to [`AppData`]. Caller writes the returned record bytes.
+    /// `Live`-only — replay-derived `ServerFlightDone` has a zeroed `hs` and
+    /// would produce meaningless app keys.
     pub fn finish_handshake<'a>(
         self,
         out_buf: &'a mut [u8],
@@ -816,7 +929,7 @@ where
 }
 
 #[cfg(feature = "chacha20")]
-impl<H, C> TlsConnection<ServerFlightDone<ChaCha20Poly1305Sha256>, H, C>
+impl<H, C> TlsConnection<ServerFlightDone<ChaCha20Poly1305Sha256, Live>, H, C>
 where
     H: HkdfSha256,
     C: ChaCha20Poly1305Aead,

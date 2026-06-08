@@ -13,8 +13,8 @@ use krabitls::ChaCha20Poly1305Sha256;
 use krabitls::newtype::Secret;
 use krabitls::reassembler::ServerFlightReassembler;
 use krabitls::{
-    Aes128GcmSha256, DerCert, RustCrypto, ServerPubkey, TlsConnection, TranscriptHash,
-    WaitServerFlight, ZeroBuf,
+    Aes128GcmSha256, CLIENT_FINISHED_LEN, DerCert, Replay, RustCrypto, ServerPubkey, TlsConnection,
+    TranscriptHash, WaitServerFlight, ZeroBuf,
 };
 
 /// Per-record decrypt scratch (RSA-2048 captured flight runs ~6.3 KiB).
@@ -47,18 +47,15 @@ fn for_each_record<E>(
 where
     E: From<()>,
 {
-    let mut pos = 0;
-    while pos < flight_enc.len() {
-        if flight_enc.len() < pos + 5 {
+    let mut rest = flight_enc;
+    while !rest.is_empty() {
+        if rest.len() < 5 {
             return Err(().into());
         }
-        let body_len = u16::from_be_bytes([flight_enc[pos + 3], flight_enc[pos + 4]]) as usize;
-        let end = pos + 5 + body_len;
-        if flight_enc.len() < end {
-            return Err(().into());
-        }
-        feed(&flight_enc[pos..end])?;
-        pos = end;
+        let body_len = u16::from_be_bytes([rest[3], rest[4]]) as usize;
+        let (record, tail) = rest.split_at_checked(5 + body_len).ok_or(().into())?;
+        feed(record)?;
+        rest = tail;
     }
     Ok(())
 }
@@ -119,7 +116,7 @@ pub fn run_aes_ed25519() -> Result<(), ()> {
         transcript.update_record(&SH).map_err(|_| ())?;
 
         let mut conn = <TlsConnection<
-            WaitServerFlight<Aes128GcmSha256>,
+            WaitServerFlight<Aes128GcmSha256, Replay>,
             RustCrypto,
             RustCrypto,
         >>::from_handshake_secrets(
@@ -145,7 +142,7 @@ pub fn run_aes_ed25519() -> Result<(), ()> {
             return Err(());
         }
 
-        let mut cf_out = [0u8; 80];
+        let mut cf_out = [0u8; CLIENT_FINISHED_LEN];
         let record = conn.build_client_finished(&mut cf_out).map_err(|_| ())?;
         if record != &C_FINISHED[..] {
             return Err(());
@@ -181,7 +178,7 @@ mod jedisct_path {
             transcript.update_record(&SH).map_err(|_| ())?;
 
             let mut conn = <TlsConnection<
-                WaitServerFlight<Aes128GcmSha256>,
+                WaitServerFlight<Aes128GcmSha256, Replay>,
                 JedisctCrypto,
                 RustCrypto,
             >>::from_handshake_secrets(
@@ -207,7 +204,7 @@ mod jedisct_path {
                 return Err(());
             }
 
-            let mut cf_out = [0u8; 80];
+            let mut cf_out = [0u8; CLIENT_FINISHED_LEN];
             let record = conn.build_client_finished(&mut cf_out).map_err(|_| ())?;
             if record != &C_FINISHED[..] {
                 return Err(());
@@ -241,7 +238,7 @@ mod chacha_path {
             transcript.update_record(&SH).map_err(|_| ())?;
 
             let mut conn = <TlsConnection<
-                WaitServerFlight<ChaCha20Poly1305Sha256>,
+                WaitServerFlight<ChaCha20Poly1305Sha256, Replay>,
                 RustCrypto,
                 RustCrypto,
             >>::from_handshake_secrets(
@@ -267,7 +264,7 @@ mod chacha_path {
                 return Err(());
             }
 
-            let mut cf_out = [0u8; 80];
+            let mut cf_out = [0u8; CLIENT_FINISHED_LEN];
             let record = conn.build_client_finished(&mut cf_out).map_err(|_| ())?;
             if record != &C_FINISHED[..] {
                 return Err(());
@@ -313,7 +310,7 @@ mod rsa_path {
             transcript.update_record(&SH).map_err(|_| ())?;
 
             let mut conn = <TlsConnection<
-                WaitServerFlight<Aes128GcmSha256>,
+                WaitServerFlight<Aes128GcmSha256, Replay>,
                 RustCrypto,
                 RustCrypto,
             >>::from_handshake_secrets(
@@ -339,7 +336,7 @@ mod rsa_path {
                 return Err(());
             }
 
-            let mut cf_out = [0u8; 80];
+            let mut cf_out = [0u8; CLIENT_FINISHED_LEN];
             let record = conn.build_client_finished(&mut cf_out).map_err(|_| ())?;
             if record != &C_FINISHED[..] {
                 return Err(());

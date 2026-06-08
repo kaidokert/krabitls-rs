@@ -25,7 +25,10 @@ use std::process::ExitCode;
 
 use clap::Parser;
 use krabitls::reassembler::ServerFlightReassembler;
-use krabitls::{Aes128GcmSha256, AppData, DerCert, Init, RustCrypto, TlsConnection, VerifyMode};
+use krabitls::{
+    Aes128GcmSha256, AppData, CLIENT_FINISHED_LEN, DerCert, Init, RustCrypto, TlsConnection,
+    VerifyMode,
+};
 use log::error;
 use sha2::{Digest, Sha256};
 
@@ -215,27 +218,14 @@ fn cmd_conn_negotiate(seed: u64) -> Result<()> {
     let sh_bytes = read_packet(|d, n| d == "s2c" && n.contains("ServerHello"))?;
     let sf_bytes = read_packet(|d, n| d == "s2c" && n.contains("ServerFlight"))?;
 
-    // Recover CH random from the on-disk record so --random mode (where the
-    // random isn't separately persisted) works the same as --seed mode.
-    if ch_bytes.len() < 43 {
-        return Err("on-disk ClientHello too short to extract random".into());
-    }
-    let mut random = [0u8; 32];
-    random.copy_from_slice(&ch_bytes[11..43]);
-    let pub_bytes = ed25519_heapless::x25519_base::<Bn>(&priv_bytes);
-
-    // Drive Init -> WaitServerHello into a discard sink so the transcript
-    // ends up containing the CH bytes (we already have them on disk).
-    let conn = TlsConnection::<Init, RustCrypto, RustCrypto>::new(
-        random,
+    // Feed the captured CH record straight into the transcript instead of
+    // reconstructing it via write_client_hello — bytes the server actually
+    // saw are authoritative; a rebuilt CH risks transcript drift.
+    let conn = TlsConnection::<krabitls::WaitServerHello, RustCrypto, RustCrypto>::from_client_hello_record(
+        &ch_bytes,
         krabitls::ZeroBuf::<32>::new(priv_bytes),
-    );
-    let mut sink = [0u8; krabitls::CLIENT_HELLO_LEN];
-    let conn = {
-        let mut cursor: &mut [u8] = &mut sink;
-        conn.write_client_hello(&mut cursor, &pub_bytes, None)
-            .map_err(|e| format!("write_client_hello: {e:?}"))?
-    };
+    )
+    .map_err(|e| format!("from_client_hello_record: {e:?}"))?;
 
     let conn = conn
         .read_server_hello(&sh_bytes)
@@ -262,7 +252,7 @@ fn cmd_conn_negotiate(seed: u64) -> Result<()> {
         .map_err(|e| format!("derive_app_secrets: {e:?}"))?;
     write_session_state(&c_ap_ts, &s_ap_ts)?;
 
-    let mut cf_buf = [0u8; 80];
+    let mut cf_buf = [0u8; CLIENT_FINISHED_LEN];
     let cf_record = conn
         .build_client_finished(&mut cf_buf)
         .map_err(|e| format!("build_client_finished: {e:?}"))?;
@@ -378,23 +368,11 @@ fn renegotiate_app_secrets(
     let sh_bytes = read_packet(|d, n| d == "s2c" && n.contains("ServerHello"))?;
     let sf_bytes = read_packet(|d, n| d == "s2c" && n.contains("ServerFlight"))?;
 
-    if ch_bytes.len() < 43 {
-        return Err("on-disk ClientHello too short to extract random".into());
-    }
-    let mut random = [0u8; 32];
-    random.copy_from_slice(&ch_bytes[11..43]);
-    let pub_bytes = ed25519_heapless::x25519_base::<Bn>(priv_bytes);
-
-    let conn = TlsConnection::<Init, RustCrypto, RustCrypto>::new(
-        random,
+    let conn = TlsConnection::<krabitls::WaitServerHello, RustCrypto, RustCrypto>::from_client_hello_record(
+        &ch_bytes,
         krabitls::ZeroBuf::<32>::new(*priv_bytes),
-    );
-    let mut sink = [0u8; krabitls::CLIENT_HELLO_LEN];
-    let conn = {
-        let mut cursor: &mut [u8] = &mut sink;
-        conn.write_client_hello(&mut cursor, &pub_bytes, None)
-            .map_err(|e| format!("write_client_hello: {e:?}"))?
-    };
+    )
+    .map_err(|e| format!("from_client_hello_record: {e:?}"))?;
     let conn = conn
         .read_server_hello(&sh_bytes)
         .map_err(|e| format!("read_server_hello: {e:?}"))?

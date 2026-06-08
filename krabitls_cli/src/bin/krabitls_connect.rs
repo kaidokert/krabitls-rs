@@ -245,6 +245,11 @@ fn inspect_cert(
         verify_pinned_pubkey(&cert_view, &p.as_pinned())
             .map_err(krabitls_err("verify_pinned_pubkey"))?;
         info!("pinned pubkey matches");
+    } else {
+        log::warn!(
+            "no --pin supplied: server identity is unauthenticated (SAN match alone is MITM-vulnerable). \
+             Pass --pin <HEX> with the expected SPKI bytes to bind trust."
+        );
     }
     {
         use krabitls::identity::verify_validity;
