@@ -27,8 +27,8 @@ use krabitls::consts::CIPHER_CHACHA20_POLY1305_SHA256;
 use krabitls::consts::{CIPHER_AES_128_GCM_SHA256, CT_APPLICATION_DATA, CT_HANDSHAKE};
 use krabitls::reassembler::ServerFlightReassembler;
 use krabitls::{
-    Aes128GcmSha256, CertParser, CertView, DerCert, FlightStep, Init, NegotiatedSuite, RustCrypto,
-    TlsConnection, ZeroBuf, extract_cert_der, parse_server_flight,
+    Aes128GcmSha256, CLIENT_FINISHED_LEN, CertParser, CertView, DerCert, FlightStep, Init,
+    NegotiatedSuite, RustCrypto, TlsConnection, ZeroBuf, extract_cert_der, parse_server_flight,
 };
 use log::{debug, error, info, warn};
 
@@ -376,7 +376,7 @@ fn run(host: &str, port: u16, capture_dir: Option<&str>, pin: Option<&Pin>) -> R
             if let Some(dir) = capture_dir {
                 // Capture path: only need CH/SH/flight + hs secrets + CF bytes,
                 // so build CF without advancing into AppData.
-                let mut cf_buf = [0u8; 80];
+                let mut cf_buf = [0u8; CLIENT_FINISHED_LEN];
                 let cf_record = conn
                     .build_client_finished(&mut cf_buf)
                     .map_err(krabitls_err("build_client_finished"))?;
@@ -395,7 +395,7 @@ fn run(host: &str, port: u16, capture_dir: Option<&str>, pin: Option<&Pin>) -> R
             }
 
             // Live path: finish_handshake + write CF + drive app data.
-            let mut cf_buf = [0u8; 80];
+            let mut cf_buf = [0u8; CLIENT_FINISHED_LEN];
             let (cf_record, mut conn) = conn
                 .finish_handshake(&mut cf_buf)
                 .map_err(krabitls_err("finish_handshake"))?;
@@ -444,7 +444,7 @@ fn run(host: &str, port: u16, capture_dir: Option<&str>, pin: Option<&Pin>) -> R
             inspect_cert(&reassembler, host, pin)?;
 
             if let Some(dir) = capture_dir {
-                let mut cf_buf = [0u8; 80];
+                let mut cf_buf = [0u8; CLIENT_FINISHED_LEN];
                 let cf_record = conn
                     .build_client_finished(&mut cf_buf)
                     .map_err(krabitls_err("build_client_finished"))?;
@@ -462,7 +462,7 @@ fn run(host: &str, port: u16, capture_dir: Option<&str>, pin: Option<&Pin>) -> R
                 return Ok(());
             }
 
-            let mut cf_buf = [0u8; 80];
+            let mut cf_buf = [0u8; CLIENT_FINISHED_LEN];
             let (cf_record, mut conn) = conn
                 .finish_handshake(&mut cf_buf)
                 .map_err(krabitls_err("finish_handshake"))?;

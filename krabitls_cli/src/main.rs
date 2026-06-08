@@ -245,12 +245,11 @@ fn cmd_conn_negotiate(seed: u64) -> Result<()> {
         )
         .map_err(|e| format!("finalize_server_flight: {e:?}"))?;
 
-    // Persist app-traffic secrets before transitioning so --send / --receive
-    // can re-enter AppData via from_app_secrets without re-derivation.
+    // Derive now; persist after CF is on disk so a partial-failure handshake
+    // doesn't leave session.bin pointing at a peer that never saw CF.
     let (c_ap_ts, s_ap_ts) = conn
         .derive_app_secrets()
         .map_err(|e| format!("derive_app_secrets: {e:?}"))?;
-    write_session_state(&c_ap_ts, &s_ap_ts)?;
 
     let mut cf_buf = [0u8; CLIENT_FINISHED_LEN];
     let cf_record = conn
@@ -260,6 +259,7 @@ fn cmd_conn_negotiate(seed: u64) -> Result<()> {
     let seq = next_packet_seq()?;
     let path = packet_path(seq, "c2s", "ClientFinished_encrypted");
     fs::write(&path, cf_record)?;
+    write_session_state(&c_ap_ts, &s_ap_ts)?;
     println!("wrote {} (handshake complete)", path.display());
     Ok(())
 }
@@ -443,6 +443,10 @@ fn read_packet<F>(matches: F) -> Result<Vec<u8>>
 where
     F: Fn(&str, &str) -> bool,
 {
+    // Pick the highest-sequence match. With multiple captured handshakes in
+    // packets/, returning the first hit could splice CH/SH/SF across sessions
+    // and break transcript / secret derivation.
+    let mut best: Option<(u32, PathBuf)> = None;
     for entry in fs::read_dir(PACKETS_DIR)? {
         let entry = entry?;
         let name = entry.file_name();
@@ -455,13 +459,20 @@ where
         if parts.len() < 3 {
             continue;
         }
+        let seq: u32 = match parts[0].parse() {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
         let direction = parts[1];
         let rest = parts[2].trim_end_matches(".bin");
-        if matches(direction, rest) {
-            return Ok(fs::read(entry.path())?);
+        if matches(direction, rest) && best.as_ref().is_none_or(|(s, _)| seq > *s) {
+            best = Some((seq, entry.path()));
         }
     }
-    Err("no matching packet in packets/".into())
+    match best {
+        Some((_, path)) => Ok(fs::read(path)?),
+        None => Err("no matching packet in packets/".into()),
+    }
 }
 
 fn next_packet_seq() -> Result<u32> {

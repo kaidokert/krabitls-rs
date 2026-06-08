@@ -134,9 +134,10 @@ impl<E: core::fmt::Display> core::fmt::Display for ConnectionError<E> {
     }
 }
 
-impl<E: core::fmt::Debug + core::fmt::Display> core::error::Error for ConnectionError<E> {
+impl<E: core::error::Error + 'static> core::error::Error for ConnectionError<E> {
     fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
+            Self::ClientHello(e) => Some(e),
             Self::Parse(e) => Some(e),
             Self::Hkdf(e) => Some(e),
             Self::Flight(e) => Some(e),
@@ -145,7 +146,7 @@ impl<E: core::fmt::Debug + core::fmt::Display> core::error::Error for Connection
             Self::Transcript(e) => Some(e),
             Self::Reassembly(e) => Some(e),
             Self::ClientFinished(e) => Some(e),
-            Self::ClientHello(_) | Self::WrongSuite { .. } | Self::IncompleteFlight => None,
+            Self::WrongSuite { .. } | Self::IncompleteFlight => None,
         }
     }
 }
