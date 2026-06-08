@@ -45,6 +45,8 @@ pub use server_flight::{
 };
 #[cfg(feature = "chacha20")]
 pub use traits::ChaCha20Poly1305Aead;
+#[cfg(feature = "rsa")]
+pub use traits::RsaCertSigAlg;
 pub use traits::{
     AeadError, Aes128GcmAead, CertParseError, CertParser, CertView, Ed25519Verify, HkdfExpandError,
     HkdfSha256, Sha256Hasher,
@@ -2155,7 +2157,9 @@ mod tests {
         assert_eq!(leaf, &[1, 2, 3, 4, 5]);
     }
 
-    #[cfg(feature = "rsa")]
+    // Seed-0 RSA fixture cert is PKCS#1-v1.5-signed; rsa_pss_only rejects
+    // that OID at parse time, so the fixture tests don't apply there.
+    #[cfg(all(feature = "rsa", not(feature = "rsa_pss_only")))]
     mod rsa_tests {
         use super::*;
 

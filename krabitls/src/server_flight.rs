@@ -308,19 +308,36 @@ pub fn verify_self_signed_cert_with_cache<E: Ed25519Verify>(
         CertView::Rsa {
             tbs,
             signature,
+            outer_sig_alg,
             modulus,
             exponent,
             ..
         } => {
-            // Reuse cached RSA precomputation when the caller supplied it.
+            use crate::traits::cert::RsaCertSigAlg;
             if let Some(rk) = rsa_cache {
-                rk.verify_pkcs1v15_sha256(tbs, signature)
-                    .map_err(|_| FlightError::CertSelfSignatureInvalid)?;
+                match outer_sig_alg {
+                    #[cfg(not(feature = "rsa_pss_only"))]
+                    RsaCertSigAlg::Pkcs1v15Sha256 => rk
+                        .verify_pkcs1v15_sha256(tbs, signature)
+                        .map_err(|_| FlightError::CertSelfSignatureInvalid)?,
+                    RsaCertSigAlg::PssSha256 => rk
+                        .verify_pss_sha256(tbs, signature)
+                        .map_err(|_| FlightError::CertSelfSignatureInvalid)?,
+                }
             } else {
-                crate::backends::rsa_verify::verify_pkcs1v15_sha256(
-                    modulus, *exponent, tbs, signature,
-                )
-                .map_err(|_| FlightError::CertSelfSignatureInvalid)?;
+                match outer_sig_alg {
+                    #[cfg(not(feature = "rsa_pss_only"))]
+                    RsaCertSigAlg::Pkcs1v15Sha256 => {
+                        crate::backends::rsa_verify::verify_pkcs1v15_sha256(
+                            modulus, *exponent, tbs, signature,
+                        )
+                        .map_err(|_| FlightError::CertSelfSignatureInvalid)?
+                    }
+                    RsaCertSigAlg::PssSha256 => crate::backends::rsa_verify::verify_pss_sha256(
+                        modulus, *exponent, tbs, signature,
+                    )
+                    .map_err(|_| FlightError::CertSelfSignatureInvalid)?,
+                }
             }
         }
     }

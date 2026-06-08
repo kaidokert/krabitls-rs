@@ -28,6 +28,8 @@ pub mod time;
 #[cfg(feature = "chacha20")]
 pub use aead::ChaCha20Poly1305Aead;
 pub use aead::{AeadError, Aes128GcmAead};
+#[cfg(feature = "rsa")]
+pub use cert::RsaCertSigAlg;
 pub use cert::{CertParseError, CertParser, CertView};
 pub use ed25519_verify::Ed25519Verify;
 pub use hkdf::{HkdfExpandError, HkdfSha256, Sha256Hasher};

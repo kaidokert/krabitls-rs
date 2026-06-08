@@ -27,8 +27,11 @@ pub enum CertView<'a> {
     Rsa {
         /// TBSCertificate bytes the cert's signature was computed over.
         tbs: &'a [u8],
-        /// PKCS#1-v1.5 RSA signature bytes (size equals the RSA modulus).
+        /// RSA signature bytes (size equals the RSA modulus); padding/hash
+        /// scheme identified by `outer_sig_alg`.
         signature: &'a [u8],
+        /// Padding scheme used to sign `tbs`.
+        outer_sig_alg: RsaCertSigAlg,
         /// RSA modulus, big-endian. Length is the RSA key size in bytes:
         /// 128 for RSA-1024, 256 for RSA-2048, etc.
         modulus: &'a [u8],
@@ -40,6 +43,21 @@ pub enum CertView<'a> {
         /// Validity-SEQUENCE DER bytes; same as the Ed25519 variant.
         validity_der: &'a [u8],
     },
+}
+
+/// RSA cert outer-signature padding scheme. Only sha256-based variants are
+/// recognized; krabitls doesn't advertise other hashes.
+#[cfg(feature = "rsa")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RsaCertSigAlg {
+    /// `sha256WithRSAEncryption` (PKCS#1-v1.5, OID 1.2.840.113549.1.1.11).
+    /// Compiled out under `feature = "rsa_pss_only"` — that build accepts
+    /// PSS-signed cert outer sigs only.
+    #[cfg(not(feature = "rsa_pss_only"))]
+    Pkcs1v15Sha256,
+    /// `rsassa-pss` with SHA-256 + MGF1-SHA-256 + 32-byte salt
+    /// (OID 1.2.840.113549.1.1.10).
+    PssSha256,
 }
 
 impl<'a> CertView<'a> {

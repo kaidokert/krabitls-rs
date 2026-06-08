@@ -38,6 +38,8 @@ use sha2_v11::{Digest, Sha256};
 pub struct RsaVerifyError;
 
 /// 1024-bit RSA modulus carrier — `FixedUInt<u32, 32>` = 32 × 32 bits.
+/// Compiled out under `feature = "rsa_2048_only"`.
+#[cfg(not(feature = "rsa_2048_only"))]
 type U1024 = FixedUInt<u32, 32>;
 /// 2048-bit RSA modulus carrier — `FixedUInt<u32, 64>` = 64 × 32 bits.
 type U2048 = FixedUInt<u32, 64>;
@@ -62,7 +64,8 @@ type U2048 = FixedUInt<u32, 64>;
 // no_alloc: keep the large variant inline rather than boxing it.
 #[allow(clippy::large_enum_variant)]
 pub enum RsaVerifierKey {
-    /// 1024-bit RSA key.
+    /// 1024-bit RSA key. Compiled out under `feature = "rsa_2048_only"`.
+    #[cfg(not(feature = "rsa_2048_only"))]
     U1024(VkPair<U1024>),
     /// 2048-bit RSA key.
     U2048(VkPair<U2048>),
@@ -83,6 +86,7 @@ impl RsaVerifierKey {
     /// Build cached verifying keys for one RSA public key.
     pub fn new(modulus: &[u8], exponent: u32) -> Result<Self, RsaVerifyError> {
         match modulus.len() {
+            #[cfg(not(feature = "rsa_2048_only"))]
             128 => Ok(RsaVerifierKey::U1024(build_vk_pair::<U1024>(
                 modulus, exponent,
             )?)),
@@ -101,6 +105,7 @@ impl RsaVerifierKey {
     ) -> Result<(), RsaVerifyError> {
         let prehash = Sha256::digest(message);
         match self {
+            #[cfg(not(feature = "rsa_2048_only"))]
             RsaVerifierKey::U1024(vks) => {
                 if signature.len() != 128 {
                     return Err(RsaVerifyError);
@@ -131,6 +136,7 @@ impl RsaVerifierKey {
     ) -> Result<(), RsaVerifyError> {
         let prehash = Sha256::digest(message);
         match self {
+            #[cfg(not(feature = "rsa_2048_only"))]
             RsaVerifierKey::U1024(vks) => {
                 if signature.len() != 128 {
                     return Err(RsaVerifyError);
@@ -177,6 +183,7 @@ pub fn verify_pkcs1v15_sha256(
     }
     let prehash = Sha256::digest(message);
     match modulus.len() {
+        #[cfg(not(feature = "rsa_2048_only"))]
         128 => verify_pkcs1v15_1024(modulus, exponent, &prehash, signature),
         256 => verify_pkcs1v15_2048(modulus, exponent, &prehash, signature),
         _ => Err(RsaVerifyError),
@@ -197,12 +204,14 @@ pub fn verify_pss_sha256(
     }
     let prehash = Sha256::digest(message);
     match modulus.len() {
+        #[cfg(not(feature = "rsa_2048_only"))]
         128 => verify_pss_1024(modulus, exponent, &prehash, signature),
         256 => verify_pss_2048(modulus, exponent, &prehash, signature),
         _ => Err(RsaVerifyError),
     }
 }
 
+#[cfg(not(feature = "rsa_2048_only"))]
 fn verify_pkcs1v15_1024(
     modulus: &[u8],
     exponent: u32,
@@ -227,6 +236,7 @@ fn verify_pkcs1v15_2048(
     vk.verify_prehash(prehash, &sig).map_err(|_| RsaVerifyError)
 }
 
+#[cfg(not(feature = "rsa_2048_only"))]
 fn verify_pss_1024(
     modulus: &[u8],
     exponent: u32,

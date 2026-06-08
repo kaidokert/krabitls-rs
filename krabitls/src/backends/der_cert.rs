@@ -3,6 +3,8 @@
 use der::asn1::{AnyRef, BitStringRef, ObjectIdentifier};
 use der::{Decode, Reader, SliceReader, Tag, TagNumber};
 
+#[cfg(feature = "rsa")]
+use crate::traits::cert::RsaCertSigAlg;
 use crate::traits::cert::{CertParseError, CertParser, CertView};
 
 /// Marker type for the `der`-crate-backed [`CertParser`].
@@ -12,6 +14,10 @@ const ED25519_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.101.112"
 
 #[cfg(feature = "rsa")]
 const RSA_ENCRYPTION_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.1");
+#[cfg(all(feature = "rsa", not(feature = "rsa_pss_only")))]
+const SHA256_WITH_RSA_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.11");
+#[cfg(feature = "rsa")]
+const RSASSA_PSS_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.10");
 
 const SAN_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.5.29.17");
 
@@ -141,18 +147,15 @@ impl CertParser for DerCert {
             #[cfg(feature = "rsa")]
             SpkiKind::Rsa => {
                 let (modulus, exponent) = parse_rsa_pubkey(pk_bytes)?;
-                // No `signature.len() == modulus.len()` check here: that
-                // equality only holds for self-signed certs. A CA-issued
-                // leaf cert has an outer signature produced by the
-                // *issuer*'s key (possibly a different size, or even
-                // ECDSA), so rejecting on mismatch at parse time would
-                // block legitimate chains. The self-sig verifier
-                // (`verify_self_signed_cert_with_cache`) enforces
-                // signature.len() == modulus.len() via `rsa_verify`'s
-                // length guard.
+                // Classify the outer sig alg so verify can pick PKCS#1-v1.5
+                // vs PSS. Unknown OIDs surface here, not at verify time.
+                // (No `signature.len() == modulus.len()` check: that
+                // equality only holds for self-signed certs.)
+                let outer_sig_alg = classify_rsa_outer_sig_alg(outer_sig_alg_bytes)?;
                 Ok(CertView::Rsa {
                     tbs: tbs_bytes,
                     signature: sig_bytes,
+                    outer_sig_alg,
                     modulus,
                     exponent,
                     san: san_bytes,
@@ -268,6 +271,31 @@ fn classify_spki_algorithm(alg_id_bytes: &[u8]) -> Result<SpkiKind, CertParseErr
     Err(CertParseError::WrongAlgorithmOid)
 }
 
+/// Classify a `Certificate.signatureAlgorithm` AlgorithmIdentifier as one
+/// of the RSA padding schemes we accept on cert outer signatures. Only the
+/// OID is checked; PSS parameters are not introspected — `verify_pss_sha256`
+/// hard-codes the SHA-256 + MGF1-SHA-256 + 32-byte-salt shape and rejects
+/// anything else at verify time.
+#[cfg(feature = "rsa")]
+fn classify_rsa_outer_sig_alg(alg_id_bytes: &[u8]) -> Result<RsaCertSigAlg, CertParseError> {
+    let map_err = |_| CertParseError::Malformed;
+    let any = AnyRef::try_from(alg_id_bytes).map_err(map_err)?;
+    if any.header().tag() != Tag::Sequence {
+        return Err(CertParseError::Malformed);
+    }
+    let mut r = SliceReader::new(any.value()).map_err(map_err)?;
+    let oid = ObjectIdentifier::decode(&mut r).map_err(map_err)?;
+    #[cfg(not(feature = "rsa_pss_only"))]
+    if oid == SHA256_WITH_RSA_OID {
+        return Ok(RsaCertSigAlg::Pkcs1v15Sha256);
+    }
+    if oid == RSASSA_PSS_OID {
+        Ok(RsaCertSigAlg::PssSha256)
+    } else {
+        Err(CertParseError::WrongAlgorithmOid)
+    }
+}
+
 /// Helper for the RSA `rsaEncryption` SPKI path: require an *explicit* NULL
 /// TLV (`05 00`) per RFC 3279 §2.3.1, then the reader must be exhausted.
 /// Absent parameters, non-NULL parameters, and trailing bytes all reject
@@ -317,10 +345,14 @@ fn parse_rsa_pubkey(bit_string: &[u8]) -> Result<(&[u8], u32), CertParseError> {
     if modulus.is_empty() || modulus[0] == 0 {
         return Err(CertParseError::BadRsaPubkey);
     }
-    // Only support 1024-bit (128 B) and 2048-bit (256 B) moduli for now;
-    // refuse anything else so the runtime dispatch in `rsa_verify::*` stays
-    // mechanical.
-    if modulus.len() != 128 && modulus.len() != 256 {
+    // Only 1024-bit (128 B) and 2048-bit (256 B) moduli are supported.
+    // Under `rsa_2048_only` reject 128 too so LTO can drop the U1024
+    // monomorphizations from rsa_verify::*.
+    #[cfg(not(feature = "rsa_2048_only"))]
+    let modulus_ok = modulus.len() == 128 || modulus.len() == 256;
+    #[cfg(feature = "rsa_2048_only")]
+    let modulus_ok = modulus.len() == 256;
+    if !modulus_ok {
         return Err(CertParseError::UnsupportedRsaKeySize);
     }
 
