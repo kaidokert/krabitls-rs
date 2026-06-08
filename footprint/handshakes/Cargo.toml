@@ -12,11 +12,14 @@ edition = "2024"
 # Optional ChaCha20-Poly1305 + RSA-PSS variants follow the krabitls feature
 # wiring so each target crate can include or exclude them.
 chacha20 = ["krabitls/chacha20"]
-rsa = ["krabitls/rsa"]
+# Footprint replays a PSS-signed RSA-2048 captured cert; enable both
+# rsa_pss_only (drops PKCS#1-v1.5) and rsa_2048_only (drops U1024) so LTO
+# strips the unreachable paths from the M3/RV measurement.
+rsa = ["krabitls/rsa", "krabitls/rsa_pss_only", "krabitls/rsa_2048_only"]
 jedisct = ["krabitls/jedisct"]
 
 [dependencies]
-krabitls = { path = "../../krabitls", features = ["dev-utils"] }
+krabitls = { path = "../../krabitls", features = ["dev-utils", "replay"] }
 critical-section = "1"
 
 [lints.rust]

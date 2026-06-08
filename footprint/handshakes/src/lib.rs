@@ -85,7 +85,7 @@ mod fixture_aes_rsa2048 {
         krabitls::hex_decode(include_str!("../../captured/aes_rsa2048/s_hs_ts.hex"));
     pub const C_HS_TS: [u8; 32] =
         krabitls::hex_decode(include_str!("../../captured/aes_rsa2048/c_hs_ts.hex"));
-    pub const FLIGHT_ENC: [u8; 1234] =
+    pub const FLIGHT_ENC: [u8; 1336] =
         krabitls::hex_decode(include_str!("../../captured/aes_rsa2048/flight_enc.hex"));
     pub const C_FINISHED: [u8; 58] =
         krabitls::hex_decode(include_str!("../../captured/aes_rsa2048/c_finished.hex"));
