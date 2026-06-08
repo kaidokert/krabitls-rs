@@ -17,7 +17,6 @@ pub mod reassembler;
 pub mod server_flight;
 pub mod traits;
 
-#[cfg(feature = "chacha20")]
 // Public surface — typestate API + the trait/backend/error types it
 // surfaces. The sans-io free functions, RecordKeys, and the verify-chain
 // helpers are pub(crate) at their source modules; reach them through
@@ -38,15 +37,20 @@ pub use connection::{
 pub use hkdf::{HkdfLabelError, TranscriptError, TranscriptHash};
 // Lib-test convenience re-exports — internal helpers reachable via `crate::foo`
 // inside the in-crate tests module. External callers go through TlsConnection.
+// `unused_imports` allowed because not every feature combo exercises every test helper.
 #[cfg(test)]
+#[allow(unused_imports)]
 pub(crate) use aead::{
     RecordKeys, aead_nonce, decrypt_record, encrypt_record, split_inner_plaintext,
 };
 #[cfg(all(test, feature = "chacha20"))]
+#[allow(unused_imports)]
 pub(crate) use aead::{decrypt_record_chacha, encrypt_record_chacha};
 #[cfg(all(test, feature = "chacha20"))]
+#[allow(unused_imports)]
 pub(crate) use hkdf::traffic_keys_chacha;
 #[cfg(test)]
+#[allow(unused_imports)]
 pub(crate) use hkdf::{
     EMPTY_TRANSCRIPT_HASH, application_traffic_secrets, derive_secret, early_secret, finished_mac,
     handshake_secret, handshake_traffic_secrets, hkdf_expand_label, master_secret, traffic_keys,
@@ -57,6 +61,7 @@ pub use identity::{ValidityError, verify_validity};
 pub use newtype::AeadKey32;
 pub use newtype::{AeadIv, AeadKey, Secret, TranscriptDigest, ZeroBuf};
 #[cfg(test)]
+#[allow(unused_imports)]
 pub(crate) use server_flight::{
     ServerFlightVerified, verify_certificate_verify, verify_certificate_verify_with_cache,
     verify_self_signed_cert, verify_self_signed_cert_with_cache, verify_server_finished,
