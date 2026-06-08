@@ -1025,7 +1025,7 @@ mod tests {
     /// Drive the connection through `Init -> WaitServerHello ->
     /// NegotiatedSuite` and verify we land on the AES variant under the
     /// default-features build (where the SH negotiates AES-128-GCM).
-    #[cfg(not(feature = "chacha20"))]
+    #[cfg(all(not(feature = "chacha20"), not(feature = "rsa")))]
     #[test]
     fn read_server_hello_lands_on_aes_variant() {
         let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
@@ -1063,7 +1063,7 @@ mod tests {
     /// End-to-end smoke test through `WaitServerFlight`: feed the captured
     /// packet 003 into the reassembler, finalize, and check that the
     /// extracted server pubkey matches the cert in the fixture.
-    #[cfg(not(feature = "chacha20"))]
+    #[cfg(all(not(feature = "chacha20"), not(feature = "rsa")))]
     #[test]
     fn feed_server_record_and_finalize_smoke() {
         use crate::backends::DerCert;
@@ -1105,7 +1105,7 @@ mod tests {
 
     /// `finalize_server_flight` must reject an empty reassembler with the
     /// `IncompleteFlight` sentinel rather than wandering into the verifier.
-    #[cfg(not(feature = "chacha20"))]
+    #[cfg(all(not(feature = "chacha20"), not(feature = "rsa")))]
     #[test]
     fn finalize_without_flight_is_incomplete() {
         use crate::backends::DerCert;
@@ -1138,7 +1138,7 @@ mod tests {
 
     /// CCS records must be dropped without bumping `seq_in` so the next
     /// real AEAD record decrypts under sequence 0.
-    #[cfg(not(feature = "chacha20"))]
+    #[cfg(all(not(feature = "chacha20"), not(feature = "rsa")))]
     #[test]
     fn feed_server_record_skips_ccs_without_bumping_seq() {
         use crate::reassembler::ServerFlightReassembler;
@@ -1197,7 +1197,7 @@ mod tests {
     /// Drive the typestate through `Init → AppData` and assert that
     /// `finish_handshake` lays down the exact byte sequence the
     /// Python fixture captured in `packets/004_c2s_ClientFinished_encrypted.hex`.
-    #[cfg(not(feature = "chacha20"))]
+    #[cfg(all(not(feature = "chacha20"), not(feature = "rsa")))]
     #[test]
     fn finish_handshake_byte_identical_client_finished() {
         use crate::backends::DerCert;
@@ -1235,7 +1235,7 @@ mod tests {
     /// Full pipeline through `AppData::encrypt_record`: the same plaintext
     /// the Python seed-0 cli.py sent encrypts to the same bytes captured
     /// in `packets/005`.
-    #[cfg(not(feature = "chacha20"))]
+    #[cfg(all(not(feature = "chacha20"), not(feature = "rsa")))]
     #[test]
     fn app_data_encrypt_record_byte_identical_packet_5() {
         use crate::backends::DerCert;
@@ -1281,7 +1281,7 @@ mod tests {
     /// Full pipeline through `AppData::decrypt_record`: the captured
     /// server reply in `packets/006` round-trips back to the original
     /// plaintext.
-    #[cfg(not(feature = "chacha20"))]
+    #[cfg(all(not(feature = "chacha20"), not(feature = "rsa")))]
     #[test]
     fn app_data_decrypt_record_round_trips_packet_6() {
         use crate::backends::DerCert;
@@ -1327,7 +1327,7 @@ mod tests {
 
     /// `close_notify` encrypts the standard `[0x01, 0x00]` alert under
     /// the next outbound sequence and consumes the connection.
-    #[cfg(not(feature = "chacha20"))]
+    #[cfg(all(not(feature = "chacha20"), not(feature = "rsa")))]
     #[test]
     fn close_notify_emits_encrypted_alert_record() {
         use crate::backends::DerCert;
@@ -1373,7 +1373,7 @@ mod tests {
 
     /// Verify that `assume_aes_128_gcm` succeeds when the suite really
     /// is AES — embedded callers use this to skip the runtime enum.
-    #[cfg(not(feature = "chacha20"))]
+    #[cfg(all(not(feature = "chacha20"), not(feature = "rsa")))]
     #[test]
     fn assume_aes_succeeds_for_aes_handshake() {
         let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
