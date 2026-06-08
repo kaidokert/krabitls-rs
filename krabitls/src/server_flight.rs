@@ -272,8 +272,9 @@ fn read_u24(b: &[u8]) -> u32 {
     ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | (b[2] as u32)
 }
 
-/// Verify a self-signed certificate and return its parsed view.
-pub fn verify_self_signed_cert<C: CertParser, E: Ed25519Verify>(
+/// Parse + verify a self-signed cert in one shot. Test-only helper.
+#[cfg(test)]
+pub(crate) fn verify_self_signed_cert<C: CertParser, E: Ed25519Verify>(
     cert_der: &[u8],
 ) -> Result<CertView<'_>, FlightError> {
     let cache = E::new_cache();
@@ -287,8 +288,8 @@ pub fn verify_self_signed_cert<C: CertParser, E: Ed25519Verify>(
     Ok(view)
 }
 
-/// Cached variant of [`verify_self_signed_cert`].
-pub fn verify_self_signed_cert_with_cache<E: Ed25519Verify>(
+/// Verify the cert's outer self-signature against its own pubkey.
+pub(crate) fn verify_self_signed_cert_with_cache<E: Ed25519Verify>(
     cache: &E::Cache,
     view: &CertView<'_>,
     #[cfg(feature = "rsa")] rsa_cache: Option<&crate::backends::rsa_verify::RsaVerifierKey>,
@@ -349,7 +350,9 @@ pub fn verify_self_signed_cert_with_cache<E: Ed25519Verify>(
 }
 
 /// Verify a `CertificateVerify` body against the transcript hash and public key.
-pub fn verify_certificate_verify<E: Ed25519Verify>(
+/// Non-cached CertificateVerify wrapper. Test-only.
+#[cfg(test)]
+pub(crate) fn verify_certificate_verify<E: Ed25519Verify>(
     cert_view: &CertView<'_>,
     transcript_hash_ch_through_cert: &TranscriptDigest,
     cv_body: &[u8],
@@ -365,8 +368,7 @@ pub fn verify_certificate_verify<E: Ed25519Verify>(
     )
 }
 
-/// Cached variant of [`verify_certificate_verify`].
-pub fn verify_certificate_verify_with_cache<E: Ed25519Verify>(
+pub(crate) fn verify_certificate_verify_with_cache<E: Ed25519Verify>(
     cache: &E::Cache,
     cert_view: &CertView<'_>,
     transcript_hash_ch_through_cert: &TranscriptDigest,
@@ -429,7 +431,7 @@ pub fn verify_certificate_verify_with_cache<E: Ed25519Verify>(
 }
 
 /// Verify a server `Finished` body.
-pub fn verify_server_finished<H: HkdfSha256>(
+pub(crate) fn verify_server_finished<H: HkdfSha256>(
     s_hs_traffic_secret: &Secret,
     transcript_hash_ch_through_cv: &TranscriptDigest,
     finished_body: &[u8],
@@ -494,15 +496,21 @@ impl<'a> ServerPubkey<'a> {
 
 /// End-to-end result of `verify_server_flight`.
 #[derive(Debug, Clone, Copy)]
-pub struct ServerFlightVerified<'a> {
+pub(crate) struct ServerFlightVerified<'a> {
     pub server_pubkey: ServerPubkey<'a>,
 }
 
 /// Verify the server flight and advance the caller's transcript.
-pub fn verify_server_flight<'a, H: HkdfSha256, C: CertParser, E: Ed25519Verify>(
+///
+/// `verify_cert_self_sig` controls whether the cert's outer signature is
+/// checked against its own pubkey. `true` for self-signed certs (controlled
+/// peers, captured fixtures); `false` for CA-issued certs where the caller
+/// establishes trust some other way (pin / SAN / out-of-band).
+pub(crate) fn verify_server_flight<'a, H: HkdfSha256, C: CertParser, E: Ed25519Verify>(
     transcript: &mut TranscriptHash<H>,
     plaintext: &'a [u8],
     s_hs_traffic_secret: &Secret,
+    verify_cert_self_sig: bool,
 ) -> Result<ServerFlightVerified<'a>, FlightError> {
     let flight = parse_server_flight(plaintext)?;
 
@@ -524,12 +532,14 @@ pub fn verify_server_flight<'a, H: HkdfSha256, C: CertParser, E: Ed25519Verify>(
         _ => None,
     };
 
-    verify_self_signed_cert_with_cache::<E>(
-        &ed_cache,
-        &cert_view,
-        #[cfg(feature = "rsa")]
-        rsa_cache.as_ref(),
-    )?;
+    if verify_cert_self_sig {
+        verify_self_signed_cert_with_cache::<E>(
+            &ed_cache,
+            &cert_view,
+            #[cfg(feature = "rsa")]
+            rsa_cache.as_ref(),
+        )?;
+    }
 
     transcript.update(flight.ee_full);
     transcript.update(flight.cert_full);

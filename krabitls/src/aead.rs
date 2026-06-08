@@ -21,7 +21,7 @@ use crate::traits::ChaCha20Poly1305Aead;
 /// `IV XOR seq_be`; the seq is a public counter, so leaking the nonce
 /// is equivalent to leaking the secret IV. Same hygiene level as
 /// [`AeadIv`] itself.
-pub fn aead_nonce(iv: &AeadIv, seq: u64) -> ZeroBuf<12> {
+pub(crate) fn aead_nonce(iv: &AeadIv, seq: u64) -> ZeroBuf<12> {
     let seq_be = seq.to_be_bytes(); // 8 bytes
     let mut nonce = ZeroBuf::<12>::new(*iv.as_bytes());
     // XOR seq into the low 8 bytes of the IV (high 4 bytes untouched).
@@ -152,7 +152,7 @@ where
 /// The post-loop bounds and emptiness checks branch on the final
 /// content_type-position, but that value is the public protocol-level
 /// outcome (record-too-large / empty-record), not the padding length.
-pub fn split_inner_plaintext(inner: &[u8]) -> Result<(&[u8], u8), DecryptError> {
+pub(crate) fn split_inner_plaintext(inner: &[u8]) -> Result<(&[u8], u8), DecryptError> {
     use subtle::{ConditionallySelectable, ConstantTimeEq};
 
     // Upfront DoS / overflow guard. Without this a public caller could
