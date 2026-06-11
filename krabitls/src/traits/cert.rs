@@ -97,18 +97,23 @@ impl<'a> CertView<'a> {
 }
 
 /// Reasons cert parsing may fail.
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, thiserror::Error)]
 pub enum CertParseError {
     /// Underlying DER parse / length / tag error.
+    #[error("malformed cert DER")]
     Malformed,
     /// `Ed25519` `SubjectPublicKey` wasn't 32 bytes.
+    #[error("Ed25519 SubjectPublicKey was not 32 bytes")]
     WrongPubkeyLength,
     /// Cert signature wasn't 64 bytes (Ed25519) or didn't match the RSA modulus length.
+    #[error("cert signature length did not match the algorithm")]
     WrongSignatureLength,
     /// A `BIT STRING` came in with non-zero unused-bits prefix (we don't
     /// expect that for cert signatures, Ed25519 keys, or RSA pubkey blobs).
+    #[error("BIT STRING had non-zero unused-bits prefix")]
     BitStringHasUnusedBits,
     /// Bytes left over after the outer SEQUENCE.
+    #[error("bytes left over after the outer SEQUENCE")]
     TrailingBytes,
     /// The leaf's `SubjectPublicKeyInfo` `AlgorithmIdentifier` names an OID
     /// we don't recognize. The known set is Ed25519 (`1.3.101.112`, always)
@@ -116,20 +121,24 @@ pub enum CertParseError {
     /// The cert's *outer* `signatureAlgorithm` (issuer's signature) is not
     /// interpreted at parse time, so unknown values there don't trigger
     /// this variant; they only matter when self-sig verification runs.
+    #[error("SubjectPublicKeyInfo named an unsupported algorithm OID")]
     WrongAlgorithmOid,
     /// `AlgorithmIdentifier.parameters` violated the spec for the algorithm:
     /// Ed25519 requires absent (RFC 8410 §3); `rsaEncryption` requires an
     /// explicit NULL TLV per RFC 3279 §2.3.1. Any other shape — Ed25519 with
     /// a non-empty parameter, RSA with absent / non-NULL / extra bytes —
     /// surfaces here.
+    #[error("AlgorithmIdentifier.parameters violated the per-algorithm rule")]
     AlgorithmHasParameters,
     /// The outer `Certificate.signatureAlgorithm` and `TBSCertificate.signature`
     /// don't carry identical bytes. RFC 5280 §4.1.1.2 / §4.1.2.3 require them
     /// to match exactly.
+    #[error("outer signatureAlgorithm did not match TBSCertificate.signature")]
     SignatureAlgorithmMismatch,
     /// `TBSCertificate.version` is present but doesn't decode to `v3` (the
     /// only version this client accepts), or absent (DER omits the field
     /// only for the default `v1`, which this client doesn't accept).
+    #[error("TBSCertificate.version was not v3")]
     UnsupportedCertVersion,
     /// RSA pubkey SPKI bit string didn't decode as `SEQUENCE { INTEGER
     /// modulus, INTEGER exponent }` with valid DER framing — wrong tags,
@@ -137,38 +146,11 @@ pub enum CertParseError {
     /// zeros), exponent that doesn't fit in `u32`, or exponent that's
     /// even or less than 3 (RFC 8017 §3.1).
     #[cfg(feature = "rsa")]
+    #[error("RSA pubkey SPKI did not decode as SEQUENCE {{ INTEGER, INTEGER }}")]
     BadRsaPubkey,
     /// RSA modulus length wasn't in the 128 B (RSA-1024) or 256 B
     /// (RSA-2048) set this crate's `rsa_verify` dispatch supports.
     #[cfg(feature = "rsa")]
+    #[error("RSA modulus length was not 128 B (RSA-1024) or 256 B (RSA-2048)")]
     UnsupportedRsaKeySize,
 }
-
-impl core::fmt::Display for CertParseError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let s = match self {
-            Self::Malformed => "malformed cert DER",
-            Self::WrongPubkeyLength => "Ed25519 SubjectPublicKey was not 32 bytes",
-            Self::WrongSignatureLength => "cert signature length did not match the algorithm",
-            Self::BitStringHasUnusedBits => "BIT STRING had non-zero unused-bits prefix",
-            Self::TrailingBytes => "bytes left over after the outer SEQUENCE",
-            Self::WrongAlgorithmOid => "SubjectPublicKeyInfo named an unsupported algorithm OID",
-            Self::AlgorithmHasParameters => {
-                "AlgorithmIdentifier.parameters violated the per-algorithm rule"
-            }
-            Self::SignatureAlgorithmMismatch => {
-                "outer signatureAlgorithm did not match TBSCertificate.signature"
-            }
-            Self::UnsupportedCertVersion => "TBSCertificate.version was not v3",
-            #[cfg(feature = "rsa")]
-            Self::BadRsaPubkey => "RSA pubkey SPKI did not decode as SEQUENCE { INTEGER, INTEGER }",
-            #[cfg(feature = "rsa")]
-            Self::UnsupportedRsaKeySize => {
-                "RSA modulus length was not 128 B (RSA-1024) or 256 B (RSA-2048)"
-            }
-        };
-        f.write_str(s)
-    }
-}
-
-impl core::error::Error for CertParseError {}

@@ -290,6 +290,12 @@ trait WriteExt: Write {
 impl<W: Write + ?Sized> WriteExt for W {}
 
 /// Error returned by [`WriteExt::write_u24`].
+//
+// NOTE: Not `#[derive(thiserror::Error)]` because thiserror's
+// `#[error("{0}")]` forces `Display` onto the generic field, which would
+// propagate `E: Display` as a bound on the struct itself and infect every
+// caller. The manual impl below gates only the Display/Error impls on
+// `E: Display`, leaving the struct generic-bound-free.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Write24Error<E> {
     /// `n > 0xFF_FFFF` — cannot be encoded as a 24-bit big-endian field.
@@ -534,113 +540,69 @@ pub struct ServerHelloView<'a> {
 }
 
 /// Reasons a `parse_*` call may fail.
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, thiserror::Error)]
 pub enum ParseError {
     /// Buffer ended mid-field, or a length prefix declared more bytes than remained.
+    #[error("buffer ended mid-field or length prefix overran")]
     Truncated,
     /// TLS record content type wasn't `handshake` (22).
+    #[error("record content_type was 0x{0:02x}, expected handshake (22)")]
     UnexpectedContentType(u8),
     /// Handshake message type wasn't `server_hello` (2).
+    #[error("handshake type was 0x{0:02x}, expected server_hello (2)")]
     UnexpectedHandshakeType(u8),
     /// Record-layer or `ClientHello.legacy_version` wasn't 0x0303.
+    #[error("legacy_version was 0x{0:04x}, expected 0x0303")]
     UnexpectedLegacyVersion(u16),
     /// Selected cipher suite isn't part of our locked profile.
+    #[error("cipher suite 0x{0:04x} is outside the locked profile")]
     UnsupportedCipherSuite(u16),
     /// `legacy_compression_method` wasn't 0.
+    #[error("legacy_compression_method was 0x{0:02x}, expected 0")]
     UnexpectedCompressionMethod(u8),
     /// `supported_versions` extension missing, malformed, or didn't pick TLS 1.3.
+    #[error("supported_versions extension missing, malformed, or did not pick TLS 1.3")]
     BadSupportedVersions,
     /// `key_share` extension missing, wrong group, or wrong key length.
+    #[error("key_share extension missing, wrong group, or wrong key length")]
     BadKeyShare,
     /// Bytes left over after the structure said it was done.
+    #[error("bytes left over after the structure said it was done")]
     TrailingBytes,
     /// Outer length didn't match the body it framed.
+    #[error("outer length did not match the body it framed")]
     LengthMismatch,
 
     /// ServerHello carried an extension type we did not offer in the ClientHello.
     /// Per RFC 8446 §4.1.4 the client MUST abort the handshake.
+    #[error("ServerHello carried an extension type 0x{0:04x} not offered in the ClientHello")]
     UnknownExtension(u16),
     /// Same extension type appeared twice in the same extension block.
     /// RFC 8446 §4.2 forbids this.
+    #[error("extension type 0x{0:04x} appeared twice in the same extension block")]
     DuplicateExtension(u16),
     /// Server echoed back a non-empty `legacy_session_id_echo`, but the client
     /// sent an empty `legacy_session_id`. RFC 8446 §4.1.3 requires the echo to
     /// match what was sent.
+    #[error("server echoed a non-empty legacy_session_id_echo")]
     UnexpectedSessionIdEcho,
     /// `ServerHello.random` carries the magic value indicating this message is
     /// really a HelloRetryRequest. Our profile never expects HRR, so this is
     /// either a misconfigured server or a downgrade attempt.
+    #[error("server requested HelloRetryRequest")]
     HelloRetryRequested,
     /// Last 8 bytes of `ServerHello.random` match the RFC 8446 §4.1.3 sentinel
     /// that a TLS-1.3-capable server uses when it has been forced to negotiate
     /// TLS 1.2 or below. A real TLS 1.3 server speaking only TLS 1.3 will never
     /// emit this; if we see it, the connection is being downgraded.
+    #[error("ServerHello.random sentinel indicates a TLS-1.2-or-below downgrade")]
     DowngradeDetected,
     /// X25519 shared secret was the all-zero value. RFC 8446 §7.4.2.1 says the
     /// client MUST abort with `illegal_parameter`. Typically means a low-order
     /// server key_share.
+    #[error("X25519 shared secret was the all-zero value (low-order point)")]
     DhAllZero,
 }
-
-impl core::fmt::Display for ParseError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::Truncated => f.write_str("buffer ended mid-field or length prefix overran"),
-            Self::UnexpectedContentType(b) => {
-                write!(
-                    f,
-                    "record content_type was 0x{b:02x}, expected handshake (22)"
-                )
-            }
-            Self::UnexpectedHandshakeType(b) => {
-                write!(f, "handshake type was 0x{b:02x}, expected server_hello (2)")
-            }
-            Self::UnexpectedLegacyVersion(v) => {
-                write!(f, "legacy_version was 0x{v:04x}, expected 0x0303")
-            }
-            Self::UnsupportedCipherSuite(v) => {
-                write!(f, "cipher suite 0x{v:04x} is outside the locked profile")
-            }
-            Self::UnexpectedCompressionMethod(b) => {
-                write!(f, "legacy_compression_method was 0x{b:02x}, expected 0")
-            }
-            Self::BadSupportedVersions => f.write_str(
-                "supported_versions extension missing, malformed, or did not pick TLS 1.3",
-            ),
-            Self::BadKeyShare => {
-                f.write_str("key_share extension missing, wrong group, or wrong key length")
-            }
-            Self::TrailingBytes => {
-                f.write_str("bytes left over after the structure said it was done")
-            }
-            Self::LengthMismatch => f.write_str("outer length did not match the body it framed"),
-            Self::UnknownExtension(v) => {
-                write!(
-                    f,
-                    "ServerHello carried an extension type 0x{v:04x} not offered in the ClientHello"
-                )
-            }
-            Self::DuplicateExtension(v) => {
-                write!(
-                    f,
-                    "extension type 0x{v:04x} appeared twice in the same extension block"
-                )
-            }
-            Self::UnexpectedSessionIdEcho => {
-                f.write_str("server echoed a non-empty legacy_session_id_echo")
-            }
-            Self::HelloRetryRequested => f.write_str("server requested HelloRetryRequest"),
-            Self::DowngradeDetected => {
-                f.write_str("ServerHello.random sentinel indicates a TLS-1.2-or-below downgrade")
-            }
-            Self::DhAllZero => {
-                f.write_str("X25519 shared secret was the all-zero value (low-order point)")
-            }
-        }
-    }
-}
-
-impl core::error::Error for ParseError {}
 
 /// Parse a complete TLS record carrying a `server_hello` handshake message.
 ///

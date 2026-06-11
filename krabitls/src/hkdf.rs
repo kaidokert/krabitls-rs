@@ -25,50 +25,28 @@ use crate::traits::{HkdfExpandError, HkdfSha256, Sha256Hasher};
 const HKDF_LABEL_MAX: usize = 64;
 
 /// Errors while encoding a TLS 1.3 `HkdfLabel`.
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, thiserror::Error)]
 pub enum HkdfLabelError {
     /// The requested output length does not fit in the `uint16 length` field.
+    #[error("HKDF-Label length field overflowed")]
     OutputTooLong,
     /// `"tls13 " || label` does not fit in the TLS vector's `u8` length field.
+    #[error("HKDF label exceeds the u8 length field")]
     LabelTooLong,
     /// The context does not fit in the TLS vector's `u8` length field.
+    #[error("HKDF context exceeds the u8 length field")]
     ContextTooLong,
     /// The encoded label exceeds krabitls's fixed scratch buffer.
+    #[error("encoded HKDF label exceeds the scratch buffer")]
     EncodedTooLong,
     /// The HKDF backend rejected the requested output length.
-    Expand(HkdfExpandError),
+    #[error("HKDF backend rejected the requested output length")]
+    Expand(#[from] HkdfExpandError),
 }
 
 impl From<heapless::CapacityError> for HkdfLabelError {
     fn from(_: heapless::CapacityError) -> Self {
         HkdfLabelError::EncodedTooLong
-    }
-}
-
-impl From<HkdfExpandError> for HkdfLabelError {
-    fn from(e: HkdfExpandError) -> Self {
-        HkdfLabelError::Expand(e)
-    }
-}
-
-impl core::fmt::Display for HkdfLabelError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::OutputTooLong => f.write_str("HKDF-Label length field overflowed"),
-            Self::LabelTooLong => f.write_str("HKDF label exceeds the u8 length field"),
-            Self::ContextTooLong => f.write_str("HKDF context exceeds the u8 length field"),
-            Self::EncodedTooLong => f.write_str("encoded HKDF label exceeds the scratch buffer"),
-            Self::Expand(_) => f.write_str("HKDF backend rejected the requested output length"),
-        }
-    }
-}
-
-impl core::error::Error for HkdfLabelError {
-    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
-        match self {
-            Self::Expand(e) => Some(e),
-            _ => None,
-        }
     }
 }
 
@@ -192,24 +170,13 @@ impl<H: HkdfSha256> Default for TranscriptHash<H> {
 }
 
 /// Errors returnable by [`TranscriptHash::update_record`].
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, thiserror::Error)]
 pub enum TranscriptError {
     /// `update_record` was called with a slice shorter than the 5-byte TLS
     /// record header — almost always a caller bug (wrong slice end).
+    #[error("record slice is shorter than the 5-byte TLS record header")]
     RecordTooShort,
 }
-
-impl core::fmt::Display for TranscriptError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::RecordTooShort => {
-                f.write_str("record slice is shorter than the 5-byte TLS record header")
-            }
-        }
-    }
-}
-
-impl core::error::Error for TranscriptError {}
 
 /// `early_secret` for no-PSK: `HKDF-Extract(salt=00..00, IKM=00..00)`. RFC 8446 §7.1.
 pub(crate) fn early_secret<H: HkdfSha256>() -> Secret {

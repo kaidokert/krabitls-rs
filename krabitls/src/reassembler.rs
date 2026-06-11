@@ -32,21 +32,12 @@ pub struct ServerFlightReassembler<const N: usize> {
     buf: Vec<u8, N>,
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, thiserror::Error)]
 pub enum ReassemblyError {
     /// Appending the chunk would exceed capacity `N`.
+    #[error("server-flight reassembler capacity exceeded")]
     Overflow,
 }
-
-impl core::fmt::Display for ReassemblyError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::Overflow => f.write_str("server-flight reassembler capacity exceeded"),
-        }
-    }
-}
-
-impl core::error::Error for ReassemblyError {}
 
 impl<const N: usize> ServerFlightReassembler<N> {
     pub const fn new() -> Self {
