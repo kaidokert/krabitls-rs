@@ -13,7 +13,7 @@ macro_rules! secret_newtype {
     ) => {
         $(#[$attr])*
         #[repr(transparent)]
-        #[derive(Clone, PartialEq, Eq)]
+        #[derive(Clone, PartialEq, Eq, zeroize::Zeroize)]
         pub struct $name(ZeroBuf<$n>);
 
         impl $name {
@@ -42,12 +42,6 @@ macro_rules! secret_newtype {
         impl From<[u8; $n]> for $name {
             fn from(bytes: [u8; $n]) -> Self {
                 Self(ZeroBuf::<$n>::new(bytes))
-            }
-        }
-
-        impl zeroize::Zeroize for $name {
-            fn zeroize(&mut self) {
-                zeroize::Zeroize::zeroize(&mut *self.0);
             }
         }
     };
