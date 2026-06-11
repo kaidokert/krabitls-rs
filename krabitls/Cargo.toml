@@ -82,3 +82,4 @@ der = { version = "0.8.0", default-features = false, features = ["oid"] }
 zeroize = { version = "1.8", default-features = false }
 heapless = { version = "0.9", default-features = false }
 subtle = { version = "2.6", default-features = false }
+thiserror = { version = "2", default-features = false }

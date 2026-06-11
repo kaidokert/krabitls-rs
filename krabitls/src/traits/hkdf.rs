@@ -50,28 +50,19 @@ pub trait HkdfSha256 {
 }
 
 /// Errors a [`HkdfSha256::expand`] implementation may return.
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, thiserror::Error)]
 pub enum HkdfExpandError {
     /// `out.len() > 255 * hash_len`. For SHA-256 that's 8160 bytes
     /// (RFC 5869's hard cap on HKDF-Expand output).
+    #[error("HKDF-Expand output exceeds 255 * hash_len")]
     OutputTooLong,
     /// PRK was rejected by the backend (e.g. wrong size). The trait's
     /// `prk: &[u8; 32]` type makes this statically unreachable for
     /// well-behaved backends, but the variant exists so impls don't have
     /// to `.expect()` the underlying crate's fallible constructor.
+    #[error("HKDF backend rejected the PRK")]
     InvalidPrk,
 }
-
-impl core::fmt::Display for HkdfExpandError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::OutputTooLong => f.write_str("HKDF-Expand output exceeds 255 * hash_len"),
-            Self::InvalidPrk => f.write_str("HKDF backend rejected the PRK"),
-        }
-    }
-}
-
-impl core::error::Error for HkdfExpandError {}
 
 /// Incremental SHA-256 hash state.
 ///

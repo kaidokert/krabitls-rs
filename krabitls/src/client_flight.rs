@@ -13,42 +13,14 @@ use crate::traits::{Aes128GcmAead, HkdfSha256};
 const HS_FINISHED: u8 = 20;
 
 /// Reasons [`build_client_finished`] may fail.
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, thiserror::Error)]
 pub enum ClientFinishedError {
     /// The record-layer encrypt step failed.
-    Encrypt(EncryptError),
+    #[error("record-layer encrypt step failed")]
+    Encrypt(#[from] EncryptError),
     /// HKDF-Expand-Label rejected a key-schedule derivation.
-    Hkdf(HkdfLabelError),
-}
-
-impl From<EncryptError> for ClientFinishedError {
-    fn from(e: EncryptError) -> Self {
-        ClientFinishedError::Encrypt(e)
-    }
-}
-
-impl From<HkdfLabelError> for ClientFinishedError {
-    fn from(e: HkdfLabelError) -> Self {
-        ClientFinishedError::Hkdf(e)
-    }
-}
-
-impl core::fmt::Display for ClientFinishedError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::Encrypt(_) => f.write_str("record-layer encrypt step failed"),
-            Self::Hkdf(_) => f.write_str("HKDF-Expand-Label rejected a key-schedule derivation"),
-        }
-    }
-}
-
-impl core::error::Error for ClientFinishedError {
-    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
-        match self {
-            Self::Encrypt(e) => Some(e),
-            Self::Hkdf(e) => Some(e),
-        }
-    }
+    #[error("HKDF-Expand-Label rejected a key-schedule derivation")]
+    Hkdf(#[from] HkdfLabelError),
 }
 
 /// Build the `Finished` handshake message bytes (`u8(20) || u24(32) || verify_data`)

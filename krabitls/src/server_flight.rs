@@ -26,94 +26,56 @@ pub struct ServerFlightView<'a> {
 }
 
 /// Reasons walking or verifying the server flight may fail.
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, thiserror::Error)]
 pub enum FlightError {
     /// A handshake message header or body claimed more bytes than remained.
+    #[error("handshake header / body claimed more bytes than remained")]
     Truncated,
     /// Trailing bytes after we'd consumed all four expected messages.
+    #[error("trailing bytes after the four expected handshake messages")]
     TrailingBytes,
     /// Handshake messages didn't appear in `EE -> Cert -> CV -> Finished` order.
+    #[error("handshake messages out of order: expected type 0x{expected:02x}, got 0x{got:02x}")]
     UnexpectedHandshakeType { expected: u8, got: u8 },
 
     /// X.509 DER parse error.
-    BadCert(CertParseError),
+    #[error("cert DER parse failed")]
+    BadCert(#[from] CertParseError),
     /// `Ed25519::verify` returned false for the cert's self-signature.
+    #[error("cert self-signature did not verify")]
     CertSelfSignatureInvalid,
 
     /// `CertificateVerify.signature_scheme` wasn't `ed25519` (0x0807).
+    #[error("unexpected CertificateVerify signature_scheme 0x{0:04x}")]
     UnexpectedSignatureScheme(u16),
     /// `CertificateVerify.signature` length didn't match what the scheme
     /// requires (64 B for Ed25519; modulus byte length for RSA-PSS).
+    #[error("CertificateVerify signature length did not match the scheme")]
     WrongSignatureLength,
     /// `Ed25519::verify` returned false for `CertificateVerify`.
+    #[error("CertificateVerify signature did not verify")]
     CertVerifyInvalid,
 
     /// `Finished.verify_data` length wasn't 32 bytes.
+    #[error("Finished verify_data length was not 32 bytes")]
     FinishedWrongLength,
     /// Finished MAC didn't match what we computed locally.
+    #[error("Finished MAC did not match")]
     FinishedMacInvalid,
     /// Internal HKDF label encoding failed.
-    HkdfLabel(HkdfLabelError),
+    #[error("HKDF label encoding failed")]
+    HkdfLabel(#[from] HkdfLabelError),
     /// Internal encoding buffer overflowed. Statically unreachable for the
     /// fixed `CertificateVerify` signed-data shape we build, but the variant
     /// exists so the encoding path can propagate via `?` instead of
     /// `.expect` / panic.
+    #[error("internal encoding buffer overflowed")]
     InternalEncoding,
 }
 
 impl From<heapless::CapacityError> for FlightError {
     fn from(_: heapless::CapacityError) -> Self {
         FlightError::InternalEncoding
-    }
-}
-
-impl From<CertParseError> for FlightError {
-    fn from(e: CertParseError) -> Self {
-        FlightError::BadCert(e)
-    }
-}
-
-impl core::fmt::Display for FlightError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::Truncated => {
-                f.write_str("handshake header / body claimed more bytes than remained")
-            }
-            Self::TrailingBytes => {
-                f.write_str("trailing bytes after the four expected handshake messages")
-            }
-            Self::UnexpectedHandshakeType { expected, got } => {
-                write!(
-                    f,
-                    "handshake messages out of order: expected type 0x{expected:02x}, got 0x{got:02x}"
-                )
-            }
-            Self::BadCert(_) => f.write_str("cert DER parse failed"),
-            Self::CertSelfSignatureInvalid => f.write_str("cert self-signature did not verify"),
-            Self::UnexpectedSignatureScheme(v) => {
-                write!(f, "unexpected CertificateVerify signature_scheme 0x{v:04x}")
-            }
-            Self::WrongSignatureLength => {
-                f.write_str("CertificateVerify signature length did not match the scheme")
-            }
-            Self::CertVerifyInvalid => f.write_str("CertificateVerify signature did not verify"),
-            Self::FinishedWrongLength => {
-                f.write_str("Finished verify_data length was not 32 bytes")
-            }
-            Self::FinishedMacInvalid => f.write_str("Finished MAC did not match"),
-            Self::HkdfLabel(_) => f.write_str("HKDF label encoding failed"),
-            Self::InternalEncoding => f.write_str("internal encoding buffer overflowed"),
-        }
-    }
-}
-
-impl core::error::Error for FlightError {
-    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
-        match self {
-            Self::BadCert(e) => Some(e),
-            Self::HkdfLabel(e) => Some(e),
-            _ => None,
-        }
     }
 }
 

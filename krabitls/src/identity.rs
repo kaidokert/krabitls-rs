@@ -8,35 +8,25 @@
 use crate::traits::cert::CertView;
 
 /// Reasons a server-identity check may fail.
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, thiserror::Error)]
 pub enum IdentityError {
     /// Cert had no SubjectAltName extension.
+    #[error("cert had no SubjectAltName extension")]
     NoSan,
     /// None of the cert's SAN dNSName entries matched the requested hostname.
+    #[error("no SAN dNSName matched the requested hostname")]
     HostnameMismatch,
     /// Cert's SAN extension was malformed (bad DER framing inside).
+    #[error("cert SAN extension was malformed")]
     MalformedSan,
     /// Pinned public key doesn't match the cert's public key.
+    #[error("pinned public key did not match the cert pubkey")]
     PinMismatch,
     /// Pinned-key check ran with a pin whose algorithm family didn't match
     /// the cert (e.g. Ed25519 pin against an RSA cert).
+    #[error("pinned-key algorithm family did not match the cert")]
     PinAlgorithmMismatch,
 }
-
-impl core::fmt::Display for IdentityError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let s = match self {
-            Self::NoSan => "cert had no SubjectAltName extension",
-            Self::HostnameMismatch => "no SAN dNSName matched the requested hostname",
-            Self::MalformedSan => "cert SAN extension was malformed",
-            Self::PinMismatch => "pinned public key did not match the cert pubkey",
-            Self::PinAlgorithmMismatch => "pinned-key algorithm family did not match the cert",
-        };
-        f.write_str(s)
-    }
-}
-
-impl core::error::Error for IdentityError {}
 
 /// Public key material pinned out-of-band.
 #[derive(Debug, Clone, Copy)]
@@ -224,34 +214,19 @@ fn ascii_eq_ignore_case(a: &[u8], b: &[u8]) -> bool {
 
 /// Reasons [`verify_validity`] may reject a cert.
 #[cfg(feature = "validity")]
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, thiserror::Error)]
 pub enum ValidityError {
     /// Caller's current time is before the cert's `notBefore`.
+    #[error("cert not yet valid: notBefore={not_before}, now={now}")]
     NotYetValid { not_before: u64, now: u64 },
     /// Caller's current time is past the cert's `notAfter`.
+    #[error("cert expired: notAfter={not_after}, now={now}")]
     Expired { not_after: u64, now: u64 },
     /// `validity_der` didn't decode as `SEQUENCE { Time, Time }` with
     /// `Time = UTCTime | GeneralizedTime`.
+    #[error("cert validity field did not decode")]
     Malformed,
 }
-
-#[cfg(feature = "validity")]
-impl core::fmt::Display for ValidityError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::NotYetValid { not_before, now } => {
-                write!(f, "cert not yet valid: notBefore={not_before}, now={now}")
-            }
-            Self::Expired { not_after, now } => {
-                write!(f, "cert expired: notAfter={not_after}, now={now}")
-            }
-            Self::Malformed => f.write_str("cert validity field did not decode"),
-        }
-    }
-}
-
-#[cfg(feature = "validity")]
-impl core::error::Error for ValidityError {}
 
 /// Check the cert's `notBefore` / `notAfter` window against a caller-
 /// supplied [`crate::traits::TimeSource`].
