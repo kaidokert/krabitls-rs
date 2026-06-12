@@ -95,6 +95,12 @@ pub fn verify_hostname(cert_view: &CertView<'_>, hostname: &[u8]) -> Result<(), 
     // IP-literal hostnames match SAN iPAddress entries only — DNS matching
     // doesn't apply (no labels) and could otherwise produce spurious hits.
     if let Ok(s) = core::str::from_utf8(hostname) {
+        // URL-form IPv6 hostnames are bracketed (`[2001:db8::1]`);
+        // `Ipv6Addr::FromStr` doesn't accept the brackets.
+        let s = s
+            .strip_prefix('[')
+            .and_then(|s| s.strip_suffix(']'))
+            .unwrap_or(s);
         if let Ok(v4) = s.parse::<core::net::Ipv4Addr>() {
             return match_ip_address(san, &v4.octets());
         }
@@ -210,6 +216,12 @@ impl<'a> SanEntryWalker<'a> {
                 let tail = &self.rest[pos..];
                 let value = tlv.value();
                 self.rest = tail;
+                // RFC 5280 §4.2.1.6: iPAddress GeneralName is exactly
+                // 4 octets (IPv4) or 16 (IPv6). Reject other shapes so
+                // the public `san_ip_addresses` contract holds.
+                if self.target_tag == IP_ADDRESS_TAG && value.len() != 4 && value.len() != 16 {
+                    return Some(Err(IdentityError::MalformedSan));
+                }
                 return Some(Ok(value));
             }
             // Skip every other GeneralName variant.
@@ -490,7 +502,7 @@ mod tests {
         assert_eq!(ips, vec![&[1, 1, 1, 1][..]]);
     }
 
-    fn rsa_view_with_san<'a>(san: &'a [u8]) -> CertView<'a> {
+    fn ed25519_view_with_san<'a>(san: &'a [u8]) -> CertView<'a> {
         CertView::Ed25519 {
             tbs: &[],
             signature: &[0u8; 64],
@@ -503,14 +515,14 @@ mod tests {
     #[test]
     fn verify_hostname_ip_v4_match() {
         let san = tlv(0x87, &[1, 1, 1, 1]);
-        let view = rsa_view_with_san(&san);
+        let view = ed25519_view_with_san(&san);
         assert_eq!(verify_hostname(&view, b"1.1.1.1"), Ok(()));
     }
 
     #[test]
     fn verify_hostname_ip_v4_mismatch() {
         let san = tlv(0x87, &[1, 1, 1, 1]);
-        let view = rsa_view_with_san(&san);
+        let view = ed25519_view_with_san(&san);
         assert_eq!(
             verify_hostname(&view, b"1.2.3.4"),
             Err(IdentityError::HostnameMismatch)
@@ -521,7 +533,7 @@ mod tests {
     fn verify_hostname_ip_literal_skips_dns_match() {
         // dNSName "1.1.1.1" must NOT match IP literal 1.1.1.1
         let san = tlv(0x82, b"1.1.1.1");
-        let view = rsa_view_with_san(&san);
+        let view = ed25519_view_with_san(&san);
         assert_eq!(
             verify_hostname(&view, b"1.1.1.1"),
             Err(IdentityError::HostnameMismatch)
@@ -534,8 +546,26 @@ mod tests {
             0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01,
         ];
         let san = tlv(0x87, &v6);
-        let view = rsa_view_with_san(&san);
+        let view = ed25519_view_with_san(&san);
         assert_eq!(verify_hostname(&view, b"2001:db8::1"), Ok(()));
+    }
+
+    #[test]
+    fn verify_hostname_ip_v6_bracketed() {
+        let v6 = [
+            0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01,
+        ];
+        let san = tlv(0x87, &v6);
+        let view = ed25519_view_with_san(&san);
+        assert_eq!(verify_hostname(&view, b"[2001:db8::1]"), Ok(()));
+    }
+
+    #[test]
+    fn san_ip_wrong_length_is_malformed() {
+        // tag 7 with a 5-byte payload — not 4 or 16
+        let san = tlv(0x87, &[1, 2, 3, 4, 5]);
+        let r = san_ip_addresses(&san).next().unwrap();
+        assert_eq!(r, Err(IdentityError::MalformedSan));
     }
 
     fn ed25519_view(pubkey: &[u8; 32]) -> CertView<'_> {
