@@ -13,8 +13,9 @@
 //! - [`ChaCha20Poly1305Aead`] — record-layer AEAD for
 //!   `TLS_CHACHA20_POLY1305_SHA256`, gated on `feature = "chacha20"`.
 //! - [`CertParser`] — X.509 DER parser (default: [`crate::DerCert`]).
-//! - [`Ed25519Verify`] — Ed25519 signature verify (default:
-//!   [`crate::RustCrypto`] wrapping `ed25519_heapless`).
+//! - [`Ed25519VerifierProvider`] — builds per-key Ed25519 verifiers
+//!   (`signature::Verifier<[u8; 64]>`); default
+//!   [`crate::RustCrypto`] wraps `ed25519_heapless`.
 //! - [`TimeSource`] — wall-clock for cert validity checks (gated on
 //!   `feature = "validity"`).
 
@@ -31,7 +32,7 @@ pub use aead::{AeadError, Aes128GcmAead};
 #[cfg(feature = "rsa")]
 pub use cert::RsaCertSigAlg;
 pub use cert::{CertParseError, CertParser, CertView};
-pub use ed25519_verify::Ed25519Verify;
+pub use ed25519_verify::Ed25519VerifierProvider;
 pub use hkdf::{HkdfExpandError, HkdfSha256, Sha256Hasher};
 #[cfg(feature = "validity")]
 pub use time::{FixedTime, TimeSource};

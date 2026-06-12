@@ -5,7 +5,8 @@ use crate::consts::SIG_SCHEME_ED25519;
 use crate::consts::SIG_SCHEME_RSA_PSS_RSAE_SHA256;
 use crate::hkdf::{HkdfLabelError, TranscriptHash, hkdf_expand_label};
 use crate::newtype::{Secret, TranscriptDigest, ZeroBuf};
-use crate::traits::{CertParseError, CertParser, CertView, Ed25519Verify, HkdfSha256};
+use crate::traits::{CertParseError, CertParser, CertView, Ed25519VerifierProvider, HkdfSha256};
+use signature::Verifier as _;
 
 const HS_ENCRYPTED_EXTENSIONS: u8 = 8;
 const HS_CERTIFICATE: u8 = 11;
@@ -236,14 +237,18 @@ fn read_u24(b: &[u8]) -> u32 {
 
 /// Parse + verify a self-signed cert in one shot. Test-only helper.
 #[cfg(test)]
-pub(crate) fn verify_self_signed_cert<C: CertParser, E: Ed25519Verify>(
+pub(crate) fn verify_self_signed_cert<C: CertParser, E: Ed25519VerifierProvider>(
     cert_der: &[u8],
 ) -> Result<CertView<'_>, FlightError> {
-    let cache = E::new_cache();
     let view = C::parse(cert_der)?;
+    let ed25519_v = match &view {
+        CertView::Ed25519 { pubkey, .. } => Some(E::prepare_ed25519(pubkey)),
+        #[cfg(feature = "rsa")]
+        CertView::Rsa { .. } => None,
+    };
     verify_self_signed_cert_with_cache::<E>(
-        &cache,
         &view,
+        ed25519_v.as_ref(),
         #[cfg(feature = "rsa")]
         None,
     )?;
@@ -251,21 +256,16 @@ pub(crate) fn verify_self_signed_cert<C: CertParser, E: Ed25519Verify>(
 }
 
 /// Verify the cert's outer self-signature against its own pubkey.
-pub(crate) fn verify_self_signed_cert_with_cache<E: Ed25519Verify>(
-    cache: &E::Cache,
+pub(crate) fn verify_self_signed_cert_with_cache<E: Ed25519VerifierProvider>(
     view: &CertView<'_>,
+    ed25519_v: Option<&E::Verifier>,
     #[cfg(feature = "rsa")] rsa_cache: Option<&crate::backends::rsa_verify::RsaVerifierKey>,
 ) -> Result<(), FlightError> {
     match view {
-        CertView::Ed25519 {
-            tbs,
-            signature,
-            pubkey,
-            ..
-        } => {
-            if !E::verify_with_cache(cache, pubkey, tbs, signature) {
-                return Err(FlightError::CertSelfSignatureInvalid);
-            }
+        CertView::Ed25519 { tbs, signature, .. } => {
+            let v = ed25519_v.ok_or(FlightError::CertSelfSignatureInvalid)?;
+            v.verify(tbs, signature)
+                .map_err(|_| FlightError::CertSelfSignatureInvalid)?;
         }
         #[cfg(feature = "rsa")]
         CertView::Rsa {
@@ -314,27 +314,31 @@ pub(crate) fn verify_self_signed_cert_with_cache<E: Ed25519Verify>(
 /// Verify a `CertificateVerify` body against the transcript hash and public key.
 /// Non-cached CertificateVerify wrapper. Test-only.
 #[cfg(test)]
-pub(crate) fn verify_certificate_verify<E: Ed25519Verify>(
+pub(crate) fn verify_certificate_verify<E: Ed25519VerifierProvider>(
     cert_view: &CertView<'_>,
     transcript_hash_ch_through_cert: &TranscriptDigest,
     cv_body: &[u8],
 ) -> Result<(), FlightError> {
-    let cache = E::new_cache();
+    let ed25519_v = match cert_view {
+        CertView::Ed25519 { pubkey, .. } => Some(E::prepare_ed25519(pubkey)),
+        #[cfg(feature = "rsa")]
+        CertView::Rsa { .. } => None,
+    };
     verify_certificate_verify_with_cache::<E>(
-        &cache,
         cert_view,
         transcript_hash_ch_through_cert,
         cv_body,
+        ed25519_v.as_ref(),
         #[cfg(feature = "rsa")]
         None,
     )
 }
 
-pub(crate) fn verify_certificate_verify_with_cache<E: Ed25519Verify>(
-    cache: &E::Cache,
+pub(crate) fn verify_certificate_verify_with_cache<E: Ed25519VerifierProvider>(
     cert_view: &CertView<'_>,
     transcript_hash_ch_through_cert: &TranscriptDigest,
     cv_body: &[u8],
+    ed25519_v: Option<&E::Verifier>,
     #[cfg(feature = "rsa")] rsa_cache: Option<&crate::backends::rsa_verify::RsaVerifierKey>,
 ) -> Result<(), FlightError> {
     if cv_body.len() < 4 {
@@ -357,13 +361,13 @@ pub(crate) fn verify_certificate_verify_with_cache<E: Ed25519Verify>(
     signed.extend_from_slice(transcript_hash_ch_through_cert.as_bytes())?;
 
     match (scheme, cert_view) {
-        (SIG_SCHEME_ED25519, CertView::Ed25519 { pubkey, .. }) => {
+        (SIG_SCHEME_ED25519, CertView::Ed25519 { .. }) => {
             let Ok(signature) = <&[u8; 64]>::try_from(sig_bytes) else {
                 return Err(FlightError::WrongSignatureLength);
             };
-            if !E::verify_with_cache(cache, pubkey, &signed, signature) {
-                return Err(FlightError::CertVerifyInvalid);
-            }
+            let v = ed25519_v.ok_or(FlightError::CertVerifyInvalid)?;
+            v.verify(&signed, signature)
+                .map_err(|_| FlightError::CertVerifyInvalid)?;
             Ok(())
         }
         #[cfg(feature = "rsa")]
@@ -468,7 +472,7 @@ pub(crate) struct ServerFlightVerified<'a> {
 /// checked against its own pubkey. `true` for self-signed certs (controlled
 /// peers, captured fixtures); `false` for CA-issued certs where the caller
 /// establishes trust some other way (pin / SAN / out-of-band).
-pub(crate) fn verify_server_flight<'a, H: HkdfSha256, C: CertParser, E: Ed25519Verify>(
+pub(crate) fn verify_server_flight<'a, H: HkdfSha256, C: CertParser, E: Ed25519VerifierProvider>(
     transcript: &mut TranscriptHash<H>,
     plaintext: &'a [u8],
     s_hs_traffic_secret: &Secret,
@@ -476,11 +480,16 @@ pub(crate) fn verify_server_flight<'a, H: HkdfSha256, C: CertParser, E: Ed25519V
 ) -> Result<ServerFlightVerified<'a>, FlightError> {
     let flight = parse_server_flight(plaintext)?;
 
-    // Share backend precomputation across cert and CertificateVerify checks.
-    let ed_cache = E::new_cache();
-
     let cert_der = extract_cert_der(flight.cert_body)?;
     let cert_view = C::parse(cert_der)?;
+
+    // Build the verifier ONCE per cert; share across self-sig and CV checks.
+    // The Curve25519Field precompute (~100 k cycles on M3) is bundled in.
+    let ed25519_v = match &cert_view {
+        CertView::Ed25519 { pubkey, .. } => Some(E::prepare_ed25519(pubkey)),
+        #[cfg(feature = "rsa")]
+        CertView::Rsa { .. } => None,
+    };
 
     // RSA modular precomputation is expensive enough to share.
     #[cfg(feature = "rsa")]
@@ -496,8 +505,8 @@ pub(crate) fn verify_server_flight<'a, H: HkdfSha256, C: CertParser, E: Ed25519V
 
     if verify_cert_self_sig {
         verify_self_signed_cert_with_cache::<E>(
-            &ed_cache,
             &cert_view,
+            ed25519_v.as_ref(),
             #[cfg(feature = "rsa")]
             rsa_cache.as_ref(),
         )?;
@@ -507,10 +516,10 @@ pub(crate) fn verify_server_flight<'a, H: HkdfSha256, C: CertParser, E: Ed25519V
     transcript.update(flight.cert_full);
     let th_after_cert = transcript.snapshot();
     verify_certificate_verify_with_cache::<E>(
-        &ed_cache,
         &cert_view,
         &th_after_cert,
         flight.cv_body,
+        ed25519_v.as_ref(),
         #[cfg(feature = "rsa")]
         rsa_cache.as_ref(),
     )?;

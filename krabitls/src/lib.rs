@@ -76,8 +76,8 @@ pub use traits::ChaCha20Poly1305Aead;
 #[cfg(feature = "rsa")]
 pub use traits::RsaCertSigAlg;
 pub use traits::{
-    AeadError, Aes128GcmAead, CertParseError, CertParser, CertView, Ed25519Verify, HkdfExpandError,
-    HkdfSha256, Sha256Hasher,
+    AeadError, Aes128GcmAead, CertParseError, CertParser, CertView, Ed25519VerifierProvider,
+    HkdfExpandError, HkdfSha256, Sha256Hasher,
 };
 #[cfg(feature = "validity")]
 pub use traits::{FixedTime, TimeSource};
@@ -1566,19 +1566,21 @@ mod tests {
         );
     }
 
-    /// Stub Ed25519Verify backend that always rejects. Used to prove the
-    /// `E: Ed25519Verify` generic actually wires through to the verify
+    /// Stub Ed25519VerifierProvider backend that always rejects. Used to prove the
+    /// `E: Ed25519VerifierProvider` generic actually wires through to the verify
     /// callsites — swapping the backend should change observed behavior
     /// even with the same cert / signature bytes.
     struct AlwaysReject;
-    impl crate::traits::Ed25519Verify for AlwaysReject {
-        type Cache = ();
-        fn new_cache() {}
-        fn verify(_: &[u8; 32], _: &[u8], _: &[u8; 64]) -> bool {
-            false
+    struct AlwaysRejectVerifier;
+    impl signature::Verifier<[u8; 64]> for AlwaysRejectVerifier {
+        fn verify(&self, _: &[u8], _: &[u8; 64]) -> Result<(), signature::Error> {
+            Err(signature::Error::new())
         }
-        fn verify_with_cache(_: &(), _: &[u8; 32], _: &[u8], _: &[u8; 64]) -> bool {
-            false
+    }
+    impl crate::traits::Ed25519VerifierProvider for AlwaysReject {
+        type Verifier = AlwaysRejectVerifier;
+        fn prepare_ed25519(_: &[u8; 32]) -> Self::Verifier {
+            AlwaysRejectVerifier
         }
     }
 

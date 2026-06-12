@@ -25,7 +25,7 @@ use crate::server_flight::ServerPubkey;
 use crate::server_flight::verify_server_flight;
 #[cfg(feature = "chacha20")]
 use crate::traits::ChaCha20Poly1305Aead;
-use crate::traits::{Aes128GcmAead, CertParser, Ed25519Verify, HkdfSha256};
+use crate::traits::{Aes128GcmAead, CertParser, Ed25519VerifierProvider, HkdfSha256};
 use crate::{
     ClientHelloError, DecryptError, EncryptError, FlightError, ParseError, parse_server_hello,
     write_client_hello,
@@ -590,7 +590,7 @@ where
 
     /// Verify the flight (CV + Finished, plus self-sig if [`VerifyMode::SelfSigned`])
     /// and advance to [`ServerFlightDone`].
-    pub fn finalize_server_flight<const N: usize, P: CertParser, E: Ed25519Verify>(
+    pub fn finalize_server_flight<const N: usize, P: CertParser, E: Ed25519VerifierProvider>(
         mut self,
         reassembler: &ServerFlightReassembler<N>,
         mode: VerifyMode,
@@ -643,7 +643,7 @@ where
         )
     }
 
-    pub fn finalize_server_flight<const N: usize, P: CertParser, E: Ed25519Verify>(
+    pub fn finalize_server_flight<const N: usize, P: CertParser, E: Ed25519VerifierProvider>(
         mut self,
         reassembler: &ServerFlightReassembler<N>,
         mode: VerifyMode,

@@ -83,3 +83,4 @@ zeroize = { version = "1.8", default-features = false, features = ["derive"] }
 heapless = { version = "0.9", default-features = false }
 subtle = { version = "2.6", default-features = false }
 thiserror = { version = "2", default-features = false }
+signature = { version = "3", default-features = false }
