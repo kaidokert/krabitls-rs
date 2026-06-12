@@ -77,8 +77,13 @@ pub fn verify_pinned_pubkey(
 
 /// Verify the cert's SubjectAltName binds the given hostname.
 ///
-/// Matching is ASCII-case-insensitive. Wildcards are limited to the leftmost
-/// label and bind exactly one candidate label. Quick examples:
+/// If `hostname` parses as an IPv4 or IPv6 literal, the cert must list it
+/// as an `iPAddress` SAN entry (RFC 5280 §4.2.1.6 — 4 octets for IPv4,
+/// 16 for IPv6, raw network-byte-order). Otherwise it's matched against
+/// the cert's `dNSName` entries.
+///
+/// DNS matching is ASCII-case-insensitive. Wildcards are limited to the
+/// leftmost label and bind exactly one candidate label. Quick examples:
 ///
 /// - `*.example.com` matches `foo.example.com` and `BAR.example.com`,
 ///   but NOT `example.com` (no leftmost label) or `a.b.example.com`
@@ -86,6 +91,18 @@ pub fn verify_pinned_pubkey(
 /// - `*` alone, or wildcards in any non-leftmost position, are rejected.
 pub fn verify_hostname(cert_view: &CertView<'_>, hostname: &[u8]) -> Result<(), IdentityError> {
     let san = cert_view.san().ok_or(IdentityError::NoSan)?;
+
+    // IP-literal hostnames match SAN iPAddress entries only — DNS matching
+    // doesn't apply (no labels) and could otherwise produce spurious hits.
+    if let Ok(s) = core::str::from_utf8(hostname) {
+        if let Ok(v4) = s.parse::<core::net::Ipv4Addr>() {
+            return match_ip_address(san, &v4.octets());
+        }
+        if let Ok(v6) = s.parse::<core::net::Ipv6Addr>() {
+            return match_ip_address(san, &v6.octets());
+        }
+    }
+
     for entry in san_dns_names(san) {
         let entry = entry?;
         if dns_name_matches(entry, hostname) {
@@ -95,32 +112,73 @@ pub fn verify_hostname(cert_view: &CertView<'_>, hostname: &[u8]) -> Result<(), 
     Err(IdentityError::HostnameMismatch)
 }
 
-/// Iterator over dNSName entries in a SAN `GeneralNames` SEQUENCE.
-pub fn san_dns_names(san_bytes: &[u8]) -> SanDnsIter<'_> {
-    SanDnsIter { rest: san_bytes }
+fn match_ip_address(san: &[u8], expected: &[u8]) -> Result<(), IdentityError> {
+    for entry in san_ip_addresses(san) {
+        if entry? == expected {
+            return Ok(());
+        }
+    }
+    Err(IdentityError::HostnameMismatch)
 }
 
-pub struct SanDnsIter<'a> {
-    rest: &'a [u8],
+/// Iterator over dNSName entries in a SAN `GeneralNames` SEQUENCE.
+pub fn san_dns_names(san_bytes: &[u8]) -> SanDnsIter<'_> {
+    SanDnsIter(SanEntryWalker {
+        rest: san_bytes,
+        target_tag: DNS_NAME_TAG,
+    })
 }
+
+/// Iterator over iPAddress entries in a SAN `GeneralNames` SEQUENCE.
+/// Yields raw 4-byte (IPv4) or 16-byte (IPv6) network-byte-order octets.
+pub fn san_ip_addresses(san_bytes: &[u8]) -> SanIpAddressIter<'_> {
+    SanIpAddressIter(SanEntryWalker {
+        rest: san_bytes,
+        target_tag: IP_ADDRESS_TAG,
+    })
+}
+
+// GeneralName CHOICE tags (RFC 5280 §4.2.1.6): primitive, context-specific.
+const DNS_NAME_TAG: der::Tag = der::Tag::ContextSpecific {
+    constructed: false,
+    number: der::TagNumber(2),
+};
+const IP_ADDRESS_TAG: der::Tag = der::Tag::ContextSpecific {
+    constructed: false,
+    number: der::TagNumber(7),
+};
+
+pub struct SanDnsIter<'a>(SanEntryWalker<'a>);
+pub struct SanIpAddressIter<'a>(SanEntryWalker<'a>);
 
 impl<'a> Iterator for SanDnsIter<'a> {
     type Item = Result<&'a [u8], IdentityError>;
-
     fn next(&mut self) -> Option<Self::Item> {
+        self.0.next()
+    }
+}
+
+impl<'a> Iterator for SanIpAddressIter<'a> {
+    type Item = Result<&'a [u8], IdentityError>;
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.next()
+    }
+}
+
+struct SanEntryWalker<'a> {
+    rest: &'a [u8],
+    target_tag: der::Tag,
+}
+
+impl<'a> SanEntryWalker<'a> {
+    fn next(&mut self) -> Option<Result<&'a [u8], IdentityError>> {
         use der::asn1::AnyRef;
-        use der::{Decode, Reader, SliceReader, Tag, TagNumber, Tagged};
+        use der::{Decode, Reader, SliceReader, Tagged};
 
         // Fast-path for callers that keep polling after exhaustion.
         if self.rest.is_empty() {
             return None;
         }
-
-        // dNSName = [2] IMPLICIT IA5String → primitive, context-specific, tag 2.
-        const DNS_NAME_TAG: Tag = Tag::ContextSpecific {
-            constructed: false,
-            number: TagNumber(2),
-        };
 
         let mut reader = match SliceReader::new(self.rest) {
             Ok(r) => r,
@@ -137,7 +195,7 @@ impl<'a> Iterator for SanDnsIter<'a> {
                     return Some(Err(IdentityError::MalformedSan));
                 }
             };
-            if tlv.tag() == DNS_NAME_TAG {
+            if tlv.tag() == self.target_tag {
                 // Update `rest` so subsequent `next()` calls resume after
                 // this entry. `reader.position()` gives bytes consumed —
                 // checked-convert so a 16-bit `usize` target can't silently
@@ -406,6 +464,78 @@ mod tests {
         let san = [0x82, 0x05, b'a', b'b']; // claims 5 bytes, only 2 present
         let r = san_dns_names(&san).next().unwrap();
         assert_eq!(r, Err(IdentityError::MalformedSan));
+    }
+
+    #[test]
+    fn san_ip_v4_iter() {
+        let san = tlv(0x87, &[1, 1, 1, 1]);
+        let ips: Vec<&[u8]> = san_ip_addresses(&san).map(|r| r.unwrap()).collect();
+        assert_eq!(ips, vec![&[1, 1, 1, 1][..]]);
+    }
+
+    #[test]
+    fn san_ip_v6_iter() {
+        let v6 = [0u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 1, 2, 3, 4];
+        let san = tlv(0x87, &v6);
+        let ips: Vec<&[u8]> = san_ip_addresses(&san).map(|r| r.unwrap()).collect();
+        assert_eq!(ips, vec![&v6[..]]);
+    }
+
+    #[test]
+    fn san_ip_iter_skips_dns() {
+        let mut san = vec![];
+        san.extend(tlv(0x82, b"example.com"));
+        san.extend(tlv(0x87, &[1, 1, 1, 1]));
+        let ips: Vec<&[u8]> = san_ip_addresses(&san).map(|r| r.unwrap()).collect();
+        assert_eq!(ips, vec![&[1, 1, 1, 1][..]]);
+    }
+
+    fn rsa_view_with_san<'a>(san: &'a [u8]) -> CertView<'a> {
+        CertView::Ed25519 {
+            tbs: &[],
+            signature: &[0u8; 64],
+            pubkey: &[0u8; 32],
+            san: Some(san),
+            validity_der: &[],
+        }
+    }
+
+    #[test]
+    fn verify_hostname_ip_v4_match() {
+        let san = tlv(0x87, &[1, 1, 1, 1]);
+        let view = rsa_view_with_san(&san);
+        assert_eq!(verify_hostname(&view, b"1.1.1.1"), Ok(()));
+    }
+
+    #[test]
+    fn verify_hostname_ip_v4_mismatch() {
+        let san = tlv(0x87, &[1, 1, 1, 1]);
+        let view = rsa_view_with_san(&san);
+        assert_eq!(
+            verify_hostname(&view, b"1.2.3.4"),
+            Err(IdentityError::HostnameMismatch)
+        );
+    }
+
+    #[test]
+    fn verify_hostname_ip_literal_skips_dns_match() {
+        // dNSName "1.1.1.1" must NOT match IP literal 1.1.1.1
+        let san = tlv(0x82, b"1.1.1.1");
+        let view = rsa_view_with_san(&san);
+        assert_eq!(
+            verify_hostname(&view, b"1.1.1.1"),
+            Err(IdentityError::HostnameMismatch)
+        );
+    }
+
+    #[test]
+    fn verify_hostname_ip_v6_match() {
+        let v6 = [
+            0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01,
+        ];
+        let san = tlv(0x87, &v6);
+        let view = rsa_view_with_san(&san);
+        assert_eq!(verify_hostname(&view, b"2001:db8::1"), Ok(()));
     }
 
     fn ed25519_view(pubkey: &[u8; 32]) -> CertView<'_> {
