@@ -108,57 +108,44 @@ impl<'a> Iterator for SanDnsIter<'a> {
     type Item = Result<&'a [u8], IdentityError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        while !self.rest.is_empty() {
-            let (tag, len, rest_after_header) = match decode_tlv_header(self.rest) {
-                Ok(t) => t,
-                Err(e) => {
-                    self.rest = &[];
-                    return Some(Err(e));
-                }
-            };
-            if rest_after_header.len() < len {
+        use der::asn1::AnyRef;
+        use der::{Decode, Reader, SliceReader, Tag, TagNumber, Tagged};
+
+        // dNSName = [2] IMPLICIT IA5String → primitive, context-specific, tag 2.
+        const DNS_NAME_TAG: Tag = Tag::ContextSpecific {
+            constructed: false,
+            number: TagNumber(2),
+        };
+
+        let mut reader = match SliceReader::new(self.rest) {
+            Ok(r) => r,
+            Err(_) => {
                 self.rest = &[];
                 return Some(Err(IdentityError::MalformedSan));
             }
-            let (value, tail) = rest_after_header.split_at(len);
-            self.rest = tail;
-            // dNSName = [2] IMPLICIT IA5String → primitive, context-specific, tag 2.
-            const DNS_NAME_TAG: u8 = 0x82;
-            if tag == DNS_NAME_TAG {
+        };
+        while !reader.is_finished() {
+            let tlv = match AnyRef::decode(&mut reader) {
+                Ok(t) => t,
+                Err(_) => {
+                    self.rest = &[];
+                    return Some(Err(IdentityError::MalformedSan));
+                }
+            };
+            if tlv.tag() == DNS_NAME_TAG {
+                // Update `rest` so subsequent `next()` calls resume after
+                // this entry. `reader.position()` gives bytes consumed.
+                let pos: usize = u32::from(reader.position()) as usize;
+                let tail = &self.rest[pos..];
+                let value = tlv.value();
+                self.rest = tail;
                 return Some(Ok(value));
             }
             // Skip every other GeneralName variant.
         }
+        self.rest = &[];
         None
     }
-}
-
-/// Decode one DER TLV header: returns `(tag, length, &rest_after_header)`.
-/// Supports definite-form lengths up to 4 bytes (covers everything realistic
-/// for cert extensions; RFC 5280 doesn't pin a hard cap but indefinite-form
-/// length is forbidden by DER).
-fn decode_tlv_header(buf: &[u8]) -> Result<(u8, usize, &[u8]), IdentityError> {
-    if buf.len() < 2 {
-        return Err(IdentityError::MalformedSan);
-    }
-    let tag = buf[0];
-    let first_len = buf[1];
-    if first_len < 0x80 {
-        return Ok((tag, first_len as usize, &buf[2..]));
-    }
-    let n = (first_len & 0x7f) as usize;
-    if n == 0 || n > 4 || buf.len() < 2 + n {
-        return Err(IdentityError::MalformedSan);
-    }
-    // Up to 4 length bytes => values up to `u32::MAX`. Don't shift through
-    // `usize`: a 16-bit `usize` can't hold n > 2 bytes and would silently
-    // truncate. Accumulate as `u32`, then convert.
-    let mut len: u32 = 0;
-    for i in 0..n {
-        len = (len << 8) | (buf[2 + i] as u32);
-    }
-    let len: usize = len.try_into().map_err(|_| IdentityError::MalformedSan)?;
-    Ok((tag, len, &buf[2 + n..]))
 }
 
 /// Match one SAN dNSName pattern against a candidate hostname.
