@@ -111,6 +111,11 @@ impl<'a> Iterator for SanDnsIter<'a> {
         use der::asn1::AnyRef;
         use der::{Decode, Reader, SliceReader, Tag, TagNumber, Tagged};
 
+        // Fast-path for callers that keep polling after exhaustion.
+        if self.rest.is_empty() {
+            return None;
+        }
+
         // dNSName = [2] IMPLICIT IA5String → primitive, context-specific, tag 2.
         const DNS_NAME_TAG: Tag = Tag::ContextSpecific {
             constructed: false,
@@ -134,8 +139,16 @@ impl<'a> Iterator for SanDnsIter<'a> {
             };
             if tlv.tag() == DNS_NAME_TAG {
                 // Update `rest` so subsequent `next()` calls resume after
-                // this entry. `reader.position()` gives bytes consumed.
-                let pos: usize = u32::from(reader.position()) as usize;
+                // this entry. `reader.position()` gives bytes consumed —
+                // checked-convert so a 16-bit `usize` target can't silently
+                // truncate a position past `u16::MAX`.
+                let pos = match usize::try_from(u32::from(reader.position())) {
+                    Ok(p) => p,
+                    Err(_) => {
+                        self.rest = &[];
+                        return Some(Err(IdentityError::MalformedSan));
+                    }
+                };
                 let tail = &self.rest[pos..];
                 let value = tlv.value();
                 self.rest = tail;
