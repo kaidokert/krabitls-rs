@@ -321,7 +321,8 @@ where
     /// Equivalent to driving [`Self::write_client_hello`] against the
     /// `embedded_io::Write` impl for `&mut [u8]`, with the cursor
     /// arithmetic and slice re-borrow encapsulated. A too-small `buf`
-    /// surfaces as `ClientHelloError::Write(SliceWriteError::Full)`.
+    /// surfaces as
+    /// `ConnectionError::ClientHello(ClientHelloError::Write(SliceWriteError::Full))`.
     /// Use [`crate::client_hello_len`] to size `buf` exactly.
     pub fn write_client_hello_to_slice<'a>(
         self,
@@ -330,7 +331,7 @@ where
         hostname: Option<&[u8]>,
     ) -> WriteClientHelloToSliceResult<'a, H, C> {
         let total = buf.len();
-        let mut cursor: &mut [u8] = buf;
+        let mut cursor = &mut *buf;
         let next = self.write_client_hello(&mut cursor, x25519_pub, hostname)?;
         let written = total - cursor.len();
         Ok((&buf[..written], next))

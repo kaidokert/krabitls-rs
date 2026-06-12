@@ -292,7 +292,7 @@ fn run(host: &str, port: u16, capture_dir: Option<&str>, pin: Option<&Pin>) -> R
     let conn = TlsConnection::<Init, RustCrypto, RustCrypto>::new(ch_random, x25519_priv);
     let (ch_wire, conn) = conn
         .write_client_hello_to_slice(&mut ch_wire, &x25519_pub, Some(host_bytes))
-        .map_err(krabitls_err("write_client_hello"))?;
+        .map_err(krabitls_err("write_client_hello_to_slice"))?;
     stream.write_all(ch_wire)?;
     info!("sent ClientHello ({} bytes, SNI={host})", ch_wire.len());
 
