@@ -293,6 +293,12 @@ where
 // Init -> WaitServerHello
 // ============================================================================
 
+/// Successful return of [`TlsConnection::write_client_hello_to_slice`].
+pub type WriteClientHelloToSliceResult<'a, H, C> = Result<
+    (&'a [u8], TlsConnection<WaitServerHello, H, C>),
+    ConnectionError<embedded_io::SliceWriteError>,
+>;
+
 impl<H, C> TlsConnection<Init, H, C>
 where
     H: HkdfSha256,
@@ -307,6 +313,27 @@ where
             },
             _crypto: PhantomData,
         }
+    }
+
+    /// Convenience for the common in-memory case: serialize CH into `buf`,
+    /// return the written prefix and the next state.
+    ///
+    /// Equivalent to driving [`Self::write_client_hello`] against the
+    /// `embedded_io::Write` impl for `&mut [u8]`, with the cursor
+    /// arithmetic and slice re-borrow encapsulated. A too-small `buf`
+    /// surfaces as `ClientHelloError::Write(SliceWriteError::Full)`.
+    /// Use [`crate::client_hello_len`] to size `buf` exactly.
+    pub fn write_client_hello_to_slice<'a>(
+        self,
+        buf: &'a mut [u8],
+        x25519_pub: &[u8; 32],
+        hostname: Option<&[u8]>,
+    ) -> WriteClientHelloToSliceResult<'a, H, C> {
+        let total = buf.len();
+        let mut cursor: &mut [u8] = buf;
+        let next = self.write_client_hello(&mut cursor, x25519_pub, hostname)?;
+        let written = total - cursor.len();
+        Ok((&buf[..written], next))
     }
 
     /// Serialize CH into `out`, feed bytes into transcript, advance.
