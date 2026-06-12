@@ -23,6 +23,7 @@ pub mod aead;
 pub mod cert;
 pub mod ed25519_verify;
 pub mod hkdf;
+pub mod rsa_verify;
 #[cfg(feature = "validity")]
 pub mod time;
 
@@ -34,5 +35,6 @@ pub use cert::RsaCertSigAlg;
 pub use cert::{CertParseError, CertParser, CertView};
 pub use ed25519_verify::Ed25519VerifierProvider;
 pub use hkdf::{HkdfExpandError, HkdfSha256, Sha256Hasher};
+pub use rsa_verify::RsaVerifierProvider;
 #[cfg(feature = "validity")]
 pub use time::{FixedTime, TimeSource};

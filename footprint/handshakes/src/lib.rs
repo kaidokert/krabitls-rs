@@ -133,7 +133,7 @@ pub fn run_aes_ed25519() -> Result<(), ()> {
         })?;
 
         let conn = conn
-            .finalize_server_flight::<FLIGHT_BUF_CAP, DerCert, RustCrypto>(
+            .finalize_server_flight::<FLIGHT_BUF_CAP, DerCert, RustCrypto, RustCrypto>(
                 reassembler,
                 krabitls::VerifyMode::SelfSigned,
             )
@@ -195,7 +195,7 @@ mod jedisct_path {
             })?;
 
             let conn = conn
-                .finalize_server_flight::<FLIGHT_BUF_CAP, DerCert, RustCrypto>(
+                .finalize_server_flight::<FLIGHT_BUF_CAP, DerCert, RustCrypto, RustCrypto>(
                     reassembler,
                     krabitls::VerifyMode::SelfSigned,
                 )
@@ -255,7 +255,7 @@ mod chacha_path {
             })?;
 
             let conn = conn
-                .finalize_server_flight::<FLIGHT_BUF_CAP, DerCert, RustCrypto>(
+                .finalize_server_flight::<FLIGHT_BUF_CAP, DerCert, RustCrypto, RustCrypto>(
                     reassembler,
                     krabitls::VerifyMode::SelfSigned,
                 )
@@ -327,7 +327,7 @@ mod rsa_path {
             })?;
 
             let conn = conn
-                .finalize_server_flight::<FLIGHT_BUF_CAP, DerCert, RustCrypto>(
+                .finalize_server_flight::<FLIGHT_BUF_CAP, DerCert, RustCrypto, RustCrypto>(
                     reassembler,
                     krabitls::VerifyMode::SelfSigned,
                 )

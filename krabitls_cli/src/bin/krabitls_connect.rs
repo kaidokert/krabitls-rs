@@ -358,7 +358,7 @@ fn run(host: &str, port: u16, capture_dir: Option<&str>, pin: Option<&Pin>) -> R
             );
 
             let conn = conn
-                .finalize_server_flight::<FLIGHT_CAP, DerCert, RustCrypto>(
+                .finalize_server_flight::<FLIGHT_CAP, DerCert, RustCrypto, RustCrypto>(
                     &reassembler,
                     krabitls::VerifyMode::TrustOnPin,
                 )
@@ -428,7 +428,7 @@ fn run(host: &str, port: u16, capture_dir: Option<&str>, pin: Option<&Pin>) -> R
             );
 
             let conn = conn
-                .finalize_server_flight::<FLIGHT_CAP, DerCert, RustCrypto>(
+                .finalize_server_flight::<FLIGHT_CAP, DerCert, RustCrypto, RustCrypto>(
                     &reassembler,
                     krabitls::VerifyMode::TrustOnPin,
                 )

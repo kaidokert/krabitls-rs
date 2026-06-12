@@ -146,6 +146,22 @@ impl Verifier<[u8; 64]> for PreparedEd25519 {
     }
 }
 
+impl crate::traits::RsaVerifierProvider for RustCrypto {
+    // `RsaVerifierKey` enums over modulus size and impls
+    // `signature::Verifier<RsaPssSig<'_>>` (always) plus
+    // `signature::Verifier<RsaPkcs1Sig<'_>>` (unless `rsa_pss_only`).
+    #[cfg(feature = "rsa")]
+    type Verifier = crate::backends::rsa_verify::RsaVerifierKey;
+
+    #[cfg(feature = "rsa")]
+    fn prepare_rsa(
+        modulus: &[u8],
+        exponent: u32,
+    ) -> Result<Self::Verifier, crate::backends::rsa_verify::RsaVerifyError> {
+        crate::backends::rsa_verify::RsaVerifierKey::new(modulus, exponent)
+    }
+}
+
 impl Ed25519VerifierProvider for RustCrypto {
     // Despite the marker name, the Ed25519 verify wired here is
     // `ed25519_heapless` (not from the RustCrypto org). Bundled with the

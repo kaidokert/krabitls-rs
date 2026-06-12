@@ -236,7 +236,7 @@ fn cmd_conn_negotiate(seed: u64) -> Result<()> {
     conn.feed_server_record(&sf_bytes, &mut reassembler, &mut pt)
         .map_err(|e| format!("feed_server_record: {e:?}"))?;
     let conn = conn
-        .finalize_server_flight::<FLIGHT_CAP, DerCert, RustCrypto>(
+        .finalize_server_flight::<FLIGHT_CAP, DerCert, RustCrypto, RustCrypto>(
             &reassembler,
             VerifyMode::SelfSigned,
         )
@@ -382,7 +382,7 @@ fn renegotiate_app_secrets(
     conn.feed_server_record(&sf_bytes, &mut reassembler, &mut pt)
         .map_err(|e| format!("feed_server_record: {e:?}"))?;
     let conn = conn
-        .finalize_server_flight::<FLIGHT_CAP, DerCert, RustCrypto>(
+        .finalize_server_flight::<FLIGHT_CAP, DerCert, RustCrypto, RustCrypto>(
             &reassembler,
             VerifyMode::SelfSigned,
         )

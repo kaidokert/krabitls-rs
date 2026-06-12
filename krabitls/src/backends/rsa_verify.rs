@@ -37,6 +37,15 @@ use sha2_v11::{Digest, Sha256};
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct RsaVerifyError;
 
+/// RSA-PSS signature wrapper for the canonical [`signature::Verifier`]
+/// interface. Borrows the raw signature bytes; length must match the
+/// modulus (128 B for RSA-1024, 256 B for RSA-2048).
+pub struct RsaPssSig<'a>(pub &'a [u8]);
+
+/// RSA-PKCS#1-v1.5 signature wrapper for [`signature::Verifier`].
+#[cfg(not(feature = "rsa_pss_only"))]
+pub struct RsaPkcs1Sig<'a>(pub &'a [u8]);
+
 /// 1024-bit RSA modulus carrier — `FixedUInt<u32, 32>` = 32 × 32 bits.
 /// Compiled out under `feature = "rsa_2048_only"`.
 #[cfg(not(feature = "rsa_2048_only"))]
@@ -156,6 +165,21 @@ impl RsaVerifierKey {
                     .map_err(|_| RsaVerifyError)
             }
         }
+    }
+}
+
+impl<'a> signature::Verifier<RsaPssSig<'a>> for RsaVerifierKey {
+    fn verify(&self, msg: &[u8], sig: &RsaPssSig<'a>) -> Result<(), signature::Error> {
+        self.verify_pss_sha256(msg, sig.0)
+            .map_err(|_| signature::Error::new())
+    }
+}
+
+#[cfg(not(feature = "rsa_pss_only"))]
+impl<'a> signature::Verifier<RsaPkcs1Sig<'a>> for RsaVerifierKey {
+    fn verify(&self, msg: &[u8], sig: &RsaPkcs1Sig<'a>) -> Result<(), signature::Error> {
+        self.verify_pkcs1v15_sha256(msg, sig.0)
+            .map_err(|_| signature::Error::new())
     }
 }
 
