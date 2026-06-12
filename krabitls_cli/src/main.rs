@@ -194,16 +194,13 @@ fn cmd_conn_init(seed: u64, use_random: bool) -> Result<()> {
         krabitls::ZeroBuf::<32>::new(priv_bytes),
     );
     let mut record = [0u8; krabitls::CLIENT_HELLO_LEN];
-    {
-        let mut cursor: &mut [u8] = &mut record;
-        let _ = conn
-            .write_client_hello(&mut cursor, &pub_bytes, None)
-            .map_err(|e| format!("write_client_hello: {e:?}"))?;
-    }
+    let (ch_wire, _) = conn
+        .write_client_hello_to_slice(&mut record, &pub_bytes, None)
+        .map_err(|e| format!("write_client_hello_to_slice: {e:?}"))?;
 
     let seq = next_packet_seq()?;
     let path = packet_path(seq, "c2s", "ClientHello");
-    fs::write(&path, record)?;
+    fs::write(&path, ch_wire)?;
     println!("wrote {}", path.display());
     Ok(())
 }

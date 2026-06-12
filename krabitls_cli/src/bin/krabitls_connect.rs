@@ -290,16 +290,9 @@ fn run(host: &str, port: u16, capture_dir: Option<&str>, pin: Option<&Pin>) -> R
     let ch_len = krabitls::client_hello_len(Some(host_bytes.len()));
     let mut ch_wire = vec![0u8; ch_len];
     let conn = TlsConnection::<Init, RustCrypto, RustCrypto>::new(ch_random, x25519_priv);
-    // Inner block scopes the cursor borrow so ch_wire is reusable below.
-    let (conn, written) = {
-        let mut cursor: &mut [u8] = &mut ch_wire;
-        let conn = conn
-            .write_client_hello(&mut cursor, &x25519_pub, Some(host_bytes))
-            .map_err(krabitls_err("write_client_hello"))?;
-        let written = ch_len - cursor.len();
-        (conn, written)
-    };
-    let ch_wire = &ch_wire[..written];
+    let (ch_wire, conn) = conn
+        .write_client_hello_to_slice(&mut ch_wire, &x25519_pub, Some(host_bytes))
+        .map_err(krabitls_err("write_client_hello_to_slice"))?;
     stream.write_all(ch_wire)?;
     info!("sent ClientHello ({} bytes, SNI={host})", ch_wire.len());
 
