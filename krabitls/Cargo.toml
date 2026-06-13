@@ -76,10 +76,11 @@ chacha20poly1305 = { version = "0.10", default-features = false, optional = true
 sha2 = { version = "0.10", default-features = false, features = ["force-soft-compact"] }
 hmac = { version = "0.12", default-features = false }
 hkdf = { version = "0.12", default-features = false }
-ed25519_heapless = { version = "0.0.3", default-features = false, features = ["fixed-bigint", "sha512-sha2"] }
+ed25519_heapless = { version = "0.2.0", default-features = false, features = ["fixed-bigint", "sha512-sha2"] }
 fixed-bigint = { version = "0.3", default-features = false, features = ["use-unsafe", "zeroize"] }
 der = { version = "0.8.0", default-features = false, features = ["oid"] }
 zeroize = { version = "1.8", default-features = false, features = ["derive"] }
 heapless = { version = "0.9", default-features = false }
 subtle = { version = "2.6", default-features = false }
 thiserror = { version = "2", default-features = false }
+signature = { version = "3", default-features = false }

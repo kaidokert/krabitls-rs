@@ -13,7 +13,7 @@ chacha20 = ["krabitls/chacha20"]
 
 [dependencies]
 clap = { version = "4.6.1", features = ["derive"] }
-ed25519_heapless = { version = "0.0.3", default-features = false, features = ["fixed-bigint", "sha512-sha2"] }
+ed25519_heapless = { version = "0.2.0", default-features = false, features = ["fixed-bigint", "sha512-sha2"] }
 fixed-bigint = { version = "0.3", default-features = false, features = ["use-unsafe"] }
 # `replay` exposes typestate constructors for entering at WaitServerHello /
 # WaitServerFlight / AppData with pre-derived secrets — needed by the

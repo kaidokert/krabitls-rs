@@ -25,7 +25,9 @@ use crate::server_flight::ServerPubkey;
 use crate::server_flight::verify_server_flight;
 #[cfg(feature = "chacha20")]
 use crate::traits::ChaCha20Poly1305Aead;
-use crate::traits::{Aes128GcmAead, CertParser, Ed25519Verify, HkdfSha256};
+use crate::traits::{
+    Aes128GcmAead, CertParser, Ed25519VerifierProvider, HkdfSha256, RsaVerifierProvider,
+};
 use crate::{
     ClientHelloError, DecryptError, EncryptError, FlightError, ParseError, parse_server_hello,
     write_client_hello,
@@ -590,7 +592,15 @@ where
 
     /// Verify the flight (CV + Finished, plus self-sig if [`VerifyMode::SelfSigned`])
     /// and advance to [`ServerFlightDone`].
-    pub fn finalize_server_flight<const N: usize, P: CertParser, E: Ed25519Verify>(
+    ///
+    /// `R` is the RSA-verifier provider. Without `feature = "rsa"` the trait
+    /// is empty and any backend marker (e.g. `RustCrypto`) satisfies it.
+    pub fn finalize_server_flight<
+        const N: usize,
+        P: CertParser,
+        E: Ed25519VerifierProvider,
+        R: RsaVerifierProvider,
+    >(
         mut self,
         reassembler: &ServerFlightReassembler<N>,
         mode: VerifyMode,
@@ -599,7 +609,7 @@ where
             .flight_bytes()
             .ok_or(ConnectionError::IncompleteFlight)?;
         let verify_self_sig = matches!(mode, VerifyMode::SelfSigned);
-        let verified = verify_server_flight::<H, P, E>(
+        let verified = verify_server_flight::<H, P, E, R>(
             &mut self.transcript,
             plaintext,
             &self.state.s_hs_ts,
@@ -643,7 +653,12 @@ where
         )
     }
 
-    pub fn finalize_server_flight<const N: usize, P: CertParser, E: Ed25519Verify>(
+    pub fn finalize_server_flight<
+        const N: usize,
+        P: CertParser,
+        E: Ed25519VerifierProvider,
+        R: RsaVerifierProvider,
+    >(
         mut self,
         reassembler: &ServerFlightReassembler<N>,
         mode: VerifyMode,
@@ -653,7 +668,7 @@ where
             .flight_bytes()
             .ok_or(ConnectionError::IncompleteFlight)?;
         let verify_self_sig = matches!(mode, VerifyMode::SelfSigned);
-        let verified = verify_server_flight::<H, P, E>(
+        let verified = verify_server_flight::<H, P, E, R>(
             &mut self.transcript,
             plaintext,
             &self.state.s_hs_ts,
@@ -1233,7 +1248,7 @@ mod tests {
         assert_eq!(step, FlightStep::Ready);
 
         let done = conn
-            .finalize_server_flight::<512, DerCert, RustCrypto>(
+            .finalize_server_flight::<512, DerCert, RustCrypto, RustCrypto>(
                 &reassembler,
                 VerifyMode::SelfSigned,
             )
@@ -1268,7 +1283,7 @@ mod tests {
             .unwrap();
 
         let reassembler: ServerFlightReassembler<512> = ServerFlightReassembler::new();
-        let err = match conn.finalize_server_flight::<512, DerCert, RustCrypto>(
+        let err = match conn.finalize_server_flight::<512, DerCert, RustCrypto, RustCrypto>(
             &reassembler,
             VerifyMode::SelfSigned,
         ) {
@@ -1363,7 +1378,7 @@ mod tests {
         conn.feed_server_record(&FIXTURE_PACKET_3, &mut reassembler, &mut scratch)
             .unwrap();
         let conn = conn
-            .finalize_server_flight::<512, DerCert, RustCrypto>(
+            .finalize_server_flight::<512, DerCert, RustCrypto, RustCrypto>(
                 &reassembler,
                 VerifyMode::SelfSigned,
             )
@@ -1402,7 +1417,7 @@ mod tests {
         conn.feed_server_record(&FIXTURE_PACKET_3, &mut reassembler, &mut scratch)
             .unwrap();
         let conn = conn
-            .finalize_server_flight::<512, DerCert, RustCrypto>(
+            .finalize_server_flight::<512, DerCert, RustCrypto, RustCrypto>(
                 &reassembler,
                 VerifyMode::SelfSigned,
             )
@@ -1448,7 +1463,7 @@ mod tests {
         conn.feed_server_record(&FIXTURE_PACKET_3, &mut reassembler, &mut scratch)
             .unwrap();
         let conn = conn
-            .finalize_server_flight::<512, DerCert, RustCrypto>(
+            .finalize_server_flight::<512, DerCert, RustCrypto, RustCrypto>(
                 &reassembler,
                 VerifyMode::SelfSigned,
             )
@@ -1493,7 +1508,7 @@ mod tests {
         conn.feed_server_record(&FIXTURE_PACKET_3, &mut reassembler, &mut scratch)
             .unwrap();
         let conn = conn
-            .finalize_server_flight::<512, DerCert, RustCrypto>(
+            .finalize_server_flight::<512, DerCert, RustCrypto, RustCrypto>(
                 &reassembler,
                 VerifyMode::SelfSigned,
             )

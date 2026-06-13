@@ -358,12 +358,14 @@ fn run(host: &str, port: u16, capture_dir: Option<&str>, pin: Option<&Pin>) -> R
             );
 
             let conn = conn
-                .finalize_server_flight::<FLIGHT_CAP, DerCert, RustCrypto>(
+                .finalize_server_flight::<FLIGHT_CAP, DerCert, RustCrypto, RustCrypto>(
                     &reassembler,
                     krabitls::VerifyMode::TrustOnPin,
                 )
                 .map_err(krabitls_err("finalize_server_flight"))?;
-            info!("server flight verified (cert outer-sig + CertificateVerify + Finished)");
+            info!(
+                "server flight verified (CertificateVerify + Finished; outer cert signature skipped under TrustOnPin)"
+            );
             inspect_cert(&reassembler, host, pin)?;
 
             if let Some(dir) = capture_dir {
@@ -428,12 +430,14 @@ fn run(host: &str, port: u16, capture_dir: Option<&str>, pin: Option<&Pin>) -> R
             );
 
             let conn = conn
-                .finalize_server_flight::<FLIGHT_CAP, DerCert, RustCrypto>(
+                .finalize_server_flight::<FLIGHT_CAP, DerCert, RustCrypto, RustCrypto>(
                     &reassembler,
                     krabitls::VerifyMode::TrustOnPin,
                 )
                 .map_err(krabitls_err("finalize_server_flight"))?;
-            info!("server flight verified (cert outer-sig + CertificateVerify + Finished)");
+            info!(
+                "server flight verified (CertificateVerify + Finished; outer cert signature skipped under TrustOnPin)"
+            );
             inspect_cert(&reassembler, host, pin)?;
 
             if let Some(dir) = capture_dir {

@@ -76,8 +76,8 @@ pub use traits::ChaCha20Poly1305Aead;
 #[cfg(feature = "rsa")]
 pub use traits::RsaCertSigAlg;
 pub use traits::{
-    AeadError, Aes128GcmAead, CertParseError, CertParser, CertView, Ed25519Verify, HkdfExpandError,
-    HkdfSha256, Sha256Hasher,
+    AeadError, Aes128GcmAead, CertParseError, CertParser, CertView, Ed25519VerifierProvider,
+    HkdfExpandError, HkdfSha256, Sha256Hasher,
 };
 #[cfg(feature = "validity")]
 pub use traits::{FixedTime, TimeSource};
@@ -1541,7 +1541,8 @@ mod tests {
         }
 
         // Verify cert's self-signature.
-        let view = verify_self_signed_cert::<DerCert, RustCrypto>(cert_der).expect("cert self-sig");
+        let view = verify_self_signed_cert::<DerCert, RustCrypto, RustCrypto>(cert_der)
+            .expect("cert self-sig");
         let pk = match view {
             CertView::Ed25519 { pubkey, .. } => *pubkey,
             #[cfg(feature = "rsa")]
@@ -1553,7 +1554,7 @@ mod tests {
         let mut transcript = TranscriptHash::<RustCrypto>::new();
         transcript.update_record(&FIXTURE_CLIENT_HELLO).unwrap();
         transcript.update_record(&FIXTURE_SERVER_HELLO).unwrap();
-        let result = verify_server_flight::<RustCrypto, DerCert, RustCrypto>(
+        let result = verify_server_flight::<RustCrypto, DerCert, RustCrypto, RustCrypto>(
             &mut transcript,
             content,
             &make_fixture_s_hs_traffic_secret(),
@@ -1566,19 +1567,21 @@ mod tests {
         );
     }
 
-    /// Stub Ed25519Verify backend that always rejects. Used to prove the
-    /// `E: Ed25519Verify` generic actually wires through to the verify
+    /// Stub Ed25519VerifierProvider backend that always rejects. Used to prove the
+    /// `E: Ed25519VerifierProvider` generic actually wires through to the verify
     /// callsites — swapping the backend should change observed behavior
     /// even with the same cert / signature bytes.
     struct AlwaysReject;
-    impl crate::traits::Ed25519Verify for AlwaysReject {
-        type Cache = ();
-        fn new_cache() {}
-        fn verify(_: &[u8; 32], _: &[u8], _: &[u8; 64]) -> bool {
-            false
+    struct AlwaysRejectVerifier;
+    impl signature::Verifier<[u8; 64]> for AlwaysRejectVerifier {
+        fn verify(&self, _: &[u8], _: &[u8; 64]) -> Result<(), signature::Error> {
+            Err(signature::Error::new())
         }
-        fn verify_with_cache(_: &(), _: &[u8; 32], _: &[u8], _: &[u8; 64]) -> bool {
-            false
+    }
+    impl crate::traits::Ed25519VerifierProvider for AlwaysReject {
+        type Verifier = AlwaysRejectVerifier;
+        fn prepare_ed25519(_: &[u8; 32]) -> Self::Verifier {
+            AlwaysRejectVerifier
         }
     }
 
@@ -1589,7 +1592,8 @@ mod tests {
         let mut buf = [0u8; 512];
         let len = fixture_cert_der_copy(&mut buf);
         let cert_der = &buf[..len];
-        let err = verify_self_signed_cert::<DerCert, AlwaysReject>(cert_der).unwrap_err();
+        let err =
+            verify_self_signed_cert::<DerCert, AlwaysReject, RustCrypto>(cert_der).unwrap_err();
         assert_eq!(err, FlightError::CertSelfSignatureInvalid);
     }
 
@@ -1608,7 +1612,7 @@ mod tests {
         let mut transcript = TranscriptHash::<RustCrypto>::new();
         transcript.update_record(&FIXTURE_CLIENT_HELLO).unwrap();
         transcript.update_record(&FIXTURE_SERVER_HELLO).unwrap();
-        let err = verify_server_flight::<RustCrypto, DerCert, AlwaysReject>(
+        let err = verify_server_flight::<RustCrypto, DerCert, AlwaysReject, RustCrypto>(
             &mut transcript,
             content,
             &make_fixture_s_hs_traffic_secret(),
@@ -1750,7 +1754,7 @@ mod tests {
         let mut transcript = TranscriptHash::<RustCrypto>::new();
         transcript.update_record(&FIXTURE_CLIENT_HELLO).unwrap();
         transcript.update_record(&FIXTURE_SERVER_HELLO).unwrap();
-        let err = verify_server_flight::<RustCrypto, DerCert, RustCrypto>(
+        let err = verify_server_flight::<RustCrypto, DerCert, RustCrypto, RustCrypto>(
             &mut transcript,
             &tampered[..content.len()],
             &make_fixture_s_hs_traffic_secret(),
@@ -1801,7 +1805,7 @@ mod tests {
         let mut transcript = TranscriptHash::<RustCrypto>::new();
         transcript.update_record(&FIXTURE_CLIENT_HELLO).unwrap();
         transcript.update_record(&FIXTURE_SERVER_HELLO).unwrap();
-        verify_server_flight::<RustCrypto, DerCert, RustCrypto>(
+        verify_server_flight::<RustCrypto, DerCert, RustCrypto, RustCrypto>(
             &mut transcript,
             content,
             &make_fixture_s_hs_traffic_secret(),
@@ -1876,7 +1880,7 @@ mod tests {
         let mut transcript = TranscriptHash::<RustCrypto>::new();
         transcript.update_record(&FIXTURE_CLIENT_HELLO).unwrap();
         transcript.update_record(&FIXTURE_SERVER_HELLO).unwrap();
-        verify_server_flight::<RustCrypto, DerCert, RustCrypto>(
+        verify_server_flight::<RustCrypto, DerCert, RustCrypto, RustCrypto>(
             &mut transcript,
             content,
             &make_fixture_s_hs_traffic_secret(),
@@ -1913,7 +1917,7 @@ mod tests {
         let mut transcript = TranscriptHash::<RustCrypto>::new();
         transcript.update_record(&FIXTURE_CLIENT_HELLO).unwrap();
         transcript.update_record(&FIXTURE_SERVER_HELLO).unwrap();
-        verify_server_flight::<RustCrypto, DerCert, RustCrypto>(
+        verify_server_flight::<RustCrypto, DerCert, RustCrypto, RustCrypto>(
             &mut transcript,
             content,
             &make_fixture_s_hs_traffic_secret(),
@@ -2131,7 +2135,8 @@ mod tests {
         };
         let th = TranscriptDigest::new([0u8; 32]);
         let err =
-            server_flight::verify_certificate_verify::<RustCrypto>(&view, &th, &body).unwrap_err();
+            server_flight::verify_certificate_verify::<RustCrypto, RustCrypto>(&view, &th, &body)
+                .unwrap_err();
         assert_eq!(err, FlightError::TrailingBytes);
     }
 
@@ -2209,7 +2214,7 @@ mod tests {
             let mut transcript = TranscriptHash::<RustCrypto>::new();
             transcript.update_record(&FIXTURE_RSA_CLIENT_HELLO).unwrap();
             transcript.update_record(&FIXTURE_RSA_SERVER_HELLO).unwrap();
-            verify_server_flight::<RustCrypto, DerCert, RustCrypto>(
+            verify_server_flight::<RustCrypto, DerCert, RustCrypto, RustCrypto>(
                 &mut transcript,
                 content,
                 &s_hs_ts,
