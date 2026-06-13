@@ -40,10 +40,12 @@ pub struct RsaVerifyError;
 /// RSA-PSS signature wrapper for the canonical [`signature::Verifier`]
 /// interface. Borrows the raw signature bytes; length must match the
 /// modulus (128 B for RSA-1024, 256 B for RSA-2048).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RsaPssSig<'a>(pub &'a [u8]);
 
 /// RSA-PKCS#1-v1.5 signature wrapper for [`signature::Verifier`].
 #[cfg(not(feature = "rsa_pss_only"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RsaPkcs1Sig<'a>(pub &'a [u8]);
 
 /// 1024-bit RSA modulus carrier — `FixedUInt<u32, 32>` = 32 × 32 bits.

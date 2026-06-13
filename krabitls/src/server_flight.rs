@@ -507,15 +507,22 @@ pub(crate) fn verify_server_flight<
         CertView::Rsa { .. } => None,
     };
 
-    // RSA modular precomputation is expensive enough to share.
+    // RSA modular precomputation is expensive enough to share. Map a
+    // construction failure to whichever check fires first against it —
+    // `CertSelfSignatureInvalid` when we're about to verify the outer
+    // self-sig, `CertVerifyInvalid` when the cert outer-sig step was
+    // skipped (e.g. `TrustOnPin`) and `CertificateVerify` is next.
     #[cfg(feature = "rsa")]
     let rsa_v: Option<R::Verifier> = match &cert_view {
         CertView::Rsa {
             modulus, exponent, ..
-        } => Some(
-            R::prepare_rsa(modulus, *exponent)
-                .map_err(|_| FlightError::CertSelfSignatureInvalid)?,
-        ),
+        } => Some(R::prepare_rsa(modulus, *exponent).map_err(|_| {
+            if verify_cert_self_sig {
+                FlightError::CertSelfSignatureInvalid
+            } else {
+                FlightError::CertVerifyInvalid
+            }
+        })?),
         _ => None,
     };
 
