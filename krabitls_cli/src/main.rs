@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::Parser;
-use krabitls::reassembler::ServerFlightReassembler;
+use krabitls::ServerFlightReassembler;
 use krabitls::{
     Aes128GcmSha256, AppData, CLIENT_FINISHED_LEN, DerCert, Init, RustCrypto, TlsConnection,
     VerifyMode,
@@ -358,9 +358,7 @@ fn cmd_receive(seed: u64) -> Result<()> {
 
 /// Re-run the full handshake (CH+SH+sf already on disk) to recover the app
 /// traffic secrets. Called only when `state/session.bin` is missing.
-fn renegotiate_app_secrets(
-    priv_bytes: &[u8; 32],
-) -> Result<(krabitls::newtype::Secret, krabitls::newtype::Secret)> {
+fn renegotiate_app_secrets(priv_bytes: &[u8; 32]) -> Result<(krabitls::Secret, krabitls::Secret)> {
     let ch_bytes = read_packet(|d, n| d == "c2s" && n.contains("ClientHello"))?;
     let sh_bytes = read_packet(|d, n| d == "s2c" && n.contains("ServerHello"))?;
     let sf_bytes = read_packet(|d, n| d == "s2c" && n.contains("ServerFlight"))?;
@@ -395,10 +393,7 @@ fn renegotiate_app_secrets(
 // Session-state file (`state/session.bin`)
 // =====================================================================
 
-fn write_session_state(
-    c_ap_ts: &krabitls::newtype::Secret,
-    s_ap_ts: &krabitls::newtype::Secret,
-) -> Result<()> {
+fn write_session_state(c_ap_ts: &krabitls::Secret, s_ap_ts: &krabitls::Secret) -> Result<()> {
     fs::create_dir_all(STATE_DIR)?;
     let mut buf = [0u8; 64];
     buf[..32].copy_from_slice(c_ap_ts.as_bytes());
@@ -408,7 +403,7 @@ fn write_session_state(
 }
 
 /// Persisted `(c_ap_ts, s_ap_ts)`; `None` if no prior `--conn-negotiate`.
-fn load_session_state() -> Result<Option<(krabitls::newtype::Secret, krabitls::newtype::Secret)>> {
+fn load_session_state() -> Result<Option<(krabitls::Secret, krabitls::Secret)>> {
     let path = Path::new(SESSION_STATE_FILE);
     if !path.exists() {
         return Ok(None);
@@ -426,10 +421,7 @@ fn load_session_state() -> Result<Option<(krabitls::newtype::Secret, krabitls::n
     let mut s = [0u8; 32];
     c.copy_from_slice(&bytes[..32]);
     s.copy_from_slice(&bytes[32..]);
-    Ok(Some((
-        krabitls::newtype::Secret::from(c),
-        krabitls::newtype::Secret::from(s),
-    )))
+    Ok(Some((krabitls::Secret::from(c), krabitls::Secret::from(s))))
 }
 
 // =====================================================================

@@ -10,8 +10,8 @@ use critical_section::Mutex;
 
 #[cfg(feature = "chacha20")]
 use krabitls::ChaCha20Poly1305Sha256;
-use krabitls::newtype::Secret;
-use krabitls::reassembler::ServerFlightReassembler;
+use krabitls::Secret;
+use krabitls::ServerFlightReassembler;
 use krabitls::{
     Aes128GcmSha256, CLIENT_FINISHED_LEN, DerCert, Replay, RustCrypto, ServerPubkey, TlsConnection,
     TranscriptHash, WaitServerFlight, ZeroBuf,
