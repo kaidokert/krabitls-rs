@@ -29,6 +29,10 @@ pub use aead::ChaCha20Poly1305Sha256;
 pub use aead::{Aes128GcmSha256, CipherSuite, DecryptError, EncryptError};
 #[cfg(feature = "jedisct")]
 pub use backends::JedisctCrypto;
+#[cfg(all(feature = "rsa", not(feature = "rsa_pss_only")))]
+pub use backends::rsa_verify::RsaPkcs1Sig;
+#[cfg(feature = "rsa")]
+pub use backends::rsa_verify::RsaPssSig;
 pub use backends::{DerCert, RustCrypto};
 #[cfg(feature = "rsa")]
 pub use backends::{RsaVerifierKey, RsaVerifyError};
@@ -82,7 +86,7 @@ pub use traits::ChaCha20Poly1305Aead;
 pub use traits::RsaCertSigAlg;
 pub use traits::{
     AeadError, Aes128GcmAead, CertParseError, CertParser, CertView, Ed25519VerifierProvider,
-    HkdfExpandError, HkdfSha256, Sha256Hasher,
+    HkdfExpandError, HkdfSha256, RsaVerifierProvider, Sha256Hasher,
 };
 #[cfg(feature = "validity")]
 pub use traits::{FixedTime, TimeSource};

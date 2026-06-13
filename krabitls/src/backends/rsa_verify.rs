@@ -67,13 +67,12 @@ type U2048 = FixedUInt<u32, 64>;
 ///
 /// Use this when you're going to verify ≥2 signatures against the same
 /// RSA key — e.g. the cert's own self-signature (PKCS#1) and the TLS
-/// `CertificateVerify` (PSS). [`crate::verify_server_flight`] threads
-/// one of these through `verify_self_signed_cert_with_cache` +
-/// `verify_certificate_verify_with_cache` automatically.
-///
-/// For single-shot callers, the free functions
-/// ([`verify_pkcs1v15_sha256`] / [`verify_pss_sha256`]) still work and
-/// are simpler — they just construct + verify in one go.
+/// `CertificateVerify` (PSS). The typestate path threads one of these
+/// through the server-flight verify automatically; downstream callers can
+/// build one via [`Self::new`] and verify either via the inherent
+/// `verify_pkcs1v15_sha256` / `verify_pss_sha256` methods or via the
+/// `signature::Verifier<RsaPssSig>` / `signature::Verifier<RsaPkcs1Sig>`
+/// trait impls.
 // no_alloc: keep the large variant inline rather than boxing it.
 #[allow(clippy::large_enum_variant)]
 pub enum RsaVerifierKey {
