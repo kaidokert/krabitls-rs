@@ -6,16 +6,19 @@
 
 #![cfg_attr(not(test), no_std)]
 
-pub mod aead;
-pub mod backends;
-pub mod client_flight;
-pub mod connection;
-pub mod hkdf;
-pub mod identity;
-pub mod newtype;
-pub mod reassembler;
-pub mod server_flight;
-pub mod traits;
+// Internal modules. External callers should reach for the curated
+// re-exports at the crate root, not the module paths. Only `consts`
+// (further down) is exposed as a namespace, intentionally.
+pub(crate) mod aead;
+pub(crate) mod backends;
+pub(crate) mod client_flight;
+pub(crate) mod connection;
+pub(crate) mod hkdf;
+pub(crate) mod identity;
+pub(crate) mod newtype;
+pub(crate) mod reassembler;
+pub(crate) mod server_flight;
+pub(crate) mod traits;
 
 // Public surface — typestate API + the trait/backend/error types it
 // surfaces. The sans-io free functions, RecordKeys, and the verify-chain
@@ -36,6 +39,7 @@ pub use connection::{
     WaitServerHello,
 };
 pub use hkdf::{HkdfLabelError, TranscriptError, TranscriptHash};
+pub use reassembler::{ReassemblyError, ServerFlightReassembler};
 // Lib-test convenience re-exports — internal helpers reachable via `crate::foo`
 // inside the in-crate tests module. External callers go through TlsConnection.
 // `unused_imports` allowed because not every feature combo exercises every test helper.
@@ -56,6 +60,7 @@ pub(crate) use hkdf::{
     EMPTY_TRANSCRIPT_HASH, application_traffic_secrets, derive_secret, early_secret, finished_mac,
     handshake_secret, handshake_traffic_secrets, hkdf_expand_label, master_secret, traffic_keys,
 };
+pub use identity::{IdentityError, PinnedPubkey, verify_hostname, verify_pinned_pubkey};
 #[cfg(feature = "validity")]
 pub use identity::{ValidityError, verify_validity};
 #[cfg(feature = "chacha20")]
@@ -2226,16 +2231,16 @@ mod tests {
         #[test]
         fn rsa_verify_rejects_wrong_signature_length() {
             // `FixedUInt::from_be_bytes` requires an exact-length slice; the
-            // public RSA verify APIs must guard against wrong-length input
-            // and return `RsaVerifyError` instead of panicking. This test
-            // would have panicked before the length checks were added.
-            use crate::backends::rsa_verify::{verify_pkcs1v15_sha256, verify_pss_sha256};
+            // RSA verify APIs must guard against wrong-length input and
+            // return `RsaVerifyError` instead of panicking. This test would
+            // have panicked before the length checks were added.
             let modulus_2048 = [0xFFu8; 256]; // contents don't matter, only length
             let exponent: u32 = 65537;
+            let vk = RsaVerifierKey::new(&modulus_2048, exponent).expect("vk");
             // 200-byte signature for a 256-byte modulus → reject.
             let short_sig = [0u8; 200];
-            assert!(verify_pkcs1v15_sha256(&modulus_2048, exponent, b"msg", &short_sig).is_err());
-            assert!(verify_pss_sha256(&modulus_2048, exponent, b"msg", &short_sig).is_err());
+            assert!(vk.verify_pkcs1v15_sha256(b"msg", &short_sig).is_err());
+            assert!(vk.verify_pss_sha256(b"msg", &short_sig).is_err());
         }
 
         #[test]

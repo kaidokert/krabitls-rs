@@ -22,10 +22,10 @@ use std::time::Duration;
 
 #[cfg(feature = "chacha20")]
 use krabitls::ChaCha20Poly1305Sha256;
+use krabitls::ServerFlightReassembler;
 #[cfg(feature = "chacha20")]
 use krabitls::consts::CIPHER_CHACHA20_POLY1305_SHA256;
 use krabitls::consts::{CIPHER_AES_128_GCM_SHA256, CT_APPLICATION_DATA, CT_HANDSHAKE};
-use krabitls::reassembler::ServerFlightReassembler;
 use krabitls::{
     Aes128GcmSha256, CLIENT_FINISHED_LEN, CertParser, CertView, DerCert, FlightStep, Init,
     NegotiatedSuite, RustCrypto, TlsConnection, ZeroBuf, extract_cert_der, parse_server_flight,
@@ -63,8 +63,8 @@ enum Pin {
 }
 
 impl Pin {
-    fn as_pinned(&self) -> krabitls::identity::PinnedPubkey<'_> {
-        use krabitls::identity::PinnedPubkey;
+    fn as_pinned(&self) -> krabitls::PinnedPubkey<'_> {
+        use krabitls::PinnedPubkey;
         match self {
             Pin::Ed25519(pk) => PinnedPubkey::Ed25519(*pk),
             #[cfg(feature = "rsa")]
@@ -238,7 +238,7 @@ fn inspect_cert(
         <DerCert as CertParser>::parse(cert_der).map_err(krabitls_err("CertParser::parse"))?;
     log_cert_view(&cert_view);
 
-    use krabitls::identity::{verify_hostname, verify_pinned_pubkey};
+    use krabitls::{verify_hostname, verify_pinned_pubkey};
     verify_hostname(&cert_view, host.as_bytes()).map_err(krabitls_err("verify_hostname"))?;
     info!("SAN binds hostname '{host}'");
     if let Some(p) = pin {
@@ -252,8 +252,8 @@ fn inspect_cert(
         );
     }
     {
-        use krabitls::identity::verify_validity;
-        use krabitls::traits::TimeSource;
+        use krabitls::TimeSource;
+        use krabitls::verify_validity;
         struct SystemTimeSource;
         impl TimeSource for SystemTimeSource {
             fn now_unix_secs(&self) -> u64 {
@@ -594,8 +594,8 @@ fn dump_capture(
     host: &str,
     ch: &[u8],
     sh: &[u8],
-    s_hs_ts: &krabitls::newtype::Secret,
-    c_hs_ts: &krabitls::newtype::Secret,
+    s_hs_ts: &krabitls::Secret,
+    c_hs_ts: &krabitls::Secret,
     flight_enc: &[u8],
     flight_record_count: u64,
     c_finished: &[u8],

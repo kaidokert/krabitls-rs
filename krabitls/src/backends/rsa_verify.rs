@@ -1,16 +1,18 @@
 //! RSA verify glue (PKCS#1 v1.5 + RSA-PSS, SHA-256). Feature-gated, no_alloc.
 //!
 //! Wires `rsa_heapless` 0.2 (verify-only on the heapless path) into krabitls.
-//! Two entry points:
+//! Entry point: [`RsaVerifierKey`] — built once via `new(modulus, exponent)`,
+//! verifies both schemes via inherent methods or the
+//! [`signature::Verifier<RsaPssSig>`] / [`signature::Verifier<RsaPkcs1Sig>`]
+//! impls.
 //!
-//! * [`verify_pkcs1v15_sha256`] — for the self-signed RSA cert's outer
-//!   signature (`sha256WithRSAEncryption`, RFC 5754).
-//! * [`verify_pss_sha256`] — for the `CertificateVerify` body's
-//!   `rsa_pss_rsae_sha256` signature (TLS 1.3 §4.4.3, RFC 8017 §8.1).
+//! Used by:
+//! * `sha256WithRSAEncryption` (PKCS#1-v1.5) — self-signed RSA cert outer sigs (RFC 5754)
+//! * `rsassa-pss` (PSS-SHA-256) — `CertificateVerify` (`rsa_pss_rsae_sha256`,
+//!   TLS 1.3 §4.4.3, RFC 8017 §8.1) and PSS-signed cert outer sigs
 //!
-//! Both functions dispatch on modulus length: 128 B → RSA-1024,
-//! 256 B → RSA-2048. The bigint backend is `fixed_bigint::FixedUInt<u32, N>`
-//! to match the family we use for X25519 / Ed25519.
+//! Dispatch on modulus length: 128 B → RSA-1024, 256 B → RSA-2048. Bigint
+//! backend: `fixed_bigint::FixedUInt<u32, N>`.
 //!
 //! No alloc anywhere. The no_alloc path in rsa_heapless type-aliases
 //! `ModMathValue<T>` to `T`, so the verifying key's bigint type is just the
@@ -194,96 +196,4 @@ where
     let pkcs1 = Pkcs1Vk::<Sha256, _, _>::new(key.clone());
     let pss = PssVk::<Sha256, _, _>::new(key);
     Ok(VkPair { pkcs1, pss })
-}
-
-/// Verify an RSASSA-PKCS#1-v1.5 SHA-256 signature.
-pub fn verify_pkcs1v15_sha256(
-    modulus: &[u8],
-    exponent: u32,
-    message: &[u8],
-    signature: &[u8],
-) -> Result<(), RsaVerifyError> {
-    // `FixedUInt::from_be_bytes` requires an exact-length slice.
-    if signature.len() != modulus.len() {
-        return Err(RsaVerifyError);
-    }
-    let prehash = Sha256::digest(message);
-    match modulus.len() {
-        #[cfg(not(feature = "rsa_2048_only"))]
-        128 => verify_pkcs1v15_1024(modulus, exponent, &prehash, signature),
-        256 => verify_pkcs1v15_2048(modulus, exponent, &prehash, signature),
-        _ => Err(RsaVerifyError),
-    }
-}
-
-/// Verify an RSASSA-PSS-MGF1 SHA-256 signature with salt_len = hash output
-/// (32 bytes). This matches `rsa_pss_rsae_sha256` in TLS 1.3.
-pub fn verify_pss_sha256(
-    modulus: &[u8],
-    exponent: u32,
-    message: &[u8],
-    signature: &[u8],
-) -> Result<(), RsaVerifyError> {
-    // `FixedUInt::from_be_bytes` requires an exact-length slice.
-    if signature.len() != modulus.len() {
-        return Err(RsaVerifyError);
-    }
-    let prehash = Sha256::digest(message);
-    match modulus.len() {
-        #[cfg(not(feature = "rsa_2048_only"))]
-        128 => verify_pss_1024(modulus, exponent, &prehash, signature),
-        256 => verify_pss_2048(modulus, exponent, &prehash, signature),
-        _ => Err(RsaVerifyError),
-    }
-}
-
-#[cfg(not(feature = "rsa_2048_only"))]
-fn verify_pkcs1v15_1024(
-    modulus: &[u8],
-    exponent: u32,
-    prehash: &[u8],
-    signature: &[u8],
-) -> Result<(), RsaVerifyError> {
-    let key = public_key_from_be_bytes::<U1024>(modulus, exponent).map_err(|_| RsaVerifyError)?;
-    let vk = Pkcs1Vk::<Sha256, _, _>::new(key);
-    let sig = Pkcs1Sig::from(U1024::from_be_bytes(signature));
-    vk.verify_prehash(prehash, &sig).map_err(|_| RsaVerifyError)
-}
-
-fn verify_pkcs1v15_2048(
-    modulus: &[u8],
-    exponent: u32,
-    prehash: &[u8],
-    signature: &[u8],
-) -> Result<(), RsaVerifyError> {
-    let key = public_key_from_be_bytes::<U2048>(modulus, exponent).map_err(|_| RsaVerifyError)?;
-    let vk = Pkcs1Vk::<Sha256, _, _>::new(key);
-    let sig = Pkcs1Sig::from(U2048::from_be_bytes(signature));
-    vk.verify_prehash(prehash, &sig).map_err(|_| RsaVerifyError)
-}
-
-#[cfg(not(feature = "rsa_2048_only"))]
-fn verify_pss_1024(
-    modulus: &[u8],
-    exponent: u32,
-    prehash: &[u8],
-    signature: &[u8],
-) -> Result<(), RsaVerifyError> {
-    let key = public_key_from_be_bytes::<U1024>(modulus, exponent).map_err(|_| RsaVerifyError)?;
-    // salt_len = hash output (32 bytes) matches rsa_pss_rsae_sha256 per TLS 1.3.
-    let vk = PssVk::<Sha256, _, _>::new(key);
-    let sig = PssSig::from(U1024::from_be_bytes(signature));
-    vk.verify_prehash(prehash, &sig).map_err(|_| RsaVerifyError)
-}
-
-fn verify_pss_2048(
-    modulus: &[u8],
-    exponent: u32,
-    prehash: &[u8],
-    signature: &[u8],
-) -> Result<(), RsaVerifyError> {
-    let key = public_key_from_be_bytes::<U2048>(modulus, exponent).map_err(|_| RsaVerifyError)?;
-    let vk = PssVk::<Sha256, _, _>::new(key);
-    let sig = PssSig::from(U2048::from_be_bytes(signature));
-    vk.verify_prehash(prehash, &sig).map_err(|_| RsaVerifyError)
 }
