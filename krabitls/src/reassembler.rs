@@ -18,8 +18,14 @@
 
 use heapless::Vec;
 
+use crate::server_flight::FlightError;
+
 /// Handshake message type for `Finished` (RFC 8446 §4.4.4).
 const HS_FINISHED: u8 = 20;
+/// Handshake message type for `EncryptedExtensions` (RFC 8446 §4.3.1).
+const HS_ENCRYPTED_EXTENSIONS: u8 = 8;
+/// Extension ID for `record_size_limit` (RFC 8449 §4).
+const EXT_RECORD_SIZE_LIMIT: u16 = 0x001C;
 
 /// Owns the concatenated inner-handshake bytes from one or more records.
 ///
@@ -117,6 +123,72 @@ impl<const N: usize> ServerFlightReassembler<N> {
 
     pub fn clear(&mut self) {
         self.buf.clear();
+    }
+
+    /// Walk the EncryptedExtensions message in the reassembled flight and
+    /// return the peer's RFC 8449 `record_size_limit` value if present.
+    /// Returns `Ok(None)` if the extension is absent.
+    ///
+    /// Runs on AEAD-authenticated but handshake-unverified bytes (the
+    /// caller invokes this *before* `finalize_server_flight`). All
+    /// parsing is strictly bounds-checked; no panics, no OOB reads,
+    /// even on adversarially-crafted server bytes.
+    ///
+    /// Validity of the returned value (RFC 8449's `[64, 2^14 + 1]`
+    /// range) is the caller's responsibility — peek surfaces what's on
+    /// the wire; the engine maps out-of-range values to its own error
+    /// variant.
+    pub fn peek_ee_record_size_limit(&self) -> Result<Option<u16>, FlightError> {
+        let buf = self.flight_bytes().ok_or(FlightError::Truncated)?;
+        // First handshake message in the flight must be EncryptedExtensions.
+        if buf.len() < 4 {
+            return Err(FlightError::Truncated);
+        }
+        if buf[0] != HS_ENCRYPTED_EXTENSIONS {
+            return Err(FlightError::UnexpectedHandshakeType {
+                expected: HS_ENCRYPTED_EXTENSIONS,
+                got: buf[0],
+            });
+        }
+        let ee_body_len = u32::from_be_bytes([0, buf[1], buf[2], buf[3]]) as usize;
+        if buf.len() < 4 + ee_body_len {
+            return Err(FlightError::Truncated);
+        }
+        let ee_body = &buf[4..4 + ee_body_len];
+
+        // EncryptedExtensions body: u16 extensions_total, then extensions.
+        if ee_body.len() < 2 {
+            return Err(FlightError::Truncated);
+        }
+        let ext_total = u16::from_be_bytes([ee_body[0], ee_body[1]]) as usize;
+        if ee_body.len() != 2 + ext_total {
+            return Err(FlightError::Truncated);
+        }
+
+        let mut rest = &ee_body[2..];
+        let mut found: Option<u16> = None;
+        while !rest.is_empty() {
+            if rest.len() < 4 {
+                return Err(FlightError::Truncated);
+            }
+            let ext_type = u16::from_be_bytes([rest[0], rest[1]]);
+            let ext_len = u16::from_be_bytes([rest[2], rest[3]]) as usize;
+            if rest.len() < 4 + ext_len {
+                return Err(FlightError::Truncated);
+            }
+            let body = &rest[4..4 + ext_len];
+            if ext_type == EXT_RECORD_SIZE_LIMIT {
+                if body.len() != 2 {
+                    return Err(FlightError::Truncated);
+                }
+                if found.is_some() {
+                    return Err(FlightError::DuplicateExtension { ext_type });
+                }
+                found = Some(u16::from_be_bytes([body[0], body[1]]));
+            }
+            rest = &rest[4 + ext_len..];
+        }
+        Ok(found)
     }
 }
 
@@ -273,5 +345,167 @@ mod tests {
         r.clear();
         assert!(r.is_empty());
         assert!(!r.is_complete());
+    }
+
+    /// Build an EE message whose body is a u16 extensions-total followed by
+    /// the given extensions. Returns the full handshake message bytes.
+    fn ee_with_extensions(extensions: &[u8]) -> heapless::Vec<u8, 512> {
+        let mut body = heapless::Vec::<u8, 512>::new();
+        let total = extensions.len() as u16;
+        body.extend_from_slice(&total.to_be_bytes()).unwrap();
+        body.extend_from_slice(extensions).unwrap();
+        let mut msg = heapless::Vec::<u8, 512>::new();
+        msg.push(HS_ENCRYPTED_EXTENSIONS).unwrap();
+        let len = body.len() as u32;
+        msg.push(((len >> 16) & 0xff) as u8).unwrap();
+        msg.push(((len >> 8) & 0xff) as u8).unwrap();
+        msg.push((len & 0xff) as u8).unwrap();
+        msg.extend_from_slice(&body).unwrap();
+        msg
+    }
+
+    fn record_size_limit_ext(value: u16) -> [u8; 6] {
+        let v = value.to_be_bytes();
+        [
+            (EXT_RECORD_SIZE_LIMIT >> 8) as u8,
+            (EXT_RECORD_SIZE_LIMIT & 0xff) as u8,
+            0x00,
+            0x02, // ext data len = 2
+            v[0],
+            v[1],
+        ]
+    }
+
+    fn complete_flight_with_ee(ee_bytes: &[u8]) -> ServerFlightReassembler<1024> {
+        let mut r: ServerFlightReassembler<1024> = ServerFlightReassembler::new();
+        let mut combined = heapless::Vec::<u8, 1024>::new();
+        combined.extend_from_slice(ee_bytes).unwrap();
+        combined.extend_from_slice(cert(40).as_slice()).unwrap();
+        combined.extend_from_slice(cv(70).as_slice()).unwrap();
+        combined.extend_from_slice(fin(32).as_slice()).unwrap();
+        r.push_content(&combined).unwrap();
+        r
+    }
+
+    #[test]
+    fn peek_ee_record_size_limit_absent_returns_none() {
+        let ee_bytes = ee_with_extensions(&[]);
+        let r = complete_flight_with_ee(&ee_bytes);
+        assert_eq!(r.peek_ee_record_size_limit(), Ok(None));
+    }
+
+    #[test]
+    fn peek_ee_record_size_limit_present_returns_value() {
+        let ext = record_size_limit_ext(8192);
+        let ee_bytes = ee_with_extensions(&ext);
+        let r = complete_flight_with_ee(&ee_bytes);
+        assert_eq!(r.peek_ee_record_size_limit(), Ok(Some(8192)));
+    }
+
+    #[test]
+    fn peek_ee_record_size_limit_skips_unrelated_extensions() {
+        // Build extensions: [unknown_ext(4 bytes payload), record_size_limit].
+        let mut exts = heapless::Vec::<u8, 32>::new();
+        // ext type 0x002A (custom), len=4, payload=[0xab; 4]
+        exts.extend_from_slice(&[0x00, 0x2A, 0x00, 0x04, 0xab, 0xab, 0xab, 0xab])
+            .unwrap();
+        exts.extend_from_slice(&record_size_limit_ext(2048))
+            .unwrap();
+        let ee_bytes = ee_with_extensions(&exts);
+        let r = complete_flight_with_ee(&ee_bytes);
+        assert_eq!(r.peek_ee_record_size_limit(), Ok(Some(2048)));
+    }
+
+    #[test]
+    fn peek_ee_record_size_limit_duplicate_rejected() {
+        let mut exts = heapless::Vec::<u8, 32>::new();
+        exts.extend_from_slice(&record_size_limit_ext(2048))
+            .unwrap();
+        exts.extend_from_slice(&record_size_limit_ext(4096))
+            .unwrap();
+        let ee_bytes = ee_with_extensions(&exts);
+        let r = complete_flight_with_ee(&ee_bytes);
+        assert_eq!(
+            r.peek_ee_record_size_limit(),
+            Err(FlightError::DuplicateExtension {
+                ext_type: EXT_RECORD_SIZE_LIMIT
+            })
+        );
+    }
+
+    #[test]
+    fn peek_ee_record_size_limit_wrong_first_msg_type() {
+        // First handshake message is Certificate (11), not EE.
+        let mut r: ServerFlightReassembler<512> = ServerFlightReassembler::new();
+        let mut combined = heapless::Vec::<u8, 512>::new();
+        combined.extend_from_slice(cert(40).as_slice()).unwrap();
+        combined.extend_from_slice(fin(32).as_slice()).unwrap();
+        r.push_content(&combined).unwrap();
+        assert_eq!(
+            r.peek_ee_record_size_limit(),
+            Err(FlightError::UnexpectedHandshakeType {
+                expected: HS_ENCRYPTED_EXTENSIONS,
+                got: 11
+            })
+        );
+    }
+
+    #[test]
+    fn peek_ee_record_size_limit_returns_truncated_before_flight_complete() {
+        let r: ServerFlightReassembler<128> = ServerFlightReassembler::new();
+        assert_eq!(r.peek_ee_record_size_limit(), Err(FlightError::Truncated));
+    }
+
+    #[test]
+    fn peek_ee_record_size_limit_ext_with_wrong_len_rejected() {
+        // record_size_limit with claimed len=3 instead of 2.
+        let bad_ext = [
+            (EXT_RECORD_SIZE_LIMIT >> 8) as u8,
+            (EXT_RECORD_SIZE_LIMIT & 0xff) as u8,
+            0x00,
+            0x03,
+            0x10,
+            0x00,
+            0x00,
+        ];
+        let ee_bytes = ee_with_extensions(&bad_ext);
+        let r = complete_flight_with_ee(&ee_bytes);
+        assert_eq!(r.peek_ee_record_size_limit(), Err(FlightError::Truncated));
+    }
+
+    #[test]
+    fn peek_ee_record_size_limit_extensions_total_inconsistent() {
+        // ext_total in EE body claims more bytes than are present.
+        let mut body = heapless::Vec::<u8, 32>::new();
+        body.extend_from_slice(&20u16.to_be_bytes()).unwrap(); // ext_total = 20
+        body.extend_from_slice(&record_size_limit_ext(1024))
+            .unwrap(); // only 6 bytes
+        let mut msg = heapless::Vec::<u8, 32>::new();
+        msg.push(HS_ENCRYPTED_EXTENSIONS).unwrap();
+        let len = body.len() as u32;
+        msg.push(((len >> 16) & 0xff) as u8).unwrap();
+        msg.push(((len >> 8) & 0xff) as u8).unwrap();
+        msg.push((len & 0xff) as u8).unwrap();
+        msg.extend_from_slice(&body).unwrap();
+        let r = complete_flight_with_ee(&msg);
+        assert_eq!(r.peek_ee_record_size_limit(), Err(FlightError::Truncated));
+    }
+
+    #[test]
+    fn peek_ee_record_size_limit_ext_header_truncated() {
+        // Extension header claims 3 bytes of ext header + ext_len overflows body.
+        // ext_total = 3, then 3 bytes of partial extension header (need 4).
+        let mut body = heapless::Vec::<u8, 16>::new();
+        body.extend_from_slice(&3u16.to_be_bytes()).unwrap();
+        body.extend_from_slice(&[0x00, 0x2A, 0x00]).unwrap();
+        let mut msg = heapless::Vec::<u8, 16>::new();
+        msg.push(HS_ENCRYPTED_EXTENSIONS).unwrap();
+        let len = body.len() as u32;
+        msg.push(((len >> 16) & 0xff) as u8).unwrap();
+        msg.push(((len >> 8) & 0xff) as u8).unwrap();
+        msg.push((len & 0xff) as u8).unwrap();
+        msg.extend_from_slice(&body).unwrap();
+        let r = complete_flight_with_ee(&msg);
+        assert_eq!(r.peek_ee_record_size_limit(), Err(FlightError::Truncated));
     }
 }

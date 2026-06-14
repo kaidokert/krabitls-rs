@@ -8,9 +8,7 @@
 //! `TranscriptHash` running-hash wrapper, the `hkdf_expand_label`
 //! encoder, and the `HkdfLabelError` enum.
 
-#[cfg(feature = "chacha20")]
-use crate::newtype::AeadKey32;
-use crate::newtype::{AeadIv, AeadKey, Secret, TranscriptDigest, ZeroBuf};
+use crate::newtype::{AeadIv, Secret, TranscriptDigest, ZeroBuf};
 use crate::traits::{HkdfExpandError, HkdfSha256, Sha256Hasher};
 
 // TLS 1.3 derivation helpers built on top of the HKDF trait.
@@ -211,30 +209,20 @@ pub(crate) fn handshake_traffic_secrets<H: HkdfSha256>(
     ))
 }
 
-/// Derive the `(key, iv)` pair for AES-128-GCM from a traffic secret per
-/// RFC 8446 §7.3. Key is 16 bytes, IV is 12 bytes (the AEAD nonce size).
-pub(crate) fn traffic_keys<H: HkdfSha256>(
+/// Derive the `(key, iv)` pair for this suite's AEAD from a traffic secret
+/// (RFC 8446 §7.3). `N` is the suite's key length in bytes (16 for AES-128-GCM,
+/// 32 for ChaCha20-Poly1305); IV is always 12 bytes. Callers wrap `key` in
+/// the suite's key newtype.
+pub(crate) fn traffic_keys<H: HkdfSha256, const N: usize>(
     traffic_secret: &Secret,
-) -> Result<(AeadKey, AeadIv), HkdfLabelError> {
+) -> Result<(ZeroBuf<N>, AeadIv), HkdfLabelError> {
     // Wrap the temp stack buffers so they auto-zero when the bindings
     // go out of scope (covers the `?` error-return paths too).
-    let mut key = ZeroBuf::<16>::new([0; 16]);
+    let mut key = ZeroBuf::<N>::new([0; N]);
     let mut iv = ZeroBuf::<12>::new([0; 12]);
     hkdf_expand_label::<H>(traffic_secret.as_bytes(), b"key", &[], &mut key[..])?;
     hkdf_expand_label::<H>(traffic_secret.as_bytes(), b"iv", &[], &mut iv[..])?;
-    Ok((AeadKey::new(key), AeadIv::new(iv)))
-}
-
-/// `traffic_keys` for `TLS_CHACHA20_POLY1305_SHA256`. 32-byte key, 12-byte IV.
-#[cfg(feature = "chacha20")]
-pub(crate) fn traffic_keys_chacha<H: HkdfSha256>(
-    traffic_secret: &Secret,
-) -> Result<(AeadKey32, AeadIv), HkdfLabelError> {
-    let mut key = ZeroBuf::<32>::new([0; 32]);
-    let mut iv = ZeroBuf::<12>::new([0; 12]);
-    hkdf_expand_label::<H>(traffic_secret.as_bytes(), b"key", &[], &mut key[..])?;
-    hkdf_expand_label::<H>(traffic_secret.as_bytes(), b"iv", &[], &mut iv[..])?;
-    Ok((AeadKey32::new(key), AeadIv::new(iv)))
+    Ok((key, AeadIv::new(iv)))
 }
 
 /// `master_secret = HKDF-Extract(Derive-Secret(handshake_secret, "derived", H("")), 0_hash)`

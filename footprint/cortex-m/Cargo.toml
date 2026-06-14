@@ -20,6 +20,10 @@ rsa = ["footprint_handshakes/rsa"]
 # `krabitls_chacha` example: same Ed25519 fixture as `krabitls` but with the
 # AEAD swapped to ChaCha20-Poly1305.
 chacha20 = ["footprint_handshakes/chacha20"]
+# `krabitls_facade` example: drives the full facade
+# (`DefaultStream::connect`) through the seed-0 canned fixtures via
+# `SeededRng` + `CannedTransport`.
+canned-replay = ["footprint_handshakes/canned-replay"]
 
 [[example]]
 name = "krabitls"
@@ -35,6 +39,10 @@ required-features = ["rsa"]
 [[example]]
 name = "krabitls_chacha"
 required-features = ["chacha20"]
+
+[[example]]
+name = "krabitls_facade"
+required-features = ["canned-replay"]
 
 [dependencies]
 # `critical-section-single-core` registers a single-core critical-section

@@ -26,10 +26,19 @@ env_logger = { version = "0.11", default-features = false, features = ["auto-col
 # Cross-platform OS RNG. Previously the CLI opened `/dev/urandom` directly,
 # which silently failed on non-Unix hosts.
 getrandom = "0.3"
+# `krabitls_facade` wraps `getrandom` as a `rand_core::CryptoRng` to satisfy
+# the `TlsStream::connect` signature.
+rand_core = { version = "0.10", default-features = false }
 
 # The `krabitls_connect` binary needs RSA verify support to talk to most
 # public-internet servers (Cloudflare / general CDN fronts serve RSA leaf
 # certs). Build with `cargo run --bin krabitls_connect --features rsa`.
 [[bin]]
 name = "krabitls_connect"
+required-features = ["rsa"]
+
+# `krabitls_facade` is the high-level facade binary. Same RSA-verify
+# requirement as krabitls_connect for public-internet servers.
+[[bin]]
+name = "krabitls_facade"
 required-features = ["rsa"]

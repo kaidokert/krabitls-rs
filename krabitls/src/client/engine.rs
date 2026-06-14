@@ -1,0 +1,1405 @@
+//! `TlsEngine` — the `pub(crate)` state machine the [`TlsStream`] wrapper
+//! drives. Pure orchestration over the existing typestate API.
+
+#[cfg(feature = "chacha20")]
+use super::ConfigSuitePolicy;
+use super::error::{HandshakeError, InternalError};
+use super::params::TrustRoot;
+use super::scratch::{
+    AEAD_TAG, MIN_RECORD_SIZE_LIMIT, PROTO_MAX_INNER_PLAINTEXT, RECORD_OVERHEAD, TLS_HEADER,
+};
+use super::{ClientConfig, ClientParams, RuntimeSuitePolicy, Scratch};
+use crate::aead::Aes128GcmSha256;
+#[cfg(feature = "chacha20")]
+use crate::aead::ChaCha20Poly1305Sha256;
+use crate::connection::{
+    AppData, FlightStep, NegotiatedSuite, ServerFlightDone, VerifyMode, WaitServerFlight,
+    WaitServerHello,
+};
+use crate::traits::CertParser;
+use crate::{ConnectionError, TlsConnection, extract_cert_der, parse_server_flight};
+use crate::{verify_hostname, verify_pinned_pubkey};
+
+const CT_APPLICATION_DATA: u8 = 0x17;
+const CT_HANDSHAKE: u8 = 0x16;
+const CT_ALERT: u8 = 0x15;
+const CLOSE_NOTIFY_ALERT: [u8; 2] = [0x01, 0x00];
+
+/// Recv-buffer cursor state.
+///
+/// Invariants:
+/// - **I1** `0 ≤ plain_start ≤ plain_end ≤ next_record ≤ filled ≤ RECV`
+/// - **I3** `plain_end > plain_start` ⇒ `step()` must yield `AppData`;
+///   `advance(n > 0)` is illegal; `recv_buffer()` returns `&mut []`
+/// - **I6** post-drain with `next_record > 0` requires compaction
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RecvState {
+    pub filled: usize,
+    pub plain_start: usize,
+    pub plain_end: usize,
+    pub next_record: usize,
+}
+
+impl RecvState {
+    pub const fn new() -> Self {
+        Self {
+            filled: 0,
+            plain_start: 0,
+            plain_end: 0,
+            next_record: 0,
+        }
+    }
+
+    pub fn plaintext_parked(&self) -> bool {
+        self.plain_start < self.plain_end
+    }
+
+    #[cfg(test)]
+    pub fn needs_compaction(&self) -> bool {
+        !self.plaintext_parked() && self.next_record > 0
+    }
+}
+
+/// Wrapped typestate states — one variant per `(handshake-phase × suite)`
+/// plus pre-suite and terminal states.
+#[allow(clippy::large_enum_variant)] // post-handshake variants carry app keys; size is dominated by the typestate, not the enum tag
+pub(crate) enum EngineState<C: ClientConfig> {
+    WaitServerHello(TlsConnection<WaitServerHello, C::Hkdf, C::Record>),
+    WaitFlightAes(TlsConnection<WaitServerFlight<Aes128GcmSha256>, C::Hkdf, C::Record>),
+    #[cfg(feature = "chacha20")]
+    WaitFlightChaCha(TlsConnection<WaitServerFlight<ChaCha20Poly1305Sha256>, C::Hkdf, C::Record>),
+    AppAes(TlsConnection<AppData<Aes128GcmSha256>, C::Hkdf, C::Record>),
+    #[cfg(feature = "chacha20")]
+    AppChaCha(TlsConnection<AppData<ChaCha20Poly1305Sha256>, C::Hkdf, C::Record>),
+    /// Terminal sentinel; also used as the `mem::replace` placeholder
+    /// during state transitions.
+    Closed,
+}
+
+impl<C: ClientConfig> EngineState<C> {
+    pub fn in_data_phase(&self) -> bool {
+        match self {
+            EngineState::AppAes(_) => true,
+            #[cfg(feature = "chacha20")]
+            EngineState::AppChaCha(_) => true,
+            _ => false,
+        }
+    }
+}
+
+/// One step of the engine state machine yields one [`EngineEvent`].
+///
+/// Priority: `Send > HandshakeDone > AppData > Closed > Recv`. `Send(n)`
+/// carries the unsent remainder, not the original record size.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub(crate) enum EngineEvent {
+    Send(usize),
+    Recv,
+    AppData,
+    HandshakeDone,
+    Closed,
+}
+
+pub(crate) struct TlsEngine<
+    's,
+    C: ClientConfig,
+    const FLIGHT: usize,
+    const RECV: usize,
+    const SEND: usize,
+> {
+    pub(crate) scratch: &'s mut Scratch<FLIGHT, RECV, SEND>,
+    pub(crate) state: EngineState<C>,
+    pub(crate) recv: RecvState,
+
+    /// Total bytes of the current outgoing record in `scratch.send_record`.
+    pub(crate) send_pending_len: usize,
+    pub(crate) send_acked: usize,
+
+    /// Set between Server Finished verification and `HandshakeDone` emission.
+    pub(crate) pending_handshake_done: bool,
+    /// `HandshakeDone` cannot fire until the Client Finished is fully `mark_sent`-acknowledged.
+    pub(crate) handshake_finished_pending_ack: bool,
+
+    pub(crate) closed: bool,
+
+    /// RFC 8449 limit we advertised; caps incoming protected record body.
+    pub(crate) our_recv_limit: u16,
+    /// RFC 8449 limit peer advertised; caps outgoing inner plaintext.
+    pub(crate) peer_recv_limit: u16,
+
+    #[allow(dead_code)]
+    // read only via `effective_advertise_chacha`, which is itself `#[cfg(feature = "chacha20")]`
+    pub(crate) suite_policy: RuntimeSuitePolicy,
+}
+
+impl<'s, C: ClientConfig, const FLIGHT: usize, const RECV: usize, const SEND: usize>
+    TlsEngine<'s, C, FLIGHT, RECV, SEND>
+{
+    pub(crate) fn new(
+        scratch: &'s mut Scratch<FLIGHT, RECV, SEND>,
+        init_state: EngineState<C>,
+        our_recv_limit: u16,
+        peer_recv_limit: u16,
+        suite_policy: RuntimeSuitePolicy,
+    ) -> Self {
+        Self {
+            scratch,
+            state: init_state,
+            recv: RecvState::new(),
+            send_pending_len: 0,
+            send_acked: 0,
+            pending_handshake_done: false,
+            handshake_finished_pending_ack: false,
+            closed: false,
+            our_recv_limit,
+            peer_recv_limit,
+            suite_policy,
+        }
+    }
+
+    pub(crate) const fn default_our_recv_limit() -> u16 {
+        let from_buf = RECV.saturating_sub(RECORD_OVERHEAD);
+        if from_buf > PROTO_MAX_INNER_PLAINTEXT as usize {
+            PROTO_MAX_INNER_PLAINTEXT
+        } else {
+            from_buf as u16
+        }
+    }
+
+    pub(crate) fn is_send_pending(&self) -> bool {
+        self.send_pending_len > self.send_acked
+    }
+
+    pub(crate) fn is_closed(&self) -> bool {
+        self.closed || matches!(self.state, EngineState::Closed)
+    }
+
+    /// Unacknowledged tail of the pending send; matches the byte count
+    /// in the most recent `EngineEvent::Send(n)`.
+    pub(crate) fn send_bytes(&self) -> &[u8] {
+        if self.send_pending_len == 0 {
+            return &[];
+        }
+        &self.scratch.send_record[self.send_acked..self.send_pending_len]
+    }
+
+    /// Drive the handshake phase one event. Priority:
+    /// `Send > HandshakeDone > AppData > Closed > Recv`. Loop, never recursion.
+    pub(crate) fn step_handshake(
+        &mut self,
+        params: &ClientParams<'_>,
+    ) -> Result<EngineEvent, HandshakeError> {
+        loop {
+            if self.is_send_pending() {
+                let remaining = self.send_pending_len - self.send_acked;
+                return Ok(EngineEvent::Send(remaining));
+            }
+
+            if self.pending_handshake_done && !self.handshake_finished_pending_ack {
+                self.pending_handshake_done = false;
+                return Ok(EngineEvent::HandshakeDone);
+            }
+
+            // 0.5-RTT landing: handshake-phase dispatch refuses to decrypt
+            // protected records, so this normally fires only via the
+            // dispatcher's wrong-state check.
+            if self.recv.plaintext_parked() {
+                return Ok(EngineEvent::AppData);
+            }
+
+            if self.closed {
+                return Ok(EngineEvent::Closed);
+            }
+
+            match self.frame_one_record()? {
+                Framed::Need => return Ok(EngineEvent::Recv),
+                Framed::Record {
+                    start,
+                    end,
+                    outer_type,
+                    ..
+                } => {
+                    self.dispatch_handshake_record(start, end, outer_type, params)?;
+                }
+            }
+        }
+    }
+}
+
+/// Either a complete record staged in `recv_record[start..end]`, or
+/// `Need` for more transport bytes.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub(crate) enum Framed {
+    Record {
+        start: usize,
+        end: usize,
+        outer_type: u8,
+        length_field: usize,
+    },
+    Need,
+}
+
+// ============================================================================
+// Dispatch helpers
+// ============================================================================
+
+impl<'s, C: ClientConfig, const FLIGHT: usize, const RECV: usize, const SEND: usize>
+    TlsEngine<'s, C, FLIGHT, RECV, SEND>
+{
+    /// Reclaim the consumed prefix of `recv_record` by moving the tail
+    /// to offset 0. Requires I6 (no parked plaintext).
+    fn compact_recv(&mut self) {
+        debug_assert!(
+            !self.recv.plaintext_parked(),
+            "compact_recv with parked plaintext violates I6",
+        );
+        let src_start = self.recv.next_record;
+        if src_start == 0 {
+            return;
+        }
+        let count = self.recv.filled - src_start;
+        if count > 0 {
+            self.scratch
+                .recv_record
+                .copy_within(src_start..self.recv.filled, 0);
+        }
+        self.recv.filled = count;
+        self.recv.plain_start = 0;
+        self.recv.plain_end = 0;
+        self.recv.next_record = 0;
+    }
+
+    /// Shared boundary-finder for both phases. RFC 8449 limit is enforced
+    /// by dispatch, not here (plaintext SH/CCS are exempt).
+    fn frame_one_record(&mut self) -> Result<Framed, HandshakeError> {
+        if self.recv.plaintext_parked() {
+            debug_assert!(
+                false,
+                "frame_one_record with parked plaintext (caller must drain via AppData)"
+            );
+            return Err(HandshakeError::Internal(
+                InternalError::FrameWithParkedPlaintext,
+            ));
+        }
+
+        // Lazy compaction: only compact on `Need`, where it actually
+        // buys the caller more `recv_buffer()` space. Per-record-eager
+        // compaction would be O(tail · k) when a peer coalesces many
+        // small records into one transport segment.
+        let start = self.recv.next_record;
+        let buffered = self.recv.filled - start;
+        if buffered < TLS_HEADER {
+            if self.recv.next_record > 0 {
+                self.compact_recv();
+            }
+            return Ok(Framed::Need);
+        }
+
+        let outer_type = self.scratch.recv_record[start];
+        let length_field = u16::from_be_bytes([
+            self.scratch.recv_record[start + 3],
+            self.scratch.recv_record[start + 4],
+        ]) as usize;
+
+        // Physical-capacity guard: reject fast rather than block on a
+        // transport read that can never make progress.
+        let record_body_capacity = RECV.saturating_sub(TLS_HEADER);
+        if length_field > record_body_capacity {
+            return Err(HandshakeError::RecordTooLarge {
+                limit: self.our_recv_limit,
+                got: length_field as u16,
+            });
+        }
+
+        let end = start + TLS_HEADER + length_field;
+        if self.recv.filled < end {
+            if self.recv.next_record > 0 {
+                self.compact_recv();
+            }
+            return Ok(Framed::Need);
+        }
+
+        Ok(Framed::Record {
+            start,
+            end,
+            outer_type,
+            length_field,
+        })
+    }
+
+    fn dispatch_handshake_record(
+        &mut self,
+        start: usize,
+        end: usize,
+        outer_type: u8,
+        params: &ClientParams<'_>,
+    ) -> Result<(), HandshakeError> {
+        match &self.state {
+            EngineState::WaitServerHello(_) => {
+                self.handle_server_hello(start, end, outer_type)?;
+            }
+            EngineState::WaitFlightAes(_) => {
+                self.handle_flight_record(start, end, params)?;
+            }
+            #[cfg(feature = "chacha20")]
+            EngineState::WaitFlightChaCha(_) => {
+                self.handle_flight_record(start, end, params)?;
+            }
+            EngineState::AppAes(_) => {
+                return Err(HandshakeError::Internal(
+                    InternalError::HandshakeStepInDataPhase,
+                ));
+            }
+            #[cfg(feature = "chacha20")]
+            EngineState::AppChaCha(_) => {
+                return Err(HandshakeError::Internal(
+                    InternalError::HandshakeStepInDataPhase,
+                ));
+            }
+            EngineState::Closed => {
+                return Err(HandshakeError::Internal(
+                    InternalError::HandshakeStepWrongState,
+                ));
+            }
+        }
+        // Advance the cursor past the consumed record. Done here rather
+        // than in each handler so a panicking handler can't half-consume.
+        self.recv.next_record = end;
+        Ok(())
+    }
+
+    /// Parse plaintext ServerHello, transition to `WaitFlight*`, and
+    /// enforce the suite-must-be-advertised check.
+    fn handle_server_hello(
+        &mut self,
+        start: usize,
+        end: usize,
+        outer_type: u8,
+    ) -> Result<(), HandshakeError> {
+        if outer_type != CT_HANDSHAKE {
+            return Err(HandshakeError::Connection(ConnectionError::Decrypt(
+                crate::DecryptError::UnexpectedContentType(outer_type),
+            )));
+        }
+
+        let conn = match core::mem::replace(&mut self.state, EngineState::Closed) {
+            EngineState::WaitServerHello(c) => c,
+            other => {
+                self.state = other;
+                return Err(HandshakeError::Internal(
+                    InternalError::ServerHelloWrongState,
+                ));
+            }
+        };
+
+        let record = &self.scratch.recv_record[start..end];
+        let negotiated = conn.read_server_hello(record).map_err(|e| {
+            self.closed = true;
+            HandshakeError::Connection(e)
+        })?;
+
+        self.state = match negotiated {
+            NegotiatedSuite::Aes128Gcm(c) => EngineState::WaitFlightAes(c),
+            #[cfg(feature = "chacha20")]
+            NegotiatedSuite::ChaCha20Poly1305(c) => {
+                if !effective_advertise_chacha::<C>(self.suite_policy) {
+                    self.closed = true;
+                    return Err(HandshakeError::Connection(
+                        ConnectionError::UnexpectedSuite {
+                            selected_id: 0x1303,
+                        },
+                    ));
+                }
+                EngineState::WaitFlightChaCha(c)
+            }
+        };
+
+        Ok(())
+    }
+
+    /// In-place feed of a flight record. On `FlightStep::Ready`, drives
+    /// the finalize → identity → finish transition.
+    fn handle_flight_record(
+        &mut self,
+        start: usize,
+        end: usize,
+        params: &ClientParams<'_>,
+    ) -> Result<(), HandshakeError> {
+        // RFC 8449 limit applies to protected records only; CCS is
+        // handled by `feed_server_record_inplace` without decryption.
+        let outer_type = self.scratch.recv_record[start];
+        if outer_type == CT_APPLICATION_DATA {
+            let length_field = end - start - TLS_HEADER;
+            if length_field > self.our_recv_limit as usize + AEAD_TAG {
+                return Err(HandshakeError::RecordTooLarge {
+                    limit: self.our_recv_limit,
+                    got: length_field as u16,
+                });
+            }
+        }
+
+        let step = {
+            let scratch = &mut *self.scratch;
+            match &mut self.state {
+                EngineState::WaitFlightAes(conn) => conn.feed_server_record_inplace(
+                    &mut scratch.recv_record[start..end],
+                    &mut scratch.reassembler,
+                ),
+                #[cfg(feature = "chacha20")]
+                EngineState::WaitFlightChaCha(conn) => conn.feed_server_record_inplace(
+                    &mut scratch.recv_record[start..end],
+                    &mut scratch.reassembler,
+                ),
+                _ => {
+                    return Err(HandshakeError::Internal(InternalError::FlightWrongState));
+                }
+            }
+        }
+        .map_err(HandshakeError::Connection)?;
+
+        if matches!(step, FlightStep::Ready) {
+            self.finalize_and_finish(params)?;
+        }
+        Ok(())
+    }
+
+    /// Consume `WaitFlight*` → finalize → identity check → finish,
+    /// installing `App*` with the Client Finished queued for send.
+    fn finalize_and_finish(&mut self, params: &ClientParams<'_>) -> Result<(), HandshakeError> {
+        if let Some(peer_limit) = self
+            .scratch
+            .reassembler
+            .peek_ee_record_size_limit()
+            .map_err(|e| HandshakeError::Connection(ConnectionError::Flight(e)))?
+        {
+            if !(MIN_RECORD_SIZE_LIMIT..=PROTO_MAX_INNER_PLAINTEXT).contains(&peer_limit) {
+                return Err(HandshakeError::InvalidRecordSizeLimit(peer_limit));
+            }
+            self.peer_recv_limit = peer_limit;
+        }
+
+        let verify_mode = match params.trust {
+            TrustRoot::Pinned(_) => VerifyMode::TrustOnPin,
+            TrustRoot::SelfSigned => VerifyMode::SelfSigned,
+        };
+
+        let prev = core::mem::replace(&mut self.state, EngineState::Closed);
+        let done = match prev {
+            EngineState::WaitFlightAes(conn) => {
+                let d = conn
+                    .finalize_server_flight::<FLIGHT, C::CertParser, C::Ed25519, C::Rsa>(
+                        &self.scratch.reassembler,
+                        verify_mode,
+                    )
+                    .map_err(HandshakeError::Connection)?;
+                FlightDone::<C>::Aes(d)
+            }
+            #[cfg(feature = "chacha20")]
+            EngineState::WaitFlightChaCha(conn) => {
+                let d = conn
+                    .finalize_server_flight::<FLIGHT, C::CertParser, C::Ed25519, C::Rsa>(
+                        &self.scratch.reassembler,
+                        verify_mode,
+                    )
+                    .map_err(HandshakeError::Connection)?;
+                FlightDone::<C>::ChaCha(d)
+            }
+            other => {
+                self.state = other;
+                return Err(HandshakeError::Internal(InternalError::FinalizeWrongState));
+            }
+        };
+
+        // Identity check runs before app keys are derived so a failure
+        // aborts before any AppData state exists.
+        self.verify_identity(params)?;
+
+        let cf_len = match done {
+            FlightDone::Aes(d) => {
+                let (cf_bytes, app) = d
+                    .finish_handshake(&mut self.scratch.send_record)
+                    .map_err(HandshakeError::Connection)?;
+                let cf_len = cf_bytes.len();
+                self.state = EngineState::AppAes(app);
+                cf_len
+            }
+            #[cfg(feature = "chacha20")]
+            FlightDone::ChaCha(d) => {
+                let (cf_bytes, app) = d
+                    .finish_handshake(&mut self.scratch.send_record)
+                    .map_err(HandshakeError::Connection)?;
+                let cf_len = cf_bytes.len();
+                self.state = EngineState::AppChaCha(app);
+                cf_len
+            }
+        };
+
+        self.send_pending_len = cf_len;
+        self.send_acked = 0;
+        self.pending_handshake_done = true;
+        self.handshake_finished_pending_ack = true;
+        Ok(())
+    }
+
+    /// Pin + hostname + validity, after protocol signature verify and
+    /// before app keys are derived.
+    fn verify_identity(&self, params: &ClientParams<'_>) -> Result<(), HandshakeError> {
+        let flight = self
+            .scratch
+            .reassembler
+            .flight_bytes()
+            .ok_or(HandshakeError::Connection(
+                ConnectionError::IncompleteFlight,
+            ))?;
+        let view = parse_server_flight(flight)
+            .map_err(|e| HandshakeError::Connection(ConnectionError::Flight(e)))?;
+        let cert_der = extract_cert_der(view.cert_body)
+            .map_err(|e| HandshakeError::Connection(ConnectionError::Flight(e)))?;
+        let cert_view = <C::CertParser as CertParser>::parse(cert_der).map_err(|e| {
+            HandshakeError::Connection(ConnectionError::Flight(crate::FlightError::BadCert(e)))
+        })?;
+
+        if let TrustRoot::Pinned(pin) = &params.trust {
+            verify_pinned_pubkey(&cert_view, pin)?;
+        }
+        verify_hostname(&cert_view, params.hostname.as_bytes())?;
+
+        #[cfg(feature = "validity")]
+        if let Some(time) = params.time {
+            // Shim `&dyn TimeSource` into `impl TimeSource`.
+            struct DynTime<'t>(&'t dyn crate::TimeSource);
+            impl crate::TimeSource for DynTime<'_> {
+                fn now_unix_secs(&self) -> u64 {
+                    self.0.now_unix_secs()
+                }
+            }
+            crate::verify_validity(&cert_view, &DynTime(time)).map_err(HandshakeError::Validity)?;
+        }
+
+        Ok(())
+    }
+}
+
+/// Whether ChaCha20-Poly1305 was advertised in the ClientHello.
+#[cfg(feature = "chacha20")]
+fn effective_advertise_chacha<C: ClientConfig>(runtime: RuntimeSuitePolicy) -> bool {
+    matches!(runtime, RuntimeSuitePolicy::Default)
+        && matches!(C::SUITES, ConfigSuitePolicy::AesAndChaCha)
+}
+
+enum FlightDone<C: ClientConfig> {
+    Aes(TlsConnection<ServerFlightDone<Aes128GcmSha256>, C::Hkdf, C::Record>),
+    #[cfg(feature = "chacha20")]
+    ChaCha(TlsConnection<ServerFlightDone<ChaCha20Poly1305Sha256>, C::Hkdf, C::Record>),
+}
+
+// ============================================================================
+// Data-phase loop + public lifecycle
+// ============================================================================
+
+impl<'s, C: ClientConfig, const FLIGHT: usize, const RECV: usize, const SEND: usize>
+    TlsEngine<'s, C, FLIGHT, RECV, SEND>
+{
+    /// Drive the data phase one event. Priority `Send > AppData > Closed > Recv`.
+    pub(crate) fn step(&mut self) -> Result<EngineEvent, HandshakeError> {
+        loop {
+            if self.is_send_pending() {
+                let remaining = self.send_pending_len - self.send_acked;
+                return Ok(EngineEvent::Send(remaining));
+            }
+
+            if self.recv.plaintext_parked() {
+                return Ok(EngineEvent::AppData);
+            }
+
+            if self.closed {
+                return Ok(EngineEvent::Closed);
+            }
+
+            match self.frame_one_record()? {
+                Framed::Need => return Ok(EngineEvent::Recv),
+                Framed::Record {
+                    start,
+                    end,
+                    outer_type,
+                    ..
+                } => {
+                    self.dispatch_data_record(start, end, outer_type)?;
+                }
+            }
+        }
+    }
+
+    /// Data-phase records must be outer-type `application_data` (RFC 8446 §5).
+    /// Any error here is fatal; outer wrapper flips `self.closed`.
+    fn dispatch_data_record(
+        &mut self,
+        start: usize,
+        end: usize,
+        outer_type: u8,
+    ) -> Result<(), HandshakeError> {
+        match self.dispatch_data_record_inner(start, end, outer_type) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                self.closed = true;
+                Err(e)
+            }
+        }
+    }
+
+    fn dispatch_data_record_inner(
+        &mut self,
+        start: usize,
+        end: usize,
+        outer_type: u8,
+    ) -> Result<(), HandshakeError> {
+        if outer_type != CT_APPLICATION_DATA {
+            return Err(HandshakeError::Connection(
+                ConnectionError::UnknownContentType(outer_type),
+            ));
+        }
+
+        // RFC 8449: protected body = ciphertext + 16-byte AEAD tag.
+        let length_field = end - start - TLS_HEADER;
+        if length_field > self.our_recv_limit as usize + AEAD_TAG {
+            return Err(HandshakeError::RecordTooLarge {
+                limit: self.our_recv_limit,
+                got: length_field as u16,
+            });
+        }
+
+        let (content_len, inner_ct) = self.decrypt_current_data_record(start, end)?;
+        // Pre-advance: AEAD seq_in already stepped, framer never re-sees
+        // consumed bytes.
+        self.recv.next_record = end;
+        self.handle_inner_content(start + TLS_HEADER, content_len, inner_ct)
+    }
+
+    fn decrypt_current_data_record(
+        &mut self,
+        start: usize,
+        end: usize,
+    ) -> Result<(usize, u8), HandshakeError> {
+        let scratch = &mut *self.scratch;
+        match &mut self.state {
+            EngineState::AppAes(conn) => conn
+                .decrypt_record_inplace(&mut scratch.recv_record[start..end])
+                .map_err(HandshakeError::Connection),
+            #[cfg(feature = "chacha20")]
+            EngineState::AppChaCha(conn) => conn
+                .decrypt_record_inplace(&mut scratch.recv_record[start..end])
+                .map_err(HandshakeError::Connection),
+            _ => Err(HandshakeError::Internal(
+                InternalError::HandshakeStepWrongState,
+            )),
+        }
+    }
+
+    /// Inner-content dispatch after data-phase decrypt. `body_offset`
+    /// is the first plaintext byte.
+    fn handle_inner_content(
+        &mut self,
+        body_offset: usize,
+        content_len: usize,
+        inner_ct: u8,
+    ) -> Result<(), HandshakeError> {
+        match inner_ct {
+            CT_APPLICATION_DATA => {
+                if content_len > 0 {
+                    self.recv.plain_start = body_offset;
+                    self.recv.plain_end = body_offset + content_len;
+                }
+                Ok(())
+            }
+            CT_ALERT => {
+                if content_len < 2 {
+                    return Err(HandshakeError::Connection(ConnectionError::Decrypt(
+                        crate::DecryptError::Truncated,
+                    )));
+                }
+                let level = self.scratch.recv_record[body_offset];
+                let description = self.scratch.recv_record[body_offset + 1];
+                if level == 1 && description == 0 {
+                    self.closed = true;
+                    Ok(())
+                } else {
+                    Err(HandshakeError::Connection(ConnectionError::Alert {
+                        level,
+                        description,
+                    }))
+                }
+            }
+            CT_HANDSHAKE => {
+                // Walk every coalesced 4-byte-header message; permit
+                // only NewSessionTicket (skipped silently — rejecting
+                // would break interop with major CDNs). Any other
+                // msg_type fails even when coalesced after an NST, so
+                // KeyUpdate cannot silently desync the AEAD.
+                const HS_NEW_SESSION_TICKET: u8 = 4;
+                let end = body_offset + content_len;
+                let mut offset = body_offset;
+                while offset < end {
+                    if end - offset < 4 {
+                        return Err(HandshakeError::Connection(ConnectionError::Decrypt(
+                            crate::DecryptError::Truncated,
+                        )));
+                    }
+                    let msg_type = self.scratch.recv_record[offset];
+                    let len = u32::from_be_bytes([
+                        0,
+                        self.scratch.recv_record[offset + 1],
+                        self.scratch.recv_record[offset + 2],
+                        self.scratch.recv_record[offset + 3],
+                    ]) as usize;
+                    let msg_end = offset
+                        .checked_add(4)
+                        .and_then(|x| x.checked_add(len))
+                        .ok_or(HandshakeError::Connection(ConnectionError::Decrypt(
+                            crate::DecryptError::Truncated,
+                        )))?;
+                    if msg_end > end {
+                        return Err(HandshakeError::Connection(ConnectionError::Decrypt(
+                            crate::DecryptError::Truncated,
+                        )));
+                    }
+                    if msg_type != HS_NEW_SESSION_TICKET {
+                        return Err(HandshakeError::PostHandshakeNotSupported);
+                    }
+                    offset = msg_end;
+                }
+                Ok(())
+            }
+            other => Err(HandshakeError::Connection(
+                ConnectionError::UnknownContentType(other),
+            )),
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Public lifecycle — wrapper-facing API
+    // ------------------------------------------------------------------
+
+    /// Free tail of `recv_record` for the wrapper's `Recv` event.
+    /// Returns `&mut []` while plaintext is parked (I3).
+    pub(crate) fn recv_buffer(&mut self) -> &mut [u8] {
+        if self.recv.plaintext_parked() {
+            return &mut [];
+        }
+        &mut self.scratch.recv_record[self.recv.filled..]
+    }
+
+    /// Acknowledge `n` bytes written into `recv_buffer()`. `advance(n > 0)`
+    /// while plaintext is parked errors with `AdvanceWhileParked` (I3).
+    pub(crate) fn advance(&mut self, n: usize) -> Result<(), HandshakeError> {
+        if n == 0 {
+            return Ok(());
+        }
+        if self.recv.plaintext_parked() {
+            return Err(HandshakeError::Internal(InternalError::AdvanceWhileParked));
+        }
+        let new_filled = self
+            .recv
+            .filled
+            .checked_add(n)
+            .ok_or(HandshakeError::AdvanceTooLarge)?;
+        if new_filled > self.scratch.recv_record.len() {
+            return Err(HandshakeError::AdvanceTooLarge);
+        }
+        self.recv.filled = new_filled;
+        Ok(())
+    }
+
+    /// Drain parked plaintext into `out`; returns `min(parked, out.len())`.
+    pub(crate) fn read_app(&mut self, out: &mut [u8]) -> usize {
+        let parked = self.recv.plain_end - self.recv.plain_start;
+        let n = parked.min(out.len());
+        if n == 0 {
+            return 0;
+        }
+        let src_start = self.recv.plain_start;
+        out[..n].copy_from_slice(&self.scratch.recv_record[src_start..src_start + n]);
+        self.recv.plain_start += n;
+        n
+    }
+
+    /// Encrypt up to `send_chunk_limit()` bytes into a single
+    /// `application_data` record; returns plaintext bytes consumed.
+    pub(crate) fn write_app(&mut self, plaintext: &[u8]) -> Result<usize, super::WriteAppError> {
+        if self.closed {
+            return Err(super::WriteAppError::Closed);
+        }
+        if self.is_send_pending() {
+            return Err(super::WriteAppError::Busy);
+        }
+        if !self.state.in_data_phase() {
+            return Err(super::WriteAppError::NotReady);
+        }
+
+        let max_chunk = self.send_chunk_limit();
+        let chunk_len = plaintext.len().min(max_chunk);
+        if chunk_len == 0 {
+            return Ok(0);
+        }
+
+        let scratch = &mut *self.scratch;
+        let record_len = match &mut self.state {
+            EngineState::AppAes(conn) => conn
+                .encrypt_record(
+                    &plaintext[..chunk_len],
+                    CT_APPLICATION_DATA,
+                    &mut scratch.send_record,
+                )
+                .map_err(|e| super::WriteAppError::Other(HandshakeError::Connection(e)))?
+                .len(),
+            #[cfg(feature = "chacha20")]
+            EngineState::AppChaCha(conn) => conn
+                .encrypt_record(
+                    &plaintext[..chunk_len],
+                    CT_APPLICATION_DATA,
+                    &mut scratch.send_record,
+                )
+                .map_err(|e| super::WriteAppError::Other(HandshakeError::Connection(e)))?
+                .len(),
+            _ => return Err(super::WriteAppError::NotReady),
+        };
+
+        self.send_pending_len = record_len;
+        self.send_acked = 0;
+        Ok(chunk_len)
+    }
+
+    /// Acknowledge `n` transmitted bytes from `send_bytes()`. Clears
+    /// the CF gate so `HandshakeDone` can fire once the record drains.
+    pub(crate) fn mark_sent(&mut self, n: usize) -> Result<(), HandshakeError> {
+        let new_acked = self
+            .send_acked
+            .checked_add(n)
+            .ok_or(HandshakeError::Internal(InternalError::MarkSentTooLarge))?;
+        if new_acked > self.send_pending_len {
+            return Err(HandshakeError::Internal(InternalError::MarkSentTooLarge));
+        }
+        self.send_acked = new_acked;
+        if self.send_acked == self.send_pending_len {
+            self.send_pending_len = 0;
+            self.send_acked = 0;
+            if self.handshake_finished_pending_ack {
+                self.handshake_finished_pending_ack = false;
+            }
+        }
+        Ok(())
+    }
+
+    /// Force terminal state after a transport mid-record write failure;
+    /// a wrapper retry would resend duplicate bytes and desync AEAD.
+    pub(crate) fn mark_terminal(&mut self) {
+        self.state = EngineState::Closed;
+        self.closed = true;
+        self.send_pending_len = 0;
+        self.send_acked = 0;
+        self.handshake_finished_pending_ack = false;
+        self.pending_handshake_done = false;
+    }
+
+    /// Queue `close_notify` and flip to closed. Idempotent. Returns
+    /// `Busy` if a Send is pending. Pre-handshake close just flips the flag.
+    pub(crate) fn close(&mut self) -> Result<(), HandshakeError> {
+        if self.closed {
+            return Ok(());
+        }
+        if self.is_send_pending() {
+            return Err(HandshakeError::Busy);
+        }
+        if !self.state.in_data_phase() {
+            self.closed = true;
+            return Ok(());
+        }
+
+        let scratch = &mut *self.scratch;
+        let record_len = match &mut self.state {
+            EngineState::AppAes(conn) => conn
+                .encrypt_record(&CLOSE_NOTIFY_ALERT, CT_ALERT, &mut scratch.send_record)
+                .map_err(HandshakeError::Connection)?
+                .len(),
+            #[cfg(feature = "chacha20")]
+            EngineState::AppChaCha(conn) => conn
+                .encrypt_record(&CLOSE_NOTIFY_ALERT, CT_ALERT, &mut scratch.send_record)
+                .map_err(HandshakeError::Connection)?
+                .len(),
+            // Unreachable via `in_data_phase()`; return Internal
+            // rather than panic on wire-influenced state.
+            _ => {
+                return Err(HandshakeError::Internal(
+                    InternalError::HandshakeStepWrongState,
+                ));
+            }
+        };
+
+        self.send_pending_len = record_len;
+        self.send_acked = 0;
+        self.closed = true;
+        Ok(())
+    }
+
+    /// Per-chunk plaintext cap: min of peer RSL, local SEND buffer,
+    /// and proto max (each minus the 1-byte inner content type).
+    fn send_chunk_limit(&self) -> usize {
+        let peer = (self.peer_recv_limit as usize).saturating_sub(1);
+        let local = SEND.saturating_sub(RECORD_OVERHEAD + 1);
+        let proto = (PROTO_MAX_INNER_PLAINTEXT as usize).saturating_sub(1);
+        peer.min(local).min(proto)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::client::{DefaultConfig, DefaultScratch};
+
+    // RecvState
+
+    #[test]
+    fn recv_state_default_has_no_parked_plaintext() {
+        let r = RecvState::new();
+        assert!(!r.plaintext_parked());
+        assert!(!r.needs_compaction());
+    }
+
+    #[test]
+    fn recv_state_plaintext_parked_only_when_range_nonempty() {
+        let mut r = RecvState::new();
+        r.plain_start = 0;
+        r.plain_end = 0;
+        assert!(!r.plaintext_parked());
+        r.plain_end = 10;
+        assert!(r.plaintext_parked());
+        r.plain_start = 10;
+        assert!(!r.plaintext_parked());
+    }
+
+    #[test]
+    fn recv_state_needs_compaction_fires_only_post_drain_with_advanced_cursor() {
+        let mut r = RecvState::new();
+        // Not parked, next_record == 0 → false.
+        assert!(!r.needs_compaction());
+        // Parked → false (I6 only fires post-drain).
+        r.plain_end = 10;
+        r.next_record = 20;
+        assert!(!r.needs_compaction());
+        // Drained but next_record > 0 → true.
+        r.plain_end = 0;
+        assert!(r.needs_compaction());
+    }
+
+    // ---------------------------------------------------------------------
+    // Construction helpers
+    // ---------------------------------------------------------------------
+
+    /// Build an engine in `Closed` state — the lightest possible
+    /// construction. Sufficient for any test that only exercises the
+    /// scratch / cursor / flag fields and doesn't dispatch through a
+    /// live typestate.
+    fn closed_engine(
+        scratch: &mut DefaultScratch,
+    ) -> TlsEngine<'_, DefaultConfig, 16384, 16645, 4096> {
+        TlsEngine::new(
+            scratch,
+            EngineState::Closed,
+            16384,
+            16384,
+            RuntimeSuitePolicy::Default,
+        )
+    }
+
+    // advance / recv_buffer
+
+    #[test]
+    fn advance_zero_is_noop_regardless_of_state() {
+        let mut scratch = DefaultScratch::new();
+        let mut e = closed_engine(&mut scratch);
+        assert!(e.advance(0).is_ok());
+        e.recv.plain_end = 10;
+        // Parked + advance(0) still Ok.
+        assert!(e.advance(0).is_ok());
+    }
+
+    #[test]
+    fn advance_while_parked_returns_internal_error() {
+        let mut scratch = DefaultScratch::new();
+        let mut e = closed_engine(&mut scratch);
+        e.recv.plain_end = 10;
+        let err = e.advance(1).unwrap_err();
+        assert!(matches!(
+            err,
+            HandshakeError::Internal(InternalError::AdvanceWhileParked)
+        ));
+    }
+
+    #[test]
+    fn advance_overflow_returns_advance_too_large() {
+        let mut scratch = DefaultScratch::new();
+        let mut e = closed_engine(&mut scratch);
+        let err = e.advance(usize::MAX).unwrap_err();
+        assert!(matches!(err, HandshakeError::AdvanceTooLarge));
+    }
+
+    #[test]
+    fn advance_past_capacity_returns_advance_too_large() {
+        let mut scratch = DefaultScratch::new();
+        let cap = scratch.recv_record.len();
+        let mut e = closed_engine(&mut scratch);
+        let err = e.advance(cap + 1).unwrap_err();
+        assert!(matches!(err, HandshakeError::AdvanceTooLarge));
+    }
+
+    #[test]
+    fn recv_buffer_empty_while_parked() {
+        let mut scratch = DefaultScratch::new();
+        let mut e = closed_engine(&mut scratch);
+        e.recv.plain_end = 10;
+        assert!(e.recv_buffer().is_empty());
+    }
+
+    // mark_sent
+
+    #[test]
+    fn mark_sent_overflow_returns_internal_error() {
+        let mut scratch = DefaultScratch::new();
+        let mut e = closed_engine(&mut scratch);
+        e.send_pending_len = 10;
+        let err = e.mark_sent(11).unwrap_err();
+        assert!(matches!(
+            err,
+            HandshakeError::Internal(InternalError::MarkSentTooLarge)
+        ));
+    }
+
+    #[test]
+    fn mark_sent_full_drain_resets_both_cursors() {
+        let mut scratch = DefaultScratch::new();
+        let mut e = closed_engine(&mut scratch);
+        e.send_pending_len = 42;
+        e.send_acked = 10;
+        assert!(e.mark_sent(32).is_ok());
+        assert_eq!(e.send_pending_len, 0);
+        assert_eq!(e.send_acked, 0);
+    }
+
+    #[test]
+    fn mark_sent_full_drain_clears_handshake_finished_gate() {
+        let mut scratch = DefaultScratch::new();
+        let mut e = closed_engine(&mut scratch);
+        e.send_pending_len = 10;
+        e.handshake_finished_pending_ack = true;
+        e.pending_handshake_done = true;
+        assert!(e.mark_sent(10).is_ok());
+        assert!(!e.handshake_finished_pending_ack);
+        // pending_handshake_done is left for step_handshake to consume.
+        assert!(e.pending_handshake_done);
+    }
+
+    #[test]
+    fn mark_sent_partial_does_not_reset_cursors() {
+        let mut scratch = DefaultScratch::new();
+        let mut e = closed_engine(&mut scratch);
+        e.send_pending_len = 42;
+        assert!(e.mark_sent(10).is_ok());
+        assert_eq!(e.send_acked, 10);
+        assert_eq!(e.send_pending_len, 42);
+    }
+
+    // mark_terminal
+
+    #[test]
+    fn mark_terminal_clears_all_lifecycle_flags() {
+        let mut scratch = DefaultScratch::new();
+        let mut e = closed_engine(&mut scratch);
+        e.send_pending_len = 42;
+        e.send_acked = 10;
+        e.handshake_finished_pending_ack = true;
+        e.pending_handshake_done = true;
+        // closed is already true on a Closed-state engine, but verify
+        // mark_terminal forces it regardless.
+        e.closed = false;
+        e.mark_terminal();
+        assert_eq!(e.send_pending_len, 0);
+        assert_eq!(e.send_acked, 0);
+        assert!(!e.handshake_finished_pending_ack);
+        assert!(!e.pending_handshake_done);
+        assert!(e.closed);
+        assert!(matches!(e.state, EngineState::Closed));
+    }
+
+    // handle_inner_content — NewSessionTicket walker
+
+    /// Place a single handshake message header + payload at `recv_record[offset]`.
+    /// Layout: `msg_type | uint24 length | payload[0..length]`.
+    fn write_hs_msg(
+        scratch: &mut DefaultScratch,
+        offset: usize,
+        msg_type: u8,
+        payload: &[u8],
+    ) -> usize {
+        let len = payload.len();
+        assert!(len < (1 << 24));
+        scratch.recv_record[offset] = msg_type;
+        scratch.recv_record[offset + 1] = ((len >> 16) & 0xff) as u8;
+        scratch.recv_record[offset + 2] = ((len >> 8) & 0xff) as u8;
+        scratch.recv_record[offset + 3] = (len & 0xff) as u8;
+        scratch.recv_record[offset + 4..offset + 4 + len].copy_from_slice(payload);
+        4 + len
+    }
+
+    #[test]
+    fn handle_handshake_single_nst_skipped() {
+        let mut scratch = DefaultScratch::new();
+        let len = write_hs_msg(&mut scratch, 0, 4, &[0xaau8; 16]);
+        let mut e = closed_engine(&mut scratch);
+        assert!(e.handle_inner_content(0, len, CT_HANDSHAKE).is_ok());
+    }
+
+    #[test]
+    fn handle_handshake_two_coalesced_nsts_both_skipped() {
+        let mut scratch = DefaultScratch::new();
+        let l1 = write_hs_msg(&mut scratch, 0, 4, &[0x11u8; 8]);
+        let l2 = write_hs_msg(&mut scratch, l1, 4, &[0x22u8; 12]);
+        let mut e = closed_engine(&mut scratch);
+        assert!(e.handle_inner_content(0, l1 + l2, CT_HANDSHAKE).is_ok());
+    }
+
+    #[test]
+    fn handle_handshake_nst_then_key_update_rejected() {
+        // A server coalescing [NewSessionTicket][KeyUpdate] in one
+        // record must not silently consume the KeyUpdate.
+        let mut scratch = DefaultScratch::new();
+        let l1 = write_hs_msg(&mut scratch, 0, 4, &[0xaau8; 12]);
+        let l2 = write_hs_msg(&mut scratch, l1, 24, &[0u8; 1]);
+        let mut e = closed_engine(&mut scratch);
+        let err = e
+            .handle_inner_content(0, l1 + l2, CT_HANDSHAKE)
+            .unwrap_err();
+        assert!(matches!(err, HandshakeError::PostHandshakeNotSupported));
+    }
+
+    #[test]
+    fn handle_handshake_certificate_request_rejected() {
+        let mut scratch = DefaultScratch::new();
+        let len = write_hs_msg(&mut scratch, 0, 13, &[0u8; 8]);
+        let mut e = closed_engine(&mut scratch);
+        let err = e.handle_inner_content(0, len, CT_HANDSHAKE).unwrap_err();
+        assert!(matches!(err, HandshakeError::PostHandshakeNotSupported));
+    }
+
+    #[test]
+    fn handle_handshake_truncated_header_rejected() {
+        let mut scratch = DefaultScratch::new();
+        // content_len = 3 < the 4-byte handshake header.
+        let mut e = closed_engine(&mut scratch);
+        let err = e.handle_inner_content(0, 3, CT_HANDSHAKE).unwrap_err();
+        assert!(matches!(
+            err,
+            HandshakeError::Connection(ConnectionError::Decrypt(crate::DecryptError::Truncated))
+        ));
+    }
+
+    #[test]
+    fn handle_handshake_declared_length_overflows_record_rejected() {
+        // Declared length larger than content_len (fragmented-ticket case).
+        let mut scratch = DefaultScratch::new();
+        scratch.recv_record[0] = 4;
+        // Declared length 1024 with only 20 bytes of content_len.
+        scratch.recv_record[1] = 0;
+        scratch.recv_record[2] = 0x04;
+        scratch.recv_record[3] = 0x00;
+        let mut e = closed_engine(&mut scratch);
+        let err = e.handle_inner_content(0, 20, CT_HANDSHAKE).unwrap_err();
+        assert!(matches!(
+            err,
+            HandshakeError::Connection(ConnectionError::Decrypt(crate::DecryptError::Truncated))
+        ));
+    }
+
+    #[test]
+    fn handle_handshake_zero_length_record_ok() {
+        // content_len == 0 means the loop body never runs. No messages
+        // to inspect, so this is a no-op return.
+        let mut scratch = DefaultScratch::new();
+        let mut e = closed_engine(&mut scratch);
+        assert!(e.handle_inner_content(0, 0, CT_HANDSHAKE).is_ok());
+    }
+
+    // handle_inner_content — application_data + alert
+
+    #[test]
+    fn handle_application_data_parks_plaintext() {
+        let mut scratch = DefaultScratch::new();
+        let mut e = closed_engine(&mut scratch);
+        assert!(e.handle_inner_content(5, 100, CT_APPLICATION_DATA).is_ok());
+        assert_eq!(e.recv.plain_start, 5);
+        assert_eq!(e.recv.plain_end, 105);
+    }
+
+    #[test]
+    fn handle_application_data_zero_length_is_silent_noop() {
+        let mut scratch = DefaultScratch::new();
+        let mut e = closed_engine(&mut scratch);
+        assert!(e.handle_inner_content(5, 0, CT_APPLICATION_DATA).is_ok());
+        assert_eq!(e.recv.plain_start, 0);
+        assert_eq!(e.recv.plain_end, 0);
+    }
+
+    #[test]
+    fn handle_alert_close_notify_sets_closed_returns_ok() {
+        let mut scratch = DefaultScratch::new();
+        scratch.recv_record[0] = 1; // level = warning
+        scratch.recv_record[1] = 0; // description = close_notify
+        let mut e = closed_engine(&mut scratch);
+        e.closed = false;
+        assert!(e.handle_inner_content(0, 2, CT_ALERT).is_ok());
+        assert!(e.closed);
+    }
+
+    #[test]
+    fn handle_alert_fatal_returns_alert_error() {
+        let mut scratch = DefaultScratch::new();
+        scratch.recv_record[0] = 2; // level = fatal
+        scratch.recv_record[1] = 40; // description = handshake_failure
+        let mut e = closed_engine(&mut scratch);
+        let err = e.handle_inner_content(0, 2, CT_ALERT).unwrap_err();
+        assert!(matches!(
+            err,
+            HandshakeError::Connection(ConnectionError::Alert {
+                level: 2,
+                description: 40,
+            })
+        ));
+    }
+
+    #[test]
+    fn handle_alert_truncated_returns_decrypt_truncated() {
+        let mut scratch = DefaultScratch::new();
+        let mut e = closed_engine(&mut scratch);
+        let err = e.handle_inner_content(0, 1, CT_ALERT).unwrap_err();
+        assert!(matches!(
+            err,
+            HandshakeError::Connection(ConnectionError::Decrypt(crate::DecryptError::Truncated))
+        ));
+    }
+
+    #[test]
+    fn handle_unknown_inner_content_type_rejected() {
+        let mut scratch = DefaultScratch::new();
+        let mut e = closed_engine(&mut scratch);
+        let err = e.handle_inner_content(0, 4, 0xff).unwrap_err();
+        assert!(matches!(
+            err,
+            HandshakeError::Connection(ConnectionError::UnknownContentType(0xff))
+        ));
+    }
+
+    // ---------------------------------------------------------------------
+    // Live AppAes engine (replay-gated)
+    //
+    // Constructs a real AppAes typestate via `from_app_secrets` so the
+    // write_app / close paths run against actual AEAD state instead of
+    // a stub. Verifies the wrapper-facing contract that's load-bearing
+    // for the data-phase drive loop.
+    // ---------------------------------------------------------------------
+
+    #[cfg(feature = "replay")]
+    mod replay {
+        use super::*;
+        use crate::Secret;
+        use crate::aead::Aes128GcmSha256;
+        use crate::backends::RustCrypto;
+        use crate::client::WriteAppError;
+        use crate::connection::AppData;
+
+        fn app_engine(
+            scratch: &mut DefaultScratch,
+        ) -> TlsEngine<'_, DefaultConfig, 16384, 16645, 4096> {
+            let c_ap_ts = Secret::from([0x42u8; 32]);
+            let s_ap_ts = Secret::from([0x43u8; 32]);
+            let conn = TlsConnection::<AppData<Aes128GcmSha256>, RustCrypto, RustCrypto>::from_app_secrets(
+                c_ap_ts, s_ap_ts, 0, 0,
+            )
+            .unwrap();
+            TlsEngine::new(
+                scratch,
+                EngineState::AppAes(conn),
+                16384,
+                16384,
+                RuntimeSuitePolicy::Default,
+            )
+        }
+
+        #[test]
+        fn write_app_returns_closed_when_engine_terminal() {
+            let mut scratch = DefaultScratch::new();
+            let mut e = app_engine(&mut scratch);
+            e.closed = true;
+            assert!(matches!(e.write_app(b"hi"), Err(WriteAppError::Closed)));
+        }
+
+        #[test]
+        fn write_app_returns_busy_when_send_pending() {
+            let mut scratch = DefaultScratch::new();
+            let mut e = app_engine(&mut scratch);
+            e.send_pending_len = 16;
+            assert!(matches!(e.write_app(b"hi"), Err(WriteAppError::Busy)));
+        }
+
+        #[test]
+        fn write_app_returns_zero_on_empty_plaintext() {
+            let mut scratch = DefaultScratch::new();
+            let mut e = app_engine(&mut scratch);
+            assert_eq!(e.write_app(b""), Ok(0));
+            assert_eq!(e.send_pending_len, 0);
+        }
+
+        #[test]
+        fn write_app_queues_encrypted_record() {
+            let mut scratch = DefaultScratch::new();
+            let mut e = app_engine(&mut scratch);
+            let n = e.write_app(b"hello").unwrap();
+            assert_eq!(n, 5);
+            // Encrypted record = 5-byte header + 5 plaintext + 1 inner CT + 16 AEAD tag.
+            assert_eq!(e.send_pending_len, 5 + 5 + 1 + 16);
+            assert!(e.is_send_pending());
+            assert_eq!(e.send_bytes().len(), e.send_pending_len);
+            // First byte is the outer content type — must be application_data.
+            assert_eq!(e.send_bytes()[0], CT_APPLICATION_DATA);
+        }
+
+        #[test]
+        fn close_queues_encrypted_close_notify() {
+            let mut scratch = DefaultScratch::new();
+            let mut e = app_engine(&mut scratch);
+            assert!(e.close().is_ok());
+            // close_notify payload = [1, 0] → 2 plaintext + 1 inner CT + 16 tag + 5 header.
+            assert_eq!(e.send_pending_len, 2 + 1 + 16 + 5);
+            assert!(e.closed);
+            // Outer record type is application_data (close_notify wrapped).
+            assert_eq!(e.send_bytes()[0], CT_APPLICATION_DATA);
+        }
+
+        #[test]
+        fn close_is_idempotent_after_first_call() {
+            let mut scratch = DefaultScratch::new();
+            let mut e = app_engine(&mut scratch);
+            assert!(e.close().is_ok());
+            let first_pending = e.send_pending_len;
+            // Second call is a no-op.
+            assert!(e.close().is_ok());
+            assert_eq!(e.send_pending_len, first_pending);
+        }
+
+        #[test]
+        fn close_returns_busy_when_send_pending() {
+            let mut scratch = DefaultScratch::new();
+            let mut e = app_engine(&mut scratch);
+            e.send_pending_len = 16;
+            let err = e.close().unwrap_err();
+            assert!(matches!(err, HandshakeError::Busy));
+        }
+    }
+}
