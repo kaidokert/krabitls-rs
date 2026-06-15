@@ -115,11 +115,7 @@ pub fn run_aes_ed25519() -> Result<(), ()> {
         transcript.update_record(&CH).map_err(|_| ())?;
         transcript.update_record(&SH).map_err(|_| ())?;
 
-        let mut conn = <TlsConnection<
-            WaitServerFlight<Aes128GcmSha256, Replay>,
-            RustCrypto,
-            RustCrypto,
-        >>::from_handshake_secrets(
+        let mut conn = <TlsConnection<WaitServerFlight<Aes128GcmSha256, Replay>, RustCrypto>>::from_handshake_secrets(
             transcript,
             Secret::new(ZeroBuf::<32>::new(C_HS_TS)),
             Secret::new(ZeroBuf::<32>::new(S_HS_TS)),
@@ -257,7 +253,6 @@ mod jedisct_path {
             let mut conn = <TlsConnection<
                 WaitServerFlight<Aes128GcmSha256, Replay>,
                 JedisctCrypto,
-                RustCrypto,
             >>::from_handshake_secrets(
                 transcript,
                 Secret::new(ZeroBuf::<32>::new(C_HS_TS)),
@@ -316,7 +311,6 @@ mod chacha_path {
 
             let mut conn = <TlsConnection<
                 WaitServerFlight<ChaCha20Poly1305Sha256, Replay>,
-                RustCrypto,
                 RustCrypto,
             >>::from_handshake_secrets(
                 transcript,
@@ -386,11 +380,7 @@ mod rsa_path {
             transcript.update_record(&CH).map_err(|_| ())?;
             transcript.update_record(&SH).map_err(|_| ())?;
 
-            let mut conn = <TlsConnection<
-                WaitServerFlight<Aes128GcmSha256, Replay>,
-                RustCrypto,
-                RustCrypto,
-            >>::from_handshake_secrets(
+            let mut conn = <TlsConnection<WaitServerFlight<Aes128GcmSha256, Replay>, RustCrypto>>::from_handshake_secrets(
                 transcript,
                 Secret::new(ZeroBuf::<32>::new(C_HS_TS)),
                 Secret::new(ZeroBuf::<32>::new(S_HS_TS)),

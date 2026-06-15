@@ -13,35 +13,19 @@
 //! RustCrypto SHA chain, the consumer also has to avoid referencing
 //! `RustCrypto` anywhere in their call sites — which today means giving
 //! up AES-GCM (jedisct1 has no equivalent in the same family) or
-//! supplying their own [`crate::Aes128GcmAead`] impl.
+//! supplying their own AEAD path.
 
 use hmac_sha256::{HKDF, Hash};
 
-use crate::traits::{HkdfExpandError, HkdfSha256, Sha256Hasher};
+use crate::traits::{HkdfExpandError, HkdfSha256};
 
-/// Marker type holding the jedisct1-backed HKDF impl. Pair with
-/// [`crate::RustCrypto`] for AEAD on the call site:
-///
-/// ```ignore
-/// build_client_finished::<JedisctCrypto, RustCrypto>(...)
-/// ```
 pub struct JedisctCrypto;
-
-impl Sha256Hasher for Hash {
-    fn update(&mut self, data: &[u8]) {
-        Hash::update(self, data)
-    }
-
-    fn finalize(self) -> [u8; 32] {
-        Hash::finalize(self)
-    }
-}
 
 impl HkdfSha256 for JedisctCrypto {
     type Hasher = Hash;
 
     fn hasher() -> Self::Hasher {
-        Hash::new()
+        digest::Digest::new()
     }
 
     fn extract(salt: &[u8], ikm: &[u8]) -> zeroize::Zeroizing<[u8; 32]> {

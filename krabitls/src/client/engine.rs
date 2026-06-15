@@ -62,13 +62,13 @@ impl RecvState {
 /// plus pre-suite and terminal states.
 #[allow(clippy::large_enum_variant)] // post-handshake variants carry app keys; size is dominated by the typestate, not the enum tag
 pub(crate) enum EngineState<C: ClientConfig> {
-    WaitServerHello(TlsConnection<WaitServerHello, C::Hkdf, C::Record>),
-    WaitFlightAes(TlsConnection<WaitServerFlight<Aes128GcmSha256>, C::Hkdf, C::Record>),
+    WaitServerHello(TlsConnection<WaitServerHello, C::Hkdf>),
+    WaitFlightAes(TlsConnection<WaitServerFlight<Aes128GcmSha256>, C::Hkdf>),
     #[cfg(feature = "chacha20")]
-    WaitFlightChaCha(TlsConnection<WaitServerFlight<ChaCha20Poly1305Sha256>, C::Hkdf, C::Record>),
-    AppAes(TlsConnection<AppData<Aes128GcmSha256>, C::Hkdf, C::Record>),
+    WaitFlightChaCha(TlsConnection<WaitServerFlight<ChaCha20Poly1305Sha256>, C::Hkdf>),
+    AppAes(TlsConnection<AppData<Aes128GcmSha256>, C::Hkdf>),
     #[cfg(feature = "chacha20")]
-    AppChaCha(TlsConnection<AppData<ChaCha20Poly1305Sha256>, C::Hkdf, C::Record>),
+    AppChaCha(TlsConnection<AppData<ChaCha20Poly1305Sha256>, C::Hkdf>),
     /// Terminal sentinel; also used as the `mem::replace` placeholder
     /// during state transitions.
     Closed,
@@ -566,9 +566,9 @@ impl<'s, C: ClientConfig, const FLIGHT: usize, const RECV: usize, const SEND: us
 }
 
 enum FlightDone<C: ClientConfig> {
-    Aes(TlsConnection<ServerFlightDone<Aes128GcmSha256>, C::Hkdf, C::Record>),
+    Aes(TlsConnection<ServerFlightDone<Aes128GcmSha256>, C::Hkdf>),
     #[cfg(feature = "chacha20")]
-    ChaCha(TlsConnection<ServerFlightDone<ChaCha20Poly1305Sha256>, C::Hkdf, C::Record>),
+    ChaCha(TlsConnection<ServerFlightDone<ChaCha20Poly1305Sha256>, C::Hkdf>),
 }
 
 // ============================================================================
@@ -1291,7 +1291,7 @@ mod tests {
         ) -> TlsEngine<'_, DefaultConfig, 16384, 16645, 4096> {
             let c_ap_ts = Secret::from([0x42u8; 32]);
             let s_ap_ts = Secret::from([0x43u8; 32]);
-            let conn = TlsConnection::<AppData<Aes128GcmSha256>, RustCrypto, RustCrypto>::from_app_secrets(
+            let conn = TlsConnection::<AppData<Aes128GcmSha256>, RustCrypto>::from_app_secrets(
                 c_ap_ts, s_ap_ts, 0, 0,
             )
             .unwrap();

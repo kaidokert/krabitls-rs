@@ -75,13 +75,11 @@ pub(crate) use server_flight::{
 // `extract_cert_der` + `parse_server_flight` stay pub for callers doing
 // cert-content inspection (SAN / pin / validity) after the typestate verify.
 pub use server_flight::{FlightError, ServerPubkey, extract_cert_der, parse_server_flight};
-#[cfg(feature = "chacha20")]
-pub use traits::ChaCha20Poly1305Aead;
 #[cfg(feature = "rsa")]
 pub use traits::RsaCertSigAlg;
 pub use traits::{
-    AeadError, Aes128GcmAead, CertParseError, CertParser, CertView, Ed25519VerifierProvider,
-    HkdfExpandError, HkdfSha256, RecordAead, RsaVerifierProvider, Sha256Hasher,
+    AeadError, CertParseError, CertParser, CertView, Ed25519VerifierProvider, HkdfExpandError,
+    HkdfSha256, RsaVerifierProvider,
 };
 #[cfg(feature = "validity")]
 pub use traits::{FixedTime, TimeSource};
@@ -1773,7 +1771,7 @@ mod tests {
         let key = make_fixture_s_hs_key();
         let iv = make_fixture_s_hs_iv();
         let mut buf = [0u8; 400];
-        let pt = decrypt_record::<RustCrypto, _>(
+        let pt = decrypt_record::<Aes128GcmSha256>(
             &FIXTURE_PACKET_3,
             key.as_zeroizing(),
             &iv,
@@ -1811,7 +1809,7 @@ mod tests {
         let key = AeadKey::new(k);
 
         let mut buf = [0u8; 400];
-        let pt = decrypt_record::<RustCrypto, _>(
+        let pt = decrypt_record::<Aes128GcmSha256>(
             &FIXTURE_PACKET_3,
             key.as_zeroizing(),
             &iv,
@@ -1830,7 +1828,7 @@ mod tests {
         let key = make_fixture_s_hs_key();
         let iv = make_fixture_s_hs_iv();
         let mut buf = [0u8; 400];
-        let pt = decrypt_record::<RustCrypto, _>(
+        let pt = decrypt_record::<Aes128GcmSha256>(
             &FIXTURE_PACKET_3,
             key.as_zeroizing(),
             &iv,
@@ -1926,7 +1924,7 @@ mod tests {
         let key = make_fixture_s_hs_key();
         let iv = make_fixture_s_hs_iv();
         let mut pt_buf = [0u8; 400];
-        let pt = decrypt_record::<RustCrypto, _>(
+        let pt = decrypt_record::<Aes128GcmSha256>(
             &FIXTURE_PACKET_3,
             key.as_zeroizing(),
             &iv,
@@ -1977,7 +1975,7 @@ mod tests {
         let key = make_fixture_s_hs_key();
         let iv = make_fixture_s_hs_iv();
         let mut pt_buf = [0u8; 400];
-        let pt = decrypt_record::<RustCrypto, _>(
+        let pt = decrypt_record::<Aes128GcmSha256>(
             &FIXTURE_PACKET_3,
             key.as_zeroizing(),
             &iv,
@@ -2074,7 +2072,7 @@ mod tests {
         let key = make_fixture_s_hs_key();
         let iv = make_fixture_s_hs_iv();
         let mut buf = [0u8; 400];
-        let pt = decrypt_record::<RustCrypto, _>(
+        let pt = decrypt_record::<Aes128GcmSha256>(
             &FIXTURE_PACKET_3,
             key.as_zeroizing(),
             &iv,
@@ -2138,7 +2136,7 @@ mod tests {
         let key = make_fixture_s_hs_key();
         let iv = make_fixture_s_hs_iv();
         let mut pt_buf = [0u8; 400];
-        let pt = decrypt_record::<RustCrypto, _>(
+        let pt = decrypt_record::<Aes128GcmSha256>(
             &FIXTURE_PACKET_3,
             key.as_zeroizing(),
             &iv,
@@ -2189,7 +2187,7 @@ mod tests {
 
         // First app-data record under c_ap uses seq = 0.
         let mut out = [0u8; 80];
-        let record = encrypt_record::<RustCrypto, _>(
+        let record = encrypt_record::<Aes128GcmSha256>(
             PACKET_5_PLAINTEXT,
             consts::CT_APPLICATION_DATA,
             c_key.as_zeroizing(),
@@ -2205,7 +2203,7 @@ mod tests {
     fn fixture_packet_6_decrypts_to_expected_plaintext() {
         let (_, (s_key, s_iv)) = application_keys();
         let mut pt = [0u8; 64];
-        let inner = decrypt_record::<RustCrypto, _>(
+        let inner = decrypt_record::<Aes128GcmSha256>(
             &FIXTURE_PACKET_6,
             s_key.as_zeroizing(),
             &s_iv,
@@ -2229,7 +2227,7 @@ mod tests {
         let key = make_fixture_s_hs_key();
         let iv = make_fixture_s_hs_iv();
         let mut pt_buf = [0u8; 400];
-        let pt = decrypt_record::<RustCrypto, _>(
+        let pt = decrypt_record::<Aes128GcmSha256>(
             &FIXTURE_PACKET_3,
             key.as_zeroizing(),
             &iv,
@@ -2251,14 +2249,13 @@ mod tests {
 
         // Now build the client Finished record and compare to fixture's packet 4.
         let mut out = [0u8; 64];
-        let record =
-            RecordKeys::<Aes128GcmSha256>::build_client_finished::<RustCrypto, RustCrypto>(
-                &make_fixture_c_hs_traffic_secret(),
-                &transcript.snapshot(),
-                0, // first record under c_hs_traffic_secret
-                &mut out,
-            )
-            .unwrap();
+        let record = RecordKeys::<Aes128GcmSha256>::build_client_finished::<RustCrypto>(
+            &make_fixture_c_hs_traffic_secret(),
+            &transcript.snapshot(),
+            0, // first record under c_hs_traffic_secret
+            &mut out,
+        )
+        .unwrap();
         assert_eq!(record.len(), CLIENT_FINISHED_LEN);
         assert_eq!(record, &FIXTURE_PACKET_4[..]);
     }
@@ -2272,7 +2269,7 @@ mod tests {
         let key = make_fixture_s_hs_key();
         let iv = make_fixture_s_hs_iv();
         let mut pt_buf = [0u8; 400];
-        let pt = decrypt_record::<RustCrypto, _>(
+        let pt = decrypt_record::<Aes128GcmSha256>(
             &FIXTURE_PACKET_3,
             key.as_zeroizing(),
             &iv,
@@ -2322,8 +2319,9 @@ mod tests {
         // Pre-fill with a sentinel; the function should overwrite the
         // ciphertext window with zeroes on AEAD failure.
         buf.fill(0xAA);
-        let err = decrypt_record::<RustCrypto, _>(&tampered, key.as_zeroizing(), &iv, 0, &mut buf)
-            .unwrap_err();
+        let err =
+            decrypt_record::<Aes128GcmSha256>(&tampered, key.as_zeroizing(), &iv, 0, &mut buf)
+                .unwrap_err();
         assert_eq!(err, DecryptError::AeadFailed);
 
         // The bytes in the ciphertext window (record body minus 16-byte tag)
@@ -2352,7 +2350,7 @@ mod tests {
         extra[..415].copy_from_slice(&FIXTURE_PACKET_3);
         extra[415] = 0xAB; // one stray byte past the declared record body
         let mut buf = [0u8; 416];
-        let err = decrypt_record::<RustCrypto, _>(&extra, key.as_zeroizing(), &iv, 0, &mut buf)
+        let err = decrypt_record::<Aes128GcmSha256>(&extra, key.as_zeroizing(), &iv, 0, &mut buf)
             .unwrap_err();
         assert_eq!(err, DecryptError::TrailingBytes);
     }
@@ -2403,7 +2401,7 @@ mod tests {
         // matter — RecordTooLarge fires before BufferTooSmall.
         let big = vec![0u8; (1 << 14) + 256];
         let mut out = [0u8; 1];
-        let err = encrypt_record::<RustCrypto, _>(
+        let err = encrypt_record::<Aes128GcmSha256>(
             &big,
             consts::CT_APPLICATION_DATA,
             &ZeroBuf::<16>::new([0u8; 16]),
@@ -2422,7 +2420,7 @@ mod tests {
         let iv = AeadIv::new(ZeroBuf::<12>::new([0x22; 12]));
         let plaintext = b"hello world";
         let mut record_buf = [0u8; 64];
-        let record = encrypt_record::<RustCrypto, _>(
+        let record = encrypt_record::<ChaCha20Poly1305Sha256>(
             plaintext,
             consts::CT_APPLICATION_DATA,
             key.as_zeroizing(),
@@ -2433,9 +2431,14 @@ mod tests {
         .unwrap();
         let record_owned = record.to_vec();
         let mut pt_buf = [0u8; 64];
-        let inner =
-            decrypt_record::<RustCrypto, _>(&record_owned, key.as_zeroizing(), &iv, 7, &mut pt_buf)
-                .unwrap();
+        let inner = decrypt_record::<ChaCha20Poly1305Sha256>(
+            &record_owned,
+            key.as_zeroizing(),
+            &iv,
+            7,
+            &mut pt_buf,
+        )
+        .unwrap();
         let (content, content_type) = aead::split_inner_plaintext(inner).unwrap();
         assert_eq!(content, plaintext);
         assert_eq!(content_type, consts::CT_APPLICATION_DATA);
@@ -2449,7 +2452,7 @@ mod tests {
         // plaintext cap — must surface as RecordTooLarge.
         let just_over = vec![0u8; (1 << 14) + 1];
         let mut out = vec![0u8; (1 << 14) + 256 + 5];
-        let err = encrypt_record::<RustCrypto, _>(
+        let err = encrypt_record::<Aes128GcmSha256>(
             &just_over,
             consts::CT_APPLICATION_DATA,
             &ZeroBuf::<16>::new([0u8; 16]),
@@ -2576,7 +2579,7 @@ mod tests {
 
             // Decrypt the RSA fixture's server flight.
             let mut pt_buf = [0u8; 1100];
-            let pt = decrypt_record::<RustCrypto, _>(
+            let pt = decrypt_record::<Aes128GcmSha256>(
                 &FIXTURE_RSA_PACKET_3,
                 key.as_zeroizing(),
                 &iv,
@@ -2624,7 +2627,7 @@ mod tests {
             let (k, iv) = traffic_keys::<RustCrypto, 16>(&s_hs_ts).unwrap();
             let key = AeadKey::new(k);
             let mut pt_buf = [0u8; 1100];
-            let pt = decrypt_record::<RustCrypto, _>(
+            let pt = decrypt_record::<Aes128GcmSha256>(
                 &FIXTURE_RSA_PACKET_3,
                 key.as_zeroizing(),
                 &iv,
