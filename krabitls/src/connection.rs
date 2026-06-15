@@ -1,4 +1,4 @@
-//! Typestate TLS 1.3 client. `TlsConnection<State, H, C>`'s only legal
+//! Typestate TLS 1.3 client. `TlsConnection<State, H>`'s only legal
 //! next move is the one named by `State` — wrong-method-for-state is a
 //! compile error. Design notes in `TYPESTATE_DESIGN.md`.
 
@@ -319,31 +319,30 @@ pub struct AppData<S: CipherSuite> {
 // ============================================================================
 
 /// `H` = HKDF/SHA-256 + transcript backend; `C` = AEAD backend.
-pub struct TlsConnection<State, H = RustCrypto, C = RustCrypto>
+pub struct TlsConnection<State, H = RustCrypto>
 where
     H: HkdfSha256,
 {
     transcript: TranscriptHash<H>,
     state: State,
-    _crypto: PhantomData<C>,
 }
 
 // ============================================================================
 // Init -> WaitServerHello
 // ============================================================================
 
-pub type WriteClientHelloToSliceResult<'a, H, C> = Result<
-    (&'a [u8], TlsConnection<WaitServerHello, H, C>),
+pub type WriteClientHelloToSliceResult<'a, H> = Result<
+    (&'a [u8], TlsConnection<WaitServerHello, H>),
     ConnectionError<embedded_io::SliceWriteError>,
 >;
 
 /// Carries `written_len` rather than `&buf[..n]` so the borrow ends before the next state.
-pub type WriteClientHelloToSliceWithResult<H, C> = Result<
-    (usize, TlsConnection<WaitServerHello, H, C>),
+pub type WriteClientHelloToSliceWithResult<H> = Result<
+    (usize, TlsConnection<WaitServerHello, H>),
     ConnectionError<embedded_io::SliceWriteError>,
 >;
 
-impl<H, C> TlsConnection<Init, H, C>
+impl<H> TlsConnection<Init, H>
 where
     H: HkdfSha256,
 {
@@ -354,7 +353,6 @@ where
                 client_random,
                 x25519_priv,
             },
-            _crypto: PhantomData,
         }
     }
 
@@ -365,7 +363,7 @@ where
         buf: &'a mut [u8],
         x25519_pub: &[u8; 32],
         hostname: Option<&[u8]>,
-    ) -> WriteClientHelloToSliceResult<'a, H, C> {
+    ) -> WriteClientHelloToSliceResult<'a, H> {
         let total = buf.len();
         let mut cursor = &mut *buf;
         let next = self.write_client_hello(&mut cursor, x25519_pub, hostname)?;
@@ -378,7 +376,7 @@ where
         out: &mut W,
         x25519_pub: &[u8; 32],
         hostname: Option<&[u8]>,
-    ) -> Result<TlsConnection<WaitServerHello, H, C>, ConnectionError<W::Error>> {
+    ) -> Result<TlsConnection<WaitServerHello, H>, ConnectionError<W::Error>> {
         self.write_client_hello_with(
             out,
             x25519_pub,
@@ -395,7 +393,7 @@ where
         out: &mut W,
         x25519_pub: &[u8; 32],
         opts: &crate::ClientHelloOptions<'_>,
-    ) -> Result<TlsConnection<WaitServerHello, H, C>, ConnectionError<W::Error>> {
+    ) -> Result<TlsConnection<WaitServerHello, H>, ConnectionError<W::Error>> {
         // Scratch first so the transcript sees the exact wire bytes.
         let mut scratch = [0u8; CH_SCRATCH];
         let mut cursor: &mut [u8] = &mut scratch[..];
@@ -433,7 +431,6 @@ where
                 x25519_priv: self.state.x25519_priv,
                 advertised: opts.suites,
             },
-            _crypto: PhantomData,
         })
     }
 
@@ -442,7 +439,7 @@ where
         buf: &mut [u8],
         x25519_pub: &[u8; 32],
         opts: &crate::ClientHelloOptions<'_>,
-    ) -> WriteClientHelloToSliceWithResult<H, C> {
+    ) -> WriteClientHelloToSliceWithResult<H> {
         let total = buf.len();
         let mut cursor = &mut *buf;
         let next = self.write_client_hello_with(&mut cursor, x25519_pub, opts)?;
@@ -452,7 +449,7 @@ where
 }
 
 #[cfg(feature = "replay")]
-impl<H, C> TlsConnection<WaitServerHello, H, C>
+impl<H> TlsConnection<WaitServerHello, H>
 where
     H: HkdfSha256,
 {
@@ -473,7 +470,6 @@ where
                 x25519_priv,
                 advertised,
             },
-            _crypto: PhantomData,
         })
     }
 }
@@ -483,22 +479,23 @@ where
 // ============================================================================
 
 /// Pre-known suite? Use `assume_*` to skip the runtime match.
-pub enum NegotiatedSuite<H = RustCrypto, C = RustCrypto>
+#[allow(clippy::large_enum_variant)] // AES Aes128Gcm key schedule dominates
+pub enum NegotiatedSuite<H = RustCrypto>
 where
     H: HkdfSha256,
 {
-    Aes128Gcm(TlsConnection<WaitServerFlight<Aes128GcmSha256>, H, C>),
+    Aes128Gcm(TlsConnection<WaitServerFlight<Aes128GcmSha256>, H>),
     #[cfg(feature = "chacha20")]
-    ChaCha20Poly1305(TlsConnection<WaitServerFlight<ChaCha20Poly1305Sha256>, H, C>),
+    ChaCha20Poly1305(TlsConnection<WaitServerFlight<ChaCha20Poly1305Sha256>, H>),
 }
 
-impl<H, C> NegotiatedSuite<H, C>
+impl<H> NegotiatedSuite<H>
 where
     H: HkdfSha256,
 {
     pub fn assume_aes_128_gcm(
         self,
-    ) -> Result<TlsConnection<WaitServerFlight<Aes128GcmSha256>, H, C>, ConnectionError> {
+    ) -> Result<TlsConnection<WaitServerFlight<Aes128GcmSha256>, H>, ConnectionError> {
         match self {
             Self::Aes128Gcm(c) => Ok(c),
             #[cfg(feature = "chacha20")]
@@ -512,8 +509,7 @@ where
     #[cfg(feature = "chacha20")]
     pub fn assume_chacha20_poly1305(
         self,
-    ) -> Result<TlsConnection<WaitServerFlight<ChaCha20Poly1305Sha256>, H, C>, ConnectionError>
-    {
+    ) -> Result<TlsConnection<WaitServerFlight<ChaCha20Poly1305Sha256>, H>, ConnectionError> {
         match self {
             Self::ChaCha20Poly1305(c) => Ok(c),
             Self::Aes128Gcm(_) => Err(ConnectionError::WrongSuite {
@@ -524,14 +520,14 @@ where
     }
 }
 
-impl<H, C> TlsConnection<WaitServerHello, H, C>
+impl<H> TlsConnection<WaitServerHello, H>
 where
     H: HkdfSha256,
 {
     pub fn read_server_hello(
         mut self,
         sh_record: &[u8],
-    ) -> Result<NegotiatedSuite<H, C>, ConnectionError> {
+    ) -> Result<NegotiatedSuite<H>, ConnectionError> {
         use subtle::ConstantTimeEq;
 
         let sh = parse_server_hello(sh_record)?;
@@ -582,7 +578,6 @@ where
                         seq_in: 0,
                         _mode: PhantomData,
                     },
-                    _crypto: PhantomData,
                 }))
             }
             #[cfg(feature = "chacha20")]
@@ -598,7 +593,6 @@ where
                         seq_in: 0,
                         _mode: PhantomData,
                     },
-                    _crypto: PhantomData,
                 }))
             }
             other => Err(ConnectionError::Parse(ParseError::UnsupportedCipherSuite(
@@ -696,11 +690,10 @@ where
     }
 }
 
-impl<S, H, C, M> TlsConnection<WaitServerFlight<S, M>, H, C>
+impl<S, H, M> TlsConnection<WaitServerFlight<S, M>, H>
 where
     S: CipherSuite,
     H: HkdfSha256,
-    C: crate::traits::RecordAead<S::KeyBytes>,
     M: HandshakeMode,
 {
     /// CCS records skipped without bumping seq_in.
@@ -715,7 +708,7 @@ where
             &mut self.state.seq_in,
             reassembler,
             scratch,
-            |r, s, b| self.state.s_hs_keys.decrypt_record::<C>(r, s, b),
+            |r, s, b| self.state.s_hs_keys.decrypt_record(r, s, b),
         )
     }
 
@@ -725,7 +718,7 @@ where
         reassembler: &mut ServerFlightReassembler<N>,
     ) -> Result<FlightStep, ConnectionError> {
         feed_server_record_inplace_inner(record, &mut self.state.seq_in, reassembler, |r, s| {
-            self.state.s_hs_keys.decrypt_record_inplace::<C>(r, s)
+            self.state.s_hs_keys.decrypt_record_inplace(r, s)
         })
     }
 
@@ -740,7 +733,7 @@ where
         mut self,
         reassembler: &ServerFlightReassembler<N>,
         mode: VerifyMode,
-    ) -> Result<TlsConnection<ServerFlightDone<S, M>, H, C>, ConnectionError> {
+    ) -> Result<TlsConnection<ServerFlightDone<S, M>, H>, ConnectionError> {
         let plaintext = reassembler
             .flight_bytes()
             .ok_or(ConnectionError::IncompleteFlight)?;
@@ -762,7 +755,6 @@ where
                 _suite: PhantomData,
                 _mode: PhantomData,
             },
-            _crypto: PhantomData,
         })
     }
 }
@@ -773,7 +765,7 @@ where
 
 type FinishHandshakeOut<'a, S> = (&'a [u8], RecordKeys<S>, RecordKeys<S>);
 
-type FinishHandshakeOk<'a, S, H, C> = (&'a [u8], TlsConnection<AppData<S>, H, C>);
+type FinishHandshakeOk<'a, S, H> = (&'a [u8], TlsConnection<AppData<S>, H>);
 
 fn finish_handshake_inner<'a, S, H, BuildFn, DeriveFn>(
     hs: &Secret,
@@ -804,7 +796,7 @@ where
     Ok((record, c_ap_keys, s_ap_keys))
 }
 
-impl<S, H, C, M> TlsConnection<ServerFlightDone<S, M>, H, C>
+impl<S, H, M> TlsConnection<ServerFlightDone<S, M>, H>
 where
     S: CipherSuite,
     H: HkdfSha256,
@@ -825,7 +817,7 @@ where
     }
 }
 
-impl<S, H, C> TlsConnection<ServerFlightDone<S, Live>, H, C>
+impl<S, H> TlsConnection<ServerFlightDone<S, Live>, H>
 where
     S: CipherSuite,
     H: HkdfSha256,
@@ -839,11 +831,10 @@ where
     }
 }
 
-impl<S, H, C, M> TlsConnection<ServerFlightDone<S, M>, H, C>
+impl<S, H, M> TlsConnection<ServerFlightDone<S, M>, H>
 where
     S: CipherSuite,
     H: HkdfSha256,
-    C: crate::traits::RecordAead<S::KeyBytes>,
     M: HandshakeMode,
 {
     /// No transition; skips `ms` + app-traffic derivation. Replay-harness use;
@@ -854,7 +845,7 @@ where
     ) -> Result<&'a [u8], ConnectionError> {
         let th = self.transcript.snapshot();
         let record =
-            RecordKeys::<S>::build_client_finished::<H, C>(&self.state.c_hs_ts, &th, 0, out_buf)?;
+            RecordKeys::<S>::build_client_finished::<H>(&self.state.c_hs_ts, &th, 0, out_buf)?;
         Ok(record)
     }
 }
@@ -864,7 +855,7 @@ where
 // ============================================================================
 
 #[cfg(feature = "replay")]
-impl<S, H, C> TlsConnection<WaitServerFlight<S, Replay>, H, C>
+impl<S, H> TlsConnection<WaitServerFlight<S, Replay>, H>
 where
     S: CipherSuite,
     H: HkdfSha256,
@@ -886,13 +877,12 @@ where
                 seq_in: 0,
                 _mode: PhantomData,
             },
-            _crypto: PhantomData,
         })
     }
 }
 
 #[cfg(feature = "replay")]
-impl<S, H, C> TlsConnection<AppData<S>, H, C>
+impl<S, H> TlsConnection<AppData<S>, H>
 where
     S: CipherSuite,
     H: HkdfSha256,
@@ -914,22 +904,20 @@ where
                 seq_out,
                 seq_in,
             },
-            _crypto: PhantomData,
         })
     }
 }
 
-impl<S, H, C> TlsConnection<ServerFlightDone<S, Live>, H, C>
+impl<S, H> TlsConnection<ServerFlightDone<S, Live>, H>
 where
     S: CipherSuite,
     H: HkdfSha256,
-    C: crate::traits::RecordAead<S::KeyBytes>,
 {
     /// `out_buf` ≥ 58 B. `Live`-only.
     pub fn finish_handshake<'a>(
         self,
         out_buf: &'a mut [u8],
-    ) -> Result<FinishHandshakeOk<'a, S, H, C>, ConnectionError> {
+    ) -> Result<FinishHandshakeOk<'a, S, H>, ConnectionError> {
         let th = self.transcript.snapshot();
         let (record, c_ap_keys, s_ap_keys) = finish_handshake_inner::<S, H, _, _>(
             &self.state.hs,
@@ -937,7 +925,7 @@ where
             &th,
             out_buf,
             |secret, th, seq, buf| {
-                RecordKeys::<S>::build_client_finished::<H, C>(secret, th, seq, buf)
+                RecordKeys::<S>::build_client_finished::<H>(secret, th, seq, buf)
             },
             RecordKeys::<S>::derive::<H>,
         )?;
@@ -951,7 +939,6 @@ where
                     seq_out: 0,
                     seq_in: 0,
                 },
-                _crypto: PhantomData,
             },
         ))
     }
@@ -961,11 +948,10 @@ where
 // AppData: encrypt_record / decrypt_record / close_notify
 // ============================================================================
 
-impl<S, H, C> TlsConnection<AppData<S>, H, C>
+impl<S, H> TlsConnection<AppData<S>, H>
 where
     S: CipherSuite,
     H: HkdfSha256,
-    C: crate::traits::RecordAead<S::KeyBytes>,
 {
     /// `content_type` is the inner TLS 1.3 type (`CT_APPLICATION_DATA` / `CT_ALERT`).
     pub fn encrypt_record<'a>(
@@ -974,7 +960,7 @@ where
         content_type: u8,
         out_buf: &'a mut [u8],
     ) -> Result<&'a [u8], ConnectionError> {
-        let record = self.state.c_ap_keys.encrypt_record::<C>(
+        let record = self.state.c_ap_keys.encrypt_record(
             content,
             content_type,
             self.state.seq_out,
@@ -992,7 +978,7 @@ where
         let inner = self
             .state
             .s_ap_keys
-            .decrypt_record::<C>(record, self.state.seq_in, scratch)?;
+            .decrypt_record(record, self.state.seq_in, scratch)?;
         // Borrow split: end split_inner_plaintext's borrow before reborrowing scratch.
         let (content_len, ct) = {
             let (content, ct) = split_inner_plaintext(inner)?;
@@ -1012,7 +998,7 @@ where
         let inner_len = self
             .state
             .s_ap_keys
-            .decrypt_record_inplace::<C>(record, self.state.seq_in)?;
+            .decrypt_record_inplace(record, self.state.seq_in)?;
         let (content_len, ct) = {
             let inner = &record[5..5 + inner_len];
             let (content, ct) = split_inner_plaintext(inner)?;
@@ -1088,8 +1074,7 @@ mod tests {
     #[test]
     fn write_client_hello_with_legacy_opts_emits_no_rsl_extension() {
         let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
-        let conn: TlsConnection<Init, RustCrypto, RustCrypto> =
-            TlsConnection::new(FIXTURE_RANDOM, priv_zb);
+        let conn: TlsConnection<Init, RustCrypto> = TlsConnection::new(FIXTURE_RANDOM, priv_zb);
         let mut out = [0u8; 256];
         let (written, _next) = conn
             .write_client_hello_to_slice_with(
@@ -1112,8 +1097,7 @@ mod tests {
     #[test]
     fn write_client_hello_with_record_size_limit_extension_present() {
         let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
-        let conn: TlsConnection<Init, RustCrypto, RustCrypto> =
-            TlsConnection::new(FIXTURE_RANDOM, priv_zb);
+        let conn: TlsConnection<Init, RustCrypto> = TlsConnection::new(FIXTURE_RANDOM, priv_zb);
         let mut out = [0u8; 256];
         let opts = crate::ClientHelloOptions {
             hostname: None,
@@ -1138,7 +1122,7 @@ mod tests {
     #[test]
     fn write_client_hello_with_aes_only_narrows_cipher_suites() {
         let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
-        let conn_default: TlsConnection<Init, RustCrypto, RustCrypto> =
+        let conn_default: TlsConnection<Init, RustCrypto> =
             TlsConnection::new(FIXTURE_RANDOM, priv_zb.clone());
         let mut out_default = [0u8; 256];
         let (written_default, _) = conn_default
@@ -1149,8 +1133,7 @@ mod tests {
             )
             .expect("default");
 
-        let conn_aes: TlsConnection<Init, RustCrypto, RustCrypto> =
-            TlsConnection::new(FIXTURE_RANDOM, priv_zb);
+        let conn_aes: TlsConnection<Init, RustCrypto> = TlsConnection::new(FIXTURE_RANDOM, priv_zb);
         let mut out_aes = [0u8; 256];
         let aes_opts = crate::ClientHelloOptions {
             hostname: None,
@@ -1177,8 +1160,7 @@ mod tests {
     #[test]
     fn init_writes_byte_identical_client_hello() {
         let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
-        let conn: TlsConnection<Init, RustCrypto, RustCrypto> =
-            TlsConnection::new(FIXTURE_RANDOM, priv_zb);
+        let conn: TlsConnection<Init, RustCrypto> = TlsConnection::new(FIXTURE_RANDOM, priv_zb);
         const BUF_LEN: usize = 256;
         let mut out = [0u8; BUF_LEN];
         let written = {
@@ -1196,8 +1178,7 @@ mod tests {
     #[test]
     fn read_server_hello_lands_on_aes_variant() {
         let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
-        let conn: TlsConnection<Init, RustCrypto, RustCrypto> =
-            TlsConnection::new(FIXTURE_RANDOM, priv_zb);
+        let conn: TlsConnection<Init, RustCrypto> = TlsConnection::new(FIXTURE_RANDOM, priv_zb);
         let mut out_buf = [0u8; 256];
         let mut cursor: &mut [u8] = &mut out_buf[..];
         let conn = conn
@@ -1231,8 +1212,7 @@ mod tests {
         use crate::reassembler::ServerFlightReassembler;
 
         let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
-        let conn: TlsConnection<Init, RustCrypto, RustCrypto> =
-            TlsConnection::new(FIXTURE_RANDOM, priv_zb);
+        let conn: TlsConnection<Init, RustCrypto> = TlsConnection::new(FIXTURE_RANDOM, priv_zb);
         let mut out_buf = [0u8; 256];
         let mut cursor: &mut [u8] = &mut out_buf[..];
         let conn = conn
@@ -1271,8 +1251,7 @@ mod tests {
         use crate::reassembler::ServerFlightReassembler;
 
         let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
-        let conn: TlsConnection<Init, RustCrypto, RustCrypto> =
-            TlsConnection::new(FIXTURE_RANDOM, priv_zb);
+        let conn: TlsConnection<Init, RustCrypto> = TlsConnection::new(FIXTURE_RANDOM, priv_zb);
         let mut out_buf = [0u8; 256];
         let mut cursor: &mut [u8] = &mut out_buf[..];
         let conn = conn
@@ -1301,8 +1280,7 @@ mod tests {
         use crate::reassembler::ServerFlightReassembler;
 
         let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
-        let conn: TlsConnection<Init, RustCrypto, RustCrypto> =
-            TlsConnection::new(FIXTURE_RANDOM, priv_zb);
+        let conn: TlsConnection<Init, RustCrypto> = TlsConnection::new(FIXTURE_RANDOM, priv_zb);
         let mut out_buf = [0u8; 256];
         let mut cursor: &mut [u8] = &mut out_buf[..];
         let conn = conn
@@ -1338,8 +1316,7 @@ mod tests {
         use crate::reassembler::ServerFlightReassembler;
 
         let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
-        let conn: TlsConnection<Init, RustCrypto, RustCrypto> =
-            TlsConnection::new(FIXTURE_RANDOM, priv_zb);
+        let conn: TlsConnection<Init, RustCrypto> = TlsConnection::new(FIXTURE_RANDOM, priv_zb);
         let mut out_buf = [0u8; 256];
         let mut cursor: &mut [u8] = &mut out_buf[..];
         let conn = conn
@@ -1359,8 +1336,7 @@ mod tests {
 
         // Separate TlsConnection so we can compare seq_in.
         let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
-        let conn: TlsConnection<Init, RustCrypto, RustCrypto> =
-            TlsConnection::new(FIXTURE_RANDOM, priv_zb);
+        let conn: TlsConnection<Init, RustCrypto> = TlsConnection::new(FIXTURE_RANDOM, priv_zb);
         let mut out_buf = [0u8; 256];
         let mut cursor: &mut [u8] = &mut out_buf[..];
         let conn = conn
@@ -1388,8 +1364,7 @@ mod tests {
         use crate::reassembler::ServerFlightReassembler;
 
         let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
-        let conn: TlsConnection<Init, RustCrypto, RustCrypto> =
-            TlsConnection::new(FIXTURE_RANDOM, priv_zb);
+        let conn: TlsConnection<Init, RustCrypto> = TlsConnection::new(FIXTURE_RANDOM, priv_zb);
         let mut out_buf = [0u8; 256];
         let mut cursor: &mut [u8] = &mut out_buf[..];
         let conn = conn
@@ -1439,8 +1414,7 @@ mod tests {
         use crate::reassembler::ServerFlightReassembler;
 
         let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
-        let conn: TlsConnection<Init, RustCrypto, RustCrypto> =
-            TlsConnection::new(FIXTURE_RANDOM, priv_zb);
+        let conn: TlsConnection<Init, RustCrypto> = TlsConnection::new(FIXTURE_RANDOM, priv_zb);
         let mut out = [0u8; 256];
         let mut cursor: &mut [u8] = &mut out[..];
         let conn = conn
@@ -1475,8 +1449,7 @@ mod tests {
         use crate::reassembler::ServerFlightReassembler;
 
         let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
-        let conn: TlsConnection<Init, RustCrypto, RustCrypto> =
-            TlsConnection::new(FIXTURE_RANDOM, priv_zb);
+        let conn: TlsConnection<Init, RustCrypto> = TlsConnection::new(FIXTURE_RANDOM, priv_zb);
         let mut ch_buf = [0u8; 256];
         let mut cursor: &mut [u8] = &mut ch_buf[..];
         let conn = conn
@@ -1517,8 +1490,7 @@ mod tests {
         use crate::reassembler::ServerFlightReassembler;
 
         let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
-        let conn: TlsConnection<Init, RustCrypto, RustCrypto> =
-            TlsConnection::new(FIXTURE_RANDOM, priv_zb);
+        let conn: TlsConnection<Init, RustCrypto> = TlsConnection::new(FIXTURE_RANDOM, priv_zb);
         let mut ch_buf = [0u8; 256];
         let mut cursor: &mut [u8] = &mut ch_buf[..];
         let conn = conn
@@ -1560,8 +1532,7 @@ mod tests {
         use crate::reassembler::ServerFlightReassembler;
 
         let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
-        let conn: TlsConnection<Init, RustCrypto, RustCrypto> =
-            TlsConnection::new(FIXTURE_RANDOM, priv_zb);
+        let conn: TlsConnection<Init, RustCrypto> = TlsConnection::new(FIXTURE_RANDOM, priv_zb);
         let mut ch_buf = [0u8; 256];
         let mut cursor: &mut [u8] = &mut ch_buf[..];
         let conn = conn
@@ -1599,8 +1570,7 @@ mod tests {
     #[test]
     fn assume_aes_succeeds_for_aes_handshake() {
         let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
-        let conn: TlsConnection<Init, RustCrypto, RustCrypto> =
-            TlsConnection::new(FIXTURE_RANDOM, priv_zb);
+        let conn: TlsConnection<Init, RustCrypto> = TlsConnection::new(FIXTURE_RANDOM, priv_zb);
         let mut out_buf = [0u8; 256];
         let mut cursor: &mut [u8] = &mut out_buf[..];
         let conn = conn

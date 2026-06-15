@@ -183,12 +183,12 @@ fn main() -> ExitCode {
 
 /// Loop `feed_server_record` until `FlightStep::Ready`. Buffers raw wire
 /// bytes for the optional `--capture` path.
-fn read_server_flight<S, H, C>(
+fn read_server_flight<S, H>(
     stream: &mut TcpStream,
-    conn: &mut TlsConnection<krabitls::WaitServerFlight<S>, H, C>,
+    conn: &mut TlsConnection<krabitls::WaitServerFlight<S>, H>,
     reassembler: &mut ServerFlightReassembler<FLIGHT_CAP>,
     feed: impl Fn(
-        &mut TlsConnection<krabitls::WaitServerFlight<S>, H, C>,
+        &mut TlsConnection<krabitls::WaitServerFlight<S>, H>,
         &[u8],
         &mut ServerFlightReassembler<FLIGHT_CAP>,
         &mut [u8],
@@ -289,7 +289,7 @@ fn run(host: &str, port: u16, capture_dir: Option<&str>, pin: Option<&Pin>) -> R
     let host_bytes = host.as_bytes();
     let ch_len = krabitls::client_hello_len(Some(host_bytes.len()));
     let mut ch_wire = vec![0u8; ch_len];
-    let conn = TlsConnection::<Init, RustCrypto, RustCrypto>::new(ch_random, x25519_priv);
+    let conn = TlsConnection::<Init, RustCrypto>::new(ch_random, x25519_priv);
     let (ch_wire, conn) = conn
         .write_client_hello_to_slice(&mut ch_wire, &x25519_pub, Some(host_bytes))
         .map_err(krabitls_err("write_client_hello_to_slice"))?;
@@ -345,7 +345,7 @@ fn run(host: &str, port: u16, capture_dir: Option<&str>, pin: Option<&Pin>) -> R
     let mut reassembler: ServerFlightReassembler<FLIGHT_CAP> = ServerFlightReassembler::new();
     match negotiated {
         NegotiatedSuite::Aes128Gcm(mut conn) => {
-            let (flight_enc_bytes, record_count) = read_server_flight::<Aes128GcmSha256, _, _>(
+            let (flight_enc_bytes, record_count) = read_server_flight::<Aes128GcmSha256, _>(
                 &mut stream,
                 &mut conn,
                 &mut reassembler,
@@ -410,19 +410,18 @@ fn run(host: &str, port: u16, capture_dir: Option<&str>, pin: Option<&Pin>) -> R
                 request.len(),
                 req_record.len()
             );
-            drive_response::<Aes128GcmSha256, _, _>(&mut stream, &mut conn, |c, r, pt| {
+            drive_response::<Aes128GcmSha256, _>(&mut stream, &mut conn, |c, r, pt| {
                 c.decrypt_record(r, pt)
             })?;
         }
         #[cfg(feature = "chacha20")]
         NegotiatedSuite::ChaCha20Poly1305(mut conn) => {
-            let (flight_enc_bytes, record_count) =
-                read_server_flight::<ChaCha20Poly1305Sha256, _, _>(
-                    &mut stream,
-                    &mut conn,
-                    &mut reassembler,
-                    |c, r, ra, pt| c.feed_server_record(r, ra, pt),
-                )?;
+            let (flight_enc_bytes, record_count) = read_server_flight::<ChaCha20Poly1305Sha256, _>(
+                &mut stream,
+                &mut conn,
+                &mut reassembler,
+                |c, r, ra, pt| c.feed_server_record(r, ra, pt),
+            )?;
             info!(
                 "reassembled server flight: {} inner bytes from {} record(s)",
                 reassembler.len(),
@@ -479,7 +478,7 @@ fn run(host: &str, port: u16, capture_dir: Option<&str>, pin: Option<&Pin>) -> R
                 request.len(),
                 req_record.len()
             );
-            drive_response::<ChaCha20Poly1305Sha256, _, _>(&mut stream, &mut conn, |c, r, pt| {
+            drive_response::<ChaCha20Poly1305Sha256, _>(&mut stream, &mut conn, |c, r, pt| {
                 c.decrypt_record(r, pt)
             })?;
         }
@@ -489,11 +488,11 @@ fn run(host: &str, port: u16, capture_dir: Option<&str>, pin: Option<&Pin>) -> R
 }
 
 /// Read response records until the peer closes or sends close_notify.
-fn drive_response<S, H, C>(
+fn drive_response<S, H>(
     stream: &mut TcpStream,
-    conn: &mut TlsConnection<krabitls::AppData<S>, H, C>,
+    conn: &mut TlsConnection<krabitls::AppData<S>, H>,
     decrypt: impl for<'a> Fn(
-        &mut TlsConnection<krabitls::AppData<S>, H, C>,
+        &mut TlsConnection<krabitls::AppData<S>, H>,
         &[u8],
         &'a mut [u8],
     ) -> std::result::Result<(&'a [u8], u8), krabitls::ConnectionError>,

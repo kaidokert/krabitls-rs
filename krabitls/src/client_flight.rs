@@ -4,7 +4,7 @@ use crate::aead::{CipherSuite, EncryptError, RecordKeys};
 use crate::consts::CT_HANDSHAKE;
 use crate::hkdf::{HkdfLabelError, finished_mac};
 use crate::newtype::{Secret, TranscriptDigest, ZeroBuf};
-use crate::traits::{HkdfSha256, RecordAead};
+use crate::traits::HkdfSha256;
 
 const HS_FINISHED: u8 = 20;
 
@@ -34,7 +34,7 @@ fn build_finished_plaintext<H: HkdfSha256>(
 impl<S: CipherSuite> RecordKeys<S> {
     /// Build the client `Finished` record. Associated function — no
     /// existing `RecordKeys` instance is required at the call site.
-    pub fn build_client_finished<'a, H: HkdfSha256, C: RecordAead<S::KeyBytes>>(
+    pub fn build_client_finished<'a, H: HkdfSha256>(
         c_hs_traffic_secret: &Secret,
         transcript_hash_through_server_finished: &TranscriptDigest,
         seq: u64,
@@ -45,7 +45,7 @@ impl<S: CipherSuite> RecordKeys<S> {
             transcript_hash_through_server_finished,
         )?;
         let keys = Self::derive::<H>(c_hs_traffic_secret)?;
-        let record = keys.encrypt_record::<C>(&finished_msg[..], CT_HANDSHAKE, seq, out_buf)?;
+        let record = keys.encrypt_record(&finished_msg[..], CT_HANDSHAKE, seq, out_buf)?;
         Ok(record)
     }
 }

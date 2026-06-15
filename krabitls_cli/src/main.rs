@@ -189,10 +189,8 @@ fn cmd_conn_init(seed: u64, use_random: bool) -> Result<()> {
     let random = client_random_for_init(seed, use_random)?;
     let pub_bytes = ed25519_heapless::x25519_base::<Bn>(&priv_bytes);
 
-    let conn = TlsConnection::<Init, RustCrypto, RustCrypto>::new(
-        random,
-        krabitls::ZeroBuf::<32>::new(priv_bytes),
-    );
+    let conn =
+        TlsConnection::<Init, RustCrypto>::new(random, krabitls::ZeroBuf::<32>::new(priv_bytes));
     let mut record = [0u8; krabitls::CLIENT_HELLO_LEN];
     let (ch_wire, _) = conn
         .write_client_hello_to_slice(&mut record, &pub_bytes, None)
@@ -224,7 +222,7 @@ fn cmd_conn_negotiate(seed: u64) -> Result<()> {
     // captured CH advertised only AES, read_server_hello would still
     // accept a ChaCha ServerHello — the suite-mismatch check enforces
     // exactly what the typestate was told was advertised.
-    let conn = TlsConnection::<krabitls::WaitServerHello, RustCrypto, RustCrypto>::from_client_hello_record(
+    let conn = TlsConnection::<krabitls::WaitServerHello, RustCrypto>::from_client_hello_record(
         &ch_bytes,
         krabitls::ZeroBuf::<32>::new(priv_bytes),
         krabitls::SuiteList::Default,
@@ -282,11 +280,10 @@ fn cmd_send(seed: u64, text: &str) -> Result<()> {
     };
 
     let ap_seq = next_c2s_app_data_seq()?;
-    let mut conn =
-        TlsConnection::<AppData<Aes128GcmSha256>, RustCrypto, RustCrypto>::from_app_secrets(
-            c_ap_ts, s_ap_ts, ap_seq, 0,
-        )
-        .map_err(|e| format!("AppData::from_app_secrets: {e:?}"))?;
+    let mut conn = TlsConnection::<AppData<Aes128GcmSha256>, RustCrypto>::from_app_secrets(
+        c_ap_ts, s_ap_ts, ap_seq, 0,
+    )
+    .map_err(|e| format!("AppData::from_app_secrets: {e:?}"))?;
 
     let mut out = vec![0u8; text.len() + 32];
     let record = conn
@@ -340,14 +337,13 @@ fn cmd_receive(seed: u64) -> Result<()> {
     for (seq, path) in &replies {
         // One-shot AppData per reply so each decrypts at its own seq_in,
         // tolerating missing intermediate replies.
-        let mut conn =
-            TlsConnection::<AppData<Aes128GcmSha256>, RustCrypto, RustCrypto>::from_app_secrets(
-                c_ap_ts.clone(),
-                s_ap_ts.clone(),
-                0,
-                *seq as u64,
-            )
-            .map_err(|e| format!("AppData::from_app_secrets: {e:?}"))?;
+        let mut conn = TlsConnection::<AppData<Aes128GcmSha256>, RustCrypto>::from_app_secrets(
+            c_ap_ts.clone(),
+            s_ap_ts.clone(),
+            0,
+            *seq as u64,
+        )
+        .map_err(|e| format!("AppData::from_app_secrets: {e:?}"))?;
         let record = fs::read(path)?;
         let mut pt_buf = vec![0u8; record.len()];
         let (content, _ct) = conn
@@ -372,7 +368,7 @@ fn renegotiate_app_secrets(priv_bytes: &[u8; 32]) -> Result<(krabitls::Secret, k
 
     // SuiteList::Default assumes the captured CH advertised both suites
     // (see cmd_conn_negotiate for the matching note).
-    let conn = TlsConnection::<krabitls::WaitServerHello, RustCrypto, RustCrypto>::from_client_hello_record(
+    let conn = TlsConnection::<krabitls::WaitServerHello, RustCrypto>::from_client_hello_record(
         &ch_bytes,
         krabitls::ZeroBuf::<32>::new(*priv_bytes),
         krabitls::SuiteList::Default,

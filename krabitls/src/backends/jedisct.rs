@@ -13,7 +13,7 @@
 //! RustCrypto SHA chain, the consumer also has to avoid referencing
 //! `RustCrypto` anywhere in their call sites — which today means giving
 //! up AES-GCM (jedisct1 has no equivalent in the same family) or
-//! supplying their own [`crate::Aes128GcmAead`] impl.
+//! supplying their own AEAD path.
 
 use hmac_sha256::{HKDF, Hash};
 

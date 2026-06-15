@@ -72,7 +72,7 @@ where
 
         let our_recv_limit = TlsEngine::<'_, C, FLIGHT, RECV, SEND>::default_our_recv_limit();
         let suites = effective_suite_list::<C>(params.suite_policy);
-        let init = TlsConnection::<Init, C::Hkdf, C::Record>::new(client_random, x25519_priv);
+        let init = TlsConnection::<Init, C::Hkdf>::new(client_random, x25519_priv);
 
         let opts = crate::ClientHelloOptions {
             hostname: Some(params.hostname.as_bytes()),
