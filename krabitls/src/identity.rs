@@ -107,9 +107,10 @@ pub fn verify_hostname(cert_view: &CertView<'_>, hostname: &str) -> Result<(), I
         return match_ip_address(san, &v6.octets());
     }
 
+    let hostname_bytes = hostname.as_bytes();
     for entry in san_dns_names(san) {
         let entry = entry?;
-        if dns_name_matches(entry, hostname.as_bytes()) {
+        if dns_name_matches(entry, hostname_bytes) {
             return Ok(());
         }
     }
