@@ -1,30 +1,16 @@
 //! TLS 1.3 record-layer encrypt / decrypt over a pluggable AEAD.
-//!
-//! AEAD trait definitions live in [`crate::traits::aead`]
-//! ([`crate::traits::Aes128GcmAead`] and, under `feature = "chacha20"`,
-//! [`crate::traits::ChaCha20Poly1305Aead`]). This module owns the
-//! `decrypt_record` / `encrypt_record` / `aead_nonce` helpers and their
-//! error types.
 
 #[cfg(feature = "chacha20")]
 use crate::newtype::AeadKey32;
 use crate::newtype::{AeadIv, AeadKey, ZeroBuf};
-use crate::traits::Aes128GcmAead;
-#[cfg(feature = "chacha20")]
-use crate::traits::ChaCha20Poly1305Aead;
+#[cfg(test)]
+use crate::traits::RecordAead;
 
 /// Per-record AEAD nonce: `iv` XOR `seq` (8-byte sequence number,
 /// big-endian, left-padded). RFC 8446 §5.3.
-///
-/// Returned wrapped in [`ZeroBuf`] so the nonce bytes don't linger on
-/// the caller's stack after the AEAD operation. The nonce is
-/// `IV XOR seq_be`; the seq is a public counter, so leaking the nonce
-/// is equivalent to leaking the secret IV. Same hygiene level as
-/// [`AeadIv`] itself.
 pub(crate) fn aead_nonce(iv: &AeadIv, seq: u64) -> ZeroBuf<12> {
-    let seq_be = seq.to_be_bytes(); // 8 bytes
+    let seq_be = seq.to_be_bytes();
     let mut nonce = ZeroBuf::<12>::new(*iv.as_bytes());
-    // XOR seq into the low 8 bytes of the IV (high 4 bytes untouched).
     for i in 0..8 {
         nonce[4 + i] ^= seq_be[i];
     }
@@ -33,40 +19,25 @@ pub(crate) fn aead_nonce(iv: &AeadIv, seq: u64) -> ZeroBuf<12> {
 
 /// Decrypt one TLS 1.3 application_data-wrapped record.
 ///
-/// `record` is the full record including its 5-byte header. The record is
-/// validated to be `application_data / 0x0303 / len` and then the body's tag
-/// is verified and its ciphertext decrypted into `plaintext_buf`. Returns the
-/// slice of `plaintext_buf` containing the plaintext (which is then a
-/// `TLSInnerPlaintext`; call [`split_inner_plaintext`] to peel off the
-/// content_type byte and trailing zero padding).
+/// On `Ok` the returned slice is `TLSInnerPlaintext`; call
+/// [`split_inner_plaintext`] to peel off the content_type byte and padding.
 #[cfg(test)]
-pub(crate) fn decrypt_record<'a, A: Aes128GcmAead>(
+pub(crate) fn decrypt_record<'a, A, T>(
     record: &[u8],
-    key: &AeadKey,
+    key: &zeroize::Zeroizing<T>,
     iv: &AeadIv,
     seq: u64,
     plaintext_buf: &'a mut [u8],
-) -> Result<&'a [u8], DecryptError> {
+) -> Result<&'a [u8], DecryptError>
+where
+    A: RecordAead<T>,
+    T: zeroize::Zeroize,
+{
     decrypt_record_with(record, iv, seq, plaintext_buf, |nonce, aad, pt, tag| {
-        A::decrypt(key.as_zeroizing(), nonce, aad, pt, tag)
+        A::decrypt(key, nonce, aad, pt, tag)
     })
 }
 
-/// `decrypt_record` for the `TLS_CHACHA20_POLY1305_SHA256` suite.
-#[cfg(all(test, feature = "chacha20"))]
-pub(crate) fn decrypt_record_chacha<'a, C: ChaCha20Poly1305Aead>(
-    record: &[u8],
-    key: &AeadKey32,
-    iv: &AeadIv,
-    seq: u64,
-    plaintext_buf: &'a mut [u8],
-) -> Result<&'a [u8], DecryptError> {
-    decrypt_record_with(record, iv, seq, plaintext_buf, |nonce, aad, pt, tag| {
-        C::decrypt(key.as_zeroizing(), nonce, aad, pt, tag)
-    })
-}
-
-/// Shared record-layer decrypt; the closure performs the AEAD verify+decrypt.
 fn decrypt_record_with<'a, F>(
     record: &[u8],
     iv: &AeadIv,
@@ -125,14 +96,65 @@ where
     match aead_decrypt(&nonce, aad, plaintext, &tag) {
         Ok(()) => Ok(plaintext),
         Err(_) => {
-            // AEAD verification failed: the buffer currently holds either
-            // ciphertext (if the AEAD impl never wrote) or the decrypted-
-            // with-this-key-anyway plaintext (if it wrote before checking
-            // the tag, common for in-place AEADs). The contract says
-            // callers MUST NOT use the buffer on Err, but a defensive
-            // zeroize closes the hole if a caller forgets.
+            // Defensive zeroize: AEADs may have written partial plaintext before tag check failed.
             use zeroize::Zeroize;
             plaintext.zeroize();
+            Err(DecryptError::AeadFailed)
+        }
+    }
+}
+
+/// On `Ok(ct_len)`, the inner plaintext occupies `record[5..5 + ct_len]`.
+/// On `Err`, the plaintext region is zeroed.
+fn decrypt_record_inplace_with<F>(
+    record: &mut [u8],
+    iv: &AeadIv,
+    seq: u64,
+    aead_decrypt: F,
+) -> Result<usize, DecryptError>
+where
+    F: FnOnce(&ZeroBuf<12>, &[u8], &mut [u8], &[u8; 16]) -> Result<(), crate::traits::AeadError>,
+{
+    if record.len() < 5 {
+        return Err(DecryptError::Truncated);
+    }
+    let content_type = record[0];
+    if content_type != crate::consts::CT_APPLICATION_DATA {
+        return Err(DecryptError::UnexpectedContentType(content_type));
+    }
+    let legacy_version = u16::from_be_bytes([record[1], record[2]]);
+    if legacy_version != crate::consts::LEGACY_VERSION {
+        return Err(DecryptError::UnexpectedLegacyVersion(legacy_version));
+    }
+    let body_len = u16::from_be_bytes([record[3], record[4]]) as usize;
+    if body_len > TLS_CIPHERTEXT_MAX {
+        return Err(DecryptError::RecordTooLarge);
+    }
+    if record.len() < 5 + body_len {
+        return Err(DecryptError::Truncated);
+    }
+    if record.len() != 5 + body_len {
+        return Err(DecryptError::TrailingBytes);
+    }
+    if body_len < 16 {
+        return Err(DecryptError::Truncated);
+    }
+    let ct_len = body_len - 16;
+
+    // Split the record so AAD (header) and AEAD buffer (body) are disjoint
+    // mutable borrows.
+    let (header, body) = record.split_at_mut(5);
+    let (ciphertext, tag_slice) = body.split_at_mut(ct_len);
+    let mut tag = [0u8; 16];
+    tag.copy_from_slice(tag_slice);
+
+    let nonce = aead_nonce(iv, seq);
+    let aad: &[u8] = header;
+    match aead_decrypt(&nonce, aad, ciphertext, &tag) {
+        Ok(()) => Ok(ct_len),
+        Err(_) => {
+            use zeroize::Zeroize;
+            ciphertext.zeroize();
             Err(DecryptError::AeadFailed)
         }
     }
@@ -185,47 +207,29 @@ pub(crate) fn split_inner_plaintext(inner: &[u8]) -> Result<(&[u8], u8), Decrypt
     Ok((&inner[..end - 1], content_type))
 }
 
-/// Encrypt one TLS 1.3 inner plaintext into an application_data record.
 #[cfg(test)]
-pub(crate) fn encrypt_record<'a, A: Aes128GcmAead>(
+pub(crate) fn encrypt_record<'a, A, T>(
     content: &[u8],
     content_type: u8,
-    key: &AeadKey,
+    key: &zeroize::Zeroizing<T>,
     iv: &AeadIv,
     seq: u64,
     out_buf: &'a mut [u8],
-) -> Result<&'a [u8], EncryptError> {
+) -> Result<&'a [u8], EncryptError>
+where
+    A: RecordAead<T>,
+    T: zeroize::Zeroize,
+{
     encrypt_record_with(
         content,
         content_type,
         iv,
         seq,
         out_buf,
-        |nonce, aad, buf| A::encrypt(key.as_zeroizing(), nonce, aad, buf),
+        |nonce, aad, buf| A::encrypt(key, nonce, aad, buf),
     )
 }
 
-/// `encrypt_record` for the `TLS_CHACHA20_POLY1305_SHA256` suite.
-#[cfg(all(test, feature = "chacha20"))]
-pub(crate) fn encrypt_record_chacha<'a, C: ChaCha20Poly1305Aead>(
-    content: &[u8],
-    content_type: u8,
-    key: &AeadKey32,
-    iv: &AeadIv,
-    seq: u64,
-    out_buf: &'a mut [u8],
-) -> Result<&'a [u8], EncryptError> {
-    encrypt_record_with(
-        content,
-        content_type,
-        iv,
-        seq,
-        out_buf,
-        |nonce, aad, buf| C::encrypt(key.as_zeroizing(), nonce, aad, buf),
-    )
-}
-
-/// Shared record-layer encrypt; the closure performs the AEAD seal.
 fn encrypt_record_with<'a, F>(
     content: &[u8],
     content_type: u8,
@@ -237,11 +241,7 @@ fn encrypt_record_with<'a, F>(
 where
     F: FnOnce(&ZeroBuf<12>, &[u8], &mut [u8]) -> Result<[u8; 16], crate::traits::AeadError>,
 {
-    // TLSPlaintext.length cap (RFC 8446 §5.1): the inner-plaintext content
-    // must not exceed 2^14 bytes. This is *separate* from the §5.2
-    // ciphertext-body cap below — without it, callers could pass content in
-    // [2^14+1, 2^14+255] which fits the ciphertext cap but produces records
-    // a spec-compliant peer will reject.
+    // RFC 8446 §5.1: TLSPlaintext.length cap (separate from the §5.2 cap below).
     if content.len() > TLS_PLAINTEXT_MAX {
         return Err(EncryptError::RecordTooLarge);
     }
@@ -267,11 +267,7 @@ where
         });
     }
 
-    // The cipher_body_len <= TLS_CIPHERTEXT_MAX (= 2^14 + 256 = 16640) cap
-    // above means the `as u16` cast here is provably non-truncating.
-    // Build the AAD directly (no `try_into().expect(...)`), then copy it
-    // into the buffer. The header IS the AAD by definition; constructing
-    // it once eliminates a panic path.
+    // u16 cast safe given the cap above; header IS the AAD.
     let legacy = crate::consts::LEGACY_VERSION.to_be_bytes();
     let body_len_be = (cipher_body_len as u16).to_be_bytes();
     let aad: [u8; 5] = [
@@ -300,20 +296,17 @@ mod sealed {
     pub trait Sealed {}
 }
 
-/// TLS 1.3 cipher suite marker — picked by the *caller* at compile time
-/// where possible (embedded targets that know the suite from `sh.cipher_suite`
-/// already), via a top-level local dispatch in the CLI where not.
-///
-/// Sealed: only the two suites krabitls's locked profile speaks
-/// (`Aes128GcmSha256` and, with `feature = "chacha20"`,
-/// `ChaCha20Poly1305Sha256`) implement it. This lets [`RecordKeys<S>`] be
-/// a single generic type whose monomorphizations carry only the AEAD
-/// code for the suite the binary actually uses.
-pub trait CipherSuite: sealed::Sealed {
+/// TLS 1.3 cipher suite marker. Sealed.
+pub trait CipherSuite: sealed::Sealed + Sized {
     /// Wire-format suite ID per RFC 8446 §B.4.
     const ID: u16;
-    /// The AEAD key newtype for this suite (16 B for AES, 32 B for ChaCha).
     type Key;
+    type KeyBytes: zeroize::Zeroize;
+    fn key_zeroizing(key: &Self::Key) -> &zeroize::Zeroizing<Self::KeyBytes>;
+    /// Derive this suite's `(key, iv)` from a traffic secret (RFC 8446 §7.3).
+    fn derive_keys<H: crate::traits::HkdfSha256>(
+        traffic_secret: &crate::newtype::Secret,
+    ) -> Result<RecordKeys<Self>, crate::hkdf::HkdfLabelError>;
 }
 
 /// `TLS_AES_128_GCM_SHA256` (`0x1301`) — the mandatory TLS 1.3 suite.
@@ -322,6 +315,19 @@ impl sealed::Sealed for Aes128GcmSha256 {}
 impl CipherSuite for Aes128GcmSha256 {
     const ID: u16 = crate::consts::CIPHER_AES_128_GCM_SHA256;
     type Key = AeadKey;
+    type KeyBytes = [u8; 16];
+    fn key_zeroizing(key: &AeadKey) -> &zeroize::Zeroizing<[u8; 16]> {
+        key.as_zeroizing()
+    }
+    fn derive_keys<H: crate::traits::HkdfSha256>(
+        traffic_secret: &crate::newtype::Secret,
+    ) -> Result<RecordKeys<Self>, crate::hkdf::HkdfLabelError> {
+        let (key_bytes, iv) = crate::hkdf::traffic_keys::<H, 16>(traffic_secret)?;
+        Ok(RecordKeys {
+            key: AeadKey::new(key_bytes),
+            iv,
+        })
+    }
 }
 
 /// `TLS_CHACHA20_POLY1305_SHA256` (`0x1303`). Gated on `feature = "chacha20"`.
@@ -333,33 +339,37 @@ impl sealed::Sealed for ChaCha20Poly1305Sha256 {}
 impl CipherSuite for ChaCha20Poly1305Sha256 {
     const ID: u16 = crate::consts::CIPHER_CHACHA20_POLY1305_SHA256;
     type Key = AeadKey32;
+    type KeyBytes = [u8; 32];
+    fn key_zeroizing(key: &AeadKey32) -> &zeroize::Zeroizing<[u8; 32]> {
+        key.as_zeroizing()
+    }
+    fn derive_keys<H: crate::traits::HkdfSha256>(
+        traffic_secret: &crate::newtype::Secret,
+    ) -> Result<RecordKeys<Self>, crate::hkdf::HkdfLabelError> {
+        let (key_bytes, iv) = crate::hkdf::traffic_keys::<H, 32>(traffic_secret)?;
+        Ok(RecordKeys {
+            key: AeadKey32::new(key_bytes),
+            iv,
+        })
+    }
 }
 
 /// Suite-typed record-layer key + IV pair.
-///
-/// `RecordKeys<Aes128GcmSha256>` and `RecordKeys<ChaCha20Poly1305Sha256>`
-/// are *distinct types*. Methods live in per-suite `impl` blocks, so a
-/// binary that only ever instantiates one of them carries no code for the
-/// other (LTO has nothing to prove — the unused suite's `impl` block was
-/// never monomorphized). Callers who don't know the suite until runtime
-/// (the network CLI) dispatch with a thin local enum that wraps the
-/// per-suite `RecordKeys<S>` types.
 pub struct RecordKeys<S: CipherSuite> {
     pub key: S::Key,
     pub iv: AeadIv,
 }
 
-impl RecordKeys<Aes128GcmSha256> {
-    /// Derive the AES-128-GCM `(key, iv)` from a traffic secret (RFC 8446 §7.3).
+impl<S: CipherSuite> RecordKeys<S> {
+    /// Derive this suite's `(key, iv)` from a traffic secret (RFC 8446 §7.3).
     pub fn derive<H: crate::traits::HkdfSha256>(
         traffic_secret: &crate::newtype::Secret,
     ) -> Result<Self, crate::hkdf::HkdfLabelError> {
-        let (key, iv) = crate::hkdf::traffic_keys::<H>(traffic_secret)?;
-        Ok(Self { key, iv })
+        S::derive_keys::<H>(traffic_secret)
     }
 
     /// Decrypt one `application_data` record under this suite's AEAD.
-    pub fn decrypt_record<'a, C: Aes128GcmAead>(
+    pub fn decrypt_record<'a, C: crate::traits::RecordAead<S::KeyBytes>>(
         &self,
         record: &[u8],
         seq: u64,
@@ -370,12 +380,22 @@ impl RecordKeys<Aes128GcmSha256> {
             &self.iv,
             seq,
             plaintext_buf,
-            |nonce, aad, pt, tag| C::decrypt(self.key.as_zeroizing(), nonce, aad, pt, tag),
+            |nonce, aad, pt, tag| C::decrypt(S::key_zeroizing(&self.key), nonce, aad, pt, tag),
         )
+    }
+
+    pub fn decrypt_record_inplace<C: crate::traits::RecordAead<S::KeyBytes>>(
+        &self,
+        record: &mut [u8],
+        seq: u64,
+    ) -> Result<usize, DecryptError> {
+        decrypt_record_inplace_with(record, &self.iv, seq, |nonce, aad, pt, tag| {
+            C::decrypt(S::key_zeroizing(&self.key), nonce, aad, pt, tag)
+        })
     }
 
     /// Encrypt one inner plaintext into an `application_data` record.
-    pub fn encrypt_record<'a, C: Aes128GcmAead>(
+    pub fn encrypt_record<'a, C: crate::traits::RecordAead<S::KeyBytes>>(
         &self,
         content: &[u8],
         content_type: u8,
@@ -388,50 +408,7 @@ impl RecordKeys<Aes128GcmSha256> {
             &self.iv,
             seq,
             out_buf,
-            |nonce, aad, buf| C::encrypt(self.key.as_zeroizing(), nonce, aad, buf),
-        )
-    }
-}
-
-#[cfg(feature = "chacha20")]
-impl RecordKeys<ChaCha20Poly1305Sha256> {
-    /// Derive the ChaCha20-Poly1305 `(key, iv)` from a traffic secret (RFC 8446 §7.3).
-    pub fn derive<H: crate::traits::HkdfSha256>(
-        traffic_secret: &crate::newtype::Secret,
-    ) -> Result<Self, crate::hkdf::HkdfLabelError> {
-        let (key, iv) = crate::hkdf::traffic_keys_chacha::<H>(traffic_secret)?;
-        Ok(Self { key, iv })
-    }
-
-    pub fn decrypt_record<'a, C: ChaCha20Poly1305Aead>(
-        &self,
-        record: &[u8],
-        seq: u64,
-        plaintext_buf: &'a mut [u8],
-    ) -> Result<&'a [u8], DecryptError> {
-        decrypt_record_with(
-            record,
-            &self.iv,
-            seq,
-            plaintext_buf,
-            |nonce, aad, pt, tag| C::decrypt(self.key.as_zeroizing(), nonce, aad, pt, tag),
-        )
-    }
-
-    pub fn encrypt_record<'a, C: ChaCha20Poly1305Aead>(
-        &self,
-        content: &[u8],
-        content_type: u8,
-        seq: u64,
-        out_buf: &'a mut [u8],
-    ) -> Result<&'a [u8], EncryptError> {
-        encrypt_record_with(
-            content,
-            content_type,
-            &self.iv,
-            seq,
-            out_buf,
-            |nonce, aad, buf| C::encrypt(self.key.as_zeroizing(), nonce, aad, buf),
+            |nonce, aad, buf| C::encrypt(S::key_zeroizing(&self.key), nonce, aad, buf),
         )
     }
 }
@@ -445,7 +422,6 @@ const TLS_PLAINTEXT_MAX: usize = 1 << 14;
 /// (inner plaintext + AEAD tag) must not exceed `2^14 + 256` bytes.
 const TLS_CIPHERTEXT_MAX: usize = (1 << 14) + 256;
 
-/// Reasons an `encrypt_record` call may fail.
 #[derive(Debug, PartialEq, Eq, Clone, Copy, thiserror::Error)]
 pub enum EncryptError {
     /// `out_buf` cannot fit the resulting record.
@@ -457,24 +433,17 @@ pub enum EncryptError {
     /// split across multiple records.
     #[error("plaintext exceeds the TLS 1.3 record-size cap")]
     RecordTooLarge,
-    /// The AEAD backend rejected the encrypt call. Statically unreachable
-    /// for TLS-bounded record sizes; surfaced rather than swallowed so
-    /// backends don't have to `.expect()` their underlying crate.
+    /// AEAD backend rejected; statically unreachable for TLS-bounded sizes.
     #[error("AEAD backend rejected the encrypt call")]
     AeadFailed,
 }
 
-/// Reasons a `decrypt_record` call may fail.
 #[derive(Debug, PartialEq, Eq, Clone, Copy, thiserror::Error)]
 pub enum DecryptError {
     /// Record shorter than its declared length, or shorter than `5 + tag_len`.
     #[error("record shorter than its declared length or AEAD tag")]
     Truncated,
-    /// Record size exceeds spec. Fires for `TLSCiphertext.length > 2^14 +
-    /// 256` (RFC 8446 §5.2, in [`decrypt_record`]) or for an inner-plaintext
-    /// content longer than `2^14` after padding stripping (§5.1 / §5.4, in
-    /// [`split_inner_plaintext`]). Symmetric with
-    /// [`EncryptError::RecordTooLarge`].
+    /// Record size exceeds spec (RFC 8446 §5.1 / §5.2 / §5.4).
     #[error("record exceeds the TLS 1.3 record-size cap")]
     RecordTooLarge,
     /// Bytes left in `record` after the declared `5 + body_len`. Almost
@@ -490,8 +459,7 @@ pub enum DecryptError {
     /// `plaintext_buf` cannot fit the ciphertext (= plaintext length).
     #[error("plaintext buffer too small (needed {needed}, got {got})")]
     BufferTooSmall { needed: usize, got: usize },
-    /// AEAD tag verification failed — almost certainly a wrong key or
-    /// tampered ciphertext.
+    /// AEAD tag verification failed.
     #[error("AEAD tag verification failed")]
     AeadFailed,
     /// `TLSInnerPlaintext` was all zeros — has no `content_type` byte.
@@ -558,5 +526,88 @@ mod tests {
         let (content, ct) = split_inner_plaintext(inner).unwrap();
         assert_eq!(content, b"\x00\x00\xab");
         assert_eq!(ct, 0x17);
+    }
+
+    #[test]
+    fn decrypt_record_inplace_matches_copying() {
+        use crate::backends::RustCrypto;
+        use crate::newtype::{AeadIv, AeadKey, ZeroBuf};
+
+        let key = AeadKey::new(ZeroBuf::new([0xa5; 16]));
+        let iv = AeadIv::new(ZeroBuf::new([0x42; 12]));
+        let content = b"hello world, this is plaintext";
+        let seq = 7;
+        let keys = RecordKeys::<Aes128GcmSha256> {
+            key: key.clone(),
+            iv: iv.clone(),
+        };
+
+        let mut record_buf = [0u8; 128];
+        let record = keys
+            .encrypt_record::<RustCrypto>(
+                content,
+                crate::consts::CT_APPLICATION_DATA,
+                seq,
+                &mut record_buf,
+            )
+            .expect("encrypt");
+        let record_len = record.len();
+
+        // Copying decrypt.
+        let mut copy_pt = [0u8; 128];
+        let copy = keys
+            .decrypt_record::<RustCrypto>(&record_buf[..record_len], seq, &mut copy_pt)
+            .expect("copying decrypt");
+        let copy_bytes: heapless::Vec<u8, 128> = heapless::Vec::from_slice(copy).unwrap();
+
+        // In-place decrypt over the same record bytes.
+        let mut inplace = [0u8; 128];
+        inplace[..record_len].copy_from_slice(&record_buf[..record_len]);
+        let pt_len = keys
+            .decrypt_record_inplace::<RustCrypto>(&mut inplace[..record_len], seq)
+            .expect("in-place decrypt");
+
+        assert_eq!(&inplace[5..5 + pt_len], &copy_bytes[..]);
+    }
+
+    #[cfg(feature = "chacha20")]
+    #[test]
+    fn decrypt_record_inplace_matches_copying_chacha() {
+        use crate::backends::RustCrypto;
+        use crate::newtype::{AeadIv, AeadKey32, ZeroBuf};
+
+        let key = AeadKey32::new(ZeroBuf::new([0xc3; 32]));
+        let iv = AeadIv::new(ZeroBuf::new([0x99; 12]));
+        let content = b"chacha plaintext sample bytes";
+        let seq = 11;
+        let keys = RecordKeys::<ChaCha20Poly1305Sha256> {
+            key: key.clone(),
+            iv: iv.clone(),
+        };
+
+        let mut record_buf = [0u8; 128];
+        let record = keys
+            .encrypt_record::<RustCrypto>(
+                content,
+                crate::consts::CT_APPLICATION_DATA,
+                seq,
+                &mut record_buf,
+            )
+            .expect("encrypt");
+        let record_len = record.len();
+
+        let mut copy_pt = [0u8; 128];
+        let copy = keys
+            .decrypt_record::<RustCrypto>(&record_buf[..record_len], seq, &mut copy_pt)
+            .expect("copying decrypt");
+        let copy_bytes: heapless::Vec<u8, 128> = heapless::Vec::from_slice(copy).unwrap();
+
+        let mut inplace = [0u8; 128];
+        inplace[..record_len].copy_from_slice(&record_buf[..record_len]);
+        let pt_len = keys
+            .decrypt_record_inplace::<RustCrypto>(&mut inplace[..record_len], seq)
+            .expect("in-place decrypt");
+
+        assert_eq!(&inplace[5..5 + pt_len], &copy_bytes[..]);
     }
 }

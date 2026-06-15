@@ -11,6 +11,7 @@
 // (further down) is exposed as a namespace, intentionally.
 pub(crate) mod aead;
 pub(crate) mod backends;
+pub mod client;
 pub(crate) mod client_flight;
 pub(crate) mod connection;
 pub(crate) mod hkdf;
@@ -52,12 +53,6 @@ pub use reassembler::{ReassemblyError, ServerFlightReassembler};
 pub(crate) use aead::{
     RecordKeys, aead_nonce, decrypt_record, encrypt_record, split_inner_plaintext,
 };
-#[cfg(all(test, feature = "chacha20"))]
-#[allow(unused_imports)]
-pub(crate) use aead::{decrypt_record_chacha, encrypt_record_chacha};
-#[cfg(all(test, feature = "chacha20"))]
-#[allow(unused_imports)]
-pub(crate) use hkdf::traffic_keys_chacha;
 #[cfg(test)]
 #[allow(unused_imports)]
 pub(crate) use hkdf::{
@@ -86,7 +81,7 @@ pub use traits::ChaCha20Poly1305Aead;
 pub use traits::RsaCertSigAlg;
 pub use traits::{
     AeadError, Aes128GcmAead, CertParseError, CertParser, CertView, Ed25519VerifierProvider,
-    HkdfExpandError, HkdfSha256, RsaVerifierProvider, Sha256Hasher,
+    HkdfExpandError, HkdfSha256, RecordAead, RsaVerifierProvider, Sha256Hasher,
 };
 #[cfg(feature = "validity")]
 pub use traits::{FixedTime, TimeSource};
@@ -165,6 +160,7 @@ pub mod consts {
     pub const EXT_SERVER_NAME: u16 = 0;
     pub const EXT_SUPPORTED_GROUPS: u16 = 10;
     pub const EXT_SIGNATURE_ALGORITHMS: u16 = 13;
+    pub const EXT_RECORD_SIZE_LIMIT: u16 = 28;
     pub const EXT_SUPPORTED_VERSIONS: u16 = 43;
     pub const EXT_KEY_SHARE: u16 = 51;
     /// `name_type` value inside the SNI extension (RFC 6066 §3). Krabitls
@@ -212,8 +208,48 @@ const CH_CIPHER_SUITES_COUNT: usize = 1;
 #[cfg(feature = "chacha20")]
 const CH_CIPHER_SUITES_COUNT: usize = 2;
 
-/// Wire size of `cipher_suites`: 2-byte length prefix + 2 bytes per suite.
-const CH_CIPHER_SUITES_FIELD_LEN: usize = 2 + 2 * CH_CIPHER_SUITES_COUNT;
+/// Wire size of the RFC 8449 `record_size_limit` extension: 4-byte header
+/// (ext_type + ext_data_len) + 2-byte value.
+const EXT_RECORD_SIZE_LIMIT_TOTAL: u16 = 4 + 2;
+
+/// Runtime narrowing of the compile-time suite advertisement.
+///
+/// Compile-time capability is fixed by the `chacha20` Cargo feature:
+/// `Default` matches whatever was compiled in. `AesOnly` forces AES-only
+/// advertisement even when `chacha20` is enabled — the facade uses this
+/// to honour a caller's `ClientParams::aes_only()` request without
+/// recompiling the crate.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum SuiteList {
+    #[default]
+    Default,
+    AesOnly,
+}
+
+/// Options for the opts-aware ClientHello writer and its typestate
+/// wrapper, [`crate::TlsConnection::<Init>::write_client_hello_to_slice_with`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ClientHelloOptions<'a> {
+    /// SNI hostname bytes. `None` omits the extension.
+    pub hostname: Option<&'a [u8]>,
+    /// RFC 8449 `record_size_limit` value to advertise. `None` omits the
+    /// extension. Must be in `[64, 2^14 + 1]`; the writer enforces this
+    /// and returns [`ClientHelloError::RecordSizeLimitOutOfRange`] otherwise.
+    pub record_size_limit: Option<u16>,
+    /// Suite list to advertise. See [`SuiteList`].
+    pub suites: SuiteList,
+}
+
+impl<'a> ClientHelloOptions<'a> {
+    /// Legacy default: no `record_size_limit`, no SNI, default suite list.
+    pub const fn legacy() -> Self {
+        Self {
+            hostname: None,
+            record_size_limit: None,
+            suites: SuiteList::Default,
+        }
+    }
+}
 
 /// Fixed-extension total when the caller supplies no SNI.
 const CH_EXTENSIONS_FIXED_TOTAL: u16 = EXT_SUPPORTED_VERSIONS_TOTAL
@@ -227,32 +263,84 @@ const fn sni_ext_total(hostname_len: usize) -> usize {
     9 + hostname_len
 }
 
-/// Compute the exact serialized size of a ClientHello with the given
-/// hostname option. Useful for the connect binary that needs to size its
-/// buffer at runtime.
-pub const fn client_hello_len(hostname_len: Option<usize>) -> usize {
-    let sni = match hostname_len {
+/// Number of cipher_suites advertised on the wire for the given suite list.
+const fn ch_n_suites(suites: SuiteList) -> usize {
+    match suites {
+        SuiteList::Default => CH_CIPHER_SUITES_COUNT,
+        SuiteList::AesOnly => 1,
+    }
+}
+
+/// Wire size of `cipher_suites`: 2-byte length prefix + 2 bytes per suite.
+const fn ch_cipher_suites_field_len(suites: SuiteList) -> usize {
+    2 + 2 * ch_n_suites(suites)
+}
+
+/// Total wire size of the variable extensions: fixed extensions + optional
+/// SNI + optional `record_size_limit`.
+const fn ch_extensions_total(sni_host_len: Option<usize>, has_record_size_limit: bool) -> usize {
+    let sni = match sni_host_len {
         None => 0,
         Some(n) => sni_ext_total(n),
     };
-    // 5 (record header) + 4 (handshake header) + body
-    // body = legacy_version(2) + random(32) + session_id(1+0)
-    //      + cipher_suites(2 + 2*N) + compression(1+1)
-    //      + extensions_len(2) + fixed_extensions + sni_ext
-    5 + 4
-        + 2
-        + 32
-        + 1
-        + CH_CIPHER_SUITES_FIELD_LEN
-        + (1 + 1)
-        + 2
-        + CH_EXTENSIONS_FIXED_TOTAL as usize
-        + sni
+    let rsl = if has_record_size_limit {
+        EXT_RECORD_SIZE_LIMIT_TOTAL as usize
+    } else {
+        0
+    };
+    CH_EXTENSIONS_FIXED_TOTAL as usize + sni + rsl
 }
 
-/// Serialized size of the ClientHello [`write_client_hello`] produces when
-/// no SNI is supplied. 117 bytes by default, 119 with `feature = "rsa"` (the
-/// signature_algorithms extension carries one extra scheme entry).
+/// ClientHello body length (the bytes after the 4-byte handshake header).
+const fn ch_body_len(
+    suites: SuiteList,
+    sni_host_len: Option<usize>,
+    has_record_size_limit: bool,
+) -> usize {
+    2 + 32
+        + 1
+        + ch_cipher_suites_field_len(suites)
+        + (1 + 1)
+        + 2
+        + ch_extensions_total(sni_host_len, has_record_size_limit)
+}
+
+/// Total wire size of a ClientHello with the given dimensions (record
+/// header + handshake header + body). Source of truth for both
+/// [`client_hello_len`] and [`client_hello_len_with`].
+const fn ch_total_len(
+    suites: SuiteList,
+    sni_host_len: Option<usize>,
+    has_record_size_limit: bool,
+) -> usize {
+    5 + 4 + ch_body_len(suites, sni_host_len, has_record_size_limit)
+}
+
+/// Compute the exact serialized size of a ClientHello with the given
+/// hostname option, using the compile-time default suite list and no
+/// `record_size_limit` extension. Use [`client_hello_len_with`] when
+/// emitting opts-driven extensions or narrowing the suite advertisement.
+pub const fn client_hello_len(hostname_len: Option<usize>) -> usize {
+    ch_total_len(SuiteList::Default, hostname_len, false)
+}
+
+/// Opts-aware sibling of [`client_hello_len`]. Returns the exact byte size
+/// the corresponding opts-aware ClientHello writer call will emit for the
+/// supplied options. Single source of truth shared with the writer — the
+/// two cannot drift on the new (`record_size_limit` / `SuiteList::AesOnly`)
+/// paths.
+pub const fn client_hello_len_with(opts: &ClientHelloOptions<'_>) -> usize {
+    let sni_host_len = match opts.hostname {
+        None => None,
+        Some(h) => Some(h.len()),
+    };
+    ch_total_len(opts.suites, sni_host_len, opts.record_size_limit.is_some())
+}
+
+/// Serialized size of the ClientHello the default-opts writer produces
+/// when no SNI is supplied. 117 bytes by default, 119 with
+/// `feature = "rsa"` (the signature_algorithms extension carries one
+/// extra scheme entry).
 ///
 /// Composed from per-field lengths above — adding or dropping an extension
 /// flows through `CH_EXTENSIONS_FIXED_TOTAL` automatically.
@@ -341,24 +429,17 @@ impl<E: core::error::Error + 'static> core::error::Error for Write24Error<E> {
 /// a ClientHello must not exceed this; `write_client_hello` enforces it.
 const TLS_PLAINTEXT_MAX: usize = 1 << 14;
 
-/// Reasons [`write_client_hello`] may fail before any bytes hit the writer.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum ClientHelloError<E> {
-    /// `hostname.len()` exceeds the u16 cap of the SNI `HostName` field
-    /// (RFC 6066 §3). Real hostnames are far shorter (DNS caps at 255
-    /// bytes), but the wire format permits up to 65535.
+    /// `hostname.len()` exceeds the u16 SNI `HostName` cap (RFC 6066 §3).
     HostnameTooLong,
-    /// Computed ClientHello record body exceeds TLS 1.3's `2^14` plaintext
-    /// fragment limit (RFC 8446 §5.1). In practice this can only fire from
-    /// a very long hostname; the rest of the message is fixed-size.
+    /// Computed ClientHello body exceeds TLS 1.3's `2^14` plaintext cap
+    /// (RFC 8446 §5.1).
     MessageTooLong,
-    /// A length field overflowed its wire-format encoding (currently only
-    /// `u24` for the handshake body length). Not reachable from
-    /// [`write_client_hello`] given the existing `u16`-typed
-    /// `body_len` and `MessageTooLong` precheck — kept as a real error
-    /// rather than a silent debug-only assert so a future refactor can't
-    /// regress to truncated framing.
+    /// A wire-format length field overflowed its encoding.
     IntegerOverflow,
+    /// `record_size_limit` is outside the RFC 8449 valid range `[64, 2^14 + 1]`.
+    RecordSizeLimitOutOfRange,
     /// The underlying writer returned an error.
     Write(E),
 }
@@ -366,6 +447,21 @@ pub enum ClientHelloError<E> {
 impl<E> From<E> for ClientHelloError<E> {
     fn from(e: E) -> Self {
         Self::Write(e)
+    }
+}
+
+impl<E> ClientHelloError<E> {
+    pub fn map_writer<F, U>(self, f: F) -> ClientHelloError<U>
+    where
+        F: FnOnce(E) -> U,
+    {
+        match self {
+            Self::HostnameTooLong => ClientHelloError::HostnameTooLong,
+            Self::MessageTooLong => ClientHelloError::MessageTooLong,
+            Self::IntegerOverflow => ClientHelloError::IntegerOverflow,
+            Self::RecordSizeLimitOutOfRange => ClientHelloError::RecordSizeLimitOutOfRange,
+            Self::Write(e) => ClientHelloError::Write(f(e)),
+        }
     }
 }
 
@@ -388,6 +484,9 @@ impl<E: core::fmt::Display> core::fmt::Display for ClientHelloError<E> {
             Self::IntegerOverflow => {
                 f.write_str("a length field overflowed its wire-format encoding")
             }
+            Self::RecordSizeLimitOutOfRange => {
+                f.write_str("record_size_limit is outside the RFC 8449 valid range")
+            }
             Self::Write(e) => write!(f, "writer error: {e}"),
         }
     }
@@ -402,61 +501,58 @@ impl<E: core::error::Error + 'static> core::error::Error for ClientHelloError<E>
     }
 }
 
-/// Serialize a TLS 1.3 ClientHello into `out`.
-///
-/// `random` is the 32-byte `ClientHello.random` field; `x25519_pub` is the
-/// raw 32-byte ephemeral X25519 public key for the `key_share` extension.
-/// `hostname`, if `Some`, becomes a `server_name` extension (RFC 6066 §3) —
-/// required to talk to virtually any modern public-internet server (CDN
-/// fronts pick the cert from the SNI). Pass `None` for the historical
-/// no-SNI ClientHello shape used by the fixture tests.
-///
-/// `random`, `x25519_pub`, and `hostname` are supplied by the caller — this
-/// function never touches crypto or randomness.
-///
-/// Returns [`ClientHelloError::HostnameTooLong`] if `hostname` overflows the
-/// u16 SNI length field, [`ClientHelloError::MessageTooLong`] if the
-/// resulting record exceeds the TLS 1.3 plaintext fragment cap, or
-/// [`ClientHelloError::Write`] wrapping `W`'s error type for any I/O
-/// failure on the writer.
-///
-/// Returns the number of bytes written on success, equal to
-/// [`client_hello_len`]`(hostname.map(|h| h.len()))`. When `hostname` is
-/// `None`, that's [`CLIENT_HELLO_LEN`] (117 by default, 119 with
-/// `feature = "rsa"` or `feature = "chacha20"`, 121 with both).
-///
-/// With `feature = "chacha20"`, the CH advertises
-/// `TLS_CHACHA20_POLY1305_SHA256` first. Callers MUST dispatch their
-/// record-layer code on the suite returned in `ServerHelloView::cipher_suite` —
-/// using AES-typed `traffic_keys` / `decrypt_record` / `encrypt_record` /
-/// `build_client_finished` on a ChaCha-negotiated connection will fail at the
-/// first encrypted record.
-pub(crate) fn write_client_hello<W: Write>(
+/// Serialize a TLS 1.3 ClientHello into `out` using caller-supplied
+/// [`ClientHelloOptions`]. `opts.hostname` (if `Some`) produces an SNI
+/// extension (RFC 6066 §3); `opts.record_size_limit` (if `Some`) adds
+/// the RFC 8449 extension; `opts.suites` narrows the suite advertisement.
+/// Returns bytes written, equal to [`client_hello_len_with`]`(opts)`.
+pub(crate) fn write_client_hello_with<W: Write>(
     out: &mut W,
     random: &[u8; 32],
     x25519_pub: &[u8; 32],
-    hostname: Option<&[u8]>,
+    opts: &ClientHelloOptions<'_>,
 ) -> Result<usize, ClientHelloError<W::Error>> {
-    // Upfront bounds checks. After these, every `as u16` / `as u32` cast
-    // below is provably non-truncating.
+    let hostname = opts.hostname;
     let host_len = hostname.map(|h| h.len()).unwrap_or(0);
     if host_len > u16::MAX as usize {
         return Err(ClientHelloError::HostnameTooLong);
     }
-    let total_len = client_hello_len(hostname.map(|h| h.len()));
+    // RFC 8449 §4: record_size_limit must be in [64, 2^14 + 1].
+    if let Some(rsl) = opts.record_size_limit
+        && !(64..=16385).contains(&rsl)
+    {
+        return Err(ClientHelloError::RecordSizeLimitOutOfRange);
+    }
+
+    // Compute the exact total in `usize` BEFORE any narrowing cast: an
+    // oversized hostname can otherwise wrap intermediate `as u16` casts
+    // and slip past the cap check, then panic on `host_len as u16` or
+    // emit wrapped length fields on the wire. Route through the same
+    // const helpers the public `client_hello_len_with` uses so the writer
+    // and the sizer cannot drift on the new (RFC 8449 / `AesOnly`) paths.
+    let total_len = client_hello_len_with(opts);
     if total_len > 5 + TLS_PLAINTEXT_MAX {
         return Err(ClientHelloError::MessageTooLong);
     }
+    // Past this point every sub-length is provably ≤ total_len
+    // ≤ 5 + 2^14 < u16::MAX, so the casts below are non-truncating.
 
-    let sni_total = hostname.map(|h| sni_ext_total(h.len())).unwrap_or(0);
-    let extensions_total = (CH_EXTENSIONS_FIXED_TOTAL as usize + sni_total) as u16;
-    let body_len =
-        (2 + 32 + 1 + CH_CIPHER_SUITES_FIELD_LEN + (1 + 1) + 2 + extensions_total as usize) as u16;
+    let sni_host_len = hostname.map(|h| h.len());
+    let has_rsl = opts.record_size_limit.is_some();
+    let n_suites = ch_n_suites(opts.suites);
+    let extensions_total = ch_extensions_total(sni_host_len, has_rsl);
+    let body_len = ch_body_len(opts.suites, sni_host_len, has_rsl);
     let hs_len = 4 + body_len;
+
+    // ChaCha appears in the wire output iff the feature was compiled in
+    // AND the runtime opts allow the default suite list. Only bound under
+    // the feature — no-chacha20 builds have no use for the binding.
+    #[cfg(feature = "chacha20")]
+    let advertise_chacha = matches!(opts.suites, SuiteList::Default);
 
     out.write_u8(CT_HANDSHAKE)?; // 0x16
     out.write_u16(LEGACY_VERSION)?; // 0x0303
-    out.write_u16(hs_len)?; // length of handshake message that follows
+    out.write_u16(hs_len as u16)?; // length of handshake message that follows
 
     out.write_u8(HS_CLIENT_HELLO)?; // 0x01
     out.write_u24(body_len as u32)?; // length of ClientHello body
@@ -464,14 +560,18 @@ pub(crate) fn write_client_hello<W: Write>(
     out.write_u16(LEGACY_VERSION)?; // legacy_version = 0x0303
     out.write_all(random)?; // random (32)
     out.write_u8(0)?; // legacy_session_id length = 0
-    // ChaCha first so servers that honor client preference pick it.
-    out.write_u16((2 * CH_CIPHER_SUITES_COUNT) as u16)?;
+    // cipher_suites list length (just the suite bytes, sans length prefix).
+    out.write_u16((2 * n_suites) as u16)?;
+    // ChaCha first when both are offered, so servers that honour client
+    // preference pick it.
     #[cfg(feature = "chacha20")]
-    out.write_u16(CIPHER_CHACHA20_POLY1305_SHA256)?;
+    if advertise_chacha {
+        out.write_u16(CIPHER_CHACHA20_POLY1305_SHA256)?;
+    }
     out.write_u16(CIPHER_AES_128_GCM_SHA256)?;
     out.write_u8(1)?; // legacy_compression_methods length
     out.write_u8(0)?; // null compression
-    out.write_u16(extensions_total)?; // total extensions length
+    out.write_u16(extensions_total as u16)?; // total extensions length
 
     // -- supported_versions --
     out.write_u16(EXT_SUPPORTED_VERSIONS)?;
@@ -512,6 +612,13 @@ pub(crate) fn write_client_hello<W: Write>(
         out.write_u8(SNI_NAME_TYPE_HOST_NAME)?; // 0
         out.write_u16(host_len)?;
         out.write_all(h)?;
+    }
+
+    // -- record_size_limit (RFC 8449), if supplied --
+    if let Some(value) = opts.record_size_limit {
+        out.write_u16(EXT_RECORD_SIZE_LIMIT)?;
+        out.write_u16(2)?; // ext_data_len
+        out.write_u16(value)?;
     }
 
     // -- key_share (kept last so x25519_pub sits at the end of the record) --
@@ -820,8 +927,6 @@ impl<'a> Reader<'a> {
 mod tests {
     use super::*;
     use crate::aead::{decrypt_record, encrypt_record};
-    #[cfg(feature = "chacha20")]
-    use crate::aead::{decrypt_record_chacha, encrypt_record_chacha};
     use crate::hkdf::traffic_keys;
     #[cfg(feature = "chacha20")]
     use crate::newtype::AeadKey32;
@@ -840,16 +945,29 @@ mod tests {
         0x96, 0x0d,
     ];
     /// Seed-0 ed25519-mode ClientHello from the Python fixture
-    /// (`packets/001_c2s_ClientHello.bin`), 117 bytes.
-    const FIXTURE_CLIENT_HELLO: [u8; 117] = [
-        0x16, 0x03, 0x03, 0x00, 0x70, 0x01, 0x00, 0x00, 0x6c, 0x03, 0x03, 0xed, 0xe5, 0x7b, 0xa2,
+    /// (`packets/001_c2s_ClientHello.bin`), **149 bytes**.
+    ///
+    /// Advertises **both** the RFC 6066 SNI extension
+    /// (server_name "tls-fixture.local") and the RFC 8449
+    /// `record_size_limit` extension (value 16385). Extension order
+    /// matches the Rust facade's wire emission: supported_versions →
+    /// supported_groups → signature_algorithms → server_name →
+    /// record_size_limit → key_share. The Python `tls_fixture` emits
+    /// this shape by default; the typestate API's
+    /// `ClientHelloOptions::legacy()` does **not**, so byte-identity
+    /// testing requires explicit `hostname: Some(...)` +
+    /// `record_size_limit: Some(16385)` opts.
+    const FIXTURE_CLIENT_HELLO: [u8; 149] = [
+        0x16, 0x03, 0x03, 0x00, 0x90, 0x01, 0x00, 0x00, 0x8c, 0x03, 0x03, 0xed, 0xe5, 0x7b, 0xa2,
         0x43, 0x3a, 0xd5, 0xa3, 0x4d, 0x05, 0x50, 0x3a, 0xfe, 0x4f, 0xc2, 0x89, 0xdf, 0xd9, 0xe9,
         0x53, 0x57, 0xd8, 0x16, 0x36, 0x80, 0x24, 0xe7, 0x3f, 0xbf, 0xa6, 0xfa, 0xf5, 0x00, 0x00,
-        0x02, 0x13, 0x01, 0x01, 0x00, 0x00, 0x41, 0x00, 0x2b, 0x00, 0x03, 0x02, 0x03, 0x04, 0x00,
+        0x02, 0x13, 0x01, 0x01, 0x00, 0x00, 0x61, 0x00, 0x2b, 0x00, 0x03, 0x02, 0x03, 0x04, 0x00,
         0x0a, 0x00, 0x04, 0x00, 0x02, 0x00, 0x1d, 0x00, 0x0d, 0x00, 0x04, 0x00, 0x02, 0x08, 0x07,
-        0x00, 0x33, 0x00, 0x26, 0x00, 0x24, 0x00, 0x1d, 0x00, 0x20, 0x82, 0x46, 0xe7, 0x35, 0x8f,
-        0x0a, 0xf7, 0xf3, 0x31, 0x7d, 0xca, 0xf6, 0x88, 0xd0, 0x34, 0xc9, 0x5d, 0x5a, 0x2b, 0x54,
-        0xbf, 0x66, 0xc8, 0x95, 0x0e, 0xb8, 0x7a, 0x5f, 0x47, 0x93, 0x96, 0x0d,
+        0x00, 0x00, 0x00, 0x16, 0x00, 0x14, 0x00, 0x00, 0x11, 0x74, 0x6c, 0x73, 0x2d, 0x66, 0x69,
+        0x78, 0x74, 0x75, 0x72, 0x65, 0x2e, 0x6c, 0x6f, 0x63, 0x61, 0x6c, 0x00, 0x1c, 0x00, 0x02,
+        0x40, 0x01, 0x00, 0x33, 0x00, 0x26, 0x00, 0x24, 0x00, 0x1d, 0x00, 0x20, 0x82, 0x46, 0xe7,
+        0x35, 0x8f, 0x0a, 0xf7, 0xf3, 0x31, 0x7d, 0xca, 0xf6, 0x88, 0xd0, 0x34, 0xc9, 0x5d, 0x5a,
+        0x2b, 0x54, 0xbf, 0x66, 0xc8, 0x95, 0x0e, 0xb8, 0x7a, 0x5f, 0x47, 0x93, 0x96, 0x0d,
     ];
 
     /// Helper: write into a fresh buffer through `&mut &mut [u8]`. Returns the
@@ -857,7 +975,12 @@ mod tests {
     /// bytes were consumed.
     fn write_into(buf: &mut [u8]) -> Result<&mut [u8], ClientHelloError<SliceWriteError>> {
         let mut cursor: &mut [u8] = buf;
-        write_client_hello(&mut cursor, &FIXTURE_RANDOM, &FIXTURE_X25519_PUB, None)?;
+        write_client_hello_with(
+            &mut cursor,
+            &FIXTURE_RANDOM,
+            &FIXTURE_X25519_PUB,
+            &ClientHelloOptions::legacy(),
+        )?;
         // `cursor` now points at the *unused* tail.
         Ok(cursor)
     }
@@ -869,24 +992,36 @@ mod tests {
     #[cfg(all(not(feature = "rsa"), not(feature = "chacha20")))]
     #[test]
     fn matches_python_fixture() {
+        // Python tls_fixture defaults to record_size_limit=16385
+        // so the byte-identity test must pass the matching opts. The
+        // `legacy()` path (no RSL) is still functional but no longer has
+        // a Python reference — `exact_sized_buffer_works_legacy` below
+        // covers length + writer plumbing without byte-identity.
         let mut buf = [0u8; 256];
         let mut cursor: &mut [u8] = &mut buf;
-        let n =
-            write_client_hello(&mut cursor, &FIXTURE_RANDOM, &FIXTURE_X25519_PUB, None).unwrap();
-        assert_eq!(n, CLIENT_HELLO_LEN);
-        assert_eq!(&buf[..CLIENT_HELLO_LEN], &FIXTURE_CLIENT_HELLO);
+        let opts = ClientHelloOptions {
+            hostname: Some(b"tls-fixture.local"),
+            record_size_limit: Some(16385),
+            ..ClientHelloOptions::legacy()
+        };
+        let n = write_client_hello_with(&mut cursor, &FIXTURE_RANDOM, &FIXTURE_X25519_PUB, &opts)
+            .unwrap();
+        assert_eq!(n, FIXTURE_CLIENT_HELLO.len());
+        assert_eq!(&buf[..n], &FIXTURE_CLIENT_HELLO);
     }
 
     #[cfg(all(not(feature = "rsa"), not(feature = "chacha20")))]
     #[test]
-    fn exact_sized_buffer_works() {
+    fn exact_sized_buffer_works_legacy() {
         let mut buf = [0u8; CLIENT_HELLO_LEN];
         let leftover = write_into(&mut buf).unwrap();
         assert!(
             leftover.is_empty(),
             "should fully consume a tightly-sized buffer"
         );
-        assert_eq!(buf, FIXTURE_CLIENT_HELLO);
+        // Length-only check on the legacy (no-RSL) writer path. Byte-identity
+        // against the Python fixture moved to `matches_python_fixture`.
+        assert_eq!(buf.len(), CLIENT_HELLO_LEN);
     }
 
     #[test]
@@ -902,11 +1037,14 @@ mod tests {
         let huge = vec![b'a'; (u16::MAX as usize) + 1];
         let mut buf = [0u8; 256];
         let mut cursor: &mut [u8] = &mut buf;
-        let err = write_client_hello(
+        let err = write_client_hello_with(
             &mut cursor,
             &FIXTURE_RANDOM,
             &FIXTURE_X25519_PUB,
-            Some(&huge),
+            &ClientHelloOptions {
+                hostname: Some(&huge),
+                ..ClientHelloOptions::legacy()
+            },
         )
         .unwrap_err();
         assert_eq!(err, ClientHelloError::HostnameTooLong);
@@ -918,14 +1056,151 @@ mod tests {
         let big = vec![b'a'; 16500];
         let mut buf = [0u8; 128];
         let mut cursor: &mut [u8] = &mut buf;
-        let err = write_client_hello(
+        let err = write_client_hello_with(
             &mut cursor,
             &FIXTURE_RANDOM,
             &FIXTURE_X25519_PUB,
-            Some(&big),
+            &ClientHelloOptions {
+                hostname: Some(&big),
+                ..ClientHelloOptions::legacy()
+            },
         )
         .unwrap_err();
         assert_eq!(err, ClientHelloError::MessageTooLong);
+    }
+
+    // Regression: pre-fix, body_len was computed as u16 *before* the cap
+    // check, so a near-u16::MAX hostname wrapped to a small value, the
+    // MessageTooLong guard missed, and host_len-as-u16 either panicked in
+    // debug or emitted wrapped length fields in release.
+    #[test]
+    fn rejects_hostname_near_u16_max_without_wrap() {
+        let host = vec![b'a'; 65500];
+        let mut buf = [0u8; 256];
+        let mut cursor: &mut [u8] = &mut buf;
+        let err = write_client_hello_with(
+            &mut cursor,
+            &FIXTURE_RANDOM,
+            &FIXTURE_X25519_PUB,
+            &ClientHelloOptions {
+                hostname: Some(&host),
+                ..ClientHelloOptions::legacy()
+            },
+        )
+        .unwrap_err();
+        assert_eq!(err, ClientHelloError::MessageTooLong);
+    }
+
+    #[test]
+    fn rejects_record_size_limit_out_of_rfc8449_range() {
+        // RFC 8449 §4: valid range is [64, 2^14 + 1] = [64, 16385].
+        let mut buf = [0u8; 512];
+        for rsl in [0u16, 1, 63, 16386, u16::MAX] {
+            let mut cursor: &mut [u8] = &mut buf;
+            let err = write_client_hello_with(
+                &mut cursor,
+                &FIXTURE_RANDOM,
+                &FIXTURE_X25519_PUB,
+                &ClientHelloOptions {
+                    record_size_limit: Some(rsl),
+                    ..ClientHelloOptions::legacy()
+                },
+            )
+            .unwrap_err();
+            assert_eq!(
+                err,
+                ClientHelloError::RecordSizeLimitOutOfRange,
+                "rsl={rsl} must reject"
+            );
+        }
+        // Boundary values accepted.
+        for rsl in [64u16, 16385] {
+            let mut cursor: &mut [u8] = &mut buf;
+            write_client_hello_with(
+                &mut cursor,
+                &FIXTURE_RANDOM,
+                &FIXTURE_X25519_PUB,
+                &ClientHelloOptions {
+                    record_size_limit: Some(rsl),
+                    ..ClientHelloOptions::legacy()
+                },
+            )
+            .unwrap_or_else(|_| panic!("rsl={rsl} must accept"));
+        }
+    }
+
+    #[test]
+    fn client_hello_len_with_agrees_with_legacy_for_default_opts() {
+        for host_len in [None, Some(0), Some(1), Some(64), Some(255), Some(8192)] {
+            let legacy = client_hello_len(host_len);
+            let host_bytes;
+            let hostname: Option<&[u8]> = match host_len {
+                None => None,
+                Some(n) => {
+                    host_bytes = vec![b'x'; n];
+                    Some(host_bytes.leak())
+                }
+            };
+            let opts = ClientHelloOptions {
+                hostname,
+                record_size_limit: None,
+                suites: SuiteList::Default,
+            };
+            assert_eq!(
+                client_hello_len_with(&opts),
+                legacy,
+                "host_len={host_len:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn client_hello_len_with_accounts_for_record_size_limit() {
+        let base = client_hello_len_with(&ClientHelloOptions::legacy());
+        let with_rsl = client_hello_len_with(&ClientHelloOptions {
+            record_size_limit: Some(16385),
+            ..ClientHelloOptions::legacy()
+        });
+        assert_eq!(with_rsl, base + 6);
+    }
+
+    #[cfg(feature = "chacha20")]
+    #[test]
+    fn client_hello_len_with_aes_only_shrinks_by_two_bytes_under_chacha20() {
+        let default = client_hello_len_with(&ClientHelloOptions::legacy());
+        let aes_only = client_hello_len_with(&ClientHelloOptions {
+            suites: SuiteList::AesOnly,
+            ..ClientHelloOptions::legacy()
+        });
+        assert_eq!(aes_only + 2, default);
+    }
+
+    #[test]
+    fn writer_emits_exactly_client_hello_len_with_bytes() {
+        for opts in [
+            ClientHelloOptions::legacy(),
+            ClientHelloOptions {
+                record_size_limit: Some(16385),
+                ..ClientHelloOptions::legacy()
+            },
+            ClientHelloOptions {
+                hostname: Some(b"example.com"),
+                ..ClientHelloOptions::legacy()
+            },
+            ClientHelloOptions {
+                hostname: Some(b"example.com"),
+                record_size_limit: Some(4096),
+                ..ClientHelloOptions::legacy()
+            },
+        ] {
+            let expected = client_hello_len_with(&opts);
+            let mut buf = [0u8; 512];
+            let mut cursor: &mut [u8] = &mut buf;
+            let n =
+                write_client_hello_with(&mut cursor, &FIXTURE_RANDOM, &FIXTURE_X25519_PUB, &opts)
+                    .unwrap();
+            assert_eq!(n, expected, "opts={opts:?}");
+        }
     }
 
     #[test]
@@ -964,7 +1239,13 @@ mod tests {
         }
         let mut buf = [0u8; CLIENT_HELLO_LEN];
         let mut cursor: &mut [u8] = &mut buf;
-        write_client_hello(&mut cursor, &random, &FIXTURE_X25519_PUB, None).unwrap();
+        write_client_hello_with(
+            &mut cursor,
+            &random,
+            &FIXTURE_X25519_PUB,
+            &ClientHelloOptions::legacy(),
+        )
+        .unwrap();
         assert_eq!(&buf[11..11 + 32], &random);
     }
 
@@ -977,7 +1258,13 @@ mod tests {
         }
         let mut buf = [0u8; CLIENT_HELLO_LEN];
         let mut cursor: &mut [u8] = &mut buf;
-        write_client_hello(&mut cursor, &FIXTURE_RANDOM, &pub_key, None).unwrap();
+        write_client_hello_with(
+            &mut cursor,
+            &FIXTURE_RANDOM,
+            &pub_key,
+            &ClientHelloOptions::legacy(),
+        )
+        .unwrap();
         assert_eq!(&buf[CLIENT_HELLO_LEN - 32..], &pub_key);
     }
 
@@ -1285,24 +1572,27 @@ mod tests {
         0x3a, 0x88, 0x8d, 0xa5, 0xac, 0x36, 0x72, 0x72, 0x6d, 0x20, 0x06, 0x44, 0x04, 0xf7, 0x06,
         0xdb, 0x7e,
     ];
-    /// SHA-256(ClientHello_handshake_msg || ServerHello_handshake_msg) at seed 0.
+    /// SHA-256(ClientHello_handshake_msg || ServerHello_handshake_msg) at
+    /// seed 0. CH carries SNI + RSL; cert carries SAN.
     const FIXTURE_TRANSCRIPT_HASH_CH_SH: TranscriptDigest = TranscriptDigest::new([
-        0x7d, 0x93, 0x12, 0xf1, 0x9c, 0x0e, 0x57, 0x82, 0x2f, 0x53, 0xeb, 0x79, 0xe5, 0x52, 0x36,
-        0x73, 0x7d, 0xaf, 0x66, 0xa1, 0x1a, 0x89, 0x75, 0x6a, 0xb4, 0xb4, 0x3e, 0xdd, 0x87, 0x45,
-        0x3f, 0x39,
+        0xa8, 0xc5, 0x43, 0x11, 0x16, 0x98, 0x90, 0x0f, 0x4a, 0x5f, 0x43, 0xeb, 0x51, 0x0d, 0xe6,
+        0x3f, 0xb5, 0x47, 0xd9, 0xbd, 0x5a, 0x50, 0x6b, 0x68, 0xe1, 0x7d, 0x70, 0xb1, 0x7a, 0x8e,
+        0xae, 0x74,
     ]);
+    /// Server handshake traffic secret. From tls_fixture/state/client.json `s_hs_ts`.
     const FIXTURE_S_HS_TRAFFIC_SECRET_BYTES: [u8; 32] = [
-        0x55, 0x59, 0xd1, 0xcf, 0x33, 0x31, 0x9c, 0x4b, 0x46, 0x2a, 0x11, 0x42, 0x92, 0x90, 0x2d,
-        0x05, 0xb8, 0xcc, 0x08, 0xbc, 0x5a, 0xa5, 0xdd, 0x8e, 0x59, 0x84, 0x8b, 0xd0, 0x8d, 0xb2,
-        0x82, 0x9b,
+        0x03, 0xab, 0xb1, 0x1c, 0x49, 0xde, 0x80, 0x93, 0xb3, 0x78, 0x60, 0x9b, 0x5b, 0x0a, 0xb4,
+        0xab, 0x40, 0x8b, 0x7e, 0xe2, 0x23, 0xb4, 0x59, 0xef, 0x63, 0x14, 0xbb, 0x1b, 0xae, 0xa1,
+        0x3d, 0xea,
     ];
     fn make_fixture_s_hs_traffic_secret() -> Secret {
         Secret::new(ZeroBuf::<32>::new(FIXTURE_S_HS_TRAFFIC_SECRET_BYTES))
     }
+    /// Client handshake traffic secret. From tls_fixture/state/client.json `c_hs_ts`.
     const FIXTURE_C_HS_TRAFFIC_SECRET_BYTES: [u8; 32] = [
-        0xa4, 0xfa, 0x72, 0xf0, 0xcc, 0x9e, 0xef, 0xe8, 0xb1, 0xcb, 0x2a, 0x53, 0x3e, 0x40, 0x82,
-        0x14, 0x65, 0x32, 0x95, 0x4a, 0x6d, 0x25, 0x57, 0x14, 0xa1, 0x7c, 0x2c, 0xef, 0x69, 0x08,
-        0xa7, 0x8d,
+        0xbb, 0xe1, 0xcb, 0x05, 0x42, 0x4c, 0x27, 0xe7, 0x0d, 0x7e, 0xf5, 0x7c, 0x6f, 0x96, 0xd8,
+        0x3f, 0x44, 0x8a, 0x7d, 0xa0, 0xd0, 0x15, 0x3b, 0xa6, 0x64, 0xfe, 0xe6, 0x05, 0xb4, 0x00,
+        0x30, 0x01,
     ];
 
     #[test]
@@ -1418,17 +1708,21 @@ mod tests {
         assert_eq!(s_ts.as_bytes(), &FIXTURE_S_HS_TRAFFIC_SECRET_BYTES);
     }
 
+    /// HKDF-Expand-Label(s_hs_ts, "key"/"iv", ""). All AEAD keys/IVs
+    /// below derive from the regenerated
+    /// traffic secrets above.
     const FIXTURE_S_HS_KEY_BYTES: [u8; 16] = [
-        0x72, 0x34, 0xe7, 0x98, 0x57, 0x93, 0x61, 0xb1, 0x41, 0x61, 0x86, 0x3b, 0x79, 0x98, 0x86,
-        0x3c,
+        0xca, 0xf7, 0xdb, 0x48, 0x88, 0xeb, 0x19, 0x16, 0x1b, 0x2f, 0x90, 0x8d, 0x9d, 0xc5, 0x87,
+        0x44,
     ];
     const FIXTURE_S_HS_IV_BYTES: [u8; 12] = [
-        0x61, 0xcb, 0x91, 0xee, 0x64, 0xff, 0x4a, 0x91, 0xe7, 0x07, 0x1c, 0xbe,
+        0x96, 0xaa, 0x3a, 0x44, 0xd8, 0x1f, 0x1b, 0x6b, 0xc2, 0x13, 0x31, 0xd7,
     ];
 
     #[test]
     fn fixture_traffic_keys_match() {
-        let (key, iv) = traffic_keys::<RustCrypto>(&make_fixture_s_hs_traffic_secret()).unwrap();
+        let (k, iv) = traffic_keys::<RustCrypto, 16>(&make_fixture_s_hs_traffic_secret()).unwrap();
+        let key = AeadKey::new(k);
         assert_eq!(key.as_bytes(), &FIXTURE_S_HS_KEY_BYTES);
         assert_eq!(iv.as_bytes(), &FIXTURE_S_HS_IV_BYTES);
     }
@@ -1446,18 +1740,20 @@ mod tests {
         );
     }
 
-    /// packets/003_s2c_ServerFlight_encrypted.hex (380 bytes, decoded at compile time).
-    const FIXTURE_PACKET_3: [u8; 380] = crate::hex_decode(include_str!(
+    /// packets/003_s2c_ServerFlight_encrypted.hex (415 bytes, decoded at
+    /// compile time). Cert carries SAN matching `tls-fixture.local`.
+    const FIXTURE_PACKET_3: [u8; 415] = crate::hex_decode(include_str!(
         "../../testdata/packets/003_s2c_ServerFlight_encrypted.hex"
     ));
 
     /// First 32 bytes of the decrypted TLSInnerPlaintext of packet 003. Begins:
     ///   0x08 0x00 0x00 0x02 0x00 0x00       EncryptedExtensions (empty)
     ///   0x0b 0x00 0x00 0xf0 ...             Certificate (msg_type=11, len=0x0000f0)
+    /// First 32 bytes of the SF plaintext.
     const FIXTURE_PACKET_3_PLAINTEXT_HEAD: [u8; 32] = [
-        0x08, 0x00, 0x00, 0x02, 0x00, 0x00, 0x0b, 0x00, 0x00, 0xf0, 0x00, 0x00, 0x00, 0xec, 0x00,
-        0x00, 0xe7, 0x30, 0x81, 0xe4, 0x30, 0x81, 0x97, 0xa0, 0x03, 0x02, 0x01, 0x02, 0x02, 0x01,
-        0x01, 0x30,
+        0x08, 0x00, 0x00, 0x02, 0x00, 0x00, 0x0b, 0x00, 0x01, 0x13, 0x00, 0x00, 0x01, 0x0f, 0x00,
+        0x01, 0x0a, 0x30, 0x82, 0x01, 0x06, 0x30, 0x81, 0xb9, 0xa0, 0x03, 0x02, 0x01, 0x02, 0x02,
+        0x01, 0x01,
     ];
 
     /// Wrap the seed-0 server handshake AEAD key bytes into an `AeadKey`.
@@ -1473,19 +1769,19 @@ mod tests {
     #[test]
     fn fixture_packet_3_decrypts() {
         // record body length minus the 16-byte AEAD tag = expected plaintext length.
-        // Packet 003 is 380 bytes total: 5 header + 375 body; plaintext = 375 - 16 = 359.
+        // Packet 003 is 415 bytes total: 5 header + 410 body; plaintext = 410 - 16 = 394.
         let key = make_fixture_s_hs_key();
         let iv = make_fixture_s_hs_iv();
         let mut buf = [0u8; 400];
-        let pt = decrypt_record::<RustCrypto>(
+        let pt = decrypt_record::<RustCrypto, _>(
             &FIXTURE_PACKET_3,
-            &key,
+            key.as_zeroizing(),
             &iv,
             0, // first record under s_hs_traffic_secret
             &mut buf,
         )
         .expect("decrypt_record");
-        assert_eq!(pt.len(), 359);
+        assert_eq!(pt.len(), 394);
         assert_eq!(&pt[..32], &FIXTURE_PACKET_3_PLAINTEXT_HEAD);
 
         // Inner plaintext = handshake_bytes || content_type(0x16) || zero padding.
@@ -1511,10 +1807,18 @@ mod tests {
             t.snapshot()
         };
         let (_c_ts, s_ts) = handshake_traffic_secrets::<RustCrypto>(&hs, &th).unwrap();
-        let (key, iv) = traffic_keys::<RustCrypto>(&s_ts).unwrap();
+        let (k, iv) = traffic_keys::<RustCrypto, 16>(&s_ts).unwrap();
+        let key = AeadKey::new(k);
 
         let mut buf = [0u8; 400];
-        let pt = decrypt_record::<RustCrypto>(&FIXTURE_PACKET_3, &key, &iv, 0, &mut buf).unwrap();
+        let pt = decrypt_record::<RustCrypto, _>(
+            &FIXTURE_PACKET_3,
+            key.as_zeroizing(),
+            &iv,
+            0,
+            &mut buf,
+        )
+        .unwrap();
         let (content, content_type) = split_inner_plaintext(pt).unwrap();
         assert_eq!(content_type, consts::CT_HANDSHAKE);
         assert_eq!(&content[..6], &[0x08, 0x00, 0x00, 0x02, 0x00, 0x00]);
@@ -1526,7 +1830,14 @@ mod tests {
         let key = make_fixture_s_hs_key();
         let iv = make_fixture_s_hs_iv();
         let mut buf = [0u8; 400];
-        let pt = decrypt_record::<RustCrypto>(&FIXTURE_PACKET_3, &key, &iv, 0, &mut buf).unwrap();
+        let pt = decrypt_record::<RustCrypto, _>(
+            &FIXTURE_PACKET_3,
+            key.as_zeroizing(),
+            &iv,
+            0,
+            &mut buf,
+        )
+        .unwrap();
         let (content, _ct) = split_inner_plaintext(pt).unwrap();
 
         // Walk it: EE / Cert / CertVerify / Finished.
@@ -1615,8 +1926,14 @@ mod tests {
         let key = make_fixture_s_hs_key();
         let iv = make_fixture_s_hs_iv();
         let mut pt_buf = [0u8; 400];
-        let pt =
-            decrypt_record::<RustCrypto>(&FIXTURE_PACKET_3, &key, &iv, 0, &mut pt_buf).unwrap();
+        let pt = decrypt_record::<RustCrypto, _>(
+            &FIXTURE_PACKET_3,
+            key.as_zeroizing(),
+            &iv,
+            0,
+            &mut pt_buf,
+        )
+        .unwrap();
         let (content, _) = split_inner_plaintext(pt).unwrap();
         let mut transcript = TranscriptHash::<RustCrypto>::new();
         transcript.update_record(&FIXTURE_CLIENT_HELLO).unwrap();
@@ -1660,8 +1977,14 @@ mod tests {
         let key = make_fixture_s_hs_key();
         let iv = make_fixture_s_hs_iv();
         let mut pt_buf = [0u8; 400];
-        let pt =
-            decrypt_record::<RustCrypto>(&FIXTURE_PACKET_3, &key, &iv, 0, &mut pt_buf).unwrap();
+        let pt = decrypt_record::<RustCrypto, _>(
+            &FIXTURE_PACKET_3,
+            key.as_zeroizing(),
+            &iv,
+            0,
+            &mut pt_buf,
+        )
+        .unwrap();
         let (content, _) = split_inner_plaintext(pt).unwrap();
         let flight = parse_server_flight(content).unwrap();
         let cert_der = extract_cert_der(flight.cert_body).unwrap();
@@ -1699,11 +2022,11 @@ mod tests {
 
     #[test]
     fn cert_with_unknown_outer_sig_algo_still_parses_if_spki_known() {
-        // Codex review (PR#1): flip BOTH outer and TBS sig algorithm OIDs
-        // to the same unknown value (keeping symmetry). The leaf's SPKI is
-        // still valid Ed25519. The parser must accept — the outer sig algo
-        // describes the *issuer*'s signature, which for real-world leaves
-        // routinely isn't anything we recognize. Dispatch is on SPKI.
+        // Flip BOTH outer and TBS sig-algo OIDs to the same unknown value
+        // (keeping symmetry). SPKI stays valid Ed25519. The parser must
+        // accept — outer sig algo describes the *issuer*'s signature, which
+        // for real leaves routinely isn't anything we recognize. Dispatch
+        // is on SPKI.
         let mut buf = [0u8; 512];
         let len = fixture_cert_der_copy(&mut buf);
         let positions = find_ed25519_oid_positions(&buf[..len]);
@@ -1751,7 +2074,14 @@ mod tests {
         let key = make_fixture_s_hs_key();
         let iv = make_fixture_s_hs_iv();
         let mut buf = [0u8; 400];
-        let pt = decrypt_record::<RustCrypto>(&FIXTURE_PACKET_3, &key, &iv, 0, &mut buf).unwrap();
+        let pt = decrypt_record::<RustCrypto, _>(
+            &FIXTURE_PACKET_3,
+            key.as_zeroizing(),
+            &iv,
+            0,
+            &mut buf,
+        )
+        .unwrap();
         let (content, _) = split_inner_plaintext(pt).unwrap();
 
         // Tamper with the Finished verify_data (last 32 bytes of the inner content).
@@ -1808,8 +2138,14 @@ mod tests {
         let key = make_fixture_s_hs_key();
         let iv = make_fixture_s_hs_iv();
         let mut pt_buf = [0u8; 400];
-        let pt =
-            decrypt_record::<RustCrypto>(&FIXTURE_PACKET_3, &key, &iv, 0, &mut pt_buf).unwrap();
+        let pt = decrypt_record::<RustCrypto, _>(
+            &FIXTURE_PACKET_3,
+            key.as_zeroizing(),
+            &iv,
+            0,
+            &mut pt_buf,
+        )
+        .unwrap();
         let (content, _) = split_inner_plaintext(pt).unwrap();
         let mut transcript = TranscriptHash::<RustCrypto>::new();
         transcript.update_record(&FIXTURE_CLIENT_HELLO).unwrap();
@@ -1824,35 +2160,39 @@ mod tests {
         let ms = master_secret::<RustCrypto>(&make_fixture_handshake_secret()).unwrap();
         let (c_ap_ts, s_ap_ts) =
             application_traffic_secrets::<RustCrypto>(&ms, &transcript.snapshot()).unwrap();
-        (
-            traffic_keys::<RustCrypto>(&c_ap_ts).unwrap(),
-            traffic_keys::<RustCrypto>(&s_ap_ts).unwrap(),
-        )
+        let aes_keys = |secret: &Secret| {
+            let (k, iv) = traffic_keys::<RustCrypto, 16>(secret).unwrap();
+            (AeadKey::new(k), iv)
+        };
+        (aes_keys(&c_ap_ts), aes_keys(&s_ap_ts))
     }
 
     #[test]
     fn fixture_packet_5_encrypts_byte_identical() {
         let ((c_key, c_iv), _) = application_keys();
+        // Regenerated from the c_ap_ts under the RSL-bearing CH transcript
+        // with SAN-bearing cert. See `tls_fixture/state/client.json` + Python's
+        // `hkdf_expand_label(c_ap_ts, "key"/"iv", "")`.
         assert_eq!(
             c_key.as_bytes(),
             &[
-                0x3b, 0x69, 0x7f, 0x88, 0xe5, 0x6a, 0x98, 0x7b, 0x37, 0x53, 0xa1, 0xa8, 0x2b, 0x86,
-                0x66, 0x18,
+                0xe6, 0xfc, 0x45, 0x60, 0x91, 0x90, 0x27, 0x4e, 0x6f, 0xda, 0xae, 0x67, 0xc3, 0x06,
+                0x2f, 0xb0,
             ]
         );
         assert_eq!(
             c_iv.as_bytes(),
             &[
-                0x77, 0x6e, 0xb4, 0xda, 0xbe, 0x1e, 0xa0, 0x3b, 0xac, 0xd5, 0x4f, 0xbb
+                0x6f, 0x04, 0xf5, 0xff, 0x3d, 0x43, 0x2a, 0x54, 0x4b, 0xa1, 0x4c, 0xef,
             ]
         );
 
         // First app-data record under c_ap uses seq = 0.
         let mut out = [0u8; 80];
-        let record = encrypt_record::<RustCrypto>(
+        let record = encrypt_record::<RustCrypto, _>(
             PACKET_5_PLAINTEXT,
             consts::CT_APPLICATION_DATA,
-            &c_key,
+            c_key.as_zeroizing(),
             &c_iv,
             0,
             &mut out,
@@ -1865,8 +2205,14 @@ mod tests {
     fn fixture_packet_6_decrypts_to_expected_plaintext() {
         let (_, (s_key, s_iv)) = application_keys();
         let mut pt = [0u8; 64];
-        let inner = decrypt_record::<RustCrypto>(&FIXTURE_PACKET_6, &s_key, &s_iv, 0, &mut pt)
-            .expect("decrypt packet 6");
+        let inner = decrypt_record::<RustCrypto, _>(
+            &FIXTURE_PACKET_6,
+            s_key.as_zeroizing(),
+            &s_iv,
+            0,
+            &mut pt,
+        )
+        .expect("decrypt packet 6");
         let (content, ct) = split_inner_plaintext(inner).unwrap();
         assert_eq!(ct, consts::CT_APPLICATION_DATA);
         assert_eq!(content, PACKET_6_PLAINTEXT);
@@ -1883,8 +2229,14 @@ mod tests {
         let key = make_fixture_s_hs_key();
         let iv = make_fixture_s_hs_iv();
         let mut pt_buf = [0u8; 400];
-        let pt =
-            decrypt_record::<RustCrypto>(&FIXTURE_PACKET_3, &key, &iv, 0, &mut pt_buf).unwrap();
+        let pt = decrypt_record::<RustCrypto, _>(
+            &FIXTURE_PACKET_3,
+            key.as_zeroizing(),
+            &iv,
+            0,
+            &mut pt_buf,
+        )
+        .unwrap();
         let (content, _ct) = split_inner_plaintext(pt).unwrap();
         let mut transcript = TranscriptHash::<RustCrypto>::new();
         transcript.update_record(&FIXTURE_CLIENT_HELLO).unwrap();
@@ -1920,8 +2272,14 @@ mod tests {
         let key = make_fixture_s_hs_key();
         let iv = make_fixture_s_hs_iv();
         let mut pt_buf = [0u8; 400];
-        let pt =
-            decrypt_record::<RustCrypto>(&FIXTURE_PACKET_3, &key, &iv, 0, &mut pt_buf).unwrap();
+        let pt = decrypt_record::<RustCrypto, _>(
+            &FIXTURE_PACKET_3,
+            key.as_zeroizing(),
+            &iv,
+            0,
+            &mut pt_buf,
+        )
+        .unwrap();
         let (content, _) = split_inner_plaintext(pt).unwrap();
         let mut transcript = TranscriptHash::<RustCrypto>::new();
         transcript.update_record(&FIXTURE_CLIENT_HELLO).unwrap();
@@ -1937,15 +2295,16 @@ mod tests {
         let (c_ap, s_ap) =
             application_traffic_secrets::<RustCrypto>(&ms, &transcript.snapshot()).unwrap();
 
+        // From tls_fixture/state/client.json `c_ap_ts` / `s_ap_ts` at seed 0.
         const FIXTURE_C_AP_BYTES: [u8; 32] = [
-            0x0b, 0x35, 0x2a, 0x04, 0x91, 0x96, 0x84, 0x43, 0x4b, 0x94, 0x50, 0x24, 0x30, 0x0c,
-            0xf8, 0xc6, 0xd8, 0xea, 0xd3, 0x7b, 0x66, 0xcb, 0x58, 0x3d, 0x1e, 0xe5, 0x3c, 0xd0,
-            0x43, 0x4e, 0x73, 0x21,
+            0x54, 0x1a, 0xd5, 0xfc, 0xef, 0x9e, 0x66, 0x5f, 0x2b, 0x1b, 0xdb, 0x37, 0xfc, 0x05,
+            0xd6, 0xcf, 0x94, 0x8f, 0x4a, 0x10, 0xda, 0x18, 0xe0, 0x9f, 0x57, 0x10, 0x48, 0x5b,
+            0xf4, 0xf6, 0x64, 0x88,
         ];
         const FIXTURE_S_AP_BYTES: [u8; 32] = [
-            0x72, 0xac, 0xa2, 0x7e, 0x3f, 0x25, 0x70, 0x84, 0xa1, 0x7e, 0x2d, 0x61, 0x58, 0x18,
-            0x38, 0xe9, 0xbf, 0x94, 0x70, 0xab, 0x4a, 0x4e, 0xf8, 0x4a, 0x16, 0xdc, 0x12, 0x0e,
-            0xa7, 0x6d, 0xbd, 0xba,
+            0xa1, 0x04, 0xee, 0xae, 0xe6, 0xfa, 0x92, 0x7c, 0x2a, 0x64, 0xbd, 0x79, 0x86, 0xcb,
+            0xac, 0xeb, 0x40, 0xa1, 0x69, 0xcf, 0x3a, 0xfb, 0x8c, 0xa0, 0x1a, 0x67, 0x13, 0xdb,
+            0xa7, 0x04, 0xb5, 0x65,
         ];
         assert_eq!(c_ap.as_bytes(), &FIXTURE_C_AP_BYTES);
         assert_eq!(s_ap.as_bytes(), &FIXTURE_S_AP_BYTES);
@@ -1955,7 +2314,7 @@ mod tests {
     fn bad_tag_returns_aead_failed() {
         let key = make_fixture_s_hs_key();
         let iv = make_fixture_s_hs_iv();
-        let mut tampered = [0u8; 380];
+        let mut tampered = [0u8; 415];
         tampered.copy_from_slice(&FIXTURE_PACKET_3);
         let last = tampered.len() - 1;
         tampered[last] ^= 0xFF; // corrupt the auth tag
@@ -1963,7 +2322,8 @@ mod tests {
         // Pre-fill with a sentinel; the function should overwrite the
         // ciphertext window with zeroes on AEAD failure.
         buf.fill(0xAA);
-        let err = decrypt_record::<RustCrypto>(&tampered, &key, &iv, 0, &mut buf).unwrap_err();
+        let err = decrypt_record::<RustCrypto, _>(&tampered, key.as_zeroizing(), &iv, 0, &mut buf)
+            .unwrap_err();
         assert_eq!(err, DecryptError::AeadFailed);
 
         // The bytes in the ciphertext window (record body minus 16-byte tag)
@@ -1988,11 +2348,12 @@ mod tests {
         // Two valid records glued together — caller MUST pass exactly one.
         let key = make_fixture_s_hs_key();
         let iv = make_fixture_s_hs_iv();
-        let mut extra = [0u8; 381];
-        extra[..380].copy_from_slice(&FIXTURE_PACKET_3);
-        extra[380] = 0xAB; // one stray byte past the declared record body
-        let mut buf = [0u8; 400];
-        let err = decrypt_record::<RustCrypto>(&extra, &key, &iv, 0, &mut buf).unwrap_err();
+        let mut extra = [0u8; 416];
+        extra[..415].copy_from_slice(&FIXTURE_PACKET_3);
+        extra[415] = 0xAB; // one stray byte past the declared record body
+        let mut buf = [0u8; 416];
+        let err = decrypt_record::<RustCrypto, _>(&extra, key.as_zeroizing(), &iv, 0, &mut buf)
+            .unwrap_err();
         assert_eq!(err, DecryptError::TrailingBytes);
     }
 
@@ -2042,10 +2403,10 @@ mod tests {
         // matter — RecordTooLarge fires before BufferTooSmall.
         let big = vec![0u8; (1 << 14) + 256];
         let mut out = [0u8; 1];
-        let err = encrypt_record::<RustCrypto>(
+        let err = encrypt_record::<RustCrypto, _>(
             &big,
             consts::CT_APPLICATION_DATA,
-            &AeadKey::new(ZeroBuf::<16>::new([0u8; 16])),
+            &ZeroBuf::<16>::new([0u8; 16]),
             &AeadIv::new(ZeroBuf::<12>::new([0u8; 12])),
             0,
             &mut out,
@@ -2061,10 +2422,10 @@ mod tests {
         let iv = AeadIv::new(ZeroBuf::<12>::new([0x22; 12]));
         let plaintext = b"hello world";
         let mut record_buf = [0u8; 64];
-        let record = encrypt_record_chacha::<RustCrypto>(
+        let record = encrypt_record::<RustCrypto, _>(
             plaintext,
             consts::CT_APPLICATION_DATA,
-            &key,
+            key.as_zeroizing(),
             &iv,
             7,
             &mut record_buf,
@@ -2073,7 +2434,8 @@ mod tests {
         let record_owned = record.to_vec();
         let mut pt_buf = [0u8; 64];
         let inner =
-            decrypt_record_chacha::<RustCrypto>(&record_owned, &key, &iv, 7, &mut pt_buf).unwrap();
+            decrypt_record::<RustCrypto, _>(&record_owned, key.as_zeroizing(), &iv, 7, &mut pt_buf)
+                .unwrap();
         let (content, content_type) = aead::split_inner_plaintext(inner).unwrap();
         assert_eq!(content, plaintext);
         assert_eq!(content_type, consts::CT_APPLICATION_DATA);
@@ -2087,10 +2449,10 @@ mod tests {
         // plaintext cap — must surface as RecordTooLarge.
         let just_over = vec![0u8; (1 << 14) + 1];
         let mut out = vec![0u8; (1 << 14) + 256 + 5];
-        let err = encrypt_record::<RustCrypto>(
+        let err = encrypt_record::<RustCrypto, _>(
             &just_over,
             consts::CT_APPLICATION_DATA,
-            &AeadKey::new(ZeroBuf::<16>::new([0u8; 16])),
+            &ZeroBuf::<16>::new([0u8; 16]),
             &AeadIv::new(ZeroBuf::<12>::new([0u8; 12])),
             0,
             &mut out,
@@ -2209,12 +2571,19 @@ mod tests {
         fn fixture_rsa_server_flight_verifies() {
             // Derive AEAD (key, iv) from the fixture's server handshake traffic secret.
             let s_hs_ts = s_hs_traffic_secret();
-            let (key, iv) = traffic_keys::<RustCrypto>(&s_hs_ts).expect("traffic_keys");
+            let (k, iv) = traffic_keys::<RustCrypto, 16>(&s_hs_ts).expect("traffic_keys");
+            let key = AeadKey::new(k);
 
             // Decrypt the RSA fixture's server flight.
             let mut pt_buf = [0u8; 1100];
-            let pt = decrypt_record::<RustCrypto>(&FIXTURE_RSA_PACKET_3, &key, &iv, 0, &mut pt_buf)
-                .expect("decrypt packets_rsa/003");
+            let pt = decrypt_record::<RustCrypto, _>(
+                &FIXTURE_RSA_PACKET_3,
+                key.as_zeroizing(),
+                &iv,
+                0,
+                &mut pt_buf,
+            )
+            .expect("decrypt packets_rsa/003");
             let (content, ct) = split_inner_plaintext(pt).unwrap();
             assert_eq!(ct, consts::CT_HANDSHAKE);
 
@@ -2252,10 +2621,17 @@ mod tests {
             // Spot-check that DerCert parses the fixture's RSA cert into the
             // RSA variant with a 2048-bit modulus and exponent 65537.
             let s_hs_ts = s_hs_traffic_secret();
-            let (key, iv) = traffic_keys::<RustCrypto>(&s_hs_ts).unwrap();
+            let (k, iv) = traffic_keys::<RustCrypto, 16>(&s_hs_ts).unwrap();
+            let key = AeadKey::new(k);
             let mut pt_buf = [0u8; 1100];
-            let pt = decrypt_record::<RustCrypto>(&FIXTURE_RSA_PACKET_3, &key, &iv, 0, &mut pt_buf)
-                .unwrap();
+            let pt = decrypt_record::<RustCrypto, _>(
+                &FIXTURE_RSA_PACKET_3,
+                key.as_zeroizing(),
+                &iv,
+                0,
+                &mut pt_buf,
+            )
+            .unwrap();
             let (content, _) = split_inner_plaintext(pt).unwrap();
             let flight = parse_server_flight(content).unwrap();
             let cert_der = extract_cert_der(flight.cert_body).unwrap();

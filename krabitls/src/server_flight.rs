@@ -74,6 +74,10 @@ pub enum FlightError {
     /// `.expect` / panic.
     #[error("internal encoding buffer overflowed")]
     InternalEncoding,
+    /// An extension type was seen more than once where the spec says at most
+    /// once (e.g. duplicate `record_size_limit` in EncryptedExtensions).
+    #[error("duplicate extension 0x{ext_type:04x} in handshake message")]
+    DuplicateExtension { ext_type: u16 },
 }
 
 impl From<heapless::CapacityError> for FlightError {

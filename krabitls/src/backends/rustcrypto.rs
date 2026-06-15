@@ -14,10 +14,8 @@ use sha2::{Digest, Sha256};
 
 use zeroize::Zeroizing;
 
-#[cfg(feature = "chacha20")]
-use crate::traits::ChaCha20Poly1305Aead;
 use crate::traits::ed25519_verify::Ed25519VerifierProvider;
-use crate::traits::{AeadError, Aes128GcmAead};
+use crate::traits::{AeadError, RecordAead};
 use crate::traits::{HkdfExpandError, HkdfSha256, Sha256Hasher};
 use signature::Verifier;
 
@@ -54,7 +52,7 @@ impl HkdfSha256 for RustCrypto {
     }
 }
 
-impl Aes128GcmAead for RustCrypto {
+impl RecordAead<[u8; 16]> for RustCrypto {
     fn decrypt(
         key: &Zeroizing<[u8; 16]>,
         nonce: &Zeroizing<[u8; 12]>,
@@ -89,7 +87,7 @@ impl Aes128GcmAead for RustCrypto {
 }
 
 #[cfg(feature = "chacha20")]
-impl ChaCha20Poly1305Aead for RustCrypto {
+impl RecordAead<[u8; 32]> for RustCrypto {
     fn decrypt(
         key: &Zeroizing<[u8; 32]>,
         nonce: &Zeroizing<[u8; 12]>,

@@ -17,6 +17,9 @@ chacha20 = ["krabitls/chacha20"]
 # strips the unreachable paths from the M3/RV measurement.
 rsa = ["krabitls/rsa", "krabitls/rsa_pss_only", "krabitls/rsa_2048_only"]
 jedisct = ["krabitls/jedisct"]
+# Full handshake via `DefaultStream::connect` against the captured seed-0
+# fixtures (SeededRng + CannedTransport).
+canned-replay = ["krabitls/canned-replay"]
 
 [dependencies]
 krabitls = { path = "../../krabitls", features = ["dev-utils", "replay"] }

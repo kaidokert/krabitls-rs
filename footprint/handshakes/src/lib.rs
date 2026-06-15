@@ -165,6 +165,83 @@ pub fn baseline_aes_ed25519() -> bool {
     true
 }
 
+// ----------------------------------------------------------------------------
+// Facade — full handshake via `DefaultStream::connect` against the seed-0
+// canned fixtures.
+// ----------------------------------------------------------------------------
+
+#[cfg(feature = "canned-replay")]
+mod fixture_aes_ed25519_facade {
+    pub const CLIENT_HELLO: [u8; 149] = krabitls::hex_decode(include_str!(
+        "../../../testdata/packets/001_c2s_ClientHello.hex"
+    ));
+    pub const SERVER_HELLO: [u8; 95] = krabitls::hex_decode(include_str!(
+        "../../../testdata/packets/002_s2c_ServerHello.hex"
+    ));
+    pub const SERVER_FLIGHT: [u8; 415] = krabitls::hex_decode(include_str!(
+        "../../../testdata/packets/003_s2c_ServerFlight_encrypted.hex"
+    ));
+    pub const CLIENT_FINISHED: [u8; 58] = krabitls::hex_decode(include_str!(
+        "../../../testdata/packets/004_c2s_ClientFinished_encrypted.hex"
+    ));
+}
+
+/// Drive the full facade handshake against canned seed-0 fixtures.
+///
+/// Composes SH + SF into a `CannedTransport`, then calls
+/// `DefaultStream::connect()` with `SeededRng::new(0)` and
+/// `ClientParams::self_signed("tls-fixture.local")`. On return the captured
+/// TX must equal CH || CF byte-for-byte; otherwise the handshake produced
+/// different wire bytes than the Python reference and we return `Err(())`.
+#[cfg(feature = "canned-replay")]
+pub fn run_aes_ed25519_facade() -> Result<(), ()> {
+    use fixture_aes_ed25519_facade::*;
+    use krabitls::client::canned::{CannedTransport, SeededRng};
+    use krabitls::client::{ClientParams, DefaultScratch, DefaultStream, RuntimeSuitePolicy};
+
+    // SH (95) + SF (415) = 510 bytes of canned server stream.
+    let mut server_stream = [0u8; SERVER_HELLO.len() + SERVER_FLIGHT.len()];
+    server_stream[..SERVER_HELLO.len()].copy_from_slice(&SERVER_HELLO);
+    server_stream[SERVER_HELLO.len()..].copy_from_slice(&SERVER_FLIGHT);
+
+    let mut scratch = DefaultScratch::new();
+    let mut rng = SeededRng::new(0);
+    let transport = CannedTransport::<512>::new(&server_stream);
+    let params =
+        ClientParams::self_signed("tls-fixture.local").suite_policy(RuntimeSuitePolicy::Default);
+
+    let tls = DefaultStream::connect(&params, &mut scratch, transport, &mut rng).map_err(|_| ())?;
+
+    // Captured TX must be CH || CF.
+    let captured = tls.transport().captured_tx();
+    let expected_len = CLIENT_HELLO.len() + CLIENT_FINISHED.len();
+    if captured.len() != expected_len {
+        return Err(());
+    }
+    if captured[..CLIENT_HELLO.len()] != CLIENT_HELLO[..] {
+        return Err(());
+    }
+    if captured[CLIENT_HELLO.len()..] != CLIENT_FINISHED[..] {
+        return Err(());
+    }
+    Ok(())
+}
+
+/// Baseline stub: same rodata footprint as `run_aes_ed25519_facade`,
+/// without driving any crypto. `.text` delta = full facade-driven
+/// handshake cost.
+#[cfg(feature = "canned-replay")]
+#[inline(never)]
+pub fn baseline_aes_ed25519_facade() -> bool {
+    use core::hint::black_box;
+    use fixture_aes_ed25519_facade::*;
+    black_box(&CLIENT_HELLO);
+    black_box(&SERVER_HELLO);
+    black_box(&SERVER_FLIGHT);
+    black_box(&CLIENT_FINISHED);
+    true
+}
+
 #[cfg(feature = "jedisct")]
 mod jedisct_path {
     use super::*;

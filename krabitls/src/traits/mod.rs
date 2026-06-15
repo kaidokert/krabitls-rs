@@ -8,10 +8,10 @@
 //!
 //! - [`HkdfSha256`] + [`Sha256Hasher`] — HKDF over SHA-256 and the
 //!   matching incremental hasher (default: [`crate::RustCrypto`]).
-//! - [`Aes128GcmAead`] — record-layer AEAD for `TLS_AES_128_GCM_SHA256`
-//!   (default: [`crate::RustCrypto`]).
-//! - [`ChaCha20Poly1305Aead`] — record-layer AEAD for
-//!   `TLS_CHACHA20_POLY1305_SHA256`, gated on `feature = "chacha20"`.
+//! - [`RecordAead`] — record-layer AEAD; one impl per key-buffer type
+//!   ([`u8; 16`] for AES, [`u8; 32`] for ChaCha). Marker subtraits
+//!   [`Aes128GcmAead`] / [`ChaCha20Poly1305Aead`] pin the key length so
+//!   call sites keep their suite-named bounds.
 //! - [`CertParser`] — X.509 DER parser (default: [`crate::DerCert`]).
 //! - [`Ed25519VerifierProvider`] — builds per-key Ed25519 verifiers
 //!   (`signature::Verifier<[u8; 64]>`); default
@@ -29,7 +29,7 @@ pub mod time;
 
 #[cfg(feature = "chacha20")]
 pub use aead::ChaCha20Poly1305Aead;
-pub use aead::{AeadError, Aes128GcmAead};
+pub use aead::{AeadError, Aes128GcmAead, RecordAead};
 #[cfg(feature = "rsa")]
 pub use cert::RsaCertSigAlg;
 pub use cert::{CertParseError, CertParser, CertView};

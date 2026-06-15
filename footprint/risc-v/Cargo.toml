@@ -13,6 +13,7 @@ baseline = []
 jedisct = ["footprint_handshakes/jedisct"]
 rsa = ["footprint_handshakes/rsa"]
 chacha20 = ["footprint_handshakes/chacha20"]
+canned-replay = ["footprint_handshakes/canned-replay"]
 
 [[example]]
 name = "krabitls"
@@ -28,6 +29,10 @@ required-features = ["rsa"]
 [[example]]
 name = "krabitls_chacha"
 required-features = ["chacha20"]
+
+[[example]]
+name = "krabitls_facade"
+required-features = ["canned-replay"]
 
 [dependencies]
 riscv-rt = "0.13"

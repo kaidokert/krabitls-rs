@@ -63,6 +63,13 @@ rsa_2048_only = ["rsa"]
 # x25519 and the early-key-schedule HKDF chain into `.text`. Not part of
 # the production TLS surface — gated so production builds can't reach it.
 replay = []
+# Test infrastructure for facade replay: a deterministic `SeededRng`
+# (mirrors the Python `tls_fixture/tls13.py::derive_bytes` counter-mode
+# SHA-256 derivation) plus a `CannedTransport` adapter that serves canned
+# server bytes and captures client writes. Drives `TlsStream::connect()`
+# against the seed-0 fixtures end-to-end on host and on cortex_m_demo
+# without a real transport or OS RNG.
+canned-replay = []
 
 [dependencies]
 embedded-io = { version = "0.7.1", default-features = false }
@@ -84,3 +91,4 @@ heapless = { version = "0.9", default-features = false }
 subtle = { version = "2.6", default-features = false }
 thiserror = { version = "2", default-features = false }
 signature = { version = "3", default-features = false }
+rand_core = { version = "0.10", default-features = false }

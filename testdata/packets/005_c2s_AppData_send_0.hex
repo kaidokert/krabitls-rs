@@ -1,8 +1,9 @@
-# tls_fixture seed-0 c→s app data record #0 (52 bytes including record header).
+# tls_fixture seed-0 c→s app data record #0 (52 bytes).
 # Encrypted under c_ap_traffic_secret-derived (key, iv), seq=0. Inner plaintext
 # = b"hello from the embedded client" (30 B) + 0x17 inner content_type byte,
-# then AES-128-GCM with 16-byte auth tag → 47 B payload + 5 B record header.
-17 03 03 00 2f b8 53 3b 3c 6c ae 4e 06 54 93 e8
-3c 25 47 91 f1 0b 15 d3 a3 8f 4e 18 78 e8 37 06
-dc 86 00 76 90 f6 7c 6d c3 37 35 ac ca 2b 40 fa
-70 8f 10 03
+# encrypted via AES-128-GCM with a 16-byte tag. Outer record header is the
+# plaintext 5-byte TLSCiphertext prefix.
+17 03 03 00 2f 5d 25 36 77 59 32 9e 28 9a fc 05
+33 51 ee f1 06 e4 6a 36 da b0 ed 0d ff 40 54 78
+67 c5 c8 f0 96 e3 81 e0 3f 14 37 c0 ab 86 9a c9
+0b 16 33 13

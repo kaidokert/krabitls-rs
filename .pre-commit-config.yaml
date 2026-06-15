@@ -74,6 +74,16 @@ repos:
         language: system
         pass_filenames: false
         files: ^krabitls/.*\.(rs|toml)$
+    # The canned-replay integration test is cfg-gated on
+    # `not(rsa)` + `not(chacha20)`: the facade's ClientHello wire bytes
+    # change under those features and diverge from the captured seed-0
+    # fixture. Watches `testdata/` so fixture regen retriggers.
+    -   id: krabitls-test-canned
+        name: test krabitls (canned-replay, baseline combo)
+        entry: cargo test --manifest-path=krabitls/Cargo.toml --no-default-features --features canned-replay
+        language: system
+        pass_filenames: false
+        files: ^(krabitls|testdata)/.*\.(rs|toml|hex|md)$
 
     # ---- krabitls_cli clippy: 4 combos ----
     -   id: krabitls-cli-clippy-default
@@ -182,6 +192,18 @@ repos:
         language: system
         pass_filenames: false
         files: ^(footprint|krabitls)/.*\.(rs|toml|x|hex)$
+    -   id: cortex-m-build-facade
+        name: build footprint cortex-m (thumbv7m, facade)
+        entry: cargo build --manifest-path=footprint/cortex-m/Cargo.toml --release --example krabitls_facade --target thumbv7m-none-eabi --features canned-replay
+        language: system
+        pass_filenames: false
+        files: ^(footprint|krabitls|testdata)/.*\.(rs|toml|x|hex)$
+    -   id: cortex-m-build-facade-baseline
+        name: build footprint cortex-m (thumbv7m, facade + baseline)
+        entry: cargo build --manifest-path=footprint/cortex-m/Cargo.toml --release --example krabitls_facade --target thumbv7m-none-eabi --features canned-replay --features baseline
+        language: system
+        pass_filenames: false
+        files: ^(footprint|krabitls|testdata)/.*\.(rs|toml|x|hex)$
 
     # ---- footprint/risc-v (riscv32imac) ----
     -   id: riscv-clippy
@@ -220,3 +242,9 @@ repos:
         language: system
         pass_filenames: false
         files: ^(footprint|krabitls)/.*\.(rs|toml|x|hex)$
+    -   id: riscv-build-facade
+        name: build footprint risc-v (riscv32imac, facade)
+        entry: cargo build --manifest-path=footprint/risc-v/Cargo.toml --release --example krabitls_facade --target riscv32imac-unknown-none-elf --features canned-replay
+        language: system
+        pass_filenames: false
+        files: ^(footprint|krabitls|testdata)/.*\.(rs|toml|x|hex)$
