@@ -81,7 +81,7 @@ pub use traits::ChaCha20Poly1305Aead;
 pub use traits::RsaCertSigAlg;
 pub use traits::{
     AeadError, Aes128GcmAead, CertParseError, CertParser, CertView, Ed25519VerifierProvider,
-    HkdfExpandError, HkdfSha256, RsaVerifierProvider, Sha256Hasher,
+    HkdfExpandError, HkdfSha256, RecordAead, RsaVerifierProvider, Sha256Hasher,
 };
 #[cfg(feature = "validity")]
 pub use traits::{FixedTime, TimeSource};

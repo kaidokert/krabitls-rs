@@ -148,12 +148,23 @@ fn run(host: &str, port: u16, pin: Option<&Pin>) -> Result<()> {
     tcp.set_write_timeout(Some(Duration::from_secs(15)))?;
 
     let mut scratch = DefaultScratch::new();
+    struct SystemTimeSource;
+    impl krabitls::TimeSource for SystemTimeSource {
+        fn now_unix_secs(&self) -> u64 {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0)
+        }
+    }
+    let time_source = SystemTimeSource;
     let params = if let Some(p) = pin {
         ClientParams::pinned(host, p.as_pinned())
     } else {
         ClientParams::self_signed(host)
     }
-    .suite_policy(RuntimeSuitePolicy::Default);
+    .suite_policy(RuntimeSuitePolicy::Default)
+    .time(&time_source);
 
     let mut rng = OsRng;
     let transport = TcpTransport(tcp);
@@ -228,13 +239,16 @@ fn describe_connect_error(e: &ConnectError<std::io::Error>) -> String {
     format!("{e}")
 }
 
-fn parse_host_port(s: &str) -> (String, u16) {
-    if let Some((h, p)) = s.rsplit_once(':')
-        && let Ok(port) = p.parse::<u16>()
-    {
-        return (h.to_string(), port);
+fn parse_host_port(s: &str) -> std::result::Result<(String, u16), String> {
+    // An explicit `:<port>` must parse; otherwise the bare host gets 443.
+    // IPv6 literals are not supported (no bracket handling).
+    if let Some((h, p)) = s.rsplit_once(':') {
+        let port = p
+            .parse::<u16>()
+            .map_err(|_| format!("invalid port in {s:?}: {p:?}"))?;
+        return Ok((h.to_string(), port));
     }
-    (s.to_string(), 443)
+    Ok((s.to_string(), 443))
 }
 
 fn print_usage() {
@@ -288,7 +302,13 @@ fn main() -> ExitCode {
         print_usage();
         return ExitCode::from(2);
     };
-    let (host, port) = parse_host_port(&spec);
+    let (host, port) = match parse_host_port(&spec) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::from(2);
+        }
+    };
 
     match run(&host, port, pin.as_ref()) {
         Ok(()) => ExitCode::SUCCESS,

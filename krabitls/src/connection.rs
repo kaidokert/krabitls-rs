@@ -210,6 +210,11 @@ pub struct Init {
 
 pub struct WaitServerHello {
     pub(crate) x25519_priv: ZeroBuf<32>,
+    /// Cipher suites we advertised in the ClientHello. `read_server_hello`
+    /// rejects a selected suite that wasn't on this list. Only consulted
+    /// under `feature = "chacha20"` — without it, AES is the only suite.
+    #[cfg_attr(not(feature = "chacha20"), allow(dead_code))]
+    pub(crate) advertised: crate::SuiteList,
 }
 
 mod sealed {
@@ -423,6 +428,7 @@ where
             transcript: self.transcript,
             state: WaitServerHello {
                 x25519_priv: self.state.x25519_priv,
+                advertised: opts.suites,
             },
             _crypto: PhantomData,
         })
@@ -448,16 +454,22 @@ where
     H: HkdfSha256,
 {
     /// Replay entry from a captured CH record. `x25519_priv` must match
-    /// the pub in that CH.
+    /// the pub in that CH. `advertised` must match the CH's
+    /// `cipher_suites` list; pass [`crate::SuiteList::Default`] when the
+    /// captured CH advertised both AES and ChaCha.
     pub fn from_client_hello_record(
         ch_record: &[u8],
         x25519_priv: ZeroBuf<32>,
+        advertised: crate::SuiteList,
     ) -> Result<Self, ConnectionError> {
         let mut transcript = TranscriptHash::<H>::new();
         transcript.update_record(ch_record)?;
         Ok(Self {
             transcript,
-            state: WaitServerHello { x25519_priv },
+            state: WaitServerHello {
+                x25519_priv,
+                advertised,
+            },
             _crypto: PhantomData,
         })
     }
@@ -520,6 +532,23 @@ where
         use subtle::ConstantTimeEq;
 
         let sh = parse_server_hello(sh_record)?;
+        // Selected suite must have been in the advertised cipher_suites list.
+        // AES-128-GCM-SHA256 is always advertised; ChaCha is only advertised
+        // when `SuiteList::Default` (and `feature = "chacha20"` is on).
+        let advertised_ok = match sh.cipher_suite {
+            CIPHER_AES_128_GCM_SHA256 => true,
+            #[cfg(feature = "chacha20")]
+            CIPHER_CHACHA20_POLY1305_SHA256 => {
+                matches!(self.state.advertised, crate::SuiteList::Default)
+            }
+            _ => false,
+        };
+        if !advertised_ok {
+            return Err(ConnectionError::UnexpectedSuite {
+                selected_id: sh.cipher_suite,
+            });
+        }
+
         let dhe = zeroize::Zeroizing::new(ed25519_heapless::x25519::<Bn>(
             &self.state.x25519_priv,
             sh.x25519_share,

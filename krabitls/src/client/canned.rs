@@ -42,8 +42,22 @@ impl SeededRng {
     }
 }
 
+/// `try_fill_bytes` requested more bytes than the precomputed 64-byte
+/// stream holds. Indicates a test draws more entropy than the facade's
+/// `connect()` shape (32 `client_random` + 32 X25519 priv).
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub struct EntropyExhausted;
+
+impl core::fmt::Display for EntropyExhausted {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("SeededRng precomputed stream exhausted")
+    }
+}
+
+impl core::error::Error for EntropyExhausted {}
+
 impl rand_core::TryRng for SeededRng {
-    type Error = core::convert::Infallible;
+    type Error = EntropyExhausted;
 
     fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
         let mut buf = [0u8; 4];
@@ -59,19 +73,11 @@ impl rand_core::TryRng for SeededRng {
 
     fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), Self::Error> {
         let want = self.pos.saturating_add(dst.len());
-        // Debug-panic on overdraw; release zero-fills (`Error = Infallible` precludes a real error).
-        debug_assert!(
-            want <= self.bytes.len(),
-            "SeededRng overdraw: pos+len ({want}) > precomputed cap ({})",
-            self.bytes.len()
-        );
-        let remaining = self.bytes.len().saturating_sub(self.pos);
-        let take = remaining.min(dst.len());
-        dst[..take].copy_from_slice(&self.bytes[self.pos..self.pos + take]);
-        self.pos += take;
-        if take < dst.len() {
-            dst[take..].fill(0);
+        if want > self.bytes.len() {
+            return Err(EntropyExhausted);
         }
+        dst.copy_from_slice(&self.bytes[self.pos..want]);
+        self.pos = want;
         Ok(())
     }
 }
@@ -190,7 +196,7 @@ impl<const TX: usize> Transport for CannedTransport<'_, TX> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand_core::Rng;
+    use rand_core::TryRng;
 
     /// `client_random` from `tls_fixture/state/client.json` at seed 0.
     const SEED_0_CLIENT_RANDOM: [u8; 32] = [
@@ -210,8 +216,8 @@ mod tests {
         let mut rng = SeededRng::new(0);
         let mut client_random = [0u8; 32];
         let mut x25519_priv = [0u8; 32];
-        rng.fill_bytes(&mut client_random);
-        rng.fill_bytes(&mut x25519_priv);
+        rng.try_fill_bytes(&mut client_random).unwrap();
+        rng.try_fill_bytes(&mut x25519_priv).unwrap();
         assert_eq!(
             client_random, SEED_0_CLIENT_RANDOM,
             "client_random must match tls_fixture seed-0 derivation",
@@ -227,9 +233,9 @@ mod tests {
         let mut rng = SeededRng::new(0);
         let mut first = [0u8; 32];
         let mut second = [0u8; 32];
-        rng.fill_bytes(&mut first);
+        rng.try_fill_bytes(&mut first).unwrap();
         rng.rewind();
-        rng.fill_bytes(&mut second);
+        rng.try_fill_bytes(&mut second).unwrap();
         assert_eq!(first, second);
     }
 
@@ -258,13 +264,23 @@ mod tests {
     }
 
     #[test]
+    fn seeded_rng_overdraw_returns_err() {
+        let mut rng = SeededRng::new(0);
+        let mut buf = [0u8; ENTROPY_TOTAL];
+        rng.try_fill_bytes(&mut buf).unwrap();
+        // Stream exhausted; any further draw must surface as Err, not zero-fill.
+        let mut tail = [0u8; 1];
+        assert_eq!(rng.try_fill_bytes(&mut tail), Err(EntropyExhausted));
+    }
+
+    #[test]
     fn seeded_rng_different_seeds_diverge() {
         let mut a = SeededRng::new(0);
         let mut b = SeededRng::new(1);
         let mut ba = [0u8; 32];
         let mut bb = [0u8; 32];
-        a.fill_bytes(&mut ba);
-        b.fill_bytes(&mut bb);
+        a.try_fill_bytes(&mut ba).unwrap();
+        b.try_fill_bytes(&mut bb).unwrap();
         assert_ne!(ba, bb, "seed change must perturb the stream");
     }
 

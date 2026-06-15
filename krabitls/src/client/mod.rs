@@ -100,8 +100,9 @@ mod tests {
     // of these drifts. (`assert_eq!` in a `#[test]` would be flagged by
     // clippy's `assertions_on_constants` lint anyway.)
 
-    /// `MIN_RECORD_SIZE_LIMIT (64) + RECORD_OVERHEAD (21) = 85`.
-    const _: () = assert!(MIN_RECV == 85);
+    /// Dominated by the 95-byte locked-profile ServerHello; the
+    /// MIN_RECORD_SIZE_LIMIT + RECORD_OVERHEAD floor (85) is smaller.
+    const _: () = assert!(MIN_RECV == 95);
     /// `MIN_SEND_STANDARD` must accommodate the largest engine-internal
     /// send (Client Finished today).
     const _: () = assert!(MIN_SEND_STANDARD >= crate::CLIENT_FINISHED_LEN);

@@ -1,14 +1,12 @@
 //! `TlsEngine` — the `pub(crate)` state machine the [`TlsStream`] wrapper
 //! drives. Pure orchestration over the existing typestate API.
 
-#[cfg(feature = "chacha20")]
-use super::ConfigSuitePolicy;
 use super::error::{HandshakeError, InternalError};
 use super::params::TrustRoot;
 use super::scratch::{
     AEAD_TAG, MIN_RECORD_SIZE_LIMIT, PROTO_MAX_INNER_PLAINTEXT, RECORD_OVERHEAD, TLS_HEADER,
 };
-use super::{ClientConfig, ClientParams, RuntimeSuitePolicy, Scratch};
+use super::{ClientConfig, ClientParams, Scratch};
 use crate::aead::Aes128GcmSha256;
 #[cfg(feature = "chacha20")]
 use crate::aead::ChaCha20Poly1305Sha256;
@@ -126,10 +124,6 @@ pub(crate) struct TlsEngine<
     pub(crate) our_recv_limit: u16,
     /// RFC 8449 limit peer advertised; caps outgoing inner plaintext.
     pub(crate) peer_recv_limit: u16,
-
-    #[allow(dead_code)]
-    // read only via `effective_advertise_chacha`, which is itself `#[cfg(feature = "chacha20")]`
-    pub(crate) suite_policy: RuntimeSuitePolicy,
 }
 
 impl<'s, C: ClientConfig, const FLIGHT: usize, const RECV: usize, const SEND: usize>
@@ -140,7 +134,6 @@ impl<'s, C: ClientConfig, const FLIGHT: usize, const RECV: usize, const SEND: us
         init_state: EngineState<C>,
         our_recv_limit: u16,
         peer_recv_limit: u16,
-        suite_policy: RuntimeSuitePolicy,
     ) -> Self {
         Self {
             scratch,
@@ -153,7 +146,6 @@ impl<'s, C: ClientConfig, const FLIGHT: usize, const RECV: usize, const SEND: us
             closed: false,
             our_recv_limit,
             peer_recv_limit,
-            suite_policy,
         }
     }
 
@@ -398,20 +390,13 @@ impl<'s, C: ClientConfig, const FLIGHT: usize, const RECV: usize, const SEND: us
             HandshakeError::Connection(e)
         })?;
 
+        // The advertised-suites check lives in the typestate's
+        // `read_server_hello`; by the time we reach this match the
+        // selected suite is known to have been on the advertised list.
         self.state = match negotiated {
             NegotiatedSuite::Aes128Gcm(c) => EngineState::WaitFlightAes(c),
             #[cfg(feature = "chacha20")]
-            NegotiatedSuite::ChaCha20Poly1305(c) => {
-                if !effective_advertise_chacha::<C>(self.suite_policy) {
-                    self.closed = true;
-                    return Err(HandshakeError::Connection(
-                        ConnectionError::UnexpectedSuite {
-                            selected_id: 0x1303,
-                        },
-                    ));
-                }
-                EngineState::WaitFlightChaCha(c)
-            }
+            NegotiatedSuite::ChaCha20Poly1305(c) => EngineState::WaitFlightChaCha(c),
         };
 
         Ok(())
@@ -578,13 +563,6 @@ impl<'s, C: ClientConfig, const FLIGHT: usize, const RECV: usize, const SEND: us
 
         Ok(())
     }
-}
-
-/// Whether ChaCha20-Poly1305 was advertised in the ClientHello.
-#[cfg(feature = "chacha20")]
-fn effective_advertise_chacha<C: ClientConfig>(runtime: RuntimeSuitePolicy) -> bool {
-    matches!(runtime, RuntimeSuitePolicy::Default)
-        && matches!(C::SUITES, ConfigSuitePolicy::AesAndChaCha)
 }
 
 enum FlightDone<C: ClientConfig> {
@@ -1001,13 +979,7 @@ mod tests {
     fn closed_engine(
         scratch: &mut DefaultScratch,
     ) -> TlsEngine<'_, DefaultConfig, 16384, 16645, 4096> {
-        TlsEngine::new(
-            scratch,
-            EngineState::Closed,
-            16384,
-            16384,
-            RuntimeSuitePolicy::Default,
-        )
+        TlsEngine::new(scratch, EngineState::Closed, 16384, 16384)
     }
 
     // advance / recv_buffer
@@ -1323,13 +1295,7 @@ mod tests {
                 c_ap_ts, s_ap_ts, 0, 0,
             )
             .unwrap();
-            TlsEngine::new(
-                scratch,
-                EngineState::AppAes(conn),
-                16384,
-                16384,
-                RuntimeSuitePolicy::Default,
-            )
+            TlsEngine::new(scratch, EngineState::AppAes(conn), 16384, 16384)
         }
 
         #[test]

@@ -105,6 +105,11 @@ pub enum HandshakeError {
 
     /// Engine invariant breach; see [`InternalError`].
     Internal(InternalError),
+
+    /// The caller-supplied RNG returned an error during `connect()`.
+    /// Indicates the RNG itself failed (e.g. a deterministic test RNG
+    /// exhausted its precomputed entropy); the connection cannot proceed.
+    Rng,
 }
 
 impl From<ConnectionError> for HandshakeError {
@@ -154,6 +159,7 @@ impl core::fmt::Display for HandshakeError {
                 f.write_str("post-handshake handshake message not supported")
             }
             Self::Internal(e) => write!(f, "internal: {e}"),
+            Self::Rng => f.write_str("caller-supplied RNG returned an error"),
         }
     }
 }
@@ -172,7 +178,8 @@ impl core::error::Error for HandshakeError {
             | Self::AdvanceTooLarge
             | Self::Busy
             | Self::NotReady
-            | Self::PostHandshakeNotSupported => None,
+            | Self::PostHandshakeNotSupported
+            | Self::Rng => None,
         }
     }
 }

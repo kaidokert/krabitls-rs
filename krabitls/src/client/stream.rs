@@ -57,14 +57,16 @@ where
         rng: &mut R,
     ) -> Result<Self, ConnectError<T::Error>>
     where
-        R: rand_core::CryptoRng,
+        R: rand_core::TryCryptoRng,
     {
         validate_construction::<RECV, SEND>(params)?;
 
         let mut client_random = [0u8; 32];
         let mut x25519_priv = crate::ZeroBuf::<32>::new([0u8; 32]);
-        rng.fill_bytes(&mut client_random);
-        rng.fill_bytes(&mut *x25519_priv);
+        rng.try_fill_bytes(&mut client_random)
+            .map_err(|_| HandshakeError::Rng)?;
+        rng.try_fill_bytes(&mut *x25519_priv)
+            .map_err(|_| HandshakeError::Rng)?;
 
         let x25519_pub = ed25519_heapless::x25519_base::<X25519Bn>(&x25519_priv);
 
@@ -95,7 +97,6 @@ where
             EngineState::WaitServerHello(wait_sh),
             our_recv_limit,
             PROTO_MAX_INNER_PLAINTEXT,
-            params.suite_policy,
         );
         drive_handshake(&mut engine, &mut transport, params)?;
 

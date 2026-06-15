@@ -16,11 +16,22 @@ pub(crate) const PROTO_MAX_INNER_PLAINTEXT: u16 = 16385;
 /// fatal protocol error.
 pub(crate) const MIN_RECORD_SIZE_LIMIT: u16 = 64;
 
-/// Minimum `RECV` that lets the engine receive a record from a server
-/// honouring the smallest legal `record_size_limit`.
-///
-/// `MIN_RECORD_SIZE_LIMIT (64) + RECORD_OVERHEAD (21) = 85`.
-pub const MIN_RECV: usize = MIN_RECORD_SIZE_LIMIT as usize + RECORD_OVERHEAD;
+/// Locked-profile ServerHello on-wire record size. Plaintext (no AEAD
+/// tag) so RFC 8449 negotiation doesn't constrain it; the recv buffer
+/// must still be able to hold it.
+pub(crate) const SERVER_HELLO_RECORD_LEN: usize = 95;
+
+/// Minimum `RECV` to receive both the locked-profile plaintext
+/// ServerHello and a protected record at the smallest legal
+/// `record_size_limit`. ServerHello (95 B) currently dominates.
+pub const MIN_RECV: usize = {
+    let proto_floor = MIN_RECORD_SIZE_LIMIT as usize + RECORD_OVERHEAD;
+    if SERVER_HELLO_RECORD_LEN > proto_floor {
+        SERVER_HELLO_RECORD_LEN
+    } else {
+        proto_floor
+    }
+};
 
 /// Minimum `SEND` that holds the engine's largest single internally-
 /// generated record. Today that's the Client Finished, sized exactly

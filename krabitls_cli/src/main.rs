@@ -221,6 +221,7 @@ fn cmd_conn_negotiate(seed: u64) -> Result<()> {
     let conn = TlsConnection::<krabitls::WaitServerHello, RustCrypto, RustCrypto>::from_client_hello_record(
         &ch_bytes,
         krabitls::ZeroBuf::<32>::new(priv_bytes),
+        krabitls::SuiteList::Default,
     )
     .map_err(|e| format!("from_client_hello_record: {e:?}"))?;
 
@@ -366,6 +367,7 @@ fn renegotiate_app_secrets(priv_bytes: &[u8; 32]) -> Result<(krabitls::Secret, k
     let conn = TlsConnection::<krabitls::WaitServerHello, RustCrypto, RustCrypto>::from_client_hello_record(
         &ch_bytes,
         krabitls::ZeroBuf::<32>::new(*priv_bytes),
+        krabitls::SuiteList::Default,
     )
     .map_err(|e| format!("from_client_hello_record: {e:?}"))?;
     let conn = conn
