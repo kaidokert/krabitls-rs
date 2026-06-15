@@ -89,29 +89,28 @@ pub fn verify_pinned_pubkey(
 ///   but NOT `example.com` (no leftmost label) or `a.b.example.com`
 ///   (wildcard binds one label, not multiple).
 /// - `*` alone, or wildcards in any non-leftmost position, are rejected.
-pub fn verify_hostname(cert_view: &CertView<'_>, hostname: &[u8]) -> Result<(), IdentityError> {
+pub fn verify_hostname(cert_view: &CertView<'_>, hostname: &str) -> Result<(), IdentityError> {
     let san = cert_view.san().ok_or(IdentityError::NoSan)?;
 
     // IP-literal hostnames match SAN iPAddress entries only — DNS matching
     // doesn't apply (no labels) and could otherwise produce spurious hits.
-    if let Ok(s) = core::str::from_utf8(hostname) {
-        // URL-form IPv6 hostnames are bracketed (`[2001:db8::1]`);
-        // `Ipv6Addr::FromStr` doesn't accept the brackets.
-        let s = s
-            .strip_prefix('[')
-            .and_then(|s| s.strip_suffix(']'))
-            .unwrap_or(s);
-        if let Ok(v4) = s.parse::<core::net::Ipv4Addr>() {
-            return match_ip_address(san, &v4.octets());
-        }
-        if let Ok(v6) = s.parse::<core::net::Ipv6Addr>() {
-            return match_ip_address(san, &v6.octets());
-        }
+    // URL-form IPv6 hostnames are bracketed (`[2001:db8::1]`);
+    // `Ipv6Addr::FromStr` doesn't accept the brackets.
+    let unbracketed = hostname
+        .strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .unwrap_or(hostname);
+    if let Ok(v4) = unbracketed.parse::<core::net::Ipv4Addr>() {
+        return match_ip_address(san, &v4.octets());
+    }
+    if let Ok(v6) = unbracketed.parse::<core::net::Ipv6Addr>() {
+        return match_ip_address(san, &v6.octets());
     }
 
+    let hostname_bytes = hostname.as_bytes();
     for entry in san_dns_names(san) {
         let entry = entry?;
-        if dns_name_matches(entry, hostname) {
+        if dns_name_matches(entry, hostname_bytes) {
             return Ok(());
         }
     }
@@ -516,7 +515,7 @@ mod tests {
     fn verify_hostname_ip_v4_match() {
         let san = tlv(0x87, &[1, 1, 1, 1]);
         let view = ed25519_view_with_san(&san);
-        assert_eq!(verify_hostname(&view, b"1.1.1.1"), Ok(()));
+        assert_eq!(verify_hostname(&view, "1.1.1.1"), Ok(()));
     }
 
     #[test]
@@ -524,7 +523,7 @@ mod tests {
         let san = tlv(0x87, &[1, 1, 1, 1]);
         let view = ed25519_view_with_san(&san);
         assert_eq!(
-            verify_hostname(&view, b"1.2.3.4"),
+            verify_hostname(&view, "1.2.3.4"),
             Err(IdentityError::HostnameMismatch)
         );
     }
@@ -535,7 +534,7 @@ mod tests {
         let san = tlv(0x82, b"1.1.1.1");
         let view = ed25519_view_with_san(&san);
         assert_eq!(
-            verify_hostname(&view, b"1.1.1.1"),
+            verify_hostname(&view, "1.1.1.1"),
             Err(IdentityError::HostnameMismatch)
         );
     }
@@ -547,7 +546,7 @@ mod tests {
         ];
         let san = tlv(0x87, &v6);
         let view = ed25519_view_with_san(&san);
-        assert_eq!(verify_hostname(&view, b"2001:db8::1"), Ok(()));
+        assert_eq!(verify_hostname(&view, "2001:db8::1"), Ok(()));
     }
 
     #[test]
@@ -557,7 +556,7 @@ mod tests {
         ];
         let san = tlv(0x87, &v6);
         let view = ed25519_view_with_san(&san);
-        assert_eq!(verify_hostname(&view, b"[2001:db8::1]"), Ok(()));
+        assert_eq!(verify_hostname(&view, "[2001:db8::1]"), Ok(()));
     }
 
     #[test]

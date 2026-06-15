@@ -547,7 +547,7 @@ impl<'s, C: ClientConfig, const FLIGHT: usize, const RECV: usize, const SEND: us
         if let TrustRoot::Pinned(pin) = &params.trust {
             verify_pinned_pubkey(&cert_view, pin)?;
         }
-        verify_hostname(&cert_view, params.hostname.as_bytes())?;
+        verify_hostname(&cert_view, params.hostname)?;
 
         #[cfg(feature = "validity")]
         if let Some(time) = params.time {
