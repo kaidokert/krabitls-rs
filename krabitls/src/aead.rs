@@ -413,10 +413,10 @@ fn run_decrypt<S: CipherSuite>(
     buffer: &mut [u8],
     tag: &[u8; 16],
 ) -> Result<(), crate::traits::AeadError> {
-    let nonce_arr = GenericArray::from_slice(&nonce[..]);
-    let tag_arr = GenericArray::from_slice(tag);
+    let nonce_arr = GenericArray::from(**nonce);
+    let tag_arr = GenericArray::from(*tag);
     cipher
-        .decrypt_in_place_detached(nonce_arr, aad, buffer, tag_arr)
+        .decrypt_in_place_detached(&nonce_arr, aad, buffer, &tag_arr)
         .map_err(|_| crate::traits::AeadError)
 }
 
@@ -426,9 +426,9 @@ fn run_encrypt<S: CipherSuite>(
     aad: &[u8],
     buffer: &mut [u8],
 ) -> Result<[u8; 16], crate::traits::AeadError> {
-    let nonce_arr = GenericArray::from_slice(&nonce[..]);
+    let nonce_arr = GenericArray::from(**nonce);
     let tag = cipher
-        .encrypt_in_place_detached(nonce_arr, aad, buffer)
+        .encrypt_in_place_detached(&nonce_arr, aad, buffer)
         .map_err(|_| crate::traits::AeadError)?;
     Ok(tag.into())
 }
