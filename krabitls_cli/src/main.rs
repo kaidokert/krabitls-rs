@@ -218,6 +218,12 @@ fn cmd_conn_negotiate(seed: u64) -> Result<()> {
     // Feed the captured CH record straight into the transcript instead of
     // reconstructing it via write_client_hello — bytes the server actually
     // saw are authoritative; a rebuilt CH risks transcript drift.
+    //
+    // SuiteList::Default assumes the captured CH advertised both AES and
+    // ChaCha (the krabitls_connect / krabitls_facade default). If a
+    // captured CH advertised only AES, read_server_hello would still
+    // accept a ChaCha ServerHello — the suite-mismatch check enforces
+    // exactly what the typestate was told was advertised.
     let conn = TlsConnection::<krabitls::WaitServerHello, RustCrypto, RustCrypto>::from_client_hello_record(
         &ch_bytes,
         krabitls::ZeroBuf::<32>::new(priv_bytes),
@@ -364,6 +370,8 @@ fn renegotiate_app_secrets(priv_bytes: &[u8; 32]) -> Result<(krabitls::Secret, k
     let sh_bytes = read_packet(|d, n| d == "s2c" && n.contains("ServerHello"))?;
     let sf_bytes = read_packet(|d, n| d == "s2c" && n.contains("ServerFlight"))?;
 
+    // SuiteList::Default assumes the captured CH advertised both suites
+    // (see cmd_conn_negotiate for the matching note).
     let conn = TlsConnection::<krabitls::WaitServerHello, RustCrypto, RustCrypto>::from_client_hello_record(
         &ch_bytes,
         krabitls::ZeroBuf::<32>::new(*priv_bytes),

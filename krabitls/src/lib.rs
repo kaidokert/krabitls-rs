@@ -233,8 +233,8 @@ pub struct ClientHelloOptions<'a> {
     /// SNI hostname bytes. `None` omits the extension.
     pub hostname: Option<&'a [u8]>,
     /// RFC 8449 `record_size_limit` value to advertise. `None` omits the
-    /// extension. Must be in `[64, 2^14 + 1]`; the caller is responsible
-    /// for validating the range.
+    /// extension. Must be in `[64, 2^14 + 1]`; the writer enforces this
+    /// and returns [`ClientHelloError::RecordSizeLimitOutOfRange`] otherwise.
     pub record_size_limit: Option<u16>,
     /// Suite list to advertise. See [`SuiteList`].
     pub suites: SuiteList,
@@ -438,6 +438,8 @@ pub enum ClientHelloError<E> {
     MessageTooLong,
     /// A wire-format length field overflowed its encoding.
     IntegerOverflow,
+    /// `record_size_limit` is outside the RFC 8449 valid range `[64, 2^14 + 1]`.
+    RecordSizeLimitOutOfRange,
     /// The underlying writer returned an error.
     Write(E),
 }
@@ -457,6 +459,7 @@ impl<E> ClientHelloError<E> {
             Self::HostnameTooLong => ClientHelloError::HostnameTooLong,
             Self::MessageTooLong => ClientHelloError::MessageTooLong,
             Self::IntegerOverflow => ClientHelloError::IntegerOverflow,
+            Self::RecordSizeLimitOutOfRange => ClientHelloError::RecordSizeLimitOutOfRange,
             Self::Write(e) => ClientHelloError::Write(f(e)),
         }
     }
@@ -481,6 +484,9 @@ impl<E: core::fmt::Display> core::fmt::Display for ClientHelloError<E> {
             Self::IntegerOverflow => {
                 f.write_str("a length field overflowed its wire-format encoding")
             }
+            Self::RecordSizeLimitOutOfRange => {
+                f.write_str("record_size_limit is outside the RFC 8449 valid range")
+            }
             Self::Write(e) => write!(f, "writer error: {e}"),
         }
     }
@@ -499,8 +505,7 @@ impl<E: core::error::Error + 'static> core::error::Error for ClientHelloError<E>
 /// [`ClientHelloOptions`]. `opts.hostname` (if `Some`) produces an SNI
 /// extension (RFC 6066 §3); `opts.record_size_limit` (if `Some`) adds
 /// the RFC 8449 extension; `opts.suites` narrows the suite advertisement.
-/// Returns bytes written, equal to
-/// [`client_hello_len`]`(opts.hostname.map(|h| h.len()))`.
+/// Returns bytes written, equal to [`client_hello_len_with`]`(opts)`.
 pub(crate) fn write_client_hello_with<W: Write>(
     out: &mut W,
     random: &[u8; 32],
@@ -511,6 +516,12 @@ pub(crate) fn write_client_hello_with<W: Write>(
     let host_len = hostname.map(|h| h.len()).unwrap_or(0);
     if host_len > u16::MAX as usize {
         return Err(ClientHelloError::HostnameTooLong);
+    }
+    // RFC 8449 §4: record_size_limit must be in [64, 2^14 + 1].
+    if let Some(rsl) = opts.record_size_limit
+        && !(64..=16385).contains(&rsl)
+    {
+        return Err(ClientHelloError::RecordSizeLimitOutOfRange);
     }
 
     // Compute the exact total in `usize` BEFORE any narrowing cast: an
@@ -1078,6 +1089,44 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err, ClientHelloError::MessageTooLong);
+    }
+
+    #[test]
+    fn rejects_record_size_limit_out_of_rfc8449_range() {
+        // RFC 8449 §4: valid range is [64, 2^14 + 1] = [64, 16385].
+        let mut buf = [0u8; 512];
+        for rsl in [0u16, 1, 63, 16386, u16::MAX] {
+            let mut cursor: &mut [u8] = &mut buf;
+            let err = write_client_hello_with(
+                &mut cursor,
+                &FIXTURE_RANDOM,
+                &FIXTURE_X25519_PUB,
+                &ClientHelloOptions {
+                    record_size_limit: Some(rsl),
+                    ..ClientHelloOptions::legacy()
+                },
+            )
+            .unwrap_err();
+            assert_eq!(
+                err,
+                ClientHelloError::RecordSizeLimitOutOfRange,
+                "rsl={rsl} must reject"
+            );
+        }
+        // Boundary values accepted.
+        for rsl in [64u16, 16385] {
+            let mut cursor: &mut [u8] = &mut buf;
+            write_client_hello_with(
+                &mut cursor,
+                &FIXTURE_RANDOM,
+                &FIXTURE_X25519_PUB,
+                &ClientHelloOptions {
+                    record_size_limit: Some(rsl),
+                    ..ClientHelloOptions::legacy()
+                },
+            )
+            .unwrap_or_else(|_| panic!("rsl={rsl} must accept"));
+        }
     }
 
     #[test]

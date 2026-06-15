@@ -415,6 +415,9 @@ where
             ClientHelloError::IntegerOverflow => {
                 ConnectionError::ClientHello(ClientHelloError::IntegerOverflow)
             }
+            ClientHelloError::RecordSizeLimitOutOfRange => {
+                ConnectionError::ClientHello(ClientHelloError::RecordSizeLimitOutOfRange)
+            }
         })?;
         let ch_bytes = &scratch[..n];
 
