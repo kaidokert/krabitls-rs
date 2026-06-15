@@ -6,7 +6,7 @@
 //! corresponding generic parameter to [`crate::verify_server_flight`],
 //! [`crate::write_client_hello`], etc.
 //!
-//! - [`HkdfSha256`] + [`Sha256Hasher`] — HKDF over SHA-256 and the
+//! - [`HkdfSha256`] — HKDF over SHA-256 and the
 //!   matching incremental hasher (default: [`crate::RustCrypto`]).
 //! - [`CertParser`] — X.509 DER parser (default: [`crate::DerCert`]).
 //! - [`Ed25519VerifierProvider`] — builds per-key Ed25519 verifiers
@@ -28,7 +28,7 @@ pub use aead::AeadError;
 pub use cert::RsaCertSigAlg;
 pub use cert::{CertParseError, CertParser, CertView};
 pub use ed25519_verify::Ed25519VerifierProvider;
-pub use hkdf::{HkdfExpandError, HkdfSha256, Sha256Hasher};
+pub use hkdf::{HkdfExpandError, HkdfSha256};
 pub use rsa_verify::RsaVerifierProvider;
 #[cfg(feature = "validity")]
 pub use time::{FixedTime, TimeSource};

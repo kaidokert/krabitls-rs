@@ -1,7 +1,7 @@
 //! TLS 1.3 key-schedule helpers on top of the
 //! [`HkdfSha256`](crate::traits::HkdfSha256) trait.
 //!
-//! Trait definitions (`HkdfSha256`, `Sha256Hasher`, `HkdfExpandError`)
+//! Trait definitions (`HkdfSha256`, `HkdfExpandError`)
 //! live in [`crate::traits::hkdf`]. This module owns the TLS-1.3-specific
 //! key-schedule layer: `early_secret`, `handshake_secret`, `derive_secret`,
 //! `traffic_keys`, `application_traffic_secrets`, `finished_mac`, the
@@ -9,7 +9,8 @@
 //! encoder, and the `HkdfLabelError` enum.
 
 use crate::newtype::{AeadIv, Secret, TranscriptDigest, ZeroBuf};
-use crate::traits::{HkdfExpandError, HkdfSha256, Sha256Hasher};
+use crate::traits::{HkdfExpandError, HkdfSha256};
+use digest::Digest;
 
 // TLS 1.3 derivation helpers built on top of the HKDF trait.
 
@@ -157,7 +158,7 @@ impl<H: HkdfSha256> TranscriptHash<H> {
     /// Snapshot the transcript hash at the current point without consuming
     /// the hasher. Cheap (a clone of the SHA-256 state + a finalize call).
     pub fn snapshot(&self) -> TranscriptDigest {
-        TranscriptDigest::new(self.hasher.clone().finalize())
+        TranscriptDigest::new(self.hasher.clone().finalize().into())
     }
 }
 

@@ -1,4 +1,4 @@
-//! `HkdfSha256` + `Sha256Hasher` abstraction traits.
+//! `HkdfSha256` abstraction trait.
 //!
 //! TLS 1.3 derives every key in the handshake from an HKDF chain
 //! (RFC 8446 §7.1). Different deployments may want different HKDF
@@ -23,9 +23,9 @@
 /// `sha2::Sha256` would keep `sha2` linked even when the HKDF backend
 /// changes, defeating any swap.
 pub trait HkdfSha256 {
-    /// Incremental SHA-256 hasher type — must be `Clone` so the transcript
-    /// hash can be snapshotted between TLS handshake messages.
-    type Hasher: Sha256Hasher;
+    /// Incremental SHA-256 hasher (RustCrypto `Digest` shape). `Clone` is
+    /// required so the TLS 1.3 transcript hash can be snapshotted.
+    type Hasher: digest::Digest<OutputSize = digest::consts::U32> + Clone;
 
     /// Spawn a fresh hasher.
     fn hasher() -> Self::Hasher;
@@ -62,16 +62,4 @@ pub enum HkdfExpandError {
     /// to `.expect()` the underlying crate's fallible constructor.
     #[error("HKDF backend rejected the PRK")]
     InvalidPrk,
-}
-
-/// Incremental SHA-256 hash state.
-///
-/// `Clone` is required: the TLS 1.3 transcript hash is updated as each
-/// handshake message arrives, and intermediate hash values get finalized at
-/// the points where signatures and MACs are computed
-/// (`SHA-256(CH || SH)`, `…|| EE || Cert`, etc.) without consuming the
-/// running state.
-pub trait Sha256Hasher: Clone {
-    fn update(&mut self, data: &[u8]);
-    fn finalize(self) -> [u8; 32];
 }

@@ -1,33 +1,21 @@
 //! Default [`crate::HkdfSha256`] backend on the RustCrypto crates.
 
 use ::hkdf::Hkdf;
-use sha2::{Digest, Sha256};
+use sha2::Sha256;
 
 use zeroize::Zeroizing;
 
 use crate::traits::ed25519_verify::Ed25519VerifierProvider;
-use crate::traits::{HkdfExpandError, HkdfSha256, Sha256Hasher};
+use crate::traits::{HkdfExpandError, HkdfSha256};
 use signature::Verifier;
 
-/// Marker type holding the HKDF + AES-GCM impls. Pair with [`crate::DerCert`]
-/// for the cert-parsing side.
 pub struct RustCrypto;
-
-impl Sha256Hasher for Sha256 {
-    fn update(&mut self, data: &[u8]) {
-        Digest::update(self, data)
-    }
-
-    fn finalize(self) -> [u8; 32] {
-        Digest::finalize(self).into()
-    }
-}
 
 impl HkdfSha256 for RustCrypto {
     type Hasher = Sha256;
 
     fn hasher() -> Self::Hasher {
-        Sha256::new()
+        digest::Digest::new()
     }
 
     fn extract(salt: &[u8], ikm: &[u8]) -> Zeroizing<[u8; 32]> {

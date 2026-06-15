@@ -73,7 +73,7 @@ canned-replay = []
 
 [dependencies]
 embedded-io = { version = "0.7.1", default-features = false }
-hmac-sha256 = { version = "1", default-features = false, optional = true }
+hmac-sha256 = { version = "1", default-features = false, features = ["traits010"], optional = true }
 rsa_heapless = { version = "0.2.1", default-features = false, features = ["modmath"], optional = true }
 sha2_v11 = { package = "sha2", version = "0.11", default-features = false, features = ["oid"], optional = true }
 
@@ -81,6 +81,7 @@ sha2_v11 = { package = "sha2", version = "0.11", default-features = false, featu
 aes-gcm = { version = "0.10", default-features = false, features = ["aes"] }
 chacha20poly1305 = { version = "0.10", default-features = false, optional = true }
 sha2 = { version = "0.10", default-features = false, features = ["force-soft-compact"] }
+digest = { version = "0.10", default-features = false }
 hmac = { version = "0.12", default-features = false }
 hkdf = { version = "0.12", default-features = false }
 ed25519_heapless = { version = "0.2.0", default-features = false, features = ["fixed-bigint", "sha512-sha2"] }

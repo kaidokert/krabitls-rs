@@ -79,7 +79,7 @@ pub use server_flight::{FlightError, ServerPubkey, extract_cert_der, parse_serve
 pub use traits::RsaCertSigAlg;
 pub use traits::{
     AeadError, CertParseError, CertParser, CertView, Ed25519VerifierProvider, HkdfExpandError,
-    HkdfSha256, RsaVerifierProvider, Sha256Hasher,
+    HkdfSha256, RsaVerifierProvider,
 };
 #[cfg(feature = "validity")]
 pub use traits::{FixedTime, TimeSource};
