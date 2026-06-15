@@ -239,7 +239,7 @@ fn inspect_cert(
     log_cert_view(&cert_view);
 
     use krabitls::{verify_hostname, verify_pinned_pubkey};
-    verify_hostname(&cert_view, host.as_bytes()).map_err(krabitls_err("verify_hostname"))?;
+    verify_hostname(&cert_view, host).map_err(krabitls_err("verify_hostname"))?;
     info!("SAN binds hostname '{host}'");
     if let Some(p) = pin {
         verify_pinned_pubkey(&cert_view, &p.as_pinned())
