@@ -92,24 +92,26 @@ pub fn verify_pinned_pubkey(
 pub fn verify_hostname(cert_view: &CertView<'_>, hostname: &str) -> Result<(), IdentityError> {
     let san = cert_view.san().ok_or(IdentityError::NoSan)?;
 
-    // IP-literal hostnames match SAN iPAddress entries only — DNS matching
-    // doesn't apply (no labels) and could otherwise produce spurious hits.
-    // URL-form IPv6 hostnames are bracketed (`[2001:db8::1]`);
-    // `Ipv6Addr::FromStr` doesn't accept the brackets. Gated on
-    // `feature = "ip-host"` — embedded users with DNS-named pinned peers
-    // can drop ~2 KiB of `core::net::parser` machinery by leaving it off.
-    #[cfg(feature = "ip-host")]
-    {
-        let unbracketed = hostname
-            .strip_prefix('[')
-            .and_then(|s| s.strip_suffix(']'))
-            .unwrap_or(hostname);
-        if let Ok(v4) = unbracketed.parse::<core::net::Ipv4Addr>() {
-            return match_ip_address(san, &v4.octets());
+    // IP-literal hostnames must not fall through to dNSName matching —
+    // a dNSName SAN like "1.1.1.1" would otherwise spuriously match the
+    // IP literal `1.1.1.1`. Detect the IP shape with a cheap byte-only
+    // check (no `core::net::parser`), then either parse properly
+    // (`feature = "ip-host"`) or reject as `HostnameMismatch`.
+    if looks_like_ip_literal(hostname) {
+        #[cfg(feature = "ip-host")]
+        {
+            let unbracketed = hostname
+                .strip_prefix('[')
+                .and_then(|s| s.strip_suffix(']'))
+                .unwrap_or(hostname);
+            if let Ok(v4) = unbracketed.parse::<core::net::Ipv4Addr>() {
+                return match_ip_address(san, &v4.octets());
+            }
+            if let Ok(v6) = unbracketed.parse::<core::net::Ipv6Addr>() {
+                return match_ip_address(san, &v6.octets());
+            }
         }
-        if let Ok(v6) = unbracketed.parse::<core::net::Ipv6Addr>() {
-            return match_ip_address(san, &v6.octets());
-        }
+        return Err(IdentityError::HostnameMismatch);
     }
 
     let hostname_bytes = hostname.as_bytes();
@@ -120,6 +122,35 @@ pub fn verify_hostname(cert_view: &CertView<'_>, hostname: &str) -> Result<(), I
         }
     }
     Err(IdentityError::HostnameMismatch)
+}
+
+/// Cheap shape-only check for IP-literal hostnames. Bytes only — no
+/// `core::net::parser` machinery pulled in. Used to decide whether an
+/// input should take the IP path (or be rejected when that path is
+/// gated off) before any actual parsing happens.
+///
+/// Returns true for:
+/// - URL-form IPv6 (starts with `[`)
+/// - Any string containing `:` (presumed IPv6)
+/// - All-digits-and-dots strings with at least one `.` (presumed IPv4)
+fn looks_like_ip_literal(hostname: &str) -> bool {
+    let bytes = hostname.as_bytes();
+    if bytes.first() == Some(&b'[') {
+        return true;
+    }
+    let mut saw_dot = false;
+    let mut all_digit_or_dot = true;
+    for &b in bytes {
+        if b == b':' {
+            return true;
+        }
+        if b == b'.' {
+            saw_dot = true;
+        } else if !b.is_ascii_digit() {
+            all_digit_or_dot = false;
+        }
+    }
+    !bytes.is_empty() && all_digit_or_dot && saw_dot
 }
 
 #[cfg(feature = "ip-host")]
@@ -521,6 +552,59 @@ mod tests {
             verify_hostname(&view, "1.1.1.1"),
             Err(IdentityError::HostnameMismatch)
         );
+    }
+
+    /// `ip-host` OFF must still reject IP-literal hostnames against
+    /// dNSName SAN entries — the shape detector is unconditional.
+    #[test]
+    fn verify_hostname_ip_literal_rejects_dns_fallback() {
+        let dns_san = |s: &str| {
+            let mut v = vec![0x82, s.len() as u8];
+            v.extend_from_slice(s.as_bytes());
+            v
+        };
+        fn mk_view(san: &[u8]) -> CertView<'_> {
+            CertView::Ed25519 {
+                tbs: &[],
+                signature: &[0u8; 64],
+                pubkey: &[0u8; 32],
+                san: Some(san),
+                validity_der: &[],
+            }
+        }
+        // IPv4 shape
+        let san = dns_san("1.1.1.1");
+        assert_eq!(
+            verify_hostname(&mk_view(&san), "1.1.1.1"),
+            Err(IdentityError::HostnameMismatch)
+        );
+        // IPv6 shape (contains `:`)
+        let san = dns_san("2001:db8::1");
+        assert_eq!(
+            verify_hostname(&mk_view(&san), "2001:db8::1"),
+            Err(IdentityError::HostnameMismatch)
+        );
+        // URL-form bracketed IPv6
+        let san = dns_san("[2001:db8::1]");
+        assert_eq!(
+            verify_hostname(&mk_view(&san), "[2001:db8::1]"),
+            Err(IdentityError::HostnameMismatch)
+        );
+        // Regular DNS name still matches
+        let san = dns_san("example.com");
+        assert_eq!(verify_hostname(&mk_view(&san), "example.com"), Ok(()));
+    }
+
+    #[test]
+    fn ip_shape_detector() {
+        assert!(looks_like_ip_literal("1.1.1.1"));
+        assert!(looks_like_ip_literal("2001:db8::1"));
+        assert!(looks_like_ip_literal("[2001:db8::1]"));
+        assert!(looks_like_ip_literal("999.999.999.999")); // shape-only
+        assert!(!looks_like_ip_literal("example.com"));
+        assert!(!looks_like_ip_literal("a.b.c"));
+        assert!(!looks_like_ip_literal(""));
+        assert!(!looks_like_ip_literal("12345")); // no dot, no colon
     }
 
     #[cfg(feature = "ip-host")]
