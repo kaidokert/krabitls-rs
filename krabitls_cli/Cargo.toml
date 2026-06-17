@@ -18,7 +18,7 @@ fixed-bigint = { version = "0.3", default-features = false, features = ["use-uns
 # `replay` exposes typestate constructors for entering at WaitServerHello /
 # WaitServerFlight / AppData with pre-derived secrets — needed by the
 # fixture-driver CLI's stateless-per-command flow.
-krabitls = { version = "0.1.0", path = "../krabitls", features = ["replay"] }
+krabitls = { version = "0.1.0", path = "../krabitls", features = ["replay", "ip-host"] }
 sha2 = { version = "0.10", default-features = false }
 zeroize = { version = "1.8", default-features = false }
 log = "0.4"

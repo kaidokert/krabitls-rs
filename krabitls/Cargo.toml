@@ -70,6 +70,14 @@ replay = []
 # against the seed-0 fixtures end-to-end on host and on cortex_m_demo
 # without a real transport or OS RNG.
 canned-replay = []
+# Swap [`crate::DerCert`]'s `der`-crate-backed cert parser for an in-tree
+# hand-rolled TLV walker. Drops the `der` dep (-4 KiB facade .text) at
+# the cost of an ad-hoc parser. Default OFF.
+cert-tlv = []
+# Match IP-literal hostnames against SAN `iPAddress` entries. Without it,
+# IP literals fall through to `HostnameMismatch`. Saves ~2 KiB of
+# `core::net::parser` on DNS-only embedded deployments. Default OFF.
+ip-host = []
 
 [dependencies]
 embedded-io = { version = "0.7.1", default-features = false }

@@ -95,16 +95,21 @@ pub fn verify_hostname(cert_view: &CertView<'_>, hostname: &str) -> Result<(), I
     // IP-literal hostnames match SAN iPAddress entries only — DNS matching
     // doesn't apply (no labels) and could otherwise produce spurious hits.
     // URL-form IPv6 hostnames are bracketed (`[2001:db8::1]`);
-    // `Ipv6Addr::FromStr` doesn't accept the brackets.
-    let unbracketed = hostname
-        .strip_prefix('[')
-        .and_then(|s| s.strip_suffix(']'))
-        .unwrap_or(hostname);
-    if let Ok(v4) = unbracketed.parse::<core::net::Ipv4Addr>() {
-        return match_ip_address(san, &v4.octets());
-    }
-    if let Ok(v6) = unbracketed.parse::<core::net::Ipv6Addr>() {
-        return match_ip_address(san, &v6.octets());
+    // `Ipv6Addr::FromStr` doesn't accept the brackets. Gated on
+    // `feature = "ip-host"` — embedded users with DNS-named pinned peers
+    // can drop ~2 KiB of `core::net::parser` machinery by leaving it off.
+    #[cfg(feature = "ip-host")]
+    {
+        let unbracketed = hostname
+            .strip_prefix('[')
+            .and_then(|s| s.strip_suffix(']'))
+            .unwrap_or(hostname);
+        if let Ok(v4) = unbracketed.parse::<core::net::Ipv4Addr>() {
+            return match_ip_address(san, &v4.octets());
+        }
+        if let Ok(v6) = unbracketed.parse::<core::net::Ipv6Addr>() {
+            return match_ip_address(san, &v6.octets());
+        }
     }
 
     let hostname_bytes = hostname.as_bytes();
@@ -117,6 +122,7 @@ pub fn verify_hostname(cert_view: &CertView<'_>, hostname: &str) -> Result<(), I
     Err(IdentityError::HostnameMismatch)
 }
 
+#[cfg(feature = "ip-host")]
 fn match_ip_address(san: &[u8], expected: &[u8]) -> Result<(), IdentityError> {
     for entry in san_ip_addresses(san) {
         if entry? == expected {
@@ -136,6 +142,7 @@ pub fn san_dns_names(san_bytes: &[u8]) -> SanDnsIter<'_> {
 
 /// Iterator over iPAddress entries in a SAN `GeneralNames` SEQUENCE.
 /// Yields raw 4-byte (IPv4) or 16-byte (IPv6) network-byte-order octets.
+#[cfg(feature = "ip-host")]
 pub fn san_ip_addresses(san_bytes: &[u8]) -> SanIpAddressIter<'_> {
     SanIpAddressIter(SanEntryWalker {
         rest: san_bytes,
@@ -143,17 +150,14 @@ pub fn san_ip_addresses(san_bytes: &[u8]) -> SanIpAddressIter<'_> {
     })
 }
 
-// GeneralName CHOICE tags (RFC 5280 §4.2.1.6): primitive, context-specific.
-const DNS_NAME_TAG: der::Tag = der::Tag::ContextSpecific {
-    constructed: false,
-    number: der::TagNumber(2),
-};
-const IP_ADDRESS_TAG: der::Tag = der::Tag::ContextSpecific {
-    constructed: false,
-    number: der::TagNumber(7),
-};
+// GeneralName CHOICE tag bytes (RFC 5280 §4.2.1.6 — primitive
+// context-specific): dNSName = [2] = 0x82; iPAddress = [7] = 0x87.
+const DNS_NAME_TAG: u8 = crate::backends::tlv::tag_ctx_primitive(2);
+#[cfg(feature = "ip-host")]
+const IP_ADDRESS_TAG: u8 = crate::backends::tlv::tag_ctx_primitive(7);
 
 pub struct SanDnsIter<'a>(SanEntryWalker<'a>);
+#[cfg(feature = "ip-host")]
 pub struct SanIpAddressIter<'a>(SanEntryWalker<'a>);
 
 impl<'a> Iterator for SanDnsIter<'a> {
@@ -163,6 +167,7 @@ impl<'a> Iterator for SanDnsIter<'a> {
     }
 }
 
+#[cfg(feature = "ip-host")]
 impl<'a> Iterator for SanIpAddressIter<'a> {
     type Item = Result<&'a [u8], IdentityError>;
     fn next(&mut self) -> Option<Self::Item> {
@@ -172,60 +177,32 @@ impl<'a> Iterator for SanIpAddressIter<'a> {
 
 struct SanEntryWalker<'a> {
     rest: &'a [u8],
-    target_tag: der::Tag,
+    target_tag: u8,
 }
 
 impl<'a> SanEntryWalker<'a> {
     fn next(&mut self) -> Option<Result<&'a [u8], IdentityError>> {
-        use der::asn1::AnyRef;
-        use der::{Decode, Reader, SliceReader, Tagged};
+        use crate::backends::tlv::read_tlv;
 
-        // Fast-path for callers that keep polling after exhaustion.
-        if self.rest.is_empty() {
-            return None;
-        }
-
-        let mut reader = match SliceReader::new(self.rest) {
-            Ok(r) => r,
-            Err(_) => {
-                self.rest = &[];
-                return Some(Err(IdentityError::MalformedSan));
-            }
-        };
-        while !reader.is_finished() {
-            let tlv = match AnyRef::decode(&mut reader) {
+        while !self.rest.is_empty() {
+            let t = match read_tlv(self.rest) {
                 Ok(t) => t,
                 Err(_) => {
                     self.rest = &[];
                     return Some(Err(IdentityError::MalformedSan));
                 }
             };
-            if tlv.tag() == self.target_tag {
-                // Update `rest` so subsequent `next()` calls resume after
-                // this entry. `reader.position()` gives bytes consumed —
-                // checked-convert so a 16-bit `usize` target can't silently
-                // truncate a position past `u16::MAX`.
-                let pos = match usize::try_from(u32::from(reader.position())) {
-                    Ok(p) => p,
-                    Err(_) => {
-                        self.rest = &[];
-                        return Some(Err(IdentityError::MalformedSan));
-                    }
-                };
-                let tail = &self.rest[pos..];
-                let value = tlv.value();
-                self.rest = tail;
-                // RFC 5280 §4.2.1.6: iPAddress GeneralName is exactly
-                // 4 octets (IPv4) or 16 (IPv6). Reject other shapes so
-                // the public `san_ip_addresses` contract holds.
-                if self.target_tag == IP_ADDRESS_TAG && value.len() != 4 && value.len() != 16 {
+            self.rest = t.rest;
+            if t.tag == self.target_tag {
+                // RFC 5280 §4.2.1.6: iPAddress is exactly 4 or 16 octets.
+                #[cfg(feature = "ip-host")]
+                if self.target_tag == IP_ADDRESS_TAG && t.body.len() != 4 && t.body.len() != 16 {
                     return Some(Err(IdentityError::MalformedSan));
                 }
-                return Some(Ok(value));
+                return Some(Ok(t.body));
             }
             // Skip every other GeneralName variant.
         }
-        self.rest = &[];
         None
     }
 }
@@ -477,6 +454,7 @@ mod tests {
         assert_eq!(r, Err(IdentityError::MalformedSan));
     }
 
+    #[cfg(feature = "ip-host")]
     #[test]
     fn san_ip_v4_iter() {
         let san = tlv(0x87, &[1, 1, 1, 1]);
@@ -484,6 +462,7 @@ mod tests {
         assert_eq!(ips, vec![&[1, 1, 1, 1][..]]);
     }
 
+    #[cfg(feature = "ip-host")]
     #[test]
     fn san_ip_v6_iter() {
         let v6 = [0u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 1, 2, 3, 4];
@@ -492,6 +471,7 @@ mod tests {
         assert_eq!(ips, vec![&v6[..]]);
     }
 
+    #[cfg(feature = "ip-host")]
     #[test]
     fn san_ip_iter_skips_dns() {
         let mut san = vec![];
@@ -501,6 +481,7 @@ mod tests {
         assert_eq!(ips, vec![&[1, 1, 1, 1][..]]);
     }
 
+    #[cfg(feature = "ip-host")]
     fn ed25519_view_with_san<'a>(san: &'a [u8]) -> CertView<'a> {
         CertView::Ed25519 {
             tbs: &[],
@@ -511,6 +492,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "ip-host")]
     #[test]
     fn verify_hostname_ip_v4_match() {
         let san = tlv(0x87, &[1, 1, 1, 1]);
@@ -518,6 +500,7 @@ mod tests {
         assert_eq!(verify_hostname(&view, "1.1.1.1"), Ok(()));
     }
 
+    #[cfg(feature = "ip-host")]
     #[test]
     fn verify_hostname_ip_v4_mismatch() {
         let san = tlv(0x87, &[1, 1, 1, 1]);
@@ -528,6 +511,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "ip-host")]
     #[test]
     fn verify_hostname_ip_literal_skips_dns_match() {
         // dNSName "1.1.1.1" must NOT match IP literal 1.1.1.1
@@ -539,6 +523,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "ip-host")]
     #[test]
     fn verify_hostname_ip_v6_match() {
         let v6 = [
@@ -549,6 +534,7 @@ mod tests {
         assert_eq!(verify_hostname(&view, "2001:db8::1"), Ok(()));
     }
 
+    #[cfg(feature = "ip-host")]
     #[test]
     fn verify_hostname_ip_v6_bracketed() {
         let v6 = [
@@ -559,6 +545,7 @@ mod tests {
         assert_eq!(verify_hostname(&view, "[2001:db8::1]"), Ok(()));
     }
 
+    #[cfg(feature = "ip-host")]
     #[test]
     fn san_ip_wrong_length_is_malformed() {
         // tag 7 with a 5-byte payload — not 4 or 16

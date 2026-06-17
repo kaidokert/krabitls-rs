@@ -20,6 +20,11 @@ jedisct = ["krabitls/jedisct"]
 # Full handshake via `DefaultStream::connect` against the captured seed-0
 # fixtures (SeededRng + CannedTransport).
 canned-replay = ["krabitls/canned-replay"]
+# Opt-in size-clawback features. `cert-tlv` swaps the `der`-crate-backed
+# cert parser for the hand-rolled TLV walker (-4 KiB); `ip-host` re-enables
+# IP-literal SAN matching that the embedded default skips (+2 KiB).
+cert-tlv = ["krabitls/cert-tlv"]
+ip-host = ["krabitls/ip-host"]
 
 [dependencies]
 krabitls = { path = "../../krabitls", features = ["dev-utils", "replay"] }

@@ -24,6 +24,9 @@ chacha20 = ["footprint_handshakes/chacha20"]
 # (`DefaultStream::connect`) through the seed-0 canned fixtures via
 # `SeededRng` + `CannedTransport`.
 canned-replay = ["footprint_handshakes/canned-replay"]
+# Opt-in size-clawback features: forward to footprint_handshakes / krabitls.
+cert-tlv = ["footprint_handshakes/cert-tlv"]
+ip-host = ["footprint_handshakes/ip-host"]
 
 [[example]]
 name = "krabitls"
@@ -51,7 +54,9 @@ required-features = ["canned-replay"]
 cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
 cortex-m-rt = "0.7"
 cortex-m-semihosting = "0.5"
-panic-semihosting = { version = "0.6", features = ["exit"] }
+# Custom #[panic_handler] in src/lib.rs — drops the panic-semihosting
+# crate's core::fmt machinery (~3 KiB) while keeping the QEMU-FAILURE
+# exit on panic so CI surfaces failures rather than hanging.
 portable-atomic = { version = "1", default-features = false, features = ["critical-section"] }
 
 footprint_handshakes = { path = "../handshakes" }

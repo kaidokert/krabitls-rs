@@ -63,4 +63,13 @@ pub fn test_fixture(testable: fn() -> bool, name: &str) {
     }
 }
 
-use panic_semihosting as _;
+/// Custom panic handler: drops the `core::fmt` chain `panic-semihosting`
+/// would otherwise pull in (~3 KiB) and exits QEMU with EXIT_FAILURE so CI
+/// surfaces panics rather than hanging. Panic-info text is silent.
+#[panic_handler]
+fn panic(_info: &core::panic::PanicInfo) -> ! {
+    debug::exit(debug::EXIT_FAILURE);
+    loop {
+        cortex_m::asm::nop();
+    }
+}
