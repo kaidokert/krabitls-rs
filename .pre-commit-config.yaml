@@ -80,7 +80,7 @@ repos:
     # fixture. Watches `testdata/` so fixture regen retriggers.
     -   id: krabitls-test-canned
         name: test krabitls (canned-replay, baseline combo)
-        entry: cargo test --manifest-path=krabitls/Cargo.toml --no-default-features --features canned-replay
+        entry: cargo test --manifest-path=krabitls/Cargo.toml --no-default-features --features canned-replay,cert-der
         language: system
         pass_filenames: false
         files: ^(krabitls|testdata)/.*\.(rs|toml|hex|md)$

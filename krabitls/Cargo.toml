@@ -14,7 +14,7 @@ keywords = ["embedded", "no-std", "no-heap", "tls"]
 categories = ["cryptography", "no-std", "no-std::no-alloc"]
 
 [features]
-default = []
+default = ["cert-der"]
 # Expose internal helpers that aren't part of the TLS 1.3 API
 dev-utils = []
 # Optional RSA cert + CertificateVerify support (rsa_pss_rsae_sha256 + the
@@ -38,7 +38,7 @@ jedisct = ["dep:hmac-sha256"]
 # contract a caller can use IF it has a clock. Embedded targets without an
 # RTC build with the feature OFF (default) and pay no code-size cost for
 # either the check or the trait.
-validity = []
+validity = ["dep:der"]
 # Advertise TLS_CHACHA20_POLY1305_SHA256 alongside AES-128-GCM-SHA256.
 chacha20 = ["dep:chacha20poly1305"]
 # Sub-feature of `rsa`: drop the PKCS#1-v1.5 cert outer-signature path.
@@ -70,6 +70,19 @@ replay = []
 # against the seed-0 fixtures end-to-end on host and on cortex_m_demo
 # without a real transport or OS RNG.
 canned-replay = []
+# Default cert parser, backed by the `der` crate. Mutually exclusive
+# with `cert-tlv` at the source level (`cert-tlv` takes precedence if
+# both are enabled). On by default; drop with `--no-default-features
+# --features cert-tlv` to actually exclude `der` from the build.
+cert-der = ["dep:der"]
+# Swap [`crate::DerCert`]'s `der`-crate-backed cert parser for an in-tree
+# hand-rolled TLV walker. Drops the `der` dep (-4 KiB facade .text) at
+# the cost of an ad-hoc parser. Default OFF.
+cert-tlv = []
+# Match IP-literal hostnames against SAN `iPAddress` entries. Without it,
+# IP literals fall through to `HostnameMismatch`. Saves ~2 KiB of
+# `core::net::parser` on DNS-only embedded deployments. Default OFF.
+ip-host = []
 
 [dependencies]
 embedded-io = { version = "0.7.1", default-features = false }
@@ -86,7 +99,7 @@ hmac = { version = "0.12", default-features = false }
 hkdf = { version = "0.12", default-features = false }
 ed25519_heapless = { version = "0.2.0", default-features = false, features = ["fixed-bigint", "sha512-sha2"] }
 fixed-bigint = { version = "0.3", default-features = false, features = ["use-unsafe", "zeroize"] }
-der = { version = "0.8.0", default-features = false, features = ["oid"] }
+der = { version = "0.8.0", default-features = false, features = ["oid"], optional = true }
 zeroize = { version = "1.8", default-features = false, features = ["derive"] }
 heapless = { version = "0.9", default-features = false }
 subtle = { version = "2.6", default-features = false }
