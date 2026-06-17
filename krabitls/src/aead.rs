@@ -301,6 +301,14 @@ pub trait CipherSuite: sealed::Sealed + Sized {
     ) -> Result<RecordKeys<Self>, crate::hkdf::HkdfLabelError>;
 }
 
+/// Compile-time default cipher. Tests and other call sites that need
+/// "some concrete cipher" (and are not exercising AES- or ChaCha-specific
+/// wire behavior) should refer to this alias rather than naming a
+/// specific suite. Cycles to whichever suite is enabled when a
+/// `feature = "cipher-aes"` gate is later added.
+#[allow(dead_code)] // Used by tests; ungated re-export keeps the alias stable.
+pub type DefaultCipher = Aes128GcmSha256;
+
 /// `TLS_AES_128_GCM_SHA256` (`0x1301`) — the mandatory TLS 1.3 suite.
 pub struct Aes128GcmSha256;
 impl sealed::Sealed for Aes128GcmSha256 {}
@@ -353,6 +361,101 @@ pub struct RecordKeys<S: CipherSuite> {
     pub(crate) cipher: S::Cipher,
     pub iv: AeadIv,
 }
+
+// ============================================================================
+// Test-only cipher: `NoCipher`
+// ============================================================================
+// `NoCipher` satisfies the `CipherSuite` trait shape (so generic
+// record-layer code compiles) but its AEAD implementation is a no-op:
+// `encrypt` writes nothing, `decrypt` accepts any tag. The type is gated
+// on `#[cfg(test)]`, so production code cannot construct a `NoCipher`
+// and accidentally wire a noop AEAD into a real handshake.
+//
+// Use `NoCipher` for tests that exercise pure record-layer mechanics
+// (length checks, header parse, error paths, padding strip) — they need
+// a type satisfying `CipherSuite` but never actually encrypt or decrypt.
+//
+// Use `DefaultCipher` for tests that round-trip real plaintext through
+// the AEAD. Use the named suites only for tests bound to captured wire
+// fixtures.
+
+#[cfg(test)]
+#[allow(dead_code)] // First users land in subsequent commits.
+mod no_cipher {
+    use super::*;
+    use ::aead::consts::{U0, U12, U16};
+    use ::aead::{Error as AeadError, Key, KeySizeUser, Nonce, Tag};
+
+    /// No-op AEAD: implements the AEAD trait surface required by
+    /// [`CipherSuite::Cipher`] but does no actual cryptography.
+    pub struct NoopAead;
+
+    impl KeySizeUser for NoopAead {
+        type KeySize = U16;
+    }
+
+    impl KeyInit for NoopAead {
+        fn new(_: &Key<Self>) -> Self {
+            NoopAead
+        }
+    }
+
+    impl AeadCore for NoopAead {
+        type NonceSize = U12;
+        type TagSize = U16;
+        type CiphertextOverhead = U0;
+    }
+
+    impl AeadInPlace for NoopAead {
+        fn encrypt_in_place_detached(
+            &self,
+            _: &Nonce<Self>,
+            _: &[u8],
+            _: &mut [u8],
+        ) -> Result<Tag<Self>, AeadError> {
+            Ok(GenericArray::default())
+        }
+
+        fn decrypt_in_place_detached(
+            &self,
+            _: &Nonce<Self>,
+            _: &[u8],
+            _: &mut [u8],
+            _: &Tag<Self>,
+        ) -> Result<(), AeadError> {
+            Ok(())
+        }
+    }
+
+    /// Cipher-agnostic [`CipherSuite`] for tests that don't need real
+    /// crypto. Use for record-layer mechanics tests (size limits,
+    /// header parsing, padding strip, error-path tests).
+    pub struct NoCipher;
+
+    impl sealed::Sealed for NoCipher {}
+
+    impl CipherSuite for NoCipher {
+        const ID: u16 = 0x0000; // Reserved / never advertised on the wire
+        type KeyBytes = [u8; 16];
+        type Cipher = NoopAead;
+        fn make_cipher(_: &zeroize::Zeroizing<[u8; 16]>) -> Self::Cipher {
+            NoopAead
+        }
+        fn derive_keys<H: crate::traits::HkdfSha256>(
+            traffic_secret: &crate::newtype::Secret,
+        ) -> Result<RecordKeys<Self>, crate::hkdf::HkdfLabelError> {
+            let (_, iv) = crate::hkdf::traffic_keys::<H, 16>(traffic_secret)?;
+            Ok(RecordKeys {
+                cipher: NoopAead,
+                iv,
+            })
+        }
+    }
+}
+
+#[cfg(test)]
+#[allow(unused_imports)] // First user of NoCipher arrives in a later commit.
+pub use no_cipher::NoCipher;
 
 impl<S: CipherSuite> RecordKeys<S> {
     pub fn derive<H: crate::traits::HkdfSha256>(
@@ -552,12 +655,13 @@ mod tests {
     fn decrypt_record_inplace_matches_copying() {
         use crate::newtype::{AeadIv, ZeroBuf};
 
-        let key = ZeroBuf::new([0xa5u8; 16]);
+        const N: usize = core::mem::size_of::<<DefaultCipher as CipherSuite>::KeyBytes>();
+        let key = ZeroBuf::new([0xa5u8; N]);
         let iv = AeadIv::new(ZeroBuf::new([0x42; 12]));
         let content = b"hello world, this is plaintext";
         let seq = 7;
-        let keys = RecordKeys::<Aes128GcmSha256> {
-            cipher: Aes128GcmSha256::make_cipher(&key),
+        let keys = RecordKeys::<DefaultCipher> {
+            cipher: DefaultCipher::make_cipher(&key),
             iv: iv.clone(),
         };
 

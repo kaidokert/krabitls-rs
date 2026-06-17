@@ -92,6 +92,10 @@ sha2_v11 = { package = "sha2", version = "0.11", default-features = false, featu
 
 # RustCrypto stable line — all share generic-array 0.14 / crypto-common 0.1.
 aes-gcm = { version = "0.10", default-features = false, features = ["aes", "zeroize"] }
+# Trait crate shared by aes-gcm + chacha20poly1305 (both use aead 0.5).
+# Direct dep so the AEAD-trait imports stay valid even if `aes-gcm` later
+# becomes an optional `feature = "cipher-aes"` dep.
+aead = { version = "0.5", default-features = false }
 chacha20poly1305 = { version = "0.10", default-features = false, optional = true }
 sha2 = { version = "0.10", default-features = false, features = ["force-soft-compact"] }
 digest = { version = "0.10", default-features = false }
