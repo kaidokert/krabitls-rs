@@ -9,6 +9,10 @@ edition = "2024"
 # `.text` / stack against their respective baselines.
 
 [features]
+default = ["cert-der"]
+# Default `der`-crate cert parser. Forwarded so the cortex-m demo can
+# `--no-default-features --features cert-tlv` to actually drop `der`.
+cert-der = ["krabitls/cert-der"]
 # Optional ChaCha20-Poly1305 + RSA-PSS variants follow the krabitls feature
 # wiring so each target crate can include or exclude them.
 chacha20 = ["krabitls/chacha20"]
@@ -27,7 +31,7 @@ cert-tlv = ["krabitls/cert-tlv"]
 ip-host = ["krabitls/ip-host"]
 
 [dependencies]
-krabitls = { path = "../../krabitls", features = ["dev-utils", "replay"] }
+krabitls = { path = "../../krabitls", default-features = false, features = ["dev-utils", "replay"] }
 critical-section = "1"
 
 [lints.rust]

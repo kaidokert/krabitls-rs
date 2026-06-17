@@ -7,6 +7,11 @@ autotests = false
 autobenches = false
 
 [features]
+default = ["cert-der"]
+# Default `der`-crate cert parser. Pass `--no-default-features --features
+# cert-tlv` (plus any others you want) to actually drop `der` from the
+# binary.
+cert-der = ["footprint_handshakes/cert-der"]
 # Strip the krabitls + crypto path from each example, leaving the harness +
 # panic/fmt + a black_box stub touching every captured fixture. The
 # `.text(real) - .text(baseline)` delta is the honest cost of the TLS + crypto.
@@ -59,7 +64,7 @@ cortex-m-semihosting = "0.5"
 # exit on panic so CI surfaces failures rather than hanging.
 portable-atomic = { version = "1", default-features = false, features = ["critical-section"] }
 
-footprint_handshakes = { path = "../handshakes" }
+footprint_handshakes = { path = "../handshakes", default-features = false }
 
 [profile.release]
 codegen-units = 1
