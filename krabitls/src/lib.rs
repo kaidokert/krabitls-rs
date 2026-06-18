@@ -25,9 +25,11 @@ pub(crate) mod traits;
 // surfaces. The sans-io free functions, RecordKeys, and the verify-chain
 // helpers are pub(crate) at their source modules; reach them through
 // `TlsConnection` instead.
+#[cfg(feature = "cipher-aes")]
+pub use aead::Aes128GcmSha256;
 #[cfg(feature = "chacha20")]
 pub use aead::ChaCha20Poly1305Sha256;
-pub use aead::{Aes128GcmSha256, CipherSuite, DecryptError, EncryptError};
+pub use aead::{CipherSuite, DecryptError, EncryptError};
 #[cfg(feature = "jedisct")]
 pub use backends::JedisctCrypto;
 #[cfg(all(feature = "rsa", not(feature = "rsa_pss_only")))]
@@ -201,10 +203,21 @@ const EXT_SIGNATURE_ALGORITHMS_TOTAL: u16 = 4 + 4;
 const EXT_SIGNATURE_ALGORITHMS_TOTAL: u16 = 4 + 6;
 const EXT_KEY_SHARE_TOTAL: u16 = 4 + 38;
 
-#[cfg(not(feature = "chacha20"))]
+// At least one cipher feature must be on. We can't form a valid
+// ClientHello otherwise — there's no cipher_suite to advertise.
+#[cfg(not(any(feature = "cipher-aes", feature = "chacha20")))]
+compile_error!(
+    "krabitls requires at least one of `cipher-aes` (default) or `chacha20` to provide a cipher suite"
+);
+
+// Number of suites advertised under `SuiteList::Default` — depends on which
+// cipher features are active.
+#[cfg(all(feature = "cipher-aes", not(feature = "chacha20")))]
 const CH_CIPHER_SUITES_COUNT: usize = 1;
-#[cfg(feature = "chacha20")]
+#[cfg(all(feature = "cipher-aes", feature = "chacha20"))]
 const CH_CIPHER_SUITES_COUNT: usize = 2;
+#[cfg(all(not(feature = "cipher-aes"), feature = "chacha20"))]
+const CH_CIPHER_SUITES_COUNT: usize = 1;
 
 /// Wire size of the RFC 8449 `record_size_limit` extension: 4-byte header
 /// (ext_type + ext_data_len) + 2-byte value.
@@ -221,7 +234,10 @@ const EXT_RECORD_SIZE_LIMIT_TOTAL: u16 = 4 + 2;
 pub enum SuiteList {
     #[default]
     Default,
+    #[cfg(feature = "cipher-aes")]
     AesOnly,
+    #[cfg(feature = "chacha20")]
+    ChaChaOnly,
 }
 
 /// Options for the opts-aware ClientHello writer and its typestate
@@ -265,7 +281,10 @@ const fn sni_ext_total(hostname_len: usize) -> usize {
 const fn ch_n_suites(suites: SuiteList) -> usize {
     match suites {
         SuiteList::Default => CH_CIPHER_SUITES_COUNT,
+        #[cfg(feature = "cipher-aes")]
         SuiteList::AesOnly => 1,
+        #[cfg(feature = "chacha20")]
+        SuiteList::ChaChaOnly => 1,
     }
 }
 
@@ -344,15 +363,29 @@ pub const fn client_hello_len_with(opts: &ClientHelloOptions<'_>) -> usize {
 /// flows through `CH_EXTENSIONS_FIXED_TOTAL` automatically.
 pub const CLIENT_HELLO_LEN: usize = client_hello_len(None);
 
-// Sanity pin on CLIENT_HELLO_LEN under each feature combo.
-#[cfg(all(not(feature = "rsa"), not(feature = "chacha20")))]
+// Sanity pin on CLIENT_HELLO_LEN under each feature combo. AES-only and
+// ChaCha-only builds advertise a single suite (117 / +2 for `feature =
+// "rsa"`); both-ciphers builds advertise two (119 / +2 for `rsa`).
+#[cfg(all(
+    feature = "cipher-aes",
+    not(feature = "rsa"),
+    not(feature = "chacha20")
+))]
 const _: () = assert!(CLIENT_HELLO_LEN == 117);
-#[cfg(all(feature = "rsa", not(feature = "chacha20")))]
+#[cfg(all(feature = "cipher-aes", feature = "rsa", not(feature = "chacha20")))]
 const _: () = assert!(CLIENT_HELLO_LEN == 119);
-#[cfg(all(not(feature = "rsa"), feature = "chacha20"))]
+#[cfg(all(feature = "cipher-aes", not(feature = "rsa"), feature = "chacha20"))]
 const _: () = assert!(CLIENT_HELLO_LEN == 119);
-#[cfg(all(feature = "rsa", feature = "chacha20"))]
+#[cfg(all(feature = "cipher-aes", feature = "rsa", feature = "chacha20"))]
 const _: () = assert!(CLIENT_HELLO_LEN == 121);
+#[cfg(all(
+    not(feature = "cipher-aes"),
+    feature = "chacha20",
+    not(feature = "rsa")
+))]
+const _: () = assert!(CLIENT_HELLO_LEN == 117);
+#[cfg(all(not(feature = "cipher-aes"), feature = "chacha20", feature = "rsa"))]
+const _: () = assert!(CLIENT_HELLO_LEN == 119);
 
 /// Big-endian byte-emission helpers layered on top of [`embedded_io::Write`].
 ///
@@ -546,7 +579,7 @@ pub(crate) fn write_client_hello_with<W: Write>(
     // AND the runtime opts allow the default suite list. Only bound under
     // the feature — no-chacha20 builds have no use for the binding.
     #[cfg(feature = "chacha20")]
-    let advertise_chacha = matches!(opts.suites, SuiteList::Default);
+    let advertise_chacha = matches!(opts.suites, SuiteList::Default | SuiteList::ChaChaOnly);
 
     out.write_u8(CT_HANDSHAKE)?; // 0x16
     out.write_u16(LEGACY_VERSION)?; // 0x0303
@@ -560,13 +593,20 @@ pub(crate) fn write_client_hello_with<W: Write>(
     out.write_u8(0)?; // legacy_session_id length = 0
     // cipher_suites list length (just the suite bytes, sans length prefix).
     out.write_u16((2 * n_suites) as u16)?;
-    // ChaCha first when both are offered, so servers that honour client
-    // preference pick it.
+    // ChaCha first when offered (server preference convention). Then AES
+    // when both `cipher-aes` is on and the suite list isn't ChaCha-only.
     #[cfg(feature = "chacha20")]
     if advertise_chacha {
         out.write_u16(CIPHER_CHACHA20_POLY1305_SHA256)?;
     }
-    out.write_u16(CIPHER_AES_128_GCM_SHA256)?;
+    #[cfg(all(feature = "cipher-aes", feature = "chacha20"))]
+    let advertise_aes = !matches!(opts.suites, SuiteList::ChaChaOnly);
+    #[cfg(all(feature = "cipher-aes", not(feature = "chacha20")))]
+    let advertise_aes = true;
+    #[cfg(feature = "cipher-aes")]
+    if advertise_aes {
+        out.write_u16(CIPHER_AES_128_GCM_SHA256)?;
+    }
     out.write_u8(1)?; // legacy_compression_methods length
     out.write_u8(0)?; // null compression
     out.write_u16(extensions_total as u16)?; // total extensions length
@@ -922,6 +962,10 @@ impl<'a> Reader<'a> {
 // Tests — cross-check against the Python fixture's seed-0 ClientHello.
 
 #[cfg(test)]
+// Many test helpers/fixtures are AES-bound and unused under the chacha-only
+// build (cipher-aes off). Suppress the cascade of `never used` lints for that
+// config; the AES helpers stay available for the `feature = "cipher-aes"` tests.
+#[cfg_attr(not(feature = "cipher-aes"), allow(dead_code))]
 mod tests {
     use super::*;
     use crate::aead::{decrypt_record, encrypt_record};
@@ -1162,7 +1206,7 @@ mod tests {
         assert_eq!(with_rsl, base + 6);
     }
 
-    #[cfg(feature = "chacha20")]
+    #[cfg(all(feature = "cipher-aes", feature = "chacha20"))]
     #[test]
     fn client_hello_len_with_aes_only_shrinks_by_two_bytes_under_chacha20() {
         let default = client_hello_len_with(&ClientHelloOptions::legacy());
@@ -1782,6 +1826,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "cipher-aes")]
     #[test]
     fn ed25519_verify_trait_propagates_to_cert_self_sig() {
         // Same fixture cert that passes with RustCrypto. Plugging in
@@ -1819,6 +1864,7 @@ mod tests {
 
     /// Decrypt server flight, walk to the cert SEQUENCE, return its DER bytes
     /// copied into a stack buffer the caller can mutate.
+    #[cfg(feature = "cipher-aes")]
     fn fixture_cert_der_copy(buf: &mut [u8]) -> usize {
         let key = make_fixture_s_hs_key();
         let iv = make_fixture_s_hs_iv();
@@ -1838,6 +1884,7 @@ mod tests {
         cert_der.len()
     }
 
+    #[cfg(feature = "cipher-aes")]
     #[test]
     fn cert_rejects_wrong_outer_signature_algorithm_oid_via_symmetry() {
         // Flip only the outer signatureAlgorithm OID. TBS.signature still
@@ -1853,6 +1900,7 @@ mod tests {
         assert_eq!(err, CertParseError::SignatureAlgorithmMismatch);
     }
 
+    #[cfg(feature = "cipher-aes")]
     #[test]
     fn cert_rejects_wrong_spki_algorithm_oid() {
         // Outer + symmetry pass; only the SPKI's algorithm OID is mangled.
@@ -1866,6 +1914,7 @@ mod tests {
         assert_eq!(err, CertParseError::WrongAlgorithmOid);
     }
 
+    #[cfg(feature = "cipher-aes")]
     #[test]
     fn cert_with_unknown_outer_sig_algo_still_parses_if_spki_known() {
         // Flip BOTH outer and TBS sig-algo OIDs to the same unknown value
@@ -1884,6 +1933,7 @@ mod tests {
         assert!(matches!(view, CertView::Ed25519 { .. }));
     }
 
+    #[cfg(feature = "cipher-aes")]
     #[test]
     fn cert_rejects_inner_outer_signature_alg_mismatch() {
         // Flip only the TBS.signature OID. Outer OID still claims Ed25519,
@@ -1897,6 +1947,7 @@ mod tests {
         assert_eq!(err, CertParseError::SignatureAlgorithmMismatch);
     }
 
+    #[cfg(feature = "cipher-aes")]
     #[test]
     fn cert_rejects_unsupported_version() {
         // Locate the `[0] EXPLICIT { INTEGER 2 }` version field
@@ -1943,6 +1994,7 @@ mod tests {
     /// Derive the application traffic secrets the same way the demo runs, then
     /// peel off `(c_ap_key, c_ap_iv)` and `(s_ap_key, s_ap_iv)`. Helper kept in
     /// the tests so the rest of the test file stays focused.
+    #[cfg(feature = "cipher-aes")]
     fn application_keys() -> (ApAeadKeys, ApAeadKeys) {
         // master_secret -> (c_ap, s_ap) -> traffic_keys for each
         // Need transcript_hash_through_server_finished; pick it up by running the
@@ -2192,8 +2244,8 @@ mod tests {
     // that OID at parse time, so the fixture tests don't apply there.
     /// Fixture-bound AES tests: each test decrypts or encrypts a
     /// captured wire fixture generated with AES-128-GCM, so the
-    /// cipher choice is intrinsic. Gated as a single block on
-    /// the future `feature = "cipher-aes"` toggle.
+    /// cipher choice is intrinsic.
+    #[cfg(feature = "cipher-aes")]
     mod aes_tests {
         use super::*;
 

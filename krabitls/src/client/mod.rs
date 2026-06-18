@@ -14,7 +14,11 @@ mod scratch;
 mod stream;
 mod transport;
 
-pub use config::{AesOnlyConfig, ClientConfig, ConfigSuitePolicy, DefaultConfig};
+#[cfg(feature = "cipher-aes")]
+pub use config::AesOnlyConfig;
+#[cfg(all(not(feature = "cipher-aes"), feature = "chacha20"))]
+pub use config::ChaChaOnlyConfig;
+pub use config::{ClientConfig, ConfigSuitePolicy, DefaultConfig};
 pub(crate) use error::WriteAppError;
 pub use error::{ConfigError, ConnectError, HandshakeError, InternalError};
 pub use params::{ClientParams, RuntimeSuitePolicy};
@@ -54,24 +58,34 @@ mod tests {
         // this stops compiling.
         fn assert_impl<C: ClientConfig>() {}
         assert_impl::<DefaultConfig>();
+        #[cfg(feature = "cipher-aes")]
         assert_impl::<AesOnlyConfig>();
+        #[cfg(all(not(feature = "cipher-aes"), feature = "chacha20"))]
+        assert_impl::<ChaChaOnlyConfig>();
     }
 
+    #[cfg(feature = "cipher-aes")]
     #[test]
     fn aes_only_config_advertises_aes_only_at_compile_time() {
         assert_eq!(AesOnlyConfig::SUITES, ConfigSuitePolicy::AesOnly);
     }
 
-    #[cfg(feature = "chacha20")]
+    #[cfg(all(feature = "cipher-aes", feature = "chacha20"))]
     #[test]
     fn default_config_advertises_both_under_chacha20() {
         assert_eq!(DefaultConfig::SUITES, ConfigSuitePolicy::AesAndChaCha);
     }
 
-    #[cfg(not(feature = "chacha20"))]
+    #[cfg(all(feature = "cipher-aes", not(feature = "chacha20")))]
     #[test]
     fn default_config_falls_back_to_aes_only_without_chacha20() {
         assert_eq!(DefaultConfig::SUITES, ConfigSuitePolicy::AesOnly);
+    }
+
+    #[cfg(all(not(feature = "cipher-aes"), feature = "chacha20"))]
+    #[test]
+    fn default_config_is_chacha_only_without_cipher_aes() {
+        assert_eq!(DefaultConfig::SUITES, ConfigSuitePolicy::ChaChaOnly);
     }
 
     #[test]

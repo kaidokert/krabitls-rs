@@ -355,11 +355,14 @@ fn validate_construction<const RECV: usize, const SEND: usize>(
 
 fn effective_suite_list<C: ClientConfig>(runtime: RuntimeSuitePolicy) -> crate::SuiteList {
     match (C::SUITES, runtime) {
+        #[cfg(feature = "cipher-aes")]
         (ConfigSuitePolicy::AesOnly, _) => crate::SuiteList::AesOnly,
-        #[cfg(feature = "chacha20")]
+        #[cfg(all(feature = "cipher-aes", feature = "chacha20"))]
         (ConfigSuitePolicy::AesAndChaCha, RuntimeSuitePolicy::AesOnly) => crate::SuiteList::AesOnly,
-        #[cfg(feature = "chacha20")]
+        #[cfg(all(feature = "cipher-aes", feature = "chacha20"))]
         (ConfigSuitePolicy::AesAndChaCha, RuntimeSuitePolicy::Default) => crate::SuiteList::Default,
+        #[cfg(all(not(feature = "cipher-aes"), feature = "chacha20"))]
+        (ConfigSuitePolicy::ChaChaOnly, _) => crate::SuiteList::ChaChaOnly,
     }
 }
 

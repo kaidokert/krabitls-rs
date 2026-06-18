@@ -7,6 +7,7 @@ use super::scratch::{
     AEAD_TAG, MIN_RECORD_SIZE_LIMIT, PROTO_MAX_INNER_PLAINTEXT, RECORD_OVERHEAD, TLS_HEADER,
 };
 use super::{ClientConfig, ClientParams, Scratch};
+#[cfg(feature = "cipher-aes")]
 use crate::aead::Aes128GcmSha256;
 #[cfg(feature = "chacha20")]
 use crate::aead::ChaCha20Poly1305Sha256;
@@ -63,9 +64,11 @@ impl RecvState {
 #[allow(clippy::large_enum_variant)] // post-handshake variants carry app keys; size is dominated by the typestate, not the enum tag
 pub(crate) enum EngineState<C: ClientConfig> {
     WaitServerHello(TlsConnection<WaitServerHello, C::Hkdf>),
+    #[cfg(feature = "cipher-aes")]
     WaitFlightAes(TlsConnection<WaitServerFlight<Aes128GcmSha256>, C::Hkdf>),
     #[cfg(feature = "chacha20")]
     WaitFlightChaCha(TlsConnection<WaitServerFlight<ChaCha20Poly1305Sha256>, C::Hkdf>),
+    #[cfg(feature = "cipher-aes")]
     AppAes(TlsConnection<AppData<Aes128GcmSha256>, C::Hkdf>),
     #[cfg(feature = "chacha20")]
     AppChaCha(TlsConnection<AppData<ChaCha20Poly1305Sha256>, C::Hkdf>),
@@ -77,6 +80,7 @@ pub(crate) enum EngineState<C: ClientConfig> {
 impl<C: ClientConfig> EngineState<C> {
     pub fn in_data_phase(&self) -> bool {
         match self {
+            #[cfg(feature = "cipher-aes")]
             EngineState::AppAes(_) => true,
             #[cfg(feature = "chacha20")]
             EngineState::AppChaCha(_) => true,
@@ -330,6 +334,7 @@ impl<'s, C: ClientConfig, const FLIGHT: usize, const RECV: usize, const SEND: us
             EngineState::WaitServerHello(_) => {
                 self.handle_server_hello(start, end, outer_type)?;
             }
+            #[cfg(feature = "cipher-aes")]
             EngineState::WaitFlightAes(_) => {
                 self.handle_flight_record(start, end, params)?;
             }
@@ -337,6 +342,7 @@ impl<'s, C: ClientConfig, const FLIGHT: usize, const RECV: usize, const SEND: us
             EngineState::WaitFlightChaCha(_) => {
                 self.handle_flight_record(start, end, params)?;
             }
+            #[cfg(feature = "cipher-aes")]
             EngineState::AppAes(_) => {
                 return Err(HandshakeError::Internal(
                     InternalError::HandshakeStepInDataPhase,
@@ -394,6 +400,7 @@ impl<'s, C: ClientConfig, const FLIGHT: usize, const RECV: usize, const SEND: us
         // `read_server_hello`; by the time we reach this match the
         // selected suite is known to have been on the advertised list.
         self.state = match negotiated {
+            #[cfg(feature = "cipher-aes")]
             NegotiatedSuite::Aes128Gcm(c) => EngineState::WaitFlightAes(c),
             #[cfg(feature = "chacha20")]
             NegotiatedSuite::ChaCha20Poly1305(c) => EngineState::WaitFlightChaCha(c),
@@ -426,6 +433,7 @@ impl<'s, C: ClientConfig, const FLIGHT: usize, const RECV: usize, const SEND: us
         let step = {
             let scratch = &mut *self.scratch;
             match &mut self.state {
+                #[cfg(feature = "cipher-aes")]
                 EngineState::WaitFlightAes(conn) => conn.feed_server_record_inplace(
                     &mut scratch.recv_record[start..end],
                     &mut scratch.reassembler,
@@ -470,6 +478,7 @@ impl<'s, C: ClientConfig, const FLIGHT: usize, const RECV: usize, const SEND: us
 
         let prev = core::mem::replace(&mut self.state, EngineState::Closed);
         let done = match prev {
+            #[cfg(feature = "cipher-aes")]
             EngineState::WaitFlightAes(conn) => {
                 let d = conn
                     .finalize_server_flight::<FLIGHT, C::CertParser, C::Ed25519, C::Rsa>(
@@ -500,6 +509,7 @@ impl<'s, C: ClientConfig, const FLIGHT: usize, const RECV: usize, const SEND: us
         self.verify_identity(params)?;
 
         let cf_len = match done {
+            #[cfg(feature = "cipher-aes")]
             FlightDone::Aes(d) => {
                 let (cf_bytes, app) = d
                     .finish_handshake(&mut self.scratch.send_record)
@@ -566,6 +576,7 @@ impl<'s, C: ClientConfig, const FLIGHT: usize, const RECV: usize, const SEND: us
 }
 
 enum FlightDone<C: ClientConfig> {
+    #[cfg(feature = "cipher-aes")]
     Aes(TlsConnection<ServerFlightDone<Aes128GcmSha256>, C::Hkdf>),
     #[cfg(feature = "chacha20")]
     ChaCha(TlsConnection<ServerFlightDone<ChaCha20Poly1305Sha256>, C::Hkdf>),
@@ -660,6 +671,7 @@ impl<'s, C: ClientConfig, const FLIGHT: usize, const RECV: usize, const SEND: us
     ) -> Result<(usize, u8), HandshakeError> {
         let scratch = &mut *self.scratch;
         match &mut self.state {
+            #[cfg(feature = "cipher-aes")]
             EngineState::AppAes(conn) => conn
                 .decrypt_record_inplace(&mut scratch.recv_record[start..end])
                 .map_err(HandshakeError::Connection),
@@ -821,6 +833,7 @@ impl<'s, C: ClientConfig, const FLIGHT: usize, const RECV: usize, const SEND: us
 
         let scratch = &mut *self.scratch;
         let record_len = match &mut self.state {
+            #[cfg(feature = "cipher-aes")]
             EngineState::AppAes(conn) => conn
                 .encrypt_record(
                     &plaintext[..chunk_len],
@@ -894,6 +907,7 @@ impl<'s, C: ClientConfig, const FLIGHT: usize, const RECV: usize, const SEND: us
 
         let scratch = &mut *self.scratch;
         let record_len = match &mut self.state {
+            #[cfg(feature = "cipher-aes")]
             EngineState::AppAes(conn) => conn
                 .encrypt_record(&CLOSE_NOTIFY_ALERT, CT_ALERT, &mut scratch.send_record)
                 .map_err(HandshakeError::Connection)?

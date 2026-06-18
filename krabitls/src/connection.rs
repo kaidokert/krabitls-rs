@@ -6,10 +6,12 @@ use core::marker::PhantomData;
 
 use embedded_io::Write;
 
+#[cfg(feature = "cipher-aes")]
+use crate::aead::Aes128GcmSha256;
 #[cfg(feature = "chacha20")]
 use crate::aead::ChaCha20Poly1305Sha256;
 use crate::aead::split_inner_plaintext;
-use crate::aead::{Aes128GcmSha256, CipherSuite, RecordKeys};
+use crate::aead::{CipherSuite, RecordKeys};
 use crate::backends::RustCrypto;
 use crate::client_flight::ClientFinishedError;
 #[cfg(feature = "chacha20")]
@@ -484,6 +486,7 @@ pub enum NegotiatedSuite<H = RustCrypto>
 where
     H: HkdfSha256,
 {
+    #[cfg(feature = "cipher-aes")]
     Aes128Gcm(TlsConnection<WaitServerFlight<Aes128GcmSha256>, H>),
     #[cfg(feature = "chacha20")]
     ChaCha20Poly1305(TlsConnection<WaitServerFlight<ChaCha20Poly1305Sha256>, H>),
@@ -493,6 +496,7 @@ impl<H> NegotiatedSuite<H>
 where
     H: HkdfSha256,
 {
+    #[cfg(feature = "cipher-aes")]
     pub fn assume_aes_128_gcm(
         self,
     ) -> Result<TlsConnection<WaitServerFlight<Aes128GcmSha256>, H>, ConnectionError> {
@@ -512,6 +516,7 @@ where
     ) -> Result<TlsConnection<WaitServerFlight<ChaCha20Poly1305Sha256>, H>, ConnectionError> {
         match self {
             Self::ChaCha20Poly1305(c) => Ok(c),
+            #[cfg(feature = "cipher-aes")]
             Self::Aes128Gcm(_) => Err(ConnectionError::WrongSuite {
                 expected: CIPHER_CHACHA20_POLY1305_SHA256,
                 got: CIPHER_AES_128_GCM_SHA256,
@@ -566,6 +571,7 @@ where
         let (c_hs_ts, s_hs_ts) = handshake_traffic_secrets::<H>(&hs, &th_ch_sh)?;
 
         match sh.cipher_suite {
+            #[cfg(feature = "cipher-aes")]
             CIPHER_AES_128_GCM_SHA256 => {
                 let s_hs_keys = RecordKeys::<Aes128GcmSha256>::derive::<H>(&s_hs_ts)?;
                 Ok(NegotiatedSuite::Aes128Gcm(TlsConnection {
@@ -1118,7 +1124,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "chacha20")]
+    #[cfg(all(feature = "cipher-aes", feature = "chacha20"))]
     #[test]
     fn write_client_hello_with_aes_only_narrows_cipher_suites() {
         let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
@@ -1187,6 +1193,7 @@ mod tests {
 
         let negotiated = conn.read_server_hello(&FIXTURE_SERVER_HELLO).unwrap();
         match negotiated {
+            #[cfg(feature = "cipher-aes")]
             NegotiatedSuite::Aes128Gcm(_) => {}
             #[allow(unreachable_patterns)]
             _ => panic!("expected AES-128-GCM variant"),

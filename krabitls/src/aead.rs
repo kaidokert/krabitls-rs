@@ -1,8 +1,8 @@
 //! TLS 1.3 record-layer encrypt / decrypt.
 
 use crate::newtype::{AeadIv, ZeroBuf};
-use aes_gcm::aead::generic_array::GenericArray;
-use aes_gcm::aead::{AeadCore, AeadInPlace, KeyInit};
+use ::aead::generic_array::GenericArray;
+use ::aead::{AeadCore, AeadInPlace, KeyInit};
 
 /// Per-record AEAD nonce: `iv` XOR `seq` (8-byte sequence number,
 /// big-endian, left-padded). RFC 8446 §5.3.
@@ -294,7 +294,7 @@ pub trait CipherSuite: sealed::Sealed + Sized {
     type KeyBytes: zeroize::Zeroize;
     type Cipher: AeadInPlace
         + KeyInit
-        + AeadCore<NonceSize = aes_gcm::aead::consts::U12, TagSize = aes_gcm::aead::consts::U16>;
+        + AeadCore<NonceSize = ::aead::consts::U12, TagSize = ::aead::consts::U16>;
     fn make_cipher(key: &zeroize::Zeroizing<Self::KeyBytes>) -> Self::Cipher;
     fn derive_keys<H: crate::traits::HkdfSha256>(
         traffic_secret: &crate::newtype::Secret,
@@ -303,15 +303,21 @@ pub trait CipherSuite: sealed::Sealed + Sized {
 
 /// Compile-time default cipher. Tests and other call sites that need
 /// "some concrete cipher" (and are not exercising AES- or ChaCha-specific
-/// wire behavior) should refer to this alias rather than naming a
-/// specific suite. Cycles to whichever suite is enabled when a
-/// `feature = "cipher-aes"` gate is later added.
-#[allow(dead_code)] // Used by tests; ungated re-export keeps the alias stable.
+/// wire behavior) refer to this alias rather than naming a specific
+/// suite. Resolves to whichever cipher feature is enabled.
+#[cfg(feature = "cipher-aes")]
+#[allow(dead_code)] // Used by tests + downstream code.
 pub type DefaultCipher = Aes128GcmSha256;
+#[cfg(all(not(feature = "cipher-aes"), feature = "chacha20"))]
+#[allow(dead_code)]
+pub type DefaultCipher = ChaCha20Poly1305Sha256;
 
-/// `TLS_AES_128_GCM_SHA256` (`0x1301`) — the mandatory TLS 1.3 suite.
+/// `TLS_AES_128_GCM_SHA256` (`0x1301`). Gated on `feature = "cipher-aes"`.
+#[cfg(feature = "cipher-aes")]
 pub struct Aes128GcmSha256;
+#[cfg(feature = "cipher-aes")]
 impl sealed::Sealed for Aes128GcmSha256 {}
+#[cfg(feature = "cipher-aes")]
 impl CipherSuite for Aes128GcmSha256 {
     const ID: u16 = crate::consts::CIPHER_AES_128_GCM_SHA256;
     type KeyBytes = [u8; 16];
