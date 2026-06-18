@@ -243,6 +243,7 @@ fn read_u24(b: &[u8]) -> u32 {
 
 /// Parse + verify a self-signed cert in one shot. Test-only helper.
 #[cfg(test)]
+#[allow(dead_code)] // AES-bound; chacha-only build skips its callers.
 pub(crate) fn verify_self_signed_cert<
     C: CertParser,
     E: Ed25519VerifierProvider,

@@ -8,13 +8,15 @@
 use core::cell::RefCell;
 use critical_section::Mutex;
 
+#[cfg(feature = "cipher-aes")]
+use krabitls::Aes128GcmSha256;
 #[cfg(feature = "chacha20")]
 use krabitls::ChaCha20Poly1305Sha256;
 use krabitls::Secret;
 use krabitls::ServerFlightReassembler;
 use krabitls::{
-    Aes128GcmSha256, CLIENT_FINISHED_LEN, DerCert, Replay, RustCrypto, ServerPubkey, TlsConnection,
-    TranscriptHash, WaitServerFlight, ZeroBuf,
+    CLIENT_FINISHED_LEN, DerCert, Replay, RustCrypto, ServerPubkey, TlsConnection, TranscriptHash,
+    WaitServerFlight, ZeroBuf,
 };
 
 /// Per-record decrypt scratch (RSA-2048 captured flight runs ~6.3 KiB).
@@ -60,6 +62,7 @@ where
     Ok(())
 }
 
+#[cfg(feature = "cipher-aes")]
 mod fixture_aes_ed25519 {
     pub const CH: [u8; 137] =
         krabitls::hex_decode(include_str!("../../captured/aes_ed25519/ch.hex"));
@@ -91,7 +94,7 @@ mod fixture_chacha_ed25519 {
         krabitls::hex_decode(include_str!("../../captured/chacha_ed25519/c_finished.hex"));
 }
 
-#[cfg(feature = "rsa")]
+#[cfg(all(feature = "rsa", feature = "cipher-aes"))]
 mod fixture_aes_rsa2048 {
     pub const CH: [u8; 137] =
         krabitls::hex_decode(include_str!("../../captured/aes_rsa2048/ch.hex"));
@@ -108,6 +111,7 @@ mod fixture_aes_rsa2048 {
 }
 
 /// AES-128-GCM-SHA256 + Ed25519, captured s_server fixture.
+#[cfg(feature = "cipher-aes")]
 pub fn run_aes_ed25519() -> Result<(), ()> {
     use fixture_aes_ed25519::*;
     with_buffers(|plaintext, reassembler| {
@@ -148,6 +152,7 @@ pub fn run_aes_ed25519() -> Result<(), ()> {
 }
 
 /// Baseline stub: same rodata as the real build; .text delta = crypto cost.
+#[cfg(feature = "cipher-aes")]
 #[inline(never)]
 pub fn baseline_aes_ed25519() -> bool {
     use core::hint::black_box;
@@ -238,7 +243,7 @@ pub fn baseline_aes_ed25519_facade() -> bool {
     true
 }
 
-#[cfg(feature = "jedisct")]
+#[cfg(all(feature = "jedisct", feature = "cipher-aes"))]
 mod jedisct_path {
     use super::*;
     use fixture_aes_ed25519::*;
@@ -287,12 +292,12 @@ mod jedisct_path {
 }
 
 /// AES + Ed25519, HKDF/SHA-256 via jedisct1's `hmac-sha256`.
-#[cfg(feature = "jedisct")]
+#[cfg(all(feature = "jedisct", feature = "cipher-aes"))]
 pub fn run_aes_ed25519_jedisct() -> Result<(), ()> {
     jedisct_path::run()
 }
 
-#[cfg(feature = "jedisct")]
+#[cfg(all(feature = "jedisct", feature = "cipher-aes"))]
 #[inline(never)]
 pub fn baseline_aes_ed25519_jedisct() -> bool {
     baseline_aes_ed25519()
@@ -369,7 +374,7 @@ pub fn baseline_chacha_ed25519() -> bool {
     chacha_path::baseline()
 }
 
-#[cfg(feature = "rsa")]
+#[cfg(all(feature = "rsa", feature = "cipher-aes"))]
 mod rsa_path {
     use super::*;
     use fixture_aes_rsa2048::*;
@@ -426,12 +431,12 @@ mod rsa_path {
 }
 
 /// AES-128-GCM-SHA256 + RSA-2048-PSS cert verify.
-#[cfg(feature = "rsa")]
+#[cfg(all(feature = "rsa", feature = "cipher-aes"))]
 pub fn run_aes_rsa2048() -> Result<(), ()> {
     rsa_path::run()
 }
 
-#[cfg(feature = "rsa")]
+#[cfg(all(feature = "rsa", feature = "cipher-aes"))]
 #[inline(never)]
 pub fn baseline_aes_rsa2048() -> bool {
     rsa_path::baseline()

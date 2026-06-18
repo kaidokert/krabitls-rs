@@ -6,15 +6,19 @@ use core::marker::PhantomData;
 
 use embedded_io::Write;
 
+#[cfg(feature = "cipher-aes")]
+use crate::aead::Aes128GcmSha256;
 #[cfg(feature = "chacha20")]
 use crate::aead::ChaCha20Poly1305Sha256;
 use crate::aead::split_inner_plaintext;
-use crate::aead::{Aes128GcmSha256, CipherSuite, RecordKeys};
+use crate::aead::{CipherSuite, RecordKeys};
 use crate::backends::RustCrypto;
 use crate::client_flight::ClientFinishedError;
+#[cfg(feature = "cipher-aes")]
+use crate::consts::CIPHER_AES_128_GCM_SHA256;
 #[cfg(feature = "chacha20")]
 use crate::consts::CIPHER_CHACHA20_POLY1305_SHA256;
-use crate::consts::{CIPHER_AES_128_GCM_SHA256, CT_APPLICATION_DATA, CT_HANDSHAKE};
+use crate::consts::{CT_APPLICATION_DATA, CT_HANDSHAKE};
 use crate::hkdf::{
     HkdfLabelError, TranscriptError, TranscriptHash, application_traffic_secrets, handshake_secret,
     handshake_traffic_secrets, master_secret,
@@ -245,7 +249,6 @@ pub struct WaitServerFlight<S: CipherSuite, M: HandshakeMode = Live> {
 pub struct ServerFlightDone<S: CipherSuite, M: HandshakeMode = Live> {
     pub(crate) hs: Secret,
     pub(crate) c_hs_ts: Secret,
-    #[allow(dead_code)]
     pub(crate) s_hs_ts: Secret,
     pub(crate) server_pubkey: ServerPubkeyOwned,
     pub(crate) _suite: PhantomData<S>,
@@ -484,6 +487,7 @@ pub enum NegotiatedSuite<H = RustCrypto>
 where
     H: HkdfSha256,
 {
+    #[cfg(feature = "cipher-aes")]
     Aes128Gcm(TlsConnection<WaitServerFlight<Aes128GcmSha256>, H>),
     #[cfg(feature = "chacha20")]
     ChaCha20Poly1305(TlsConnection<WaitServerFlight<ChaCha20Poly1305Sha256>, H>),
@@ -493,6 +497,7 @@ impl<H> NegotiatedSuite<H>
 where
     H: HkdfSha256,
 {
+    #[cfg(feature = "cipher-aes")]
     pub fn assume_aes_128_gcm(
         self,
     ) -> Result<TlsConnection<WaitServerFlight<Aes128GcmSha256>, H>, ConnectionError> {
@@ -512,6 +517,7 @@ where
     ) -> Result<TlsConnection<WaitServerFlight<ChaCha20Poly1305Sha256>, H>, ConnectionError> {
         match self {
             Self::ChaCha20Poly1305(c) => Ok(c),
+            #[cfg(feature = "cipher-aes")]
             Self::Aes128Gcm(_) => Err(ConnectionError::WrongSuite {
                 expected: CIPHER_CHACHA20_POLY1305_SHA256,
                 got: CIPHER_AES_128_GCM_SHA256,
@@ -532,14 +538,23 @@ where
 
         let sh = parse_server_hello(sh_record)?;
         // Selected suite must have been in the advertised cipher_suites list.
-        // AES-128-GCM-SHA256 is always advertised; ChaCha is only advertised
-        // when `SuiteList::Default` (and `feature = "chacha20"` is on).
         let advertised_ok = match sh.cipher_suite {
-            CIPHER_AES_128_GCM_SHA256 => true,
-            #[cfg(feature = "chacha20")]
-            CIPHER_CHACHA20_POLY1305_SHA256 => {
-                matches!(self.state.advertised, crate::SuiteList::Default)
+            #[cfg(feature = "cipher-aes")]
+            CIPHER_AES_128_GCM_SHA256 => {
+                #[cfg(feature = "chacha20")]
+                {
+                    !matches!(self.state.advertised, crate::SuiteList::ChaChaOnly)
+                }
+                #[cfg(not(feature = "chacha20"))]
+                {
+                    true
+                }
             }
+            #[cfg(feature = "chacha20")]
+            CIPHER_CHACHA20_POLY1305_SHA256 => matches!(
+                self.state.advertised,
+                crate::SuiteList::Default | crate::SuiteList::ChaChaOnly,
+            ),
             _ => false,
         };
         if !advertised_ok {
@@ -566,6 +581,7 @@ where
         let (c_hs_ts, s_hs_ts) = handshake_traffic_secrets::<H>(&hs, &th_ch_sh)?;
 
         match sh.cipher_suite {
+            #[cfg(feature = "cipher-aes")]
             CIPHER_AES_128_GCM_SHA256 => {
                 let s_hs_keys = RecordKeys::<Aes128GcmSha256>::derive::<H>(&s_hs_ts)?;
                 Ok(NegotiatedSuite::Aes128Gcm(TlsConnection {
@@ -1118,7 +1134,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "chacha20")]
+    #[cfg(all(feature = "cipher-aes", feature = "chacha20"))]
     #[test]
     fn write_client_hello_with_aes_only_narrows_cipher_suites() {
         let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
@@ -1187,6 +1203,7 @@ mod tests {
 
         let negotiated = conn.read_server_hello(&FIXTURE_SERVER_HELLO).unwrap();
         match negotiated {
+            #[cfg(feature = "cipher-aes")]
             NegotiatedSuite::Aes128Gcm(_) => {}
             #[allow(unreachable_patterns)]
             _ => panic!("expected AES-128-GCM variant"),

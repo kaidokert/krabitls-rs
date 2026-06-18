@@ -7,11 +7,14 @@ autotests = false
 autobenches = false
 
 [features]
-default = ["cert-der"]
+default = ["cert-der", "cipher-aes"]
 # Default `der`-crate cert parser. Pass `--no-default-features --features
 # cert-tlv` (plus any others you want) to actually drop `der` from the
 # binary.
 cert-der = ["footprint_handshakes/cert-der"]
+# Default AES-128-GCM cipher suite. Pass `--no-default-features
+# --features chacha20` to build a ChaCha-only binary.
+cipher-aes = ["footprint_handshakes/cipher-aes"]
 # Strip the krabitls + crypto path from each example, leaving the harness +
 # panic/fmt + a black_box stub touching every captured fixture. The
 # `.text(real) - .text(baseline)` delta is the honest cost of the TLS + crypto.

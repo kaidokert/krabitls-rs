@@ -14,7 +14,7 @@ keywords = ["embedded", "no-std", "no-heap", "tls"]
 categories = ["cryptography", "no-std", "no-std::no-alloc"]
 
 [features]
-default = ["cert-der"]
+default = ["cert-der", "cipher-aes"]
 # Expose internal helpers that aren't part of the TLS 1.3 API
 dev-utils = []
 # Optional RSA cert + CertificateVerify support (rsa_pss_rsae_sha256 + the
@@ -41,6 +41,11 @@ jedisct = ["dep:hmac-sha256"]
 validity = ["dep:der"]
 # Advertise TLS_CHACHA20_POLY1305_SHA256 alongside AES-128-GCM-SHA256.
 chacha20 = ["dep:chacha20poly1305"]
+# TLS_AES_128_GCM_SHA256 cipher suite. Default ON. Disable with
+# `--no-default-features --features chacha20,...` for a ChaCha-only build
+# (drops `aes-gcm` + `aes` + `ghash` deps). At least one of `cipher-aes`
+# or `chacha20` must be active.
+cipher-aes = ["dep:aes-gcm"]
 # Sub-feature of `rsa`: drop the PKCS#1-v1.5 cert outer-signature path.
 # Cert parser rejects `sha256WithRSAEncryption`; only `rsassa-pss` is
 # accepted on cert outer signatures. Saves ~1 KiB .text vs the default
@@ -91,7 +96,11 @@ rsa_heapless = { version = "0.2.1", default-features = false, features = ["modma
 sha2_v11 = { package = "sha2", version = "0.11", default-features = false, features = ["oid"], optional = true }
 
 # RustCrypto stable line — all share generic-array 0.14 / crypto-common 0.1.
-aes-gcm = { version = "0.10", default-features = false, features = ["aes", "zeroize"] }
+aes-gcm = { version = "0.10", default-features = false, features = ["aes", "zeroize"], optional = true }
+# Trait crate shared by aes-gcm + chacha20poly1305 (both use aead 0.5).
+# Direct dep so the AEAD-trait imports stay valid even if `aes-gcm` later
+# becomes an optional `feature = "cipher-aes"` dep.
+aead = { version = "0.5", default-features = false }
 chacha20poly1305 = { version = "0.10", default-features = false, optional = true }
 sha2 = { version = "0.10", default-features = false, features = ["force-soft-compact"] }
 digest = { version = "0.10", default-features = false }

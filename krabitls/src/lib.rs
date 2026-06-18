@@ -25,9 +25,11 @@ pub(crate) mod traits;
 // surfaces. The sans-io free functions, RecordKeys, and the verify-chain
 // helpers are pub(crate) at their source modules; reach them through
 // `TlsConnection` instead.
+#[cfg(feature = "cipher-aes")]
+pub use aead::Aes128GcmSha256;
 #[cfg(feature = "chacha20")]
 pub use aead::ChaCha20Poly1305Sha256;
-pub use aead::{Aes128GcmSha256, CipherSuite, DecryptError, EncryptError};
+pub use aead::{CipherSuite, DecryptError, DefaultCipher, EncryptError};
 #[cfg(feature = "jedisct")]
 pub use backends::JedisctCrypto;
 #[cfg(all(feature = "rsa", not(feature = "rsa_pss_only")))]
@@ -47,17 +49,15 @@ pub use hkdf::{HkdfLabelError, TranscriptError, TranscriptHash};
 pub use reassembler::{ReassemblyError, ServerFlightReassembler};
 // Lib-test convenience re-exports — internal helpers reachable via `crate::foo`
 // inside the in-crate tests module. External callers go through TlsConnection.
-// `unused_imports` allowed because not every feature combo exercises every test helper.
+#[cfg(all(test, feature = "cipher-aes"))]
+pub(crate) use aead::RecordKeys;
 #[cfg(test)]
-#[allow(unused_imports)]
-pub(crate) use aead::{
-    RecordKeys, aead_nonce, decrypt_record, encrypt_record, split_inner_plaintext,
-};
+pub(crate) use aead::{aead_nonce, split_inner_plaintext};
+#[cfg(all(test, feature = "cipher-aes"))]
+pub(crate) use hkdf::{application_traffic_secrets, master_secret};
 #[cfg(test)]
-#[allow(unused_imports)]
 pub(crate) use hkdf::{
-    EMPTY_TRANSCRIPT_HASH, application_traffic_secrets, derive_secret, early_secret, finished_mac,
-    handshake_secret, handshake_traffic_secrets, hkdf_expand_label, master_secret, traffic_keys,
+    derive_secret, handshake_secret, handshake_traffic_secrets, hkdf_expand_label,
 };
 pub use identity::{IdentityError, PinnedPubkey, verify_hostname, verify_pinned_pubkey};
 #[cfg(feature = "validity")]
@@ -65,13 +65,8 @@ pub use identity::{ValidityError, verify_validity};
 #[cfg(feature = "chacha20")]
 pub use newtype::AeadKey32;
 pub use newtype::{AeadIv, AeadKey, Secret, TranscriptDigest, ZeroBuf};
-#[cfg(test)]
-#[allow(unused_imports)]
-pub(crate) use server_flight::{
-    ServerFlightVerified, verify_certificate_verify, verify_certificate_verify_with_cache,
-    verify_self_signed_cert, verify_self_signed_cert_with_cache, verify_server_finished,
-    verify_server_flight,
-};
+#[cfg(all(test, feature = "cipher-aes"))]
+pub(crate) use server_flight::{verify_self_signed_cert, verify_server_flight};
 // `extract_cert_der` + `parse_server_flight` stay pub for callers doing
 // cert-content inspection (SAN / pin / validity) after the typestate verify.
 pub use server_flight::{FlightError, ServerPubkey, extract_cert_der, parse_server_flight};
@@ -201,10 +196,21 @@ const EXT_SIGNATURE_ALGORITHMS_TOTAL: u16 = 4 + 4;
 const EXT_SIGNATURE_ALGORITHMS_TOTAL: u16 = 4 + 6;
 const EXT_KEY_SHARE_TOTAL: u16 = 4 + 38;
 
-#[cfg(not(feature = "chacha20"))]
+// At least one cipher feature must be on. We can't form a valid
+// ClientHello otherwise — there's no cipher_suite to advertise.
+#[cfg(not(any(feature = "cipher-aes", feature = "chacha20")))]
+compile_error!(
+    "krabitls requires at least one of `cipher-aes` (default) or `chacha20` to provide a cipher suite"
+);
+
+// Number of suites advertised under `SuiteList::Default` — depends on which
+// cipher features are active.
+#[cfg(all(feature = "cipher-aes", not(feature = "chacha20")))]
 const CH_CIPHER_SUITES_COUNT: usize = 1;
-#[cfg(feature = "chacha20")]
+#[cfg(all(feature = "cipher-aes", feature = "chacha20"))]
 const CH_CIPHER_SUITES_COUNT: usize = 2;
+#[cfg(all(not(feature = "cipher-aes"), feature = "chacha20"))]
+const CH_CIPHER_SUITES_COUNT: usize = 1;
 
 /// Wire size of the RFC 8449 `record_size_limit` extension: 4-byte header
 /// (ext_type + ext_data_len) + 2-byte value.
@@ -221,7 +227,10 @@ const EXT_RECORD_SIZE_LIMIT_TOTAL: u16 = 4 + 2;
 pub enum SuiteList {
     #[default]
     Default,
+    #[cfg(feature = "cipher-aes")]
     AesOnly,
+    #[cfg(feature = "chacha20")]
+    ChaChaOnly,
 }
 
 /// Options for the opts-aware ClientHello writer and its typestate
@@ -265,7 +274,10 @@ const fn sni_ext_total(hostname_len: usize) -> usize {
 const fn ch_n_suites(suites: SuiteList) -> usize {
     match suites {
         SuiteList::Default => CH_CIPHER_SUITES_COUNT,
+        #[cfg(feature = "cipher-aes")]
         SuiteList::AesOnly => 1,
+        #[cfg(feature = "chacha20")]
+        SuiteList::ChaChaOnly => 1,
     }
 }
 
@@ -344,15 +356,29 @@ pub const fn client_hello_len_with(opts: &ClientHelloOptions<'_>) -> usize {
 /// flows through `CH_EXTENSIONS_FIXED_TOTAL` automatically.
 pub const CLIENT_HELLO_LEN: usize = client_hello_len(None);
 
-// Sanity pin on CLIENT_HELLO_LEN under each feature combo.
-#[cfg(all(not(feature = "rsa"), not(feature = "chacha20")))]
+// Sanity pin on CLIENT_HELLO_LEN under each feature combo. AES-only and
+// ChaCha-only builds advertise a single suite (117 / +2 for `feature =
+// "rsa"`); both-ciphers builds advertise two (119 / +2 for `rsa`).
+#[cfg(all(
+    feature = "cipher-aes",
+    not(feature = "rsa"),
+    not(feature = "chacha20")
+))]
 const _: () = assert!(CLIENT_HELLO_LEN == 117);
-#[cfg(all(feature = "rsa", not(feature = "chacha20")))]
+#[cfg(all(feature = "cipher-aes", feature = "rsa", not(feature = "chacha20")))]
 const _: () = assert!(CLIENT_HELLO_LEN == 119);
-#[cfg(all(not(feature = "rsa"), feature = "chacha20"))]
+#[cfg(all(feature = "cipher-aes", not(feature = "rsa"), feature = "chacha20"))]
 const _: () = assert!(CLIENT_HELLO_LEN == 119);
-#[cfg(all(feature = "rsa", feature = "chacha20"))]
+#[cfg(all(feature = "cipher-aes", feature = "rsa", feature = "chacha20"))]
 const _: () = assert!(CLIENT_HELLO_LEN == 121);
+#[cfg(all(
+    not(feature = "cipher-aes"),
+    feature = "chacha20",
+    not(feature = "rsa")
+))]
+const _: () = assert!(CLIENT_HELLO_LEN == 117);
+#[cfg(all(not(feature = "cipher-aes"), feature = "chacha20", feature = "rsa"))]
+const _: () = assert!(CLIENT_HELLO_LEN == 119);
 
 /// Big-endian byte-emission helpers layered on top of [`embedded_io::Write`].
 ///
@@ -546,7 +572,7 @@ pub(crate) fn write_client_hello_with<W: Write>(
     // AND the runtime opts allow the default suite list. Only bound under
     // the feature — no-chacha20 builds have no use for the binding.
     #[cfg(feature = "chacha20")]
-    let advertise_chacha = matches!(opts.suites, SuiteList::Default);
+    let advertise_chacha = matches!(opts.suites, SuiteList::Default | SuiteList::ChaChaOnly);
 
     out.write_u8(CT_HANDSHAKE)?; // 0x16
     out.write_u16(LEGACY_VERSION)?; // 0x0303
@@ -560,13 +586,20 @@ pub(crate) fn write_client_hello_with<W: Write>(
     out.write_u8(0)?; // legacy_session_id length = 0
     // cipher_suites list length (just the suite bytes, sans length prefix).
     out.write_u16((2 * n_suites) as u16)?;
-    // ChaCha first when both are offered, so servers that honour client
-    // preference pick it.
+    // ChaCha first when offered (server preference convention). Then AES
+    // when both `cipher-aes` is on and the suite list isn't ChaCha-only.
     #[cfg(feature = "chacha20")]
     if advertise_chacha {
         out.write_u16(CIPHER_CHACHA20_POLY1305_SHA256)?;
     }
-    out.write_u16(CIPHER_AES_128_GCM_SHA256)?;
+    #[cfg(all(feature = "cipher-aes", feature = "chacha20"))]
+    let advertise_aes = !matches!(opts.suites, SuiteList::ChaChaOnly);
+    #[cfg(all(feature = "cipher-aes", not(feature = "chacha20")))]
+    let advertise_aes = true;
+    #[cfg(feature = "cipher-aes")]
+    if advertise_aes {
+        out.write_u16(CIPHER_AES_128_GCM_SHA256)?;
+    }
     out.write_u8(1)?; // legacy_compression_methods length
     out.write_u8(0)?; // null compression
     out.write_u16(extensions_total as u16)?; // total extensions length
@@ -1162,7 +1195,7 @@ mod tests {
         assert_eq!(with_rsl, base + 6);
     }
 
-    #[cfg(feature = "chacha20")]
+    #[cfg(all(feature = "cipher-aes", feature = "chacha20"))]
     #[test]
     fn client_hello_len_with_aes_only_shrinks_by_two_bytes_under_chacha20() {
         let default = client_hello_len_with(&ClientHelloOptions::legacy());
@@ -1748,6 +1781,7 @@ mod tests {
     ///   0x08 0x00 0x00 0x02 0x00 0x00       EncryptedExtensions (empty)
     ///   0x0b 0x00 0x00 0xf0 ...             Certificate (msg_type=11, len=0x0000f0)
     /// First 32 bytes of the SF plaintext.
+    #[cfg(feature = "cipher-aes")]
     const FIXTURE_PACKET_3_PLAINTEXT_HEAD: [u8; 32] = [
         0x08, 0x00, 0x00, 0x02, 0x00, 0x00, 0x0b, 0x00, 0x01, 0x13, 0x00, 0x00, 0x01, 0x0f, 0x00,
         0x01, 0x0a, 0x30, 0x82, 0x01, 0x06, 0x30, 0x81, 0xb9, 0xa0, 0x03, 0x02, 0x01, 0x02, 0x02,
@@ -1757,145 +1791,30 @@ mod tests {
     /// Wrap the seed-0 server handshake AEAD key bytes into an `AeadKey`.
     /// `AeadKey::new` takes a `ZeroBuf<16>` (= `Zeroizing<[u8; 16]>`) which
     /// isn't const-constructible, so we wrap at the call site.
+    #[cfg(feature = "cipher-aes")]
     fn make_fixture_s_hs_key() -> AeadKey {
         AeadKey::new(ZeroBuf::<16>::new(FIXTURE_S_HS_KEY_BYTES))
     }
+    #[cfg(feature = "cipher-aes")]
     fn make_fixture_s_hs_iv() -> AeadIv {
         AeadIv::new(ZeroBuf::<12>::new(FIXTURE_S_HS_IV_BYTES))
-    }
-
-    #[test]
-    fn fixture_packet_3_decrypts() {
-        // record body length minus the 16-byte AEAD tag = expected plaintext length.
-        // Packet 003 is 415 bytes total: 5 header + 410 body; plaintext = 410 - 16 = 394.
-        let key = make_fixture_s_hs_key();
-        let iv = make_fixture_s_hs_iv();
-        let mut buf = [0u8; 400];
-        let pt = decrypt_record::<Aes128GcmSha256>(
-            &FIXTURE_PACKET_3,
-            key.as_zeroizing(),
-            &iv,
-            0, // first record under s_hs_traffic_secret
-            &mut buf,
-        )
-        .expect("decrypt_record");
-        assert_eq!(pt.len(), 394);
-        assert_eq!(&pt[..32], &FIXTURE_PACKET_3_PLAINTEXT_HEAD);
-
-        // Inner plaintext = handshake_bytes || content_type(0x16) || zero padding.
-        let (content, content_type) = split_inner_plaintext(pt).expect("split inner plaintext");
-        assert_eq!(content_type, consts::CT_HANDSHAKE);
-        // First handshake message is EncryptedExtensions: type=8 len=2 body=0000.
-        assert_eq!(&content[..6], &[0x08, 0x00, 0x00, 0x02, 0x00, 0x00]);
-    }
-
-    #[test]
-    fn fixture_packet_3_decrypts_full_chain() {
-        // The whole pipeline, starting from the X25519 client priv.
-        type Bn = fixed_bigint::FixedUInt<u32, 16, fixed_bigint::Ct>;
-        let dhe = ed25519_heapless::x25519::<Bn>(
-            &FIXTURE_CLIENT_X25519_PRIV,
-            &FIXTURE_SERVER_X25519_PUB_2,
-        );
-        let hs = handshake_secret::<RustCrypto>(&dhe).unwrap();
-        let th = {
-            let mut t = TranscriptHash::<RustCrypto>::new();
-            t.update_record(&FIXTURE_CLIENT_HELLO).unwrap();
-            t.update_record(&FIXTURE_SERVER_HELLO).unwrap();
-            t.snapshot()
-        };
-        let (_c_ts, s_ts) = handshake_traffic_secrets::<RustCrypto>(&hs, &th).unwrap();
-        let (k, iv) = traffic_keys::<RustCrypto, 16>(&s_ts).unwrap();
-        let key = AeadKey::new(k);
-
-        let mut buf = [0u8; 400];
-        let pt = decrypt_record::<Aes128GcmSha256>(
-            &FIXTURE_PACKET_3,
-            key.as_zeroizing(),
-            &iv,
-            0,
-            &mut buf,
-        )
-        .unwrap();
-        let (content, content_type) = split_inner_plaintext(pt).unwrap();
-        assert_eq!(content_type, consts::CT_HANDSHAKE);
-        assert_eq!(&content[..6], &[0x08, 0x00, 0x00, 0x02, 0x00, 0x00]);
-    }
-
-    #[test]
-    fn fixture_packet_3_server_flight_verifies() {
-        // Get the plaintext the same way the user-facing pipeline does.
-        let key = make_fixture_s_hs_key();
-        let iv = make_fixture_s_hs_iv();
-        let mut buf = [0u8; 400];
-        let pt = decrypt_record::<Aes128GcmSha256>(
-            &FIXTURE_PACKET_3,
-            key.as_zeroizing(),
-            &iv,
-            0,
-            &mut buf,
-        )
-        .unwrap();
-        let (content, _ct) = split_inner_plaintext(pt).unwrap();
-
-        // Walk it: EE / Cert / CertVerify / Finished.
-        let flight = parse_server_flight(content).expect("parse_server_flight");
-
-        // EncryptedExtensions is empty.
-        assert_eq!(flight.ee_body, &[0x00, 0x00][..]);
-
-        // Cert: extract Ed25519 pubkey via the DER walker.
-        let cert_der = extract_cert_der(flight.cert_body).expect("extract_cert_der");
-        let cert_view = <DerCert as CertParser>::parse(cert_der).expect("parse cert");
-        const EXPECTED_SERVER_ID_PUB: [u8; 32] = [
-            0x9d, 0xfe, 0x2a, 0xb0, 0x3e, 0x35, 0x70, 0x4b, 0x9c, 0xfb, 0x93, 0xb6, 0x03, 0xa6,
-            0x61, 0x18, 0x82, 0x17, 0xa6, 0xb5, 0xfd, 0x6a, 0x1f, 0x75, 0xe6, 0x16, 0x1a, 0x39,
-            0xe0, 0x53, 0x4c, 0x3f,
-        ];
-        match cert_view {
-            CertView::Ed25519 { pubkey, .. } => assert_eq!(pubkey, &EXPECTED_SERVER_ID_PUB),
-            #[cfg(feature = "rsa")]
-            _ => panic!("fixture cert is Ed25519"),
-        }
-
-        // Verify cert's self-signature.
-        let view = verify_self_signed_cert::<DerCert, RustCrypto, RustCrypto>(cert_der)
-            .expect("cert self-sig");
-        let pk = match view {
-            CertView::Ed25519 { pubkey, .. } => *pubkey,
-            #[cfg(feature = "rsa")]
-            _ => panic!("fixture cert is Ed25519"),
-        };
-        assert_eq!(pk, EXPECTED_SERVER_ID_PUB);
-
-        // End-to-end pipeline including CertVerify and Finished.
-        let mut transcript = TranscriptHash::<RustCrypto>::new();
-        transcript.update_record(&FIXTURE_CLIENT_HELLO).unwrap();
-        transcript.update_record(&FIXTURE_SERVER_HELLO).unwrap();
-        let result = verify_server_flight::<RustCrypto, DerCert, RustCrypto, RustCrypto>(
-            &mut transcript,
-            content,
-            &make_fixture_s_hs_traffic_secret(),
-            true,
-        )
-        .expect("verify_server_flight");
-        assert_eq!(
-            result.server_pubkey.as_ed25519(),
-            Some(EXPECTED_SERVER_ID_PUB)
-        );
     }
 
     /// Stub Ed25519VerifierProvider backend that always rejects. Used to prove the
     /// `E: Ed25519VerifierProvider` generic actually wires through to the verify
     /// callsites — swapping the backend should change observed behavior
     /// even with the same cert / signature bytes.
+    #[cfg(feature = "cipher-aes")]
     struct AlwaysReject;
+    #[cfg(feature = "cipher-aes")]
     struct AlwaysRejectVerifier;
+    #[cfg(feature = "cipher-aes")]
     impl signature::Verifier<[u8; 64]> for AlwaysRejectVerifier {
         fn verify(&self, _: &[u8], _: &[u8; 64]) -> Result<(), signature::Error> {
             Err(signature::Error::new())
         }
     }
+    #[cfg(feature = "cipher-aes")]
     impl crate::traits::Ed25519VerifierProvider for AlwaysReject {
         type Verifier = AlwaysRejectVerifier;
         fn prepare_ed25519(_: &[u8; 32]) -> Self::Verifier {
@@ -1903,6 +1822,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "cipher-aes")]
     #[test]
     fn ed25519_verify_trait_propagates_to_cert_self_sig() {
         // Same fixture cert that passes with RustCrypto. Plugging in
@@ -1915,43 +1835,13 @@ mod tests {
         assert_eq!(err, FlightError::CertSelfSignatureInvalid);
     }
 
-    #[test]
-    fn ed25519_verify_trait_propagates_to_certificate_verify() {
-        // Run the full flight pipeline with AlwaysReject. The cert self-sig
-        // check is the first place E::verify gets called, so that's what
-        // fires — but the point is "if I swap the backend, behavior
-        // changes," which proves the type param flows through.
-        let key = make_fixture_s_hs_key();
-        let iv = make_fixture_s_hs_iv();
-        let mut pt_buf = [0u8; 400];
-        let pt = decrypt_record::<Aes128GcmSha256>(
-            &FIXTURE_PACKET_3,
-            key.as_zeroizing(),
-            &iv,
-            0,
-            &mut pt_buf,
-        )
-        .unwrap();
-        let (content, _) = split_inner_plaintext(pt).unwrap();
-        let mut transcript = TranscriptHash::<RustCrypto>::new();
-        transcript.update_record(&FIXTURE_CLIENT_HELLO).unwrap();
-        transcript.update_record(&FIXTURE_SERVER_HELLO).unwrap();
-        let err = verify_server_flight::<RustCrypto, DerCert, AlwaysReject, RustCrypto>(
-            &mut transcript,
-            content,
-            &make_fixture_s_hs_traffic_secret(),
-            true,
-        )
-        .unwrap_err();
-        assert_eq!(err, FlightError::CertSelfSignatureInvalid);
-    }
-
     /// Locate every occurrence of the Ed25519 OID DER byte sequence
     /// (`06 03 2B 65 70`) in a cert. In a self-signed Ed25519 cert there are
     /// exactly three, in this byte order:
     /// 1. `TBSCertificate.signature` AlgorithmIdentifier
     /// 2. `SubjectPublicKeyInfo.algorithm` AlgorithmIdentifier
     /// 3. outer `Certificate.signatureAlgorithm` AlgorithmIdentifier
+    #[cfg(feature = "cipher-aes")]
     fn find_ed25519_oid_positions(cert_der: &[u8]) -> [usize; 3] {
         const ED25519_OID_BYTES: &[u8] = &[0x06, 0x03, 0x2B, 0x65, 0x70];
         let mut positions = [0usize; 3];
@@ -1971,6 +1861,7 @@ mod tests {
 
     /// Decrypt server flight, walk to the cert SEQUENCE, return its DER bytes
     /// copied into a stack buffer the caller can mutate.
+    #[cfg(feature = "cipher-aes")]
     fn fixture_cert_der_copy(buf: &mut [u8]) -> usize {
         let key = make_fixture_s_hs_key();
         let iv = make_fixture_s_hs_iv();
@@ -1990,6 +1881,7 @@ mod tests {
         cert_der.len()
     }
 
+    #[cfg(feature = "cipher-aes")]
     #[test]
     fn cert_rejects_wrong_outer_signature_algorithm_oid_via_symmetry() {
         // Flip only the outer signatureAlgorithm OID. TBS.signature still
@@ -2005,6 +1897,7 @@ mod tests {
         assert_eq!(err, CertParseError::SignatureAlgorithmMismatch);
     }
 
+    #[cfg(feature = "cipher-aes")]
     #[test]
     fn cert_rejects_wrong_spki_algorithm_oid() {
         // Outer + symmetry pass; only the SPKI's algorithm OID is mangled.
@@ -2018,6 +1911,7 @@ mod tests {
         assert_eq!(err, CertParseError::WrongAlgorithmOid);
     }
 
+    #[cfg(feature = "cipher-aes")]
     #[test]
     fn cert_with_unknown_outer_sig_algo_still_parses_if_spki_known() {
         // Flip BOTH outer and TBS sig-algo OIDs to the same unknown value
@@ -2036,6 +1930,7 @@ mod tests {
         assert!(matches!(view, CertView::Ed25519 { .. }));
     }
 
+    #[cfg(feature = "cipher-aes")]
     #[test]
     fn cert_rejects_inner_outer_signature_alg_mismatch() {
         // Flip only the TBS.signature OID. Outer OID still claims Ed25519,
@@ -2049,6 +1944,7 @@ mod tests {
         assert_eq!(err, CertParseError::SignatureAlgorithmMismatch);
     }
 
+    #[cfg(feature = "cipher-aes")]
     #[test]
     fn cert_rejects_unsupported_version() {
         // Locate the `[0] EXPLICIT { INTEGER 2 }` version field
@@ -2067,61 +1963,34 @@ mod tests {
         assert_eq!(err, CertParseError::UnsupportedCertVersion);
     }
 
-    #[test]
-    fn fixture_bad_finished_rejected() {
-        let key = make_fixture_s_hs_key();
-        let iv = make_fixture_s_hs_iv();
-        let mut buf = [0u8; 400];
-        let pt = decrypt_record::<Aes128GcmSha256>(
-            &FIXTURE_PACKET_3,
-            key.as_zeroizing(),
-            &iv,
-            0,
-            &mut buf,
-        )
-        .unwrap();
-        let (content, _) = split_inner_plaintext(pt).unwrap();
-
-        // Tamper with the Finished verify_data (last 32 bytes of the inner content).
-        let mut tampered = [0u8; 400];
-        tampered[..content.len()].copy_from_slice(content);
-        let last = content.len() - 1;
-        tampered[last] ^= 0xFF;
-
-        let mut transcript = TranscriptHash::<RustCrypto>::new();
-        transcript.update_record(&FIXTURE_CLIENT_HELLO).unwrap();
-        transcript.update_record(&FIXTURE_SERVER_HELLO).unwrap();
-        let err = verify_server_flight::<RustCrypto, DerCert, RustCrypto, RustCrypto>(
-            &mut transcript,
-            &tampered[..content.len()],
-            &make_fixture_s_hs_traffic_secret(),
-            true,
-        )
-        .unwrap_err();
-        assert_eq!(err, FlightError::FinishedMacInvalid);
-    }
-
     /// packets/005_c2s_AppData_send_0.hex (52 bytes) — first client app-data record.
+    #[cfg(feature = "cipher-aes")]
     const FIXTURE_PACKET_5: [u8; 52] = crate::hex_decode(include_str!(
         "../../testdata/packets/005_c2s_AppData_send_0.hex"
     ));
     /// packets/006_s2c_AppData_reply_0.hex (48 bytes) — first server app-data record.
+    #[cfg(feature = "cipher-aes")]
     const FIXTURE_PACKET_6: [u8; 48] = crate::hex_decode(include_str!(
         "../../testdata/packets/006_s2c_AppData_reply_0.hex"
     ));
 
     /// Plaintext the fixture's `cli.py --send` sent.
+    #[cfg(feature = "cipher-aes")]
     const PACKET_5_PLAINTEXT: &[u8] = b"hello from the embedded client";
     /// Plaintext the fixture's `serv.py --reply` sent — includes a UTF-8 em-dash
     /// (`\xe2\x80\x94`) which exercises non-ASCII handling.
+    #[cfg(feature = "cipher-aes")]
     const PACKET_6_PLAINTEXT: &[u8] = b"hello back \xe2\x80\x94 server here";
 
     /// `((key, iv), (key, iv))` for `(c_ap, s_ap)` AEAD streams.
+    #[cfg(feature = "cipher-aes")]
     type ApAeadKeys = (AeadKey, AeadIv);
 
+    #[cfg(feature = "cipher-aes")]
     fn make_fixture_handshake_secret() -> Secret {
         Secret::new(ZeroBuf::<32>::new(FIXTURE_HANDSHAKE_SECRET_BYTES))
     }
+    #[cfg(feature = "cipher-aes")]
     fn make_fixture_c_hs_traffic_secret() -> Secret {
         Secret::new(ZeroBuf::<32>::new(FIXTURE_C_HS_TRAFFIC_SECRET_BYTES))
     }
@@ -2129,6 +1998,7 @@ mod tests {
     /// Derive the application traffic secrets the same way the demo runs, then
     /// peel off `(c_ap_key, c_ap_iv)` and `(s_ap_key, s_ap_iv)`. Helper kept in
     /// the tests so the rest of the test file stays focused.
+    #[cfg(feature = "cipher-aes")]
     fn application_keys() -> (ApAeadKeys, ApAeadKeys) {
         // master_secret -> (c_ap, s_ap) -> traffic_keys for each
         // Need transcript_hash_through_server_finished; pick it up by running the
@@ -2165,193 +2035,25 @@ mod tests {
         (aes_keys(&c_ap_ts), aes_keys(&s_ap_ts))
     }
 
-    #[test]
-    fn fixture_packet_5_encrypts_byte_identical() {
-        let ((c_key, c_iv), _) = application_keys();
-        // Regenerated from the c_ap_ts under the RSL-bearing CH transcript
-        // with SAN-bearing cert. See `tls_fixture/state/client.json` + Python's
-        // `hkdf_expand_label(c_ap_ts, "key"/"iv", "")`.
-        assert_eq!(
-            c_key.as_bytes(),
-            &[
-                0xe6, 0xfc, 0x45, 0x60, 0x91, 0x90, 0x27, 0x4e, 0x6f, 0xda, 0xae, 0x67, 0xc3, 0x06,
-                0x2f, 0xb0,
-            ]
-        );
-        assert_eq!(
-            c_iv.as_bytes(),
-            &[
-                0x6f, 0x04, 0xf5, 0xff, 0x3d, 0x43, 0x2a, 0x54, 0x4b, 0xa1, 0x4c, 0xef,
-            ]
-        );
-
-        // First app-data record under c_ap uses seq = 0.
-        let mut out = [0u8; 80];
-        let record = encrypt_record::<Aes128GcmSha256>(
-            PACKET_5_PLAINTEXT,
-            consts::CT_APPLICATION_DATA,
-            c_key.as_zeroizing(),
-            &c_iv,
-            0,
-            &mut out,
-        )
-        .unwrap();
-        assert_eq!(record, &FIXTURE_PACKET_5[..]);
-    }
-
-    #[test]
-    fn fixture_packet_6_decrypts_to_expected_plaintext() {
-        let (_, (s_key, s_iv)) = application_keys();
-        let mut pt = [0u8; 64];
-        let inner = decrypt_record::<Aes128GcmSha256>(
-            &FIXTURE_PACKET_6,
-            s_key.as_zeroizing(),
-            &s_iv,
-            0,
-            &mut pt,
-        )
-        .expect("decrypt packet 6");
-        let (content, ct) = split_inner_plaintext(inner).unwrap();
-        assert_eq!(ct, consts::CT_APPLICATION_DATA);
-        assert_eq!(content, PACKET_6_PLAINTEXT);
-    }
-
     /// packets/004_c2s_ClientFinished_encrypted.hex (58 bytes).
+    #[cfg(feature = "cipher-aes")]
     const FIXTURE_PACKET_4: [u8; 58] = crate::hex_decode(include_str!(
         "../../testdata/packets/004_c2s_ClientFinished_encrypted.hex"
     ));
 
     #[test]
-    fn fixture_client_finished_matches() {
-        // Run the full verify chain to get the inputs for build_client_finished.
-        let key = make_fixture_s_hs_key();
-        let iv = make_fixture_s_hs_iv();
-        let mut pt_buf = [0u8; 400];
-        let pt = decrypt_record::<Aes128GcmSha256>(
-            &FIXTURE_PACKET_3,
-            key.as_zeroizing(),
-            &iv,
-            0,
-            &mut pt_buf,
-        )
-        .unwrap();
-        let (content, _ct) = split_inner_plaintext(pt).unwrap();
-        let mut transcript = TranscriptHash::<RustCrypto>::new();
-        transcript.update_record(&FIXTURE_CLIENT_HELLO).unwrap();
-        transcript.update_record(&FIXTURE_SERVER_HELLO).unwrap();
-        verify_server_flight::<RustCrypto, DerCert, RustCrypto, RustCrypto>(
-            &mut transcript,
-            content,
-            &make_fixture_s_hs_traffic_secret(),
-            true,
-        )
-        .unwrap();
-
-        // Now build the client Finished record and compare to fixture's packet 4.
-        let mut out = [0u8; 64];
-        let record = RecordKeys::<Aes128GcmSha256>::build_client_finished::<RustCrypto>(
-            &make_fixture_c_hs_traffic_secret(),
-            &transcript.snapshot(),
-            0, // first record under c_hs_traffic_secret
-            &mut out,
-        )
-        .unwrap();
-        assert_eq!(record.len(), CLIENT_FINISHED_LEN);
-        assert_eq!(record, &FIXTURE_PACKET_4[..]);
-    }
-
-    #[test]
-    fn fixture_application_traffic_secrets_match() {
-        // master_secret = HKDF chain rooted at handshake_secret.
-        let ms = master_secret::<RustCrypto>(&make_fixture_handshake_secret()).unwrap();
-        // app secrets are keyed on the transcript hash through *server* Finished.
-        // We can pick that up from verify_server_flight.
-        let key = make_fixture_s_hs_key();
-        let iv = make_fixture_s_hs_iv();
-        let mut pt_buf = [0u8; 400];
-        let pt = decrypt_record::<Aes128GcmSha256>(
-            &FIXTURE_PACKET_3,
-            key.as_zeroizing(),
-            &iv,
-            0,
-            &mut pt_buf,
-        )
-        .unwrap();
-        let (content, _) = split_inner_plaintext(pt).unwrap();
-        let mut transcript = TranscriptHash::<RustCrypto>::new();
-        transcript.update_record(&FIXTURE_CLIENT_HELLO).unwrap();
-        transcript.update_record(&FIXTURE_SERVER_HELLO).unwrap();
-        verify_server_flight::<RustCrypto, DerCert, RustCrypto, RustCrypto>(
-            &mut transcript,
-            content,
-            &make_fixture_s_hs_traffic_secret(),
-            true,
-        )
-        .unwrap();
-
-        let (c_ap, s_ap) =
-            application_traffic_secrets::<RustCrypto>(&ms, &transcript.snapshot()).unwrap();
-
-        // From tls_fixture/state/client.json `c_ap_ts` / `s_ap_ts` at seed 0.
-        const FIXTURE_C_AP_BYTES: [u8; 32] = [
-            0x54, 0x1a, 0xd5, 0xfc, 0xef, 0x9e, 0x66, 0x5f, 0x2b, 0x1b, 0xdb, 0x37, 0xfc, 0x05,
-            0xd6, 0xcf, 0x94, 0x8f, 0x4a, 0x10, 0xda, 0x18, 0xe0, 0x9f, 0x57, 0x10, 0x48, 0x5b,
-            0xf4, 0xf6, 0x64, 0x88,
-        ];
-        const FIXTURE_S_AP_BYTES: [u8; 32] = [
-            0xa1, 0x04, 0xee, 0xae, 0xe6, 0xfa, 0x92, 0x7c, 0x2a, 0x64, 0xbd, 0x79, 0x86, 0xcb,
-            0xac, 0xeb, 0x40, 0xa1, 0x69, 0xcf, 0x3a, 0xfb, 0x8c, 0xa0, 0x1a, 0x67, 0x13, 0xdb,
-            0xa7, 0x04, 0xb5, 0x65,
-        ];
-        assert_eq!(c_ap.as_bytes(), &FIXTURE_C_AP_BYTES);
-        assert_eq!(s_ap.as_bytes(), &FIXTURE_S_AP_BYTES);
-    }
-
-    #[test]
-    fn bad_tag_returns_aead_failed() {
-        let key = make_fixture_s_hs_key();
-        let iv = make_fixture_s_hs_iv();
-        let mut tampered = [0u8; 415];
-        tampered.copy_from_slice(&FIXTURE_PACKET_3);
-        let last = tampered.len() - 1;
-        tampered[last] ^= 0xFF; // corrupt the auth tag
-        let mut buf = [0u8; 400];
-        // Pre-fill with a sentinel; the function should overwrite the
-        // ciphertext window with zeroes on AEAD failure.
-        buf.fill(0xAA);
-        let err =
-            decrypt_record::<Aes128GcmSha256>(&tampered, key.as_zeroizing(), &iv, 0, &mut buf)
-                .unwrap_err();
-        assert_eq!(err, DecryptError::AeadFailed);
-
-        // The bytes in the ciphertext window (record body minus 16-byte tag)
-        // must be zeroed — RFC says callers MUST NOT use the buffer on
-        // error, and we defensively zero it. Bytes outside that window
-        // (anything beyond ct_len) are left alone, since `decrypt_record`
-        // is documented to write only the `[..ct_len]` prefix.
-        let body_len = u16::from_be_bytes([tampered[3], tampered[4]]) as usize;
-        let ct_len = body_len - 16;
-        assert!(
-            buf[..ct_len].iter().all(|&b| b == 0),
-            "ciphertext window must be zeroed on AeadFailed"
-        );
-        assert!(
-            buf[ct_len..].iter().all(|&b| b == 0xAA),
-            "bytes past ct_len must be untouched"
-        );
-    }
-
-    #[test]
     fn decrypt_record_rejects_trailing_bytes() {
         // Two valid records glued together — caller MUST pass exactly one.
-        let key = make_fixture_s_hs_key();
-        let iv = make_fixture_s_hs_iv();
+        // TrailingBytes is checked BEFORE the AEAD call so the cipher
+        // never runs. Use NoCipher so the test is cipher-feature-agnostic.
+        use crate::aead::NoCipher;
+        let key = ZeroBuf::<16>::new([0u8; 16]);
+        let iv = AeadIv::new(ZeroBuf::<12>::new([0u8; 12]));
         let mut extra = [0u8; 416];
         extra[..415].copy_from_slice(&FIXTURE_PACKET_3);
         extra[415] = 0xAB; // one stray byte past the declared record body
         let mut buf = [0u8; 416];
-        let err = decrypt_record::<Aes128GcmSha256>(&extra, key.as_zeroizing(), &iv, 0, &mut buf)
-            .unwrap_err();
+        let err = decrypt_record::<NoCipher>(&extra, &key, &iv, 0, &mut buf).unwrap_err();
         assert_eq!(err, DecryptError::TrailingBytes);
     }
 
@@ -2398,10 +2100,12 @@ mod tests {
     fn encrypt_record_rejects_oversize_plaintext() {
         // Content large enough that inner_plaintext + tag exceeds
         // TLSCiphertext.length cap (2^14 + 256). Out buffer size doesn't
-        // matter — RecordTooLarge fires before BufferTooSmall.
+        // matter — RecordTooLarge fires before BufferTooSmall. Size check
+        // runs before the AEAD call; NoCipher keeps the test cipher-agnostic.
+        use crate::aead::NoCipher;
         let big = vec![0u8; (1 << 14) + 256];
         let mut out = [0u8; 1];
-        let err = encrypt_record::<Aes128GcmSha256>(
+        let err = encrypt_record::<NoCipher>(
             &big,
             consts::CT_APPLICATION_DATA,
             &ZeroBuf::<16>::new([0u8; 16]),
@@ -2449,10 +2153,12 @@ mod tests {
         // RFC 8446 §5.1: TLSPlaintext.length max is 2^14. Content of
         // 2^14 + 1 bytes fits the §5.2 ciphertext cap (2^14 + 256) once
         // the AEAD tag + content_type are added, but violates the §5.1
-        // plaintext cap — must surface as RecordTooLarge.
+        // plaintext cap — must surface as RecordTooLarge. NoCipher keeps
+        // the test cipher-agnostic.
+        use crate::aead::NoCipher;
         let just_over = vec![0u8; (1 << 14) + 1];
         let mut out = vec![0u8; (1 << 14) + 256 + 5];
-        let err = encrypt_record::<Aes128GcmSha256>(
+        let err = encrypt_record::<NoCipher>(
             &just_over,
             consts::CT_APPLICATION_DATA,
             &ZeroBuf::<16>::new([0u8; 16]),
@@ -2541,7 +2247,372 @@ mod tests {
 
     // Seed-0 RSA fixture cert is PKCS#1-v1.5-signed; rsa_pss_only rejects
     // that OID at parse time, so the fixture tests don't apply there.
-    #[cfg(all(feature = "rsa", not(feature = "rsa_pss_only")))]
+    /// Fixture-bound AES tests: each test decrypts or encrypts a
+    /// captured wire fixture generated with AES-128-GCM, so the
+    /// cipher choice is intrinsic.
+    #[cfg(feature = "cipher-aes")]
+    mod aes_tests {
+        use super::*;
+
+        #[test]
+        fn fixture_packet_3_decrypts() {
+            // record body length minus the 16-byte AEAD tag = expected plaintext length.
+            // Packet 003 is 415 bytes total: 5 header + 410 body; plaintext = 410 - 16 = 394.
+            let key = make_fixture_s_hs_key();
+            let iv = make_fixture_s_hs_iv();
+            let mut buf = [0u8; 400];
+            let pt = decrypt_record::<Aes128GcmSha256>(
+                &FIXTURE_PACKET_3,
+                key.as_zeroizing(),
+                &iv,
+                0, // first record under s_hs_traffic_secret
+                &mut buf,
+            )
+            .expect("decrypt_record");
+            assert_eq!(pt.len(), 394);
+            assert_eq!(&pt[..32], &FIXTURE_PACKET_3_PLAINTEXT_HEAD);
+
+            // Inner plaintext = handshake_bytes || content_type(0x16) || zero padding.
+            let (content, content_type) = split_inner_plaintext(pt).expect("split inner plaintext");
+            assert_eq!(content_type, consts::CT_HANDSHAKE);
+            // First handshake message is EncryptedExtensions: type=8 len=2 body=0000.
+            assert_eq!(&content[..6], &[0x08, 0x00, 0x00, 0x02, 0x00, 0x00]);
+        }
+
+        #[test]
+        fn fixture_packet_3_decrypts_full_chain() {
+            // The whole pipeline, starting from the X25519 client priv.
+            type Bn = fixed_bigint::FixedUInt<u32, 16, fixed_bigint::Ct>;
+            let dhe = ed25519_heapless::x25519::<Bn>(
+                &FIXTURE_CLIENT_X25519_PRIV,
+                &FIXTURE_SERVER_X25519_PUB_2,
+            );
+            let hs = handshake_secret::<RustCrypto>(&dhe).unwrap();
+            let th = {
+                let mut t = TranscriptHash::<RustCrypto>::new();
+                t.update_record(&FIXTURE_CLIENT_HELLO).unwrap();
+                t.update_record(&FIXTURE_SERVER_HELLO).unwrap();
+                t.snapshot()
+            };
+            let (_c_ts, s_ts) = handshake_traffic_secrets::<RustCrypto>(&hs, &th).unwrap();
+            let (k, iv) = traffic_keys::<RustCrypto, 16>(&s_ts).unwrap();
+            let key = AeadKey::new(k);
+
+            let mut buf = [0u8; 400];
+            let pt = decrypt_record::<Aes128GcmSha256>(
+                &FIXTURE_PACKET_3,
+                key.as_zeroizing(),
+                &iv,
+                0,
+                &mut buf,
+            )
+            .unwrap();
+            let (content, content_type) = split_inner_plaintext(pt).unwrap();
+            assert_eq!(content_type, consts::CT_HANDSHAKE);
+            assert_eq!(&content[..6], &[0x08, 0x00, 0x00, 0x02, 0x00, 0x00]);
+        }
+
+        #[test]
+        fn fixture_packet_3_server_flight_verifies() {
+            // Get the plaintext the same way the user-facing pipeline does.
+            let key = make_fixture_s_hs_key();
+            let iv = make_fixture_s_hs_iv();
+            let mut buf = [0u8; 400];
+            let pt = decrypt_record::<Aes128GcmSha256>(
+                &FIXTURE_PACKET_3,
+                key.as_zeroizing(),
+                &iv,
+                0,
+                &mut buf,
+            )
+            .unwrap();
+            let (content, _ct) = split_inner_plaintext(pt).unwrap();
+
+            // Walk it: EE / Cert / CertVerify / Finished.
+            let flight = parse_server_flight(content).expect("parse_server_flight");
+
+            // EncryptedExtensions is empty.
+            assert_eq!(flight.ee_body, &[0x00, 0x00][..]);
+
+            // Cert: extract Ed25519 pubkey via the DER walker.
+            let cert_der = extract_cert_der(flight.cert_body).expect("extract_cert_der");
+            let cert_view = <DerCert as CertParser>::parse(cert_der).expect("parse cert");
+            const EXPECTED_SERVER_ID_PUB: [u8; 32] = [
+                0x9d, 0xfe, 0x2a, 0xb0, 0x3e, 0x35, 0x70, 0x4b, 0x9c, 0xfb, 0x93, 0xb6, 0x03, 0xa6,
+                0x61, 0x18, 0x82, 0x17, 0xa6, 0xb5, 0xfd, 0x6a, 0x1f, 0x75, 0xe6, 0x16, 0x1a, 0x39,
+                0xe0, 0x53, 0x4c, 0x3f,
+            ];
+            match cert_view {
+                CertView::Ed25519 { pubkey, .. } => assert_eq!(pubkey, &EXPECTED_SERVER_ID_PUB),
+                #[cfg(feature = "rsa")]
+                _ => panic!("fixture cert is Ed25519"),
+            }
+
+            // Verify cert's self-signature.
+            let view = verify_self_signed_cert::<DerCert, RustCrypto, RustCrypto>(cert_der)
+                .expect("cert self-sig");
+            let pk = match view {
+                CertView::Ed25519 { pubkey, .. } => *pubkey,
+                #[cfg(feature = "rsa")]
+                _ => panic!("fixture cert is Ed25519"),
+            };
+            assert_eq!(pk, EXPECTED_SERVER_ID_PUB);
+
+            // End-to-end pipeline including CertVerify and Finished.
+            let mut transcript = TranscriptHash::<RustCrypto>::new();
+            transcript.update_record(&FIXTURE_CLIENT_HELLO).unwrap();
+            transcript.update_record(&FIXTURE_SERVER_HELLO).unwrap();
+            let result = verify_server_flight::<RustCrypto, DerCert, RustCrypto, RustCrypto>(
+                &mut transcript,
+                content,
+                &make_fixture_s_hs_traffic_secret(),
+                true,
+            )
+            .expect("verify_server_flight");
+            assert_eq!(
+                result.server_pubkey.as_ed25519(),
+                Some(EXPECTED_SERVER_ID_PUB)
+            );
+        }
+
+        #[test]
+        fn ed25519_verify_trait_propagates_to_certificate_verify() {
+            // Run the full flight pipeline with AlwaysReject. The cert self-sig
+            // check is the first place E::verify gets called, so that's what
+            // fires — but the point is "if I swap the backend, behavior
+            // changes," which proves the type param flows through.
+            let key = make_fixture_s_hs_key();
+            let iv = make_fixture_s_hs_iv();
+            let mut pt_buf = [0u8; 400];
+            let pt = decrypt_record::<Aes128GcmSha256>(
+                &FIXTURE_PACKET_3,
+                key.as_zeroizing(),
+                &iv,
+                0,
+                &mut pt_buf,
+            )
+            .unwrap();
+            let (content, _) = split_inner_plaintext(pt).unwrap();
+            let mut transcript = TranscriptHash::<RustCrypto>::new();
+            transcript.update_record(&FIXTURE_CLIENT_HELLO).unwrap();
+            transcript.update_record(&FIXTURE_SERVER_HELLO).unwrap();
+            let err = verify_server_flight::<RustCrypto, DerCert, AlwaysReject, RustCrypto>(
+                &mut transcript,
+                content,
+                &make_fixture_s_hs_traffic_secret(),
+                true,
+            )
+            .unwrap_err();
+            assert_eq!(err, FlightError::CertSelfSignatureInvalid);
+        }
+
+        #[test]
+        fn fixture_bad_finished_rejected() {
+            let key = make_fixture_s_hs_key();
+            let iv = make_fixture_s_hs_iv();
+            let mut buf = [0u8; 400];
+            let pt = decrypt_record::<Aes128GcmSha256>(
+                &FIXTURE_PACKET_3,
+                key.as_zeroizing(),
+                &iv,
+                0,
+                &mut buf,
+            )
+            .unwrap();
+            let (content, _) = split_inner_plaintext(pt).unwrap();
+
+            // Tamper with the Finished verify_data (last 32 bytes of the inner content).
+            let mut tampered = [0u8; 400];
+            tampered[..content.len()].copy_from_slice(content);
+            let last = content.len() - 1;
+            tampered[last] ^= 0xFF;
+
+            let mut transcript = TranscriptHash::<RustCrypto>::new();
+            transcript.update_record(&FIXTURE_CLIENT_HELLO).unwrap();
+            transcript.update_record(&FIXTURE_SERVER_HELLO).unwrap();
+            let err = verify_server_flight::<RustCrypto, DerCert, RustCrypto, RustCrypto>(
+                &mut transcript,
+                &tampered[..content.len()],
+                &make_fixture_s_hs_traffic_secret(),
+                true,
+            )
+            .unwrap_err();
+            assert_eq!(err, FlightError::FinishedMacInvalid);
+        }
+
+        #[test]
+        fn fixture_packet_5_encrypts_byte_identical() {
+            let ((c_key, c_iv), _) = application_keys();
+            // Regenerated from the c_ap_ts under the RSL-bearing CH transcript
+            // with SAN-bearing cert. See `tls_fixture/state/client.json` + Python's
+            // `hkdf_expand_label(c_ap_ts, "key"/"iv", "")`.
+            assert_eq!(
+                c_key.as_bytes(),
+                &[
+                    0xe6, 0xfc, 0x45, 0x60, 0x91, 0x90, 0x27, 0x4e, 0x6f, 0xda, 0xae, 0x67, 0xc3,
+                    0x06, 0x2f, 0xb0,
+                ]
+            );
+            assert_eq!(
+                c_iv.as_bytes(),
+                &[
+                    0x6f, 0x04, 0xf5, 0xff, 0x3d, 0x43, 0x2a, 0x54, 0x4b, 0xa1, 0x4c, 0xef,
+                ]
+            );
+
+            // First app-data record under c_ap uses seq = 0.
+            let mut out = [0u8; 80];
+            let record = encrypt_record::<Aes128GcmSha256>(
+                PACKET_5_PLAINTEXT,
+                consts::CT_APPLICATION_DATA,
+                c_key.as_zeroizing(),
+                &c_iv,
+                0,
+                &mut out,
+            )
+            .unwrap();
+            assert_eq!(record, &FIXTURE_PACKET_5[..]);
+        }
+
+        #[test]
+        fn fixture_packet_6_decrypts_to_expected_plaintext() {
+            let (_, (s_key, s_iv)) = application_keys();
+            let mut pt = [0u8; 64];
+            let inner = decrypt_record::<Aes128GcmSha256>(
+                &FIXTURE_PACKET_6,
+                s_key.as_zeroizing(),
+                &s_iv,
+                0,
+                &mut pt,
+            )
+            .expect("decrypt packet 6");
+            let (content, ct) = split_inner_plaintext(inner).unwrap();
+            assert_eq!(ct, consts::CT_APPLICATION_DATA);
+            assert_eq!(content, PACKET_6_PLAINTEXT);
+        }
+
+        #[test]
+        fn fixture_client_finished_matches() {
+            // Run the full verify chain to get the inputs for build_client_finished.
+            let key = make_fixture_s_hs_key();
+            let iv = make_fixture_s_hs_iv();
+            let mut pt_buf = [0u8; 400];
+            let pt = decrypt_record::<Aes128GcmSha256>(
+                &FIXTURE_PACKET_3,
+                key.as_zeroizing(),
+                &iv,
+                0,
+                &mut pt_buf,
+            )
+            .unwrap();
+            let (content, _ct) = split_inner_plaintext(pt).unwrap();
+            let mut transcript = TranscriptHash::<RustCrypto>::new();
+            transcript.update_record(&FIXTURE_CLIENT_HELLO).unwrap();
+            transcript.update_record(&FIXTURE_SERVER_HELLO).unwrap();
+            verify_server_flight::<RustCrypto, DerCert, RustCrypto, RustCrypto>(
+                &mut transcript,
+                content,
+                &make_fixture_s_hs_traffic_secret(),
+                true,
+            )
+            .unwrap();
+
+            // Now build the client Finished record and compare to fixture's packet 4.
+            let mut out = [0u8; 64];
+            let record = RecordKeys::<Aes128GcmSha256>::build_client_finished::<RustCrypto>(
+                &make_fixture_c_hs_traffic_secret(),
+                &transcript.snapshot(),
+                0, // first record under c_hs_traffic_secret
+                &mut out,
+            )
+            .unwrap();
+            assert_eq!(record.len(), CLIENT_FINISHED_LEN);
+            assert_eq!(record, &FIXTURE_PACKET_4[..]);
+        }
+
+        #[test]
+        fn fixture_application_traffic_secrets_match() {
+            // master_secret = HKDF chain rooted at handshake_secret.
+            let ms = master_secret::<RustCrypto>(&make_fixture_handshake_secret()).unwrap();
+            // app secrets are keyed on the transcript hash through *server* Finished.
+            // We can pick that up from verify_server_flight.
+            let key = make_fixture_s_hs_key();
+            let iv = make_fixture_s_hs_iv();
+            let mut pt_buf = [0u8; 400];
+            let pt = decrypt_record::<Aes128GcmSha256>(
+                &FIXTURE_PACKET_3,
+                key.as_zeroizing(),
+                &iv,
+                0,
+                &mut pt_buf,
+            )
+            .unwrap();
+            let (content, _) = split_inner_plaintext(pt).unwrap();
+            let mut transcript = TranscriptHash::<RustCrypto>::new();
+            transcript.update_record(&FIXTURE_CLIENT_HELLO).unwrap();
+            transcript.update_record(&FIXTURE_SERVER_HELLO).unwrap();
+            verify_server_flight::<RustCrypto, DerCert, RustCrypto, RustCrypto>(
+                &mut transcript,
+                content,
+                &make_fixture_s_hs_traffic_secret(),
+                true,
+            )
+            .unwrap();
+
+            let (c_ap, s_ap) =
+                application_traffic_secrets::<RustCrypto>(&ms, &transcript.snapshot()).unwrap();
+
+            // From tls_fixture/state/client.json `c_ap_ts` / `s_ap_ts` at seed 0.
+            const FIXTURE_C_AP_BYTES: [u8; 32] = [
+                0x54, 0x1a, 0xd5, 0xfc, 0xef, 0x9e, 0x66, 0x5f, 0x2b, 0x1b, 0xdb, 0x37, 0xfc, 0x05,
+                0xd6, 0xcf, 0x94, 0x8f, 0x4a, 0x10, 0xda, 0x18, 0xe0, 0x9f, 0x57, 0x10, 0x48, 0x5b,
+                0xf4, 0xf6, 0x64, 0x88,
+            ];
+            const FIXTURE_S_AP_BYTES: [u8; 32] = [
+                0xa1, 0x04, 0xee, 0xae, 0xe6, 0xfa, 0x92, 0x7c, 0x2a, 0x64, 0xbd, 0x79, 0x86, 0xcb,
+                0xac, 0xeb, 0x40, 0xa1, 0x69, 0xcf, 0x3a, 0xfb, 0x8c, 0xa0, 0x1a, 0x67, 0x13, 0xdb,
+                0xa7, 0x04, 0xb5, 0x65,
+            ];
+            assert_eq!(c_ap.as_bytes(), &FIXTURE_C_AP_BYTES);
+            assert_eq!(s_ap.as_bytes(), &FIXTURE_S_AP_BYTES);
+        }
+
+        #[test]
+        fn bad_tag_returns_aead_failed() {
+            let key = make_fixture_s_hs_key();
+            let iv = make_fixture_s_hs_iv();
+            let mut tampered = [0u8; 415];
+            tampered.copy_from_slice(&FIXTURE_PACKET_3);
+            let last = tampered.len() - 1;
+            tampered[last] ^= 0xFF; // corrupt the auth tag
+            let mut buf = [0u8; 400];
+            // Pre-fill with a sentinel; the function should overwrite the
+            // ciphertext window with zeroes on AEAD failure.
+            buf.fill(0xAA);
+            let err =
+                decrypt_record::<Aes128GcmSha256>(&tampered, key.as_zeroizing(), &iv, 0, &mut buf)
+                    .unwrap_err();
+            assert_eq!(err, DecryptError::AeadFailed);
+
+            // The bytes in the ciphertext window (record body minus 16-byte tag)
+            // must be zeroed — RFC says callers MUST NOT use the buffer on
+            // error, and we defensively zero it. Bytes outside that window
+            // (anything beyond ct_len) are left alone, since `decrypt_record`
+            // is documented to write only the `[..ct_len]` prefix.
+            let body_len = u16::from_be_bytes([tampered[3], tampered[4]]) as usize;
+            let ct_len = body_len - 16;
+            assert!(
+                buf[..ct_len].iter().all(|&b| b == 0),
+                "ciphertext window must be zeroed on AeadFailed"
+            );
+            assert!(
+                buf[ct_len..].iter().all(|&b| b == 0xAA),
+                "bytes past ct_len must be untouched"
+            );
+        }
+    }
+
+    #[cfg(all(feature = "rsa", not(feature = "rsa_pss_only"), feature = "cipher-aes"))]
     mod rsa_tests {
         use super::*;
 
