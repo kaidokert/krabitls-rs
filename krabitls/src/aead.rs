@@ -306,10 +306,8 @@ pub trait CipherSuite: sealed::Sealed + Sized {
 /// wire behavior) refer to this alias rather than naming a specific
 /// suite. Resolves to whichever cipher feature is enabled.
 #[cfg(feature = "cipher-aes")]
-#[allow(dead_code)] // Used by tests + downstream code.
 pub type DefaultCipher = Aes128GcmSha256;
 #[cfg(all(not(feature = "cipher-aes"), feature = "chacha20"))]
-#[allow(dead_code)]
 pub type DefaultCipher = ChaCha20Poly1305Sha256;
 
 /// `TLS_AES_128_GCM_SHA256` (`0x1301`). Gated on `feature = "cipher-aes"`.
@@ -386,7 +384,6 @@ pub struct RecordKeys<S: CipherSuite> {
 // fixtures.
 
 #[cfg(test)]
-#[allow(dead_code)] // First users land in subsequent commits.
 mod no_cipher {
     use super::*;
     use ::aead::consts::{U0, U12, U16};
@@ -460,7 +457,6 @@ mod no_cipher {
 }
 
 #[cfg(test)]
-#[allow(unused_imports)] // First user of NoCipher arrives in a later commit.
 pub use no_cipher::NoCipher;
 
 impl<S: CipherSuite> RecordKeys<S> {

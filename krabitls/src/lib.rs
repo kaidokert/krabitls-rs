@@ -29,7 +29,7 @@ pub(crate) mod traits;
 pub use aead::Aes128GcmSha256;
 #[cfg(feature = "chacha20")]
 pub use aead::ChaCha20Poly1305Sha256;
-pub use aead::{CipherSuite, DecryptError, EncryptError};
+pub use aead::{CipherSuite, DecryptError, DefaultCipher, EncryptError};
 #[cfg(feature = "jedisct")]
 pub use backends::JedisctCrypto;
 #[cfg(all(feature = "rsa", not(feature = "rsa_pss_only")))]
@@ -49,17 +49,15 @@ pub use hkdf::{HkdfLabelError, TranscriptError, TranscriptHash};
 pub use reassembler::{ReassemblyError, ServerFlightReassembler};
 // Lib-test convenience re-exports — internal helpers reachable via `crate::foo`
 // inside the in-crate tests module. External callers go through TlsConnection.
-// `unused_imports` allowed because not every feature combo exercises every test helper.
+#[cfg(all(test, feature = "cipher-aes"))]
+pub(crate) use aead::RecordKeys;
 #[cfg(test)]
-#[allow(unused_imports)]
-pub(crate) use aead::{
-    RecordKeys, aead_nonce, decrypt_record, encrypt_record, split_inner_plaintext,
-};
+pub(crate) use aead::{aead_nonce, split_inner_plaintext};
+#[cfg(all(test, feature = "cipher-aes"))]
+pub(crate) use hkdf::{application_traffic_secrets, master_secret};
 #[cfg(test)]
-#[allow(unused_imports)]
 pub(crate) use hkdf::{
-    EMPTY_TRANSCRIPT_HASH, application_traffic_secrets, derive_secret, early_secret, finished_mac,
-    handshake_secret, handshake_traffic_secrets, hkdf_expand_label, master_secret, traffic_keys,
+    derive_secret, handshake_secret, handshake_traffic_secrets, hkdf_expand_label,
 };
 pub use identity::{IdentityError, PinnedPubkey, verify_hostname, verify_pinned_pubkey};
 #[cfg(feature = "validity")]
@@ -67,13 +65,8 @@ pub use identity::{ValidityError, verify_validity};
 #[cfg(feature = "chacha20")]
 pub use newtype::AeadKey32;
 pub use newtype::{AeadIv, AeadKey, Secret, TranscriptDigest, ZeroBuf};
-#[cfg(test)]
-#[allow(unused_imports)]
-pub(crate) use server_flight::{
-    ServerFlightVerified, verify_certificate_verify, verify_certificate_verify_with_cache,
-    verify_self_signed_cert, verify_self_signed_cert_with_cache, verify_server_finished,
-    verify_server_flight,
-};
+#[cfg(all(test, feature = "cipher-aes"))]
+pub(crate) use server_flight::{verify_self_signed_cert, verify_server_flight};
 // `extract_cert_der` + `parse_server_flight` stay pub for callers doing
 // cert-content inspection (SAN / pin / validity) after the typestate verify.
 pub use server_flight::{FlightError, ServerPubkey, extract_cert_der, parse_server_flight};
@@ -962,10 +955,6 @@ impl<'a> Reader<'a> {
 // Tests — cross-check against the Python fixture's seed-0 ClientHello.
 
 #[cfg(test)]
-// Many test helpers/fixtures are AES-bound and unused under the chacha-only
-// build (cipher-aes off). Suppress the cascade of `never used` lints for that
-// config; the AES helpers stay available for the `feature = "cipher-aes"` tests.
-#[cfg_attr(not(feature = "cipher-aes"), allow(dead_code))]
 mod tests {
     use super::*;
     use crate::aead::{decrypt_record, encrypt_record};
@@ -1792,6 +1781,7 @@ mod tests {
     ///   0x08 0x00 0x00 0x02 0x00 0x00       EncryptedExtensions (empty)
     ///   0x0b 0x00 0x00 0xf0 ...             Certificate (msg_type=11, len=0x0000f0)
     /// First 32 bytes of the SF plaintext.
+    #[cfg(feature = "cipher-aes")]
     const FIXTURE_PACKET_3_PLAINTEXT_HEAD: [u8; 32] = [
         0x08, 0x00, 0x00, 0x02, 0x00, 0x00, 0x0b, 0x00, 0x01, 0x13, 0x00, 0x00, 0x01, 0x0f, 0x00,
         0x01, 0x0a, 0x30, 0x82, 0x01, 0x06, 0x30, 0x81, 0xb9, 0xa0, 0x03, 0x02, 0x01, 0x02, 0x02,
@@ -1801,9 +1791,11 @@ mod tests {
     /// Wrap the seed-0 server handshake AEAD key bytes into an `AeadKey`.
     /// `AeadKey::new` takes a `ZeroBuf<16>` (= `Zeroizing<[u8; 16]>`) which
     /// isn't const-constructible, so we wrap at the call site.
+    #[cfg(feature = "cipher-aes")]
     fn make_fixture_s_hs_key() -> AeadKey {
         AeadKey::new(ZeroBuf::<16>::new(FIXTURE_S_HS_KEY_BYTES))
     }
+    #[cfg(feature = "cipher-aes")]
     fn make_fixture_s_hs_iv() -> AeadIv {
         AeadIv::new(ZeroBuf::<12>::new(FIXTURE_S_HS_IV_BYTES))
     }
@@ -1812,13 +1804,17 @@ mod tests {
     /// `E: Ed25519VerifierProvider` generic actually wires through to the verify
     /// callsites — swapping the backend should change observed behavior
     /// even with the same cert / signature bytes.
+    #[cfg(feature = "cipher-aes")]
     struct AlwaysReject;
+    #[cfg(feature = "cipher-aes")]
     struct AlwaysRejectVerifier;
+    #[cfg(feature = "cipher-aes")]
     impl signature::Verifier<[u8; 64]> for AlwaysRejectVerifier {
         fn verify(&self, _: &[u8], _: &[u8; 64]) -> Result<(), signature::Error> {
             Err(signature::Error::new())
         }
     }
+    #[cfg(feature = "cipher-aes")]
     impl crate::traits::Ed25519VerifierProvider for AlwaysReject {
         type Verifier = AlwaysRejectVerifier;
         fn prepare_ed25519(_: &[u8; 32]) -> Self::Verifier {
@@ -1845,6 +1841,7 @@ mod tests {
     /// 1. `TBSCertificate.signature` AlgorithmIdentifier
     /// 2. `SubjectPublicKeyInfo.algorithm` AlgorithmIdentifier
     /// 3. outer `Certificate.signatureAlgorithm` AlgorithmIdentifier
+    #[cfg(feature = "cipher-aes")]
     fn find_ed25519_oid_positions(cert_der: &[u8]) -> [usize; 3] {
         const ED25519_OID_BYTES: &[u8] = &[0x06, 0x03, 0x2B, 0x65, 0x70];
         let mut positions = [0usize; 3];
@@ -1967,26 +1964,33 @@ mod tests {
     }
 
     /// packets/005_c2s_AppData_send_0.hex (52 bytes) — first client app-data record.
+    #[cfg(feature = "cipher-aes")]
     const FIXTURE_PACKET_5: [u8; 52] = crate::hex_decode(include_str!(
         "../../testdata/packets/005_c2s_AppData_send_0.hex"
     ));
     /// packets/006_s2c_AppData_reply_0.hex (48 bytes) — first server app-data record.
+    #[cfg(feature = "cipher-aes")]
     const FIXTURE_PACKET_6: [u8; 48] = crate::hex_decode(include_str!(
         "../../testdata/packets/006_s2c_AppData_reply_0.hex"
     ));
 
     /// Plaintext the fixture's `cli.py --send` sent.
+    #[cfg(feature = "cipher-aes")]
     const PACKET_5_PLAINTEXT: &[u8] = b"hello from the embedded client";
     /// Plaintext the fixture's `serv.py --reply` sent — includes a UTF-8 em-dash
     /// (`\xe2\x80\x94`) which exercises non-ASCII handling.
+    #[cfg(feature = "cipher-aes")]
     const PACKET_6_PLAINTEXT: &[u8] = b"hello back \xe2\x80\x94 server here";
 
     /// `((key, iv), (key, iv))` for `(c_ap, s_ap)` AEAD streams.
+    #[cfg(feature = "cipher-aes")]
     type ApAeadKeys = (AeadKey, AeadIv);
 
+    #[cfg(feature = "cipher-aes")]
     fn make_fixture_handshake_secret() -> Secret {
         Secret::new(ZeroBuf::<32>::new(FIXTURE_HANDSHAKE_SECRET_BYTES))
     }
+    #[cfg(feature = "cipher-aes")]
     fn make_fixture_c_hs_traffic_secret() -> Secret {
         Secret::new(ZeroBuf::<32>::new(FIXTURE_C_HS_TRAFFIC_SECRET_BYTES))
     }
@@ -2032,6 +2036,7 @@ mod tests {
     }
 
     /// packets/004_c2s_ClientFinished_encrypted.hex (58 bytes).
+    #[cfg(feature = "cipher-aes")]
     const FIXTURE_PACKET_4: [u8; 58] = crate::hex_decode(include_str!(
         "../../testdata/packets/004_c2s_ClientFinished_encrypted.hex"
     ));
@@ -2607,7 +2612,7 @@ mod tests {
         }
     }
 
-    #[cfg(all(feature = "rsa", not(feature = "rsa_pss_only")))]
+    #[cfg(all(feature = "rsa", not(feature = "rsa_pss_only"), feature = "cipher-aes"))]
     mod rsa_tests {
         use super::*;
 

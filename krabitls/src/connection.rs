@@ -14,9 +14,11 @@ use crate::aead::split_inner_plaintext;
 use crate::aead::{CipherSuite, RecordKeys};
 use crate::backends::RustCrypto;
 use crate::client_flight::ClientFinishedError;
+#[cfg(feature = "cipher-aes")]
+use crate::consts::CIPHER_AES_128_GCM_SHA256;
 #[cfg(feature = "chacha20")]
 use crate::consts::CIPHER_CHACHA20_POLY1305_SHA256;
-use crate::consts::{CIPHER_AES_128_GCM_SHA256, CT_APPLICATION_DATA, CT_HANDSHAKE};
+use crate::consts::{CT_APPLICATION_DATA, CT_HANDSHAKE};
 use crate::hkdf::{
     HkdfLabelError, TranscriptError, TranscriptHash, application_traffic_secrets, handshake_secret,
     handshake_traffic_secrets, master_secret,
@@ -247,7 +249,6 @@ pub struct WaitServerFlight<S: CipherSuite, M: HandshakeMode = Live> {
 pub struct ServerFlightDone<S: CipherSuite, M: HandshakeMode = Live> {
     pub(crate) hs: Secret,
     pub(crate) c_hs_ts: Secret,
-    #[allow(dead_code)]
     pub(crate) s_hs_ts: Secret,
     pub(crate) server_pubkey: ServerPubkeyOwned,
     pub(crate) _suite: PhantomData<S>,
@@ -537,14 +538,23 @@ where
 
         let sh = parse_server_hello(sh_record)?;
         // Selected suite must have been in the advertised cipher_suites list.
-        // AES-128-GCM-SHA256 is always advertised; ChaCha is only advertised
-        // when `SuiteList::Default` (and `feature = "chacha20"` is on).
         let advertised_ok = match sh.cipher_suite {
-            CIPHER_AES_128_GCM_SHA256 => true,
-            #[cfg(feature = "chacha20")]
-            CIPHER_CHACHA20_POLY1305_SHA256 => {
-                matches!(self.state.advertised, crate::SuiteList::Default)
+            #[cfg(feature = "cipher-aes")]
+            CIPHER_AES_128_GCM_SHA256 => {
+                #[cfg(feature = "chacha20")]
+                {
+                    !matches!(self.state.advertised, crate::SuiteList::ChaChaOnly)
+                }
+                #[cfg(not(feature = "chacha20"))]
+                {
+                    true
+                }
             }
+            #[cfg(feature = "chacha20")]
+            CIPHER_CHACHA20_POLY1305_SHA256 => matches!(
+                self.state.advertised,
+                crate::SuiteList::Default | crate::SuiteList::ChaChaOnly,
+            ),
             _ => false,
         };
         if !advertised_ok {
