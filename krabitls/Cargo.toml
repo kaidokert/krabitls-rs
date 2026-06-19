@@ -75,15 +75,11 @@ replay = []
 # against the seed-0 fixtures end-to-end on host and on cortex_m_demo
 # without a real transport or OS RNG.
 canned-replay = []
-# Default cert parser, backed by the `der` crate. Mutually exclusive
-# with `cert-tlv` at the source level (`cert-tlv` takes precedence if
-# both are enabled). On by default; drop with `--no-default-features
-# --features cert-tlv` to actually exclude `der` from the build.
+# Cert parser backend selector. On (default) → der-crate-backed parser.
+# Off → in-tree hand-rolled TLV walker (drops the `der` dep, ~-4 KiB
+# .text, but the parser is unaudited). Drop with `--no-default-features
+# --features cipher-aes,...` to switch to the TLV path.
 cert-der = ["dep:der"]
-# Swap [`crate::DerCert`]'s `der`-crate-backed cert parser for an in-tree
-# hand-rolled TLV walker. Drops the `der` dep (-4 KiB facade .text) at
-# the cost of an ad-hoc parser. Default OFF.
-cert-tlv = []
 # Match IP-literal hostnames against SAN `iPAddress` entries. Without it,
 # IP literals fall through to `HostnameMismatch`. Saves ~2 KiB of
 # `core::net::parser` on DNS-only embedded deployments. Default OFF.

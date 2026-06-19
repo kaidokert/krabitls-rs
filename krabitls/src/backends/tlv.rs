@@ -17,7 +17,7 @@ pub struct TlvError;
 #[derive(Debug, Clone, Copy)]
 pub struct Tlv<'a> {
     pub tag: u8,
-    // `header_len` is only read by `tlv_cert.rs` (feature = "cert-tlv");
+    // `header_len` is only read by `tlv_cert.rs` (cfg not(feature = "cert-der"));
     // identity.rs's SAN walker doesn't need it. Keep it as a public
     // field so the `Tlv` shape is stable across both code paths.
     #[allow(dead_code)]
@@ -88,23 +88,23 @@ pub fn read_tlv(buf: &[u8]) -> Result<Tlv<'_>, TlvError> {
 // ASN.1 universal class primitive / constructed tags. Only the cert
 // parser uses these — SAN walking only needs the context-specific
 // helper below.
-#[cfg(feature = "cert-tlv")]
+#[cfg(not(feature = "cert-der"))]
 pub const TAG_BOOLEAN: u8 = 0x01;
-#[cfg(feature = "cert-tlv")]
+#[cfg(not(feature = "cert-der"))]
 pub const TAG_INTEGER: u8 = 0x02;
-#[cfg(feature = "cert-tlv")]
+#[cfg(not(feature = "cert-der"))]
 pub const TAG_BIT_STRING: u8 = 0x03;
-#[cfg(feature = "cert-tlv")]
+#[cfg(not(feature = "cert-der"))]
 pub const TAG_OCTET_STRING: u8 = 0x04;
-#[cfg(all(feature = "cert-tlv", feature = "rsa"))]
+#[cfg(all(not(feature = "cert-der"), feature = "rsa"))]
 pub const TAG_NULL: u8 = 0x05;
-#[cfg(feature = "cert-tlv")]
+#[cfg(not(feature = "cert-der"))]
 pub const TAG_OID: u8 = 0x06;
-#[cfg(feature = "cert-tlv")]
+#[cfg(not(feature = "cert-der"))]
 pub const TAG_SEQUENCE: u8 = 0x30;
 
 /// `[N]` EXPLICIT (constructed) context-specific tag byte.
-#[cfg(feature = "cert-tlv")]
+#[cfg(not(feature = "cert-der"))]
 pub const fn tag_ctx_constructed(n: u8) -> u8 {
     0xA0 | (n & 0x1F)
 }
@@ -115,7 +115,7 @@ pub const fn tag_ctx_primitive(n: u8) -> u8 {
 }
 
 /// Peek the tag byte at the start of `buf` without consuming it.
-#[cfg(feature = "cert-tlv")]
+#[cfg(not(feature = "cert-der"))]
 pub fn peek_tag(buf: &[u8]) -> Result<u8, TlvError> {
     buf.first().copied().ok_or(TlvError)
 }
@@ -180,7 +180,7 @@ mod tests {
         assert!(read_tlv(&buf).is_err());
     }
 
-    #[cfg(feature = "cert-tlv")]
+    #[cfg(not(feature = "cert-der"))]
     #[test]
     fn ctx_tags_constructed() {
         assert_eq!(tag_ctx_constructed(0), 0xA0);

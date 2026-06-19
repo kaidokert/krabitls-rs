@@ -30,7 +30,6 @@ pub use aead::Aes128GcmSha256;
 #[cfg(feature = "chacha20")]
 pub use aead::ChaCha20Poly1305Sha256;
 pub use aead::{CipherSuite, DecryptError, DefaultCipher, EncryptError};
-#[cfg(any(feature = "cert-der", feature = "cert-tlv"))]
 pub use backends::DerCert;
 #[cfg(feature = "jedisct")]
 pub use backends::JedisctCrypto;
@@ -203,14 +202,6 @@ const EXT_KEY_SHARE_TOTAL: u16 = 4 + 38;
 #[cfg(not(any(feature = "cipher-aes", feature = "chacha20")))]
 compile_error!(
     "krabitls requires at least one of `cipher-aes` (default) or `chacha20` to provide a cipher suite"
-);
-
-// Exactly one cert parser must be active. `DerCert` (the public type)
-// is re-exported from whichever backend wins; without either feature
-// there is no concrete type to satisfy the `CertParser` bound.
-#[cfg(not(any(feature = "cert-der", feature = "cert-tlv")))]
-compile_error!(
-    "krabitls requires at least one of `cert-der` (default) or `cert-tlv` to provide a cert parser"
 );
 
 // Number of suites advertised under `SuiteList::Default` — depends on which
