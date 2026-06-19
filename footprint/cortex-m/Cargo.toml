@@ -38,22 +38,19 @@ ip-host = ["footprint_handshakes/ip-host"]
 
 [[example]]
 name = "krabitls"
+required-features = ["canned-replay"]
 
 [[example]]
 name = "krabitls_jedisct"
-required-features = ["jedisct"]
+required-features = ["jedisct", "canned-replay"]
 
 [[example]]
 name = "krabitls_rsa"
-required-features = ["rsa"]
+required-features = ["rsa", "canned-replay"]
 
 [[example]]
 name = "krabitls_chacha"
-required-features = ["chacha20"]
-
-[[example]]
-name = "krabitls_facade"
-required-features = ["canned-replay"]
+required-features = ["chacha20", "canned-replay"]
 
 [dependencies]
 # `critical-section-single-core` registers a single-core critical-section

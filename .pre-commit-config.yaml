@@ -136,71 +136,70 @@ repos:
         language: system
         pass_filenames: false
         files: ^(krabitls_cli|krabitls)/.*\.(rs|toml)$
+    # `cargo hack --feature-powerset` enforces that every realistic
+    # feature combination still compiles. Without it a feature-combo
+    # regression can slip through the handpicked clippy hooks above.
+    # Constraints: at least one cipher, at least one cert parser;
+    # depth 2 keeps the combinatorial cost bounded.
+    -   id: krabitls-cargo-hack
+        name: cargo hack krabitls (feature-powerset, depth 2)
+        entry: cargo hack check --manifest-path=krabitls/Cargo.toml --feature-powerset --depth 2 --no-dev-deps --at-least-one-of cipher-aes,chacha20 --at-least-one-of cert-der,cert-tlv
+        language: system
+        pass_filenames: false
+        files: ^krabitls/.*\.(rs|toml)$
 
     # ---- footprint/cortex-m (thumbv7m) ----
     -   id: cortex-m-clippy
         name: clippy footprint cortex-m (thumbv7m)
-        entry: cargo clippy --manifest-path=footprint/cortex-m/Cargo.toml --release --example krabitls --target thumbv7m-none-eabi -- -D warnings
-        language: system
-        pass_filenames: false
-        files: ^(footprint|krabitls)/.*\.(rs|toml|x)$
-    -   id: cortex-m-build-default
-        name: build footprint cortex-m (thumbv7m, default)
-        entry: cargo build --manifest-path=footprint/cortex-m/Cargo.toml --release --example krabitls --target thumbv7m-none-eabi
-        language: system
-        pass_filenames: false
-        files: ^(footprint|krabitls)/.*\.(rs|toml|x|hex)$
-    -   id: cortex-m-build-baseline
-        name: build footprint cortex-m (thumbv7m, baseline)
-        entry: cargo build --manifest-path=footprint/cortex-m/Cargo.toml --release --example krabitls --target thumbv7m-none-eabi --features baseline
-        language: system
-        pass_filenames: false
-        files: ^(footprint|krabitls)/.*\.(rs|toml|x|hex)$
-    -   id: cortex-m-build-jedisct
-        name: build footprint cortex-m (thumbv7m, jedisct)
-        entry: cargo build --manifest-path=footprint/cortex-m/Cargo.toml --release --example krabitls_jedisct --target thumbv7m-none-eabi --features jedisct
-        language: system
-        pass_filenames: false
-        files: ^(footprint|krabitls)/.*\.(rs|toml|x|hex)$
-    -   id: cortex-m-build-rsa
-        name: build footprint cortex-m (thumbv7m, rsa)
-        entry: cargo build --manifest-path=footprint/cortex-m/Cargo.toml --release --example krabitls_rsa --target thumbv7m-none-eabi --features rsa
-        language: system
-        pass_filenames: false
-        files: ^(footprint|krabitls)/.*\.(rs|toml|x|hex)$
-    -   id: cortex-m-clippy-chacha20
-        name: clippy footprint cortex-m (thumbv7m, chacha20)
-        entry: cargo clippy --manifest-path=footprint/cortex-m/Cargo.toml --release --example krabitls_chacha --target thumbv7m-none-eabi --features chacha20 -- -D warnings
-        language: system
-        pass_filenames: false
-        files: ^(footprint|krabitls)/.*\.(rs|toml|x)$
-    -   id: cortex-m-build-chacha20
-        name: build footprint cortex-m (thumbv7m, chacha20)
-        entry: cargo build --manifest-path=footprint/cortex-m/Cargo.toml --release --example krabitls_chacha --target thumbv7m-none-eabi --features chacha20
-        language: system
-        pass_filenames: false
-        files: ^(footprint|krabitls)/.*\.(rs|toml|x|hex)$
-    -   id: cortex-m-build-chacha20-baseline
-        name: build footprint cortex-m (thumbv7m, chacha20 + baseline)
-        entry: cargo build --manifest-path=footprint/cortex-m/Cargo.toml --release --example krabitls_chacha --target thumbv7m-none-eabi --features chacha20 --features baseline
-        language: system
-        pass_filenames: false
-        files: ^(footprint|krabitls)/.*\.(rs|toml|x|hex)$
-    -   id: cortex-m-build-rsa-baseline
-        name: build footprint cortex-m (thumbv7m, rsa + baseline)
-        entry: cargo build --manifest-path=footprint/cortex-m/Cargo.toml --release --example krabitls_rsa --target thumbv7m-none-eabi --features rsa --features baseline
-        language: system
-        pass_filenames: false
-        files: ^(footprint|krabitls)/.*\.(rs|toml|x|hex)$
-    -   id: cortex-m-build-facade
-        name: build footprint cortex-m (thumbv7m, facade)
-        entry: cargo build --manifest-path=footprint/cortex-m/Cargo.toml --release --example krabitls_facade --target thumbv7m-none-eabi --features canned-replay
+        entry: cargo clippy --manifest-path=footprint/cortex-m/Cargo.toml --release --example krabitls --target thumbv7m-none-eabi --features canned-replay -- -D warnings
         language: system
         pass_filenames: false
         files: ^(footprint|krabitls|testdata)/.*\.(rs|toml|x|hex)$
-    -   id: cortex-m-build-facade-baseline
-        name: build footprint cortex-m (thumbv7m, facade + baseline)
-        entry: cargo build --manifest-path=footprint/cortex-m/Cargo.toml --release --example krabitls_facade --target thumbv7m-none-eabi --features canned-replay --features baseline
+    -   id: cortex-m-build-default
+        name: build footprint cortex-m (thumbv7m, default)
+        entry: cargo build --manifest-path=footprint/cortex-m/Cargo.toml --release --example krabitls --target thumbv7m-none-eabi --features canned-replay
+        language: system
+        pass_filenames: false
+        files: ^(footprint|krabitls|testdata)/.*\.(rs|toml|x|hex)$
+    -   id: cortex-m-build-baseline
+        name: build footprint cortex-m (thumbv7m, baseline)
+        entry: cargo build --manifest-path=footprint/cortex-m/Cargo.toml --release --example krabitls --target thumbv7m-none-eabi --features canned-replay --features baseline
+        language: system
+        pass_filenames: false
+        files: ^(footprint|krabitls|testdata)/.*\.(rs|toml|x|hex)$
+    -   id: cortex-m-build-jedisct
+        name: build footprint cortex-m (thumbv7m, jedisct)
+        entry: cargo build --manifest-path=footprint/cortex-m/Cargo.toml --release --example krabitls_jedisct --target thumbv7m-none-eabi --features jedisct,canned-replay
+        language: system
+        pass_filenames: false
+        files: ^(footprint|krabitls|testdata)/.*\.(rs|toml|x|hex)$
+    -   id: cortex-m-build-rsa
+        name: build footprint cortex-m (thumbv7m, rsa)
+        entry: cargo build --manifest-path=footprint/cortex-m/Cargo.toml --release --example krabitls_rsa --target thumbv7m-none-eabi --features rsa,canned-replay
+        language: system
+        pass_filenames: false
+        files: ^(footprint|krabitls|testdata)/.*\.(rs|toml|x|hex)$
+    -   id: cortex-m-clippy-chacha20
+        name: clippy footprint cortex-m (thumbv7m, chacha20)
+        entry: cargo clippy --manifest-path=footprint/cortex-m/Cargo.toml --release --example krabitls_chacha --target thumbv7m-none-eabi --no-default-features --features chacha20,cert-der,canned-replay -- -D warnings
+        language: system
+        pass_filenames: false
+        files: ^(footprint|krabitls|testdata)/.*\.(rs|toml|x|hex)$
+    -   id: cortex-m-build-chacha20
+        name: build footprint cortex-m (thumbv7m, chacha20)
+        entry: cargo build --manifest-path=footprint/cortex-m/Cargo.toml --release --example krabitls_chacha --target thumbv7m-none-eabi --no-default-features --features chacha20,cert-der,canned-replay
+        language: system
+        pass_filenames: false
+        files: ^(footprint|krabitls|testdata)/.*\.(rs|toml|x|hex)$
+    -   id: cortex-m-build-chacha20-baseline
+        name: build footprint cortex-m (thumbv7m, chacha20 + baseline)
+        entry: cargo build --manifest-path=footprint/cortex-m/Cargo.toml --release --example krabitls_chacha --target thumbv7m-none-eabi --no-default-features --features chacha20,cert-der,canned-replay,baseline
+        language: system
+        pass_filenames: false
+        files: ^(footprint|krabitls|testdata)/.*\.(rs|toml|x|hex)$
+    -   id: cortex-m-build-rsa-baseline
+        name: build footprint cortex-m (thumbv7m, rsa + baseline)
+        entry: cargo build --manifest-path=footprint/cortex-m/Cargo.toml --release --example krabitls_rsa --target thumbv7m-none-eabi --features rsa,canned-replay,baseline
         language: system
         pass_filenames: false
         files: ^(footprint|krabitls|testdata)/.*\.(rs|toml|x|hex)$
@@ -208,43 +207,37 @@ repos:
     # ---- footprint/risc-v (riscv32imac) ----
     -   id: riscv-clippy
         name: clippy footprint risc-v (riscv32imac)
-        entry: cargo clippy --manifest-path=footprint/risc-v/Cargo.toml --release --example krabitls --target riscv32imac-unknown-none-elf -- -D warnings
+        entry: cargo clippy --manifest-path=footprint/risc-v/Cargo.toml --release --example krabitls --target riscv32imac-unknown-none-elf --features canned-replay -- -D warnings
         language: system
         pass_filenames: false
-        files: ^(footprint|krabitls)/.*\.(rs|toml|x)$
+        files: ^(footprint|krabitls|testdata)/.*\.(rs|toml|x|hex)$
     -   id: riscv-build-default
         name: build footprint risc-v (riscv32imac, default)
-        entry: cargo build --manifest-path=footprint/risc-v/Cargo.toml --release --example krabitls --target riscv32imac-unknown-none-elf
+        entry: cargo build --manifest-path=footprint/risc-v/Cargo.toml --release --example krabitls --target riscv32imac-unknown-none-elf --features canned-replay
         language: system
         pass_filenames: false
-        files: ^(footprint|krabitls)/.*\.(rs|toml|x|hex)$
+        files: ^(footprint|krabitls|testdata)/.*\.(rs|toml|x|hex)$
     -   id: riscv-build-baseline
         name: build footprint risc-v (riscv32imac, baseline)
-        entry: cargo build --manifest-path=footprint/risc-v/Cargo.toml --release --example krabitls --target riscv32imac-unknown-none-elf --features baseline
+        entry: cargo build --manifest-path=footprint/risc-v/Cargo.toml --release --example krabitls --target riscv32imac-unknown-none-elf --features canned-replay --features baseline
         language: system
         pass_filenames: false
-        files: ^(footprint|krabitls)/.*\.(rs|toml|x|hex)$
+        files: ^(footprint|krabitls|testdata)/.*\.(rs|toml|x|hex)$
     -   id: riscv-build-jedisct
         name: build footprint risc-v (riscv32imac, jedisct)
-        entry: cargo build --manifest-path=footprint/risc-v/Cargo.toml --release --example krabitls_jedisct --target riscv32imac-unknown-none-elf --features jedisct
+        entry: cargo build --manifest-path=footprint/risc-v/Cargo.toml --release --example krabitls_jedisct --target riscv32imac-unknown-none-elf --features jedisct,canned-replay
         language: system
         pass_filenames: false
-        files: ^(footprint|krabitls)/.*\.(rs|toml|x|hex)$
+        files: ^(footprint|krabitls|testdata)/.*\.(rs|toml|x|hex)$
     -   id: riscv-build-rsa
         name: build footprint risc-v (riscv32imac, rsa)
-        entry: cargo build --manifest-path=footprint/risc-v/Cargo.toml --release --example krabitls_rsa --target riscv32imac-unknown-none-elf --features rsa
+        entry: cargo build --manifest-path=footprint/risc-v/Cargo.toml --release --example krabitls_rsa --target riscv32imac-unknown-none-elf --features rsa,canned-replay
         language: system
         pass_filenames: false
-        files: ^(footprint|krabitls)/.*\.(rs|toml|x|hex)$
+        files: ^(footprint|krabitls|testdata)/.*\.(rs|toml|x|hex)$
     -   id: riscv-build-chacha20
         name: build footprint risc-v (riscv32imac, chacha20)
-        entry: cargo build --manifest-path=footprint/risc-v/Cargo.toml --release --example krabitls_chacha --target riscv32imac-unknown-none-elf --features chacha20
-        language: system
-        pass_filenames: false
-        files: ^(footprint|krabitls)/.*\.(rs|toml|x|hex)$
-    -   id: riscv-build-facade
-        name: build footprint risc-v (riscv32imac, facade)
-        entry: cargo build --manifest-path=footprint/risc-v/Cargo.toml --release --example krabitls_facade --target riscv32imac-unknown-none-elf --features canned-replay
+        entry: cargo build --manifest-path=footprint/risc-v/Cargo.toml --release --example krabitls_chacha --target riscv32imac-unknown-none-elf --no-default-features --features chacha20,cert-der,canned-replay
         language: system
         pass_filenames: false
         files: ^(footprint|krabitls|testdata)/.*\.(rs|toml|x|hex)$

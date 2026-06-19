@@ -34,7 +34,7 @@ cert-tlv = ["krabitls/cert-tlv"]
 ip-host = ["krabitls/ip-host"]
 
 [dependencies]
-krabitls = { path = "../../krabitls", default-features = false, features = ["dev-utils", "replay"] }
+krabitls = { path = "../../krabitls", default-features = false, features = ["dev-utils"] }
 critical-section = "1"
 
 [lints.rust]

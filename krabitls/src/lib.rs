@@ -30,13 +30,15 @@ pub use aead::Aes128GcmSha256;
 #[cfg(feature = "chacha20")]
 pub use aead::ChaCha20Poly1305Sha256;
 pub use aead::{CipherSuite, DecryptError, DefaultCipher, EncryptError};
+#[cfg(any(feature = "cert-der", feature = "cert-tlv"))]
+pub use backends::DerCert;
 #[cfg(feature = "jedisct")]
 pub use backends::JedisctCrypto;
+pub use backends::RustCrypto;
 #[cfg(all(feature = "rsa", not(feature = "rsa_pss_only")))]
 pub use backends::rsa_verify::RsaPkcs1Sig;
 #[cfg(feature = "rsa")]
 pub use backends::rsa_verify::RsaPssSig;
-pub use backends::{DerCert, RustCrypto};
 #[cfg(feature = "rsa")]
 pub use backends::{RsaVerifierKey, RsaVerifyError};
 pub use client_flight::{CLIENT_FINISHED_LEN, ClientFinishedError};
@@ -201,6 +203,14 @@ const EXT_KEY_SHARE_TOTAL: u16 = 4 + 38;
 #[cfg(not(any(feature = "cipher-aes", feature = "chacha20")))]
 compile_error!(
     "krabitls requires at least one of `cipher-aes` (default) or `chacha20` to provide a cipher suite"
+);
+
+// Exactly one cert parser must be active. `DerCert` (the public type)
+// is re-exported from whichever backend wins; without either feature
+// there is no concrete type to satisfy the `CertParser` bound.
+#[cfg(not(any(feature = "cert-der", feature = "cert-tlv")))]
+compile_error!(
+    "krabitls requires at least one of `cert-der` (default) or `cert-tlv` to provide a cert parser"
 );
 
 // Number of suites advertised under `SuiteList::Default` — depends on which
@@ -2617,16 +2627,16 @@ mod tests {
         use super::*;
 
         /// RSA fixture, c→s ClientHello.
-        const FIXTURE_RSA_CLIENT_HELLO: [u8; 117] = crate::hex_decode(include_str!(
+        const FIXTURE_RSA_CLIENT_HELLO: [u8; 151] = crate::hex_decode(include_str!(
             "../../testdata/packets_rsa/001_c2s_ClientHello.hex"
         ));
         /// RSA fixture, s→c ServerHello.
         const FIXTURE_RSA_SERVER_HELLO: [u8; 95] = crate::hex_decode(include_str!(
             "../../testdata/packets_rsa/002_s2c_ServerHello.hex"
         ));
-        /// RSA fixture, encrypted server flight (1034 B — dominated by the
+        /// RSA fixture, encrypted server flight (dominated by the
         /// 2048-bit RSA cert + 256-byte RSA-PSS signature).
-        const FIXTURE_RSA_PACKET_3: [u8; 1034] = crate::hex_decode(include_str!(
+        const FIXTURE_RSA_PACKET_3: [u8; 1068] = crate::hex_decode(include_str!(
             "../../testdata/packets_rsa/003_s2c_ServerFlight_encrypted.hex"
         ));
 

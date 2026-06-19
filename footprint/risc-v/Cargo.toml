@@ -9,30 +9,30 @@ autobenches = false
 [features]
 # See `footprint_cortex_m/Cargo.toml` — same feature semantics for the
 # baseline / jedisct / rsa / chacha20 rows. Wired through `footprint_handshakes`.
+default = ["cert-der", "cipher-aes"]
 baseline = []
 jedisct = ["footprint_handshakes/jedisct"]
 rsa = ["footprint_handshakes/rsa"]
 chacha20 = ["footprint_handshakes/chacha20"]
+cert-der = ["footprint_handshakes/cert-der"]
+cipher-aes = ["footprint_handshakes/cipher-aes"]
 canned-replay = ["footprint_handshakes/canned-replay"]
 
 [[example]]
 name = "krabitls"
+required-features = ["canned-replay"]
 
 [[example]]
 name = "krabitls_jedisct"
-required-features = ["jedisct"]
+required-features = ["jedisct", "canned-replay"]
 
 [[example]]
 name = "krabitls_rsa"
-required-features = ["rsa"]
+required-features = ["rsa", "canned-replay"]
 
 [[example]]
 name = "krabitls_chacha"
-required-features = ["chacha20"]
-
-[[example]]
-name = "krabitls_facade"
-required-features = ["canned-replay"]
+required-features = ["chacha20", "canned-replay"]
 
 [dependencies]
 riscv-rt = "0.13"
@@ -41,7 +41,7 @@ riscv-rt = "0.13"
 riscv = { version = "0.12", features = ["critical-section-single-hart"] }
 riscv-semihosting = "0.2"
 
-footprint_handshakes = { path = "../handshakes" }
+footprint_handshakes = { path = "../handshakes", default-features = false }
 
 [profile.release]
 codegen-units = 1
