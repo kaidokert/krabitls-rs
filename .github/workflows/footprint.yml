@@ -49,43 +49,43 @@ jobs:
     # any handshake / fixture regression surfaces as a non-zero exit.
     - name: cortex-m / krabitls
       working-directory: footprint/cortex-m
-      run: cargo run --release --example krabitls --target thumbv7m-none-eabi --features canned-replay
+      run: timeout 180 cargo run --release --example krabitls --target thumbv7m-none-eabi --features canned-replay
 
     - name: cortex-m / krabitls (baseline)
       working-directory: footprint/cortex-m
-      run: cargo run --release --example krabitls --target thumbv7m-none-eabi --features canned-replay,baseline
+      run: timeout 180 cargo run --release --example krabitls --target thumbv7m-none-eabi --features canned-replay,baseline
 
     - name: cortex-m / krabitls_jedisct
       working-directory: footprint/cortex-m
-      run: cargo run --release --example krabitls_jedisct --target thumbv7m-none-eabi --features jedisct,canned-replay
+      run: timeout 180 cargo run --release --example krabitls_jedisct --target thumbv7m-none-eabi --features jedisct,canned-replay
 
     - name: cortex-m / krabitls_chacha
       working-directory: footprint/cortex-m
-      run: cargo run --release --example krabitls_chacha --target thumbv7m-none-eabi --no-default-features --features chacha20,cert-der,canned-replay
+      run: timeout 180 cargo run --release --example krabitls_chacha --target thumbv7m-none-eabi --no-default-features --features chacha20,cert-der,canned-replay
 
     - name: cortex-m / krabitls_rsa
       working-directory: footprint/cortex-m
-      run: cargo run --release --example krabitls_rsa --target thumbv7m-none-eabi --features rsa,canned-replay
+      run: timeout 180 cargo run --release --example krabitls_rsa --target thumbv7m-none-eabi --features rsa,canned-replay
 
     - name: risc-v / krabitls
       working-directory: footprint/risc-v
-      run: cargo run --release --example krabitls --target riscv32imac-unknown-none-elf --features canned-replay
+      run: timeout 180 cargo run --release --example krabitls --target riscv32imac-unknown-none-elf --features canned-replay
 
     - name: risc-v / krabitls (baseline)
       working-directory: footprint/risc-v
-      run: cargo run --release --example krabitls --target riscv32imac-unknown-none-elf --features canned-replay,baseline
+      run: timeout 180 cargo run --release --example krabitls --target riscv32imac-unknown-none-elf --features canned-replay,baseline
 
     - name: risc-v / krabitls_jedisct
       working-directory: footprint/risc-v
-      run: cargo run --release --example krabitls_jedisct --target riscv32imac-unknown-none-elf --features jedisct,canned-replay
+      run: timeout 180 cargo run --release --example krabitls_jedisct --target riscv32imac-unknown-none-elf --features jedisct,canned-replay
 
     - name: risc-v / krabitls_chacha
       working-directory: footprint/risc-v
-      run: cargo run --release --example krabitls_chacha --target riscv32imac-unknown-none-elf --no-default-features --features chacha20,cert-der,canned-replay
+      run: timeout 180 cargo run --release --example krabitls_chacha --target riscv32imac-unknown-none-elf --no-default-features --features chacha20,cert-der,canned-replay
 
     - name: risc-v / krabitls_rsa
       working-directory: footprint/risc-v
-      run: cargo run --release --example krabitls_rsa --target riscv32imac-unknown-none-elf --features rsa,canned-replay
+      run: timeout 180 cargo run --release --example krabitls_rsa --target riscv32imac-unknown-none-elf --features rsa,canned-replay
 
     - name: Footprint suite
       working-directory: footprint
