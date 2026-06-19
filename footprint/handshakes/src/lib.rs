@@ -7,7 +7,43 @@
 //! crypto so the `.text` delta isolates the krabitls + AEAD + sig-verify
 //! cost.
 
-#[cfg(all(feature = "canned-replay", feature = "cipher-aes"))]
+// `concat_sh_sf!(SH_LEN, SF_LEN)` expands to a const block that
+// concatenates `SERVER_HELLO || SERVER_FLIGHT` at compile time. Done as
+// a macro because the generic-const form (`fn f<const A, const B>() ->
+// [u8; A + B]`) is gated on the `generic_const_exprs` nightly feature.
+// Declared at the top of the crate so the fixture modules below can
+// resolve it via the unqualified macro name.
+#[cfg(feature = "canned-replay")]
+macro_rules! concat_sh_sf {
+    ($sh_len:expr, $sf_len:expr) => {{
+        let mut out = [0u8; $sh_len + $sf_len];
+        let mut i = 0;
+        while i < $sh_len {
+            out[i] = SERVER_HELLO[i];
+            i += 1;
+        }
+        let mut j = 0;
+        while j < $sf_len {
+            out[$sh_len + j] = SERVER_FLIGHT[j];
+            j += 1;
+        }
+        out
+    }};
+}
+
+// Each facade is gated to the exact feature combination its canned bytes
+// were generated under. The seed-0 ClientHello changes shape under
+// `rsa` (extra sig scheme) and `chacha20` (cipher list), so a build that
+// enables one of those alongside the wrong fixture would deterministically
+// return `Err(())` even though nothing is actually broken — the wire bytes
+// just no longer match what the facade now emits.
+
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "cipher-aes",
+    not(feature = "chacha20"),
+    not(feature = "rsa"),
+))]
 mod fixture_aes_ed25519_facade {
     pub const CLIENT_HELLO: [u8; 149] = krabitls::hex_decode(include_str!(
         "../../../testdata/packets/001_c2s_ClientHello.hex"
@@ -21,12 +57,15 @@ mod fixture_aes_ed25519_facade {
     pub const CLIENT_FINISHED: [u8; 58] = krabitls::hex_decode(include_str!(
         "../../../testdata/packets/004_c2s_ClientFinished_encrypted.hex"
     ));
+    pub const SERVER_STREAM: [u8; SERVER_HELLO.len() + SERVER_FLIGHT.len()] =
+        concat_sh_sf!(SERVER_HELLO.len(), SERVER_FLIGHT.len());
 }
 
 #[cfg(all(
     feature = "canned-replay",
     feature = "chacha20",
-    not(feature = "cipher-aes")
+    not(feature = "cipher-aes"),
+    not(feature = "rsa"),
 ))]
 mod fixture_chacha_ed25519_facade {
     pub const CLIENT_HELLO: [u8; 149] = krabitls::hex_decode(include_str!(
@@ -41,9 +80,16 @@ mod fixture_chacha_ed25519_facade {
     pub const CLIENT_FINISHED: [u8; 58] = krabitls::hex_decode(include_str!(
         "../../../testdata/packets_chacha/004_c2s_ClientFinished_encrypted.hex"
     ));
+    pub const SERVER_STREAM: [u8; SERVER_HELLO.len() + SERVER_FLIGHT.len()] =
+        concat_sh_sf!(SERVER_HELLO.len(), SERVER_FLIGHT.len());
 }
 
-#[cfg(all(feature = "canned-replay", feature = "rsa", feature = "cipher-aes"))]
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "rsa",
+    feature = "cipher-aes",
+    not(feature = "chacha20"),
+))]
 mod fixture_aes_rsa2048_facade {
     pub const CLIENT_HELLO: [u8; 151] = krabitls::hex_decode(include_str!(
         "../../../testdata/packets_rsa/001_c2s_ClientHello.hex"
@@ -57,6 +103,8 @@ mod fixture_aes_rsa2048_facade {
     pub const CLIENT_FINISHED: [u8; 58] = krabitls::hex_decode(include_str!(
         "../../../testdata/packets_rsa/004_c2s_ClientFinished_encrypted.hex"
     ));
+    pub const SERVER_STREAM: [u8; SERVER_HELLO.len() + SERVER_FLIGHT.len()] =
+        concat_sh_sf!(SERVER_HELLO.len(), SERVER_FLIGHT.len());
 }
 
 /// Drive the full facade handshake against canned seed-0 fixtures.
@@ -66,20 +114,20 @@ mod fixture_aes_rsa2048_facade {
 /// `ClientParams::self_signed("tls-fixture.local")`. On return the captured
 /// TX must equal CH || CF byte-for-byte; otherwise the handshake produced
 /// different wire bytes than the Python reference and we return `Err(())`.
-#[cfg(all(feature = "canned-replay", feature = "cipher-aes"))]
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "cipher-aes",
+    not(feature = "chacha20"),
+    not(feature = "rsa"),
+))]
 pub fn run_aes_ed25519_facade() -> Result<(), ()> {
     use fixture_aes_ed25519_facade::*;
     use krabitls::client::canned::{CannedTransport, SeededRng};
     use krabitls::client::{ClientParams, DefaultScratch, DefaultStream, RuntimeSuitePolicy};
 
-    // SH (95) + SF (415) = 510 bytes of canned server stream.
-    let mut server_stream = [0u8; SERVER_HELLO.len() + SERVER_FLIGHT.len()];
-    server_stream[..SERVER_HELLO.len()].copy_from_slice(&SERVER_HELLO);
-    server_stream[SERVER_HELLO.len()..].copy_from_slice(&SERVER_FLIGHT);
-
     let mut scratch = DefaultScratch::new();
     let mut rng = SeededRng::new(0);
-    let transport = CannedTransport::<512>::new(&server_stream);
+    let transport = CannedTransport::<512>::new(&SERVER_STREAM);
     let params =
         ClientParams::self_signed("tls-fixture.local").suite_policy(RuntimeSuitePolicy::Default);
 
@@ -103,7 +151,12 @@ pub fn run_aes_ed25519_facade() -> Result<(), ()> {
 /// Baseline stub: same rodata footprint as `run_aes_ed25519_facade`,
 /// without driving any crypto. `.text` delta = full facade-driven
 /// handshake cost.
-#[cfg(all(feature = "canned-replay", feature = "cipher-aes"))]
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "cipher-aes",
+    not(feature = "chacha20"),
+    not(feature = "rsa"),
+))]
 #[inline(never)]
 pub fn baseline_aes_ed25519_facade() -> bool {
     use core::hint::black_box;
@@ -124,20 +177,17 @@ pub fn baseline_aes_ed25519_facade() -> bool {
 #[cfg(all(
     feature = "canned-replay",
     feature = "chacha20",
-    not(feature = "cipher-aes")
+    not(feature = "cipher-aes"),
+    not(feature = "rsa"),
 ))]
 pub fn run_chacha_ed25519_facade() -> Result<(), ()> {
     use fixture_chacha_ed25519_facade::*;
     use krabitls::client::canned::{CannedTransport, SeededRng};
     use krabitls::client::{ClientParams, DefaultScratch, DefaultStream};
 
-    let mut server_stream = [0u8; SERVER_HELLO.len() + SERVER_FLIGHT.len()];
-    server_stream[..SERVER_HELLO.len()].copy_from_slice(&SERVER_HELLO);
-    server_stream[SERVER_HELLO.len()..].copy_from_slice(&SERVER_FLIGHT);
-
     let mut scratch = DefaultScratch::new();
     let mut rng = SeededRng::new(0);
-    let transport = CannedTransport::<512>::new(&server_stream);
+    let transport = CannedTransport::<512>::new(&SERVER_STREAM);
     let params = ClientParams::self_signed("tls-fixture.local");
 
     let tls = DefaultStream::connect(&params, &mut scratch, transport, &mut rng).map_err(|_| ())?;
@@ -156,7 +206,8 @@ pub fn run_chacha_ed25519_facade() -> Result<(), ()> {
 #[cfg(all(
     feature = "canned-replay",
     feature = "chacha20",
-    not(feature = "cipher-aes")
+    not(feature = "cipher-aes"),
+    not(feature = "rsa"),
 ))]
 #[inline(never)]
 pub fn baseline_chacha_ed25519_facade() -> bool {
@@ -174,19 +225,20 @@ pub fn baseline_chacha_ed25519_facade() -> bool {
 /// Same wire path as `run_aes_ed25519_facade`, but with an RSA-PKCS#1-v1.5
 /// self-signed cert and an RSA-PSS CertificateVerify in the server flight.
 /// Exercises the full RSA-2048 verify path through the facade.
-#[cfg(all(feature = "canned-replay", feature = "rsa", feature = "cipher-aes"))]
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "rsa",
+    feature = "cipher-aes",
+    not(feature = "chacha20"),
+))]
 pub fn run_aes_rsa2048_facade() -> Result<(), ()> {
     use fixture_aes_rsa2048_facade::*;
     use krabitls::client::canned::{CannedTransport, SeededRng};
     use krabitls::client::{ClientParams, DefaultScratch, DefaultStream, RuntimeSuitePolicy};
 
-    let mut server_stream = [0u8; SERVER_HELLO.len() + SERVER_FLIGHT.len()];
-    server_stream[..SERVER_HELLO.len()].copy_from_slice(&SERVER_HELLO);
-    server_stream[SERVER_HELLO.len()..].copy_from_slice(&SERVER_FLIGHT);
-
     let mut scratch = DefaultScratch::new();
     let mut rng = SeededRng::new(0);
-    let transport = CannedTransport::<512>::new(&server_stream);
+    let transport = CannedTransport::<512>::new(&SERVER_STREAM);
     let params =
         ClientParams::self_signed("tls-fixture.local").suite_policy(RuntimeSuitePolicy::Default);
 
@@ -203,7 +255,12 @@ pub fn run_aes_rsa2048_facade() -> Result<(), ()> {
     Ok(())
 }
 
-#[cfg(all(feature = "canned-replay", feature = "rsa", feature = "cipher-aes"))]
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "rsa",
+    feature = "cipher-aes",
+    not(feature = "chacha20"),
+))]
 #[inline(never)]
 pub fn baseline_aes_rsa2048_facade() -> bool {
     use core::hint::black_box;
@@ -220,7 +277,13 @@ pub fn baseline_aes_rsa2048_facade() -> bool {
 /// Reuses the AES+Ed25519 fixture (wire bytes are identical regardless of
 /// which `HkdfSha256` impl produces them) and swaps the config's `Hkdf`
 /// associated type to [`JedisctCrypto`].
-#[cfg(all(feature = "canned-replay", feature = "jedisct", feature = "cipher-aes"))]
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "jedisct",
+    feature = "cipher-aes",
+    not(feature = "chacha20"),
+    not(feature = "rsa"),
+))]
 pub fn run_aes_ed25519_jedisct_facade() -> Result<(), ()> {
     use fixture_aes_ed25519_facade::*;
     use krabitls::client::canned::{CannedTransport, SeededRng};
@@ -241,13 +304,9 @@ pub fn run_aes_ed25519_jedisct_facade() -> Result<(), ()> {
     type JedisctStream<'s, T> = TlsStream<'s, T, JedisctConfig, 16384, 16645, 4096>;
     type JedisctScratch = Scratch<16384, 16645, 4096>;
 
-    let mut server_stream = [0u8; SERVER_HELLO.len() + SERVER_FLIGHT.len()];
-    server_stream[..SERVER_HELLO.len()].copy_from_slice(&SERVER_HELLO);
-    server_stream[SERVER_HELLO.len()..].copy_from_slice(&SERVER_FLIGHT);
-
     let mut scratch = JedisctScratch::new();
     let mut rng = SeededRng::new(0);
-    let transport = CannedTransport::<512>::new(&server_stream);
+    let transport = CannedTransport::<512>::new(&SERVER_STREAM);
     let params = ClientParams::self_signed("tls-fixture.local");
 
     let tls = JedisctStream::connect(&params, &mut scratch, transport, &mut rng).map_err(|_| ())?;
@@ -263,7 +322,13 @@ pub fn run_aes_ed25519_jedisct_facade() -> Result<(), ()> {
     Ok(())
 }
 
-#[cfg(all(feature = "canned-replay", feature = "jedisct", feature = "cipher-aes"))]
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "jedisct",
+    feature = "cipher-aes",
+    not(feature = "chacha20"),
+    not(feature = "rsa"),
+))]
 #[inline(never)]
 pub fn baseline_aes_ed25519_jedisct_facade() -> bool {
     // Shares the AES+Ed25519 fixture rodata.
