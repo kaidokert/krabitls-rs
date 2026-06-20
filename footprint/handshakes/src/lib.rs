@@ -154,8 +154,7 @@ pub fn run_aes_ed25519_facade() -> Result<(), ()> {
         let params = ClientParams::self_signed("tls-fixture.local")
             .suite_policy(RuntimeSuitePolicy::Default);
 
-        let tls =
-            DefaultStream::connect(&params, scratch, transport, &mut rng).map_err(|_| ())?;
+        let tls = DefaultStream::connect(&params, scratch, transport, &mut rng).map_err(|_| ())?;
 
         // Captured TX must be CH || CF.
         let captured = tls.transport().captured_tx();
@@ -212,8 +211,7 @@ pub fn run_chacha_ed25519_facade() -> Result<(), ()> {
         let transport = CannedTransport::<512>::new(&SERVER_STREAM);
         let params = ClientParams::self_signed("tls-fixture.local");
 
-        let tls =
-            DefaultStream::connect(&params, scratch, transport, &mut rng).map_err(|_| ())?;
+        let tls = DefaultStream::connect(&params, scratch, transport, &mut rng).map_err(|_| ())?;
 
         let captured = tls.transport().captured_tx();
         let expected_len = CLIENT_HELLO.len() + CLIENT_FINISHED.len();
@@ -266,8 +264,7 @@ pub fn run_aes_rsa2048_facade() -> Result<(), ()> {
         let params = ClientParams::self_signed("tls-fixture.local")
             .suite_policy(RuntimeSuitePolicy::Default);
 
-        let tls =
-            DefaultStream::connect(&params, scratch, transport, &mut rng).map_err(|_| ())?;
+        let tls = DefaultStream::connect(&params, scratch, transport, &mut rng).map_err(|_| ())?;
 
         let captured = tls.transport().captured_tx();
         let expected_len = CLIENT_HELLO.len() + CLIENT_FINISHED.len();
@@ -334,8 +331,7 @@ pub fn run_aes_ed25519_jedisct_facade() -> Result<(), ()> {
         let transport = CannedTransport::<512>::new(&SERVER_STREAM);
         let params = ClientParams::self_signed("tls-fixture.local");
 
-        let tls =
-            JedisctStream::connect(&params, scratch, transport, &mut rng).map_err(|_| ())?;
+        let tls = JedisctStream::connect(&params, scratch, transport, &mut rng).map_err(|_| ())?;
 
         let captured = tls.transport().captured_tx();
         let expected_len = CLIENT_HELLO.len() + CLIENT_FINISHED.len();

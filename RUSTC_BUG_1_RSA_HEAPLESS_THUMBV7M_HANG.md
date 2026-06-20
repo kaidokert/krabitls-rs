@@ -21,21 +21,28 @@ Under release profile `opt-level = "z"` + `lto = true`, the binary
 spins forever in QEMU. No output, no panic. Witnessed in CI as a job
 that burns through the full 6 h limit before being cancelled.
 
-## Workaround in this repo (currently in `pr-a-rust-facade`)
+## Workaround in this repo
 
-`footprint/cortex-m/Cargo.toml` and `footprint/risc-v/Cargo.toml`:
+Bundled with the bug-2 mitigation: the `#[inline(never)]` on
+`krabitls::backends::rsa_verify::build_vk_pair` (which we already need
+for bug 2) ALSO masks bug 1. Adding an inline barrier at the krabitls
+call site shifts the codegen LLVM sees through the chain down into
+`rsa_heapless::cios_mont_mul` enough that the buggy MIR-opt no longer
+turns the modexp loop infinite.
 
-```toml
-[profile.release.package.rsa_heapless]
-opt-level = 2
-```
+Originally we shipped a separate per-package profile override
+(`[profile.release.package.rsa_heapless] opt-level = 2` in both
+`footprint/cortex-m/Cargo.toml` and `footprint/risc-v/Cargo.toml`),
+which also worked. Dropped that in favour of the single call-site
+attribute — one workaround instead of two, costs ~320 bytes / ~7 %
+verify perf on M3 RSA and is far harder for a future contributor to
+accidentally "clean up". Both M3 and RV32 RSA still ACCEPT cleanly
+without the override.
 
-Pinning `rsa_heapless` alone to `opt-level=2` is enough to dodge the
-loop; the rest of the crate graph stays at `-Oz`. Cost: zero on the
-AES / ChaCha / jedisct binaries (they don't link `rsa_heapless`), and a
-small bump on the RSA binary because the Montgomery kernel code in
-`rsa_heapless` gets less aggressive size optimization. The override
-becomes unnecessary once stable rustc is at 1.97.
+When stable rustc 1.97 ships (~early July 2026), bug 1's underlying
+miscompile is gone upstream. The `#[inline(never)]` stays until bug 2
+is also fixed; once both are resolved upstream the attribute can come
+off entirely.
 
 ## Symptoms in QEMU
 

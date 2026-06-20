@@ -77,11 +77,3 @@ unexpected_cfgs = { level = "warn", check-cfg = [
     'cfg(thumbv7m)',
     'cfg(thumbv7em)',
 ] }
-
-# Workaround: rsa_heapless::cios_mont_mul infinite-loops on thumbv7m
-# under `opt-level = "z"` on stable rustc <= 1.96. Fix is in master
-# (rust-lang/rust#142531, merged 2026-04-18) and will ship in stable
-# 1.97 — drop this override then. See
-# ../../RUSTC_BUG_1_RSA_HEAPLESS_THUMBV7M_HANG.md for the bisection trail.
-[profile.release.package.rsa_heapless]
-opt-level = 2

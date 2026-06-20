@@ -186,13 +186,30 @@ impl<'a> signature::Verifier<RsaPkcs1Sig<'a>> for RsaVerifierKey {
     }
 }
 
-// `#[inline(never)]` workaround: under `opt-level=z` on thumbv7m,
-// inlining `build_vk_pair` into `RsaVerifierKey::new` produces a verify
-// path that returns wrong arithmetic on RSA-PSS signatures (RSA M3
-// facade REJECTs at 2-3M cycles, while host x86 and -O2 thumbv7m both
-// ACCEPT). Forcing the function to stay out-of-line keeps inlining-
-// triggered codegen issues away. ~+224 bytes `.text`; cheap vs the
-// ~+21 KiB cost of forcing the whole crate to `opt-level = 2`.
+// `#[inline(never)]` is a load-bearing workaround for TWO distinct
+// thumbv7m `opt-level=z` rustc miscompiles, both reproducing on stable
+// 1.96. Adding an inline barrier here at the krabitls call site shifts
+// the codegen LLVM sees through the entire chain down into
+// `rsa_heapless::cios_mont_mul`, dodging both at once.
+//
+// Bug 1 — `rsa_heapless::cios_mont_mul` infinite loop at -Oz. Bisected
+// to rust-lang/rust#142531 ("Remove fewer Storage calls in CopyProp
+// and GVN"), merged 2026-04-18, will ship in stable 1.97 (~early July
+// 2026). See RUSTC_BUG_1_RSA_HEAPLESS_THUMBV7M_HANG.md at the repo
+// root for the full bisection trail.
+//
+// Bug 2 — inlining `build_vk_pair` into `RsaVerifierKey::new` at -Oz
+// on thumbv7m produces wrong arithmetic; RSA-PSS verify rejects valid
+// signatures at the very end of modexp (3-5M cycles in). Not yet
+// root-caused upstream; minimal-reduction work in progress.
+//
+// Cost on the M3 RSA binary (default features + rsa + canned-replay):
+//   * with `#[inline(never)]` only:        65896 B .text, 3274 kcycles
+//   * also forcing rsa_heapless@-O2:       65580 B .text, 2731 kcycles
+// 316 bytes / 20% verify perf to keep one workaround instead of two.
+// Once stable rustc has fixes for BOTH bugs (bug 1 by 1.97, bug 2 TBD),
+// this attribute can come off and the line above the fn signature is
+// the only line that changes.
 #[inline(never)]
 fn build_vk_pair<T>(modulus: &[u8], exponent: u32) -> Result<VkPair<T>, RsaVerifyError>
 where
