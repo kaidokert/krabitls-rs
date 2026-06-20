@@ -16,11 +16,14 @@ import re
 import subprocess
 import sys
 
-# (suite label, sig label, example, cargo --features on the real build)
+# (suite label, sig label, example, no_default_features, cargo --features list)
+# Every row pins its features explicitly: the ChaCha row drops defaults so
+# AES is genuinely absent from `.text` (otherwise the cipher-aes dep stays
+# linked and the "ChaCha-only" measurement is dishonest).
 ROWS = [
-    ("AES-128-GCM",       "Ed25519",      "krabitls",        []),
-    ("ChaCha20-Poly1305", "Ed25519",      "krabitls_chacha", ["chacha20"]),
-    ("AES-128-GCM",       "RSA-2048-PSS", "krabitls_rsa",    ["rsa"]),
+    ("AES-128-GCM",       "Ed25519",      "krabitls",        False, ["canned-replay"]),
+    ("ChaCha20-Poly1305", "Ed25519",      "krabitls_chacha", True,  ["chacha20", "cert-der", "canned-replay"]),
+    ("AES-128-GCM",       "RSA-2048-PSS", "krabitls_rsa",    False, ["rsa", "canned-replay"]),
 ]
 
 # (label, directory, cargo --target)
@@ -69,14 +72,19 @@ def run_cmd(args, cwd=None, timeout=TIMEOUT_RUN):
         )
 
 
-def cargo_features_arg(features):
-    return ["--features", ",".join(features)] if features else []
+def cargo_features_arg(features, no_default):
+    args = []
+    if no_default:
+        args.append("--no-default-features")
+    if features:
+        args += ["--features", ",".join(features)]
+    return args
 
 
-def build(target_dir, target_triple, example, features):
+def build(target_dir, target_triple, example, no_default, features):
     args = (
         ["cargo", "build", "--target", target_triple, "--release", "--example", example]
-        + cargo_features_arg(features)
+        + cargo_features_arg(features, no_default)
     )
     r = run_cmd(args, cwd=target_dir, timeout=TIMEOUT_BUILD)
     if r.returncode != 0:
@@ -105,11 +113,11 @@ def text_size(target_dir, target_triple, example):
         return None
 
 
-def qemu_run(target_dir, target_triple, example, features):
+def qemu_run(target_dir, target_triple, example, no_default, features):
     """Run the example under QEMU; return stdout+stderr."""
     args = (
         ["cargo", "run", "--target", target_triple, "--release", "--example", example]
-        + cargo_features_arg(features)
+        + cargo_features_arg(features, no_default)
     )
     r = run_cmd(args, cwd=target_dir)
     return r.stdout + r.stderr
@@ -125,12 +133,12 @@ def parse_metric(output):
     return {"stack": int(m.group(1)), "target": m.group(2), "name": m.group(3)}
 
 
-def measure(target_dir, target_triple, example, features):
+def measure(target_dir, target_triple, example, no_default, features):
     """Build + size + run + parse METRIC. Returns (text_size, stack) or (None, None)."""
-    if not build(target_dir, target_triple, example, features):
+    if not build(target_dir, target_triple, example, no_default, features):
         return None, None
     ts = text_size(target_dir, target_triple, example)
-    out = qemu_run(target_dir, target_triple, example, features)
+    out = qemu_run(target_dir, target_triple, example, no_default, features)
     if f"{example} ACCEPT" not in out:
         print(
             f"NOT ACCEPTED: dir={target_dir} example={example} features={features}",
@@ -145,12 +153,12 @@ def main():
     failures = []
     rendered_rows = []
     for label, target_dir, target_triple in TARGETS:
-        for suite, sig, example, features in ROWS:
+        for suite, sig, example, no_default, features in ROWS:
             baseline_text, baseline_stack = measure(
-                target_dir, target_triple, example, features + ["baseline"]
+                target_dir, target_triple, example, no_default, features + ["baseline"]
             )
             real_text, real_stack = measure(
-                target_dir, target_triple, example, features
+                target_dir, target_triple, example, no_default, features
             )
             if None in (baseline_text, real_text, baseline_stack, real_stack):
                 failures.append(f"{label}/{example}: incomplete measurement")

@@ -30,13 +30,14 @@ pub use aead::Aes128GcmSha256;
 #[cfg(feature = "chacha20")]
 pub use aead::ChaCha20Poly1305Sha256;
 pub use aead::{CipherSuite, DecryptError, DefaultCipher, EncryptError};
+pub use backends::DerCert;
 #[cfg(feature = "jedisct")]
 pub use backends::JedisctCrypto;
+pub use backends::RustCrypto;
 #[cfg(all(feature = "rsa", not(feature = "rsa_pss_only")))]
 pub use backends::rsa_verify::RsaPkcs1Sig;
 #[cfg(feature = "rsa")]
 pub use backends::rsa_verify::RsaPssSig;
-pub use backends::{DerCert, RustCrypto};
 #[cfg(feature = "rsa")]
 pub use backends::{RsaVerifierKey, RsaVerifyError};
 pub use client_flight::{CLIENT_FINISHED_LEN, ClientFinishedError};
@@ -2617,24 +2618,24 @@ mod tests {
         use super::*;
 
         /// RSA fixture, c→s ClientHello.
-        const FIXTURE_RSA_CLIENT_HELLO: [u8; 117] = crate::hex_decode(include_str!(
+        const FIXTURE_RSA_CLIENT_HELLO: [u8; 151] = crate::hex_decode(include_str!(
             "../../testdata/packets_rsa/001_c2s_ClientHello.hex"
         ));
         /// RSA fixture, s→c ServerHello.
         const FIXTURE_RSA_SERVER_HELLO: [u8; 95] = crate::hex_decode(include_str!(
             "../../testdata/packets_rsa/002_s2c_ServerHello.hex"
         ));
-        /// RSA fixture, encrypted server flight (1034 B — dominated by the
+        /// RSA fixture, encrypted server flight (dominated by the
         /// 2048-bit RSA cert + 256-byte RSA-PSS signature).
-        const FIXTURE_RSA_PACKET_3: [u8; 1034] = crate::hex_decode(include_str!(
+        const FIXTURE_RSA_PACKET_3: [u8; 1172] = crate::hex_decode(include_str!(
             "../../testdata/packets_rsa/003_s2c_ServerFlight_encrypted.hex"
         ));
 
         /// Server handshake traffic secret from the RSA fixture.
         const FIXTURE_RSA_S_HS_TRAFFIC_SECRET_BYTES: [u8; 32] = [
-            0x6e, 0xb5, 0xef, 0x9a, 0x73, 0xd2, 0x86, 0xdd, 0x12, 0x24, 0xb2, 0x33, 0xd3, 0xa4,
-            0xac, 0xa7, 0xaa, 0x1b, 0x4a, 0x47, 0x58, 0x61, 0x26, 0x7b, 0x68, 0xac, 0x55, 0xa9,
-            0x9d, 0xbb, 0x41, 0xe9,
+            0x8a, 0x47, 0x0c, 0x72, 0x55, 0x05, 0x3a, 0xc3, 0x11, 0xaf, 0x9a, 0x04, 0xf1, 0xb9,
+            0xa5, 0xd2, 0x9d, 0x51, 0x58, 0x81, 0xf4, 0xf4, 0x22, 0x0e, 0xc0, 0x68, 0xc6, 0x8f,
+            0x66, 0xe0, 0xca, 0xfd,
         ];
 
         fn s_hs_traffic_secret() -> Secret {
@@ -2649,7 +2650,7 @@ mod tests {
             let key = AeadKey::new(k);
 
             // Decrypt the RSA fixture's server flight.
-            let mut pt_buf = [0u8; 1100];
+            let mut pt_buf = [0u8; 1200];
             let pt = decrypt_record::<Aes128GcmSha256>(
                 &FIXTURE_RSA_PACKET_3,
                 key.as_zeroizing(),
@@ -2697,7 +2698,7 @@ mod tests {
             let s_hs_ts = s_hs_traffic_secret();
             let (k, iv) = traffic_keys::<RustCrypto, 16>(&s_hs_ts).unwrap();
             let key = AeadKey::new(k);
-            let mut pt_buf = [0u8; 1100];
+            let mut pt_buf = [0u8; 1200];
             let pt = decrypt_record::<Aes128GcmSha256>(
                 &FIXTURE_RSA_PACKET_3,
                 key.as_zeroizing(),

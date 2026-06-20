@@ -8,9 +8,9 @@ autobenches = false
 
 [features]
 default = ["cert-der", "cipher-aes"]
-# Default `der`-crate cert parser. Pass `--no-default-features --features
-# cert-tlv` (plus any others you want) to actually drop `der` from the
-# binary.
+# Default `der`-crate cert parser. Drop with `--no-default-features
+# --features cipher-aes,...` to swap in the hand-rolled TLV walker and
+# strip the `der` dep.
 cert-der = ["footprint_handshakes/cert-der"]
 # Default AES-128-GCM cipher suite. Pass `--no-default-features
 # --features chacha20` to build a ChaCha-only binary.
@@ -32,28 +32,24 @@ chacha20 = ["footprint_handshakes/chacha20"]
 # (`DefaultStream::connect`) through the seed-0 canned fixtures via
 # `SeededRng` + `CannedTransport`.
 canned-replay = ["footprint_handshakes/canned-replay"]
-# Opt-in size-clawback features: forward to footprint_handshakes / krabitls.
-cert-tlv = ["footprint_handshakes/cert-tlv"]
+# Opt-in size-clawback feature: forward to footprint_handshakes / krabitls.
 ip-host = ["footprint_handshakes/ip-host"]
 
 [[example]]
 name = "krabitls"
+required-features = ["canned-replay"]
 
 [[example]]
 name = "krabitls_jedisct"
-required-features = ["jedisct"]
+required-features = ["jedisct", "canned-replay"]
 
 [[example]]
 name = "krabitls_rsa"
-required-features = ["rsa"]
+required-features = ["rsa", "canned-replay"]
 
 [[example]]
 name = "krabitls_chacha"
-required-features = ["chacha20"]
-
-[[example]]
-name = "krabitls_facade"
-required-features = ["canned-replay"]
+required-features = ["chacha20", "canned-replay"]
 
 [dependencies]
 # `critical-section-single-core` registers a single-core critical-section

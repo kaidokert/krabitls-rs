@@ -42,6 +42,11 @@ jobs:
           footprint/risc-v/target
         key: pre-commit-${{ hashFiles('krabitls/Cargo.toml', 'krabitls_cli/Cargo.toml', 'footprint/**/Cargo.toml') }}
         restore-keys: pre-commit-
+    # `cargo hack` is invoked by one of the local pre-commit hooks. Install
+    # the binary via taiki-e's prebuilt action so the hook can find it.
+    - uses: taiki-e/install-action@v2
+      with:
+        tool: cargo-hack
     - uses: pre-commit/action@v3.0.1
 
   host:

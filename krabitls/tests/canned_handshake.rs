@@ -1,13 +1,7 @@
 //! Host integration test that drives `DefaultStream::connect` end-to-end
 //! through the seed-0 fixtures — no real transport, no OS RNG.
 
-// `rsa` and `chacha20` change the ClientHello wire bytes (extra sig_alg /
-// extra cipher suite), diverging from the captured seed-0 transcript.
-#![cfg(all(
-    feature = "canned-replay",
-    not(feature = "rsa"),
-    not(feature = "chacha20")
-))]
+#![cfg(feature = "canned-replay")]
 
 use krabitls::client::canned::{CannedTransport, SeededRng};
 use krabitls::client::{ClientParams, DefaultScratch, DefaultStream, RuntimeSuitePolicy};
@@ -48,21 +42,43 @@ fn parse_hex(s: &str) -> Vec<u8> {
     out
 }
 
+#[cfg(all(not(feature = "rsa"), not(feature = "chacha20")))]
 const CLIENT_HELLO_HEX: &str = include_str!("../../testdata/packets/001_c2s_ClientHello.hex");
+#[cfg(all(not(feature = "rsa"), not(feature = "chacha20")))]
 const SERVER_HELLO_HEX: &str = include_str!("../../testdata/packets/002_s2c_ServerHello.hex");
+#[cfg(all(not(feature = "rsa"), not(feature = "chacha20")))]
 const SERVER_FLIGHT_HEX: &str =
     include_str!("../../testdata/packets/003_s2c_ServerFlight_encrypted.hex");
+#[cfg(all(not(feature = "rsa"), not(feature = "chacha20")))]
 const CLIENT_FINISHED_HEX: &str =
     include_str!("../../testdata/packets/004_c2s_ClientFinished_encrypted.hex");
+#[cfg(all(not(feature = "rsa"), not(feature = "chacha20")))]
 const APP_DATA_SEND_HEX: &str = include_str!("../../testdata/packets/005_c2s_AppData_send_0.hex");
+#[cfg(all(not(feature = "rsa"), not(feature = "chacha20")))]
 const APP_DATA_REPLY_HEX: &str = include_str!("../../testdata/packets/006_s2c_AppData_reply_0.hex");
+
+#[cfg(all(feature = "rsa", feature = "cipher-aes", not(feature = "chacha20")))]
+const RSA_CLIENT_HELLO_HEX: &str =
+    include_str!("../../testdata/packets_rsa/001_c2s_ClientHello.hex");
+#[cfg(all(feature = "rsa", feature = "cipher-aes", not(feature = "chacha20")))]
+const RSA_SERVER_HELLO_HEX: &str =
+    include_str!("../../testdata/packets_rsa/002_s2c_ServerHello.hex");
+#[cfg(all(feature = "rsa", feature = "cipher-aes", not(feature = "chacha20")))]
+const RSA_SERVER_FLIGHT_HEX: &str =
+    include_str!("../../testdata/packets_rsa/003_s2c_ServerFlight_encrypted.hex");
+#[cfg(all(feature = "rsa", feature = "cipher-aes", not(feature = "chacha20")))]
+const RSA_CLIENT_FINISHED_HEX: &str =
+    include_str!("../../testdata/packets_rsa/004_c2s_ClientFinished_encrypted.hex");
 
 /// First app-data plaintext the Python client sent at seed 0.
 /// Matches `tls_fixture/demo.sh`: `cli.py --send "hello from the embedded client"`.
+#[cfg(all(not(feature = "rsa"), not(feature = "chacha20")))]
 const APP_DATA_SEND_PLAINTEXT: &[u8] = b"hello from the embedded client";
 /// First app-data plaintext the Python server replied with at seed 0.
+#[cfg(all(not(feature = "rsa"), not(feature = "chacha20")))]
 const APP_DATA_REPLY_PLAINTEXT: &[u8] = "hello back \u{2014} server here".as_bytes();
 
+#[cfg(all(not(feature = "rsa"), not(feature = "chacha20")))]
 #[test]
 fn facade_completes_handshake_against_canned_fixtures() {
     let server_hello = parse_hex(SERVER_HELLO_HEX);
@@ -93,6 +109,7 @@ fn facade_completes_handshake_against_canned_fixtures() {
     );
 }
 
+#[cfg(all(not(feature = "rsa"), not(feature = "chacha20")))]
 #[test]
 fn facade_round_trips_first_app_record_pair() {
     let server_hello = parse_hex(SERVER_HELLO_HEX);
@@ -139,5 +156,35 @@ fn facade_round_trips_first_app_record_pair() {
         tls.transport().captured_tx(),
         expected_tx.as_slice(),
         "facade-encrypted record must byte-match Python's seed-0 packet 005",
+    );
+}
+
+#[cfg(all(feature = "rsa", feature = "cipher-aes", not(feature = "chacha20")))]
+#[test]
+fn facade_completes_rsa_handshake_against_canned_fixtures() {
+    let server_hello = parse_hex(RSA_SERVER_HELLO_HEX);
+    let server_flight = parse_hex(RSA_SERVER_FLIGHT_HEX);
+    let mut server_stream = Vec::with_capacity(server_hello.len() + server_flight.len());
+    server_stream.extend_from_slice(&server_hello);
+    server_stream.extend_from_slice(&server_flight);
+
+    let mut scratch = DefaultScratch::new();
+    let mut rng = SeededRng::new(0);
+    let transport = CannedTransport::<2048>::new(&server_stream);
+    let params =
+        ClientParams::self_signed("tls-fixture.local").suite_policy(RuntimeSuitePolicy::Default);
+
+    let tls = DefaultStream::connect(&params, &mut scratch, transport, &mut rng)
+        .expect("facade must complete the seed-0 RSA handshake against canned fixtures");
+
+    let expected_ch = parse_hex(RSA_CLIENT_HELLO_HEX);
+    let expected_cf = parse_hex(RSA_CLIENT_FINISHED_HEX);
+    let mut expected_tx = Vec::with_capacity(expected_ch.len() + expected_cf.len());
+    expected_tx.extend_from_slice(&expected_ch);
+    expected_tx.extend_from_slice(&expected_cf);
+    assert_eq!(
+        tls.transport().captured_tx(),
+        expected_tx.as_slice(),
+        "RSA wire bytes diverged from the Python reference",
     );
 }

@@ -11,7 +11,8 @@ edition = "2024"
 [features]
 default = ["cert-der", "cipher-aes"]
 # Default `der`-crate cert parser. Forwarded so the cortex-m demo can
-# `--no-default-features --features cert-tlv` to actually drop `der`.
+# `--no-default-features --features cipher-aes,...` to swap in the
+# hand-rolled TLV walker and drop the `der` dep.
 cert-der = ["krabitls/cert-der"]
 # Default AES-128-GCM cipher suite. Forwarded so the cortex-m demo can
 # `--no-default-features --features chacha20` to actually drop `aes-gcm`.
@@ -27,14 +28,12 @@ jedisct = ["krabitls/jedisct"]
 # Full handshake via `DefaultStream::connect` against the captured seed-0
 # fixtures (SeededRng + CannedTransport).
 canned-replay = ["krabitls/canned-replay"]
-# Opt-in size-clawback features. `cert-tlv` swaps the `der`-crate-backed
-# cert parser for the hand-rolled TLV walker (-4 KiB); `ip-host` re-enables
-# IP-literal SAN matching that the embedded default skips (+2 KiB).
-cert-tlv = ["krabitls/cert-tlv"]
+# Opt-in size-clawback feature: re-enables IP-literal SAN matching
+# that the embedded default skips (+2 KiB).
 ip-host = ["krabitls/ip-host"]
 
 [dependencies]
-krabitls = { path = "../../krabitls", default-features = false, features = ["dev-utils", "replay"] }
+krabitls = { path = "../../krabitls", default-features = false, features = ["dev-utils"] }
 critical-section = "1"
 
 [lints.rust]
