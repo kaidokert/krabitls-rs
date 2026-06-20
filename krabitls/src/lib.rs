@@ -2627,7 +2627,7 @@ mod tests {
         ));
         /// RSA fixture, encrypted server flight (dominated by the
         /// 2048-bit RSA cert + 256-byte RSA-PSS signature).
-        const FIXTURE_RSA_PACKET_3: [u8; 1068] = crate::hex_decode(include_str!(
+        const FIXTURE_RSA_PACKET_3: [u8; 1172] = crate::hex_decode(include_str!(
             "../../testdata/packets_rsa/003_s2c_ServerFlight_encrypted.hex"
         ));
 
@@ -2650,7 +2650,7 @@ mod tests {
             let key = AeadKey::new(k);
 
             // Decrypt the RSA fixture's server flight.
-            let mut pt_buf = [0u8; 1100];
+            let mut pt_buf = [0u8; 1200];
             let pt = decrypt_record::<Aes128GcmSha256>(
                 &FIXTURE_RSA_PACKET_3,
                 key.as_zeroizing(),
@@ -2698,7 +2698,7 @@ mod tests {
             let s_hs_ts = s_hs_traffic_secret();
             let (k, iv) = traffic_keys::<RustCrypto, 16>(&s_hs_ts).unwrap();
             let key = AeadKey::new(k);
-            let mut pt_buf = [0u8; 1100];
+            let mut pt_buf = [0u8; 1200];
             let pt = decrypt_record::<Aes128GcmSha256>(
                 &FIXTURE_RSA_PACKET_3,
                 key.as_zeroizing(),

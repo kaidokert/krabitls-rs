@@ -7,6 +7,29 @@
 //! crypto so the `.text` delta isolates the krabitls + AEAD + sig-verify
 //! cost.
 
+// Static placement for `DefaultScratch` (≈37 KiB). Sized for arbitrary
+// RSA chains; placing it on the stack would overflow the LM3S6965 M3's
+// 64 KiB SRAM during RSA verify and corrupt `.bss`, which manifests as
+// an infinite loop under QEMU. Borrow via `with_scratch` under a
+// critical section so concurrent facade calls can't share an aliased
+// reference even if a future caller adds threads.
+#[cfg(feature = "canned-replay")]
+mod facade_scratch {
+    use core::cell::RefCell;
+    use critical_section::Mutex;
+    use krabitls::client::DefaultScratch;
+
+    static SCRATCH: Mutex<RefCell<DefaultScratch>> =
+        Mutex::new(RefCell::new(DefaultScratch::new()));
+
+    pub fn with<R>(f: impl FnOnce(&mut DefaultScratch) -> R) -> R {
+        critical_section::with(|cs| {
+            let mut s = SCRATCH.borrow(cs).borrow_mut();
+            f(&mut s)
+        })
+    }
+}
+
 // `concat_sh_sf!(SH_LEN, SF_LEN)` expands to a const block that
 // concatenates `SERVER_HELLO || SERVER_FLIGHT` at compile time. Done as
 // a macro because the generic-const form (`fn f<const A, const B>() ->
@@ -97,7 +120,7 @@ mod fixture_aes_rsa2048_facade {
     pub const SERVER_HELLO: [u8; 95] = krabitls::hex_decode(include_str!(
         "../../../testdata/packets_rsa/002_s2c_ServerHello.hex"
     ));
-    pub const SERVER_FLIGHT: [u8; 1068] = krabitls::hex_decode(include_str!(
+    pub const SERVER_FLIGHT: [u8; 1172] = krabitls::hex_decode(include_str!(
         "../../../testdata/packets_rsa/003_s2c_ServerFlight_encrypted.hex"
     ));
     pub const CLIENT_FINISHED: [u8; 58] = krabitls::hex_decode(include_str!(
@@ -123,29 +146,28 @@ mod fixture_aes_rsa2048_facade {
 pub fn run_aes_ed25519_facade() -> Result<(), ()> {
     use fixture_aes_ed25519_facade::*;
     use krabitls::client::canned::{CannedTransport, SeededRng};
-    use krabitls::client::{ClientParams, DefaultScratch, DefaultStream, RuntimeSuitePolicy};
+    use krabitls::client::{ClientParams, DefaultStream, RuntimeSuitePolicy};
 
-    let mut scratch = DefaultScratch::new();
-    let mut rng = SeededRng::new(0);
-    let transport = CannedTransport::<512>::new(&SERVER_STREAM);
-    let params =
-        ClientParams::self_signed("tls-fixture.local").suite_policy(RuntimeSuitePolicy::Default);
+    facade_scratch::with(|scratch| {
+        let mut rng = SeededRng::new(0);
+        let transport = CannedTransport::<512>::new(&SERVER_STREAM);
+        let params = ClientParams::self_signed("tls-fixture.local")
+            .suite_policy(RuntimeSuitePolicy::Default);
 
-    let tls = DefaultStream::connect(&params, &mut scratch, transport, &mut rng).map_err(|_| ())?;
+        let tls =
+            DefaultStream::connect(&params, scratch, transport, &mut rng).map_err(|_| ())?;
 
-    // Captured TX must be CH || CF.
-    let captured = tls.transport().captured_tx();
-    let expected_len = CLIENT_HELLO.len() + CLIENT_FINISHED.len();
-    if captured.len() != expected_len {
-        return Err(());
-    }
-    if captured[..CLIENT_HELLO.len()] != CLIENT_HELLO[..] {
-        return Err(());
-    }
-    if captured[CLIENT_HELLO.len()..] != CLIENT_FINISHED[..] {
-        return Err(());
-    }
-    Ok(())
+        // Captured TX must be CH || CF.
+        let captured = tls.transport().captured_tx();
+        let expected_len = CLIENT_HELLO.len() + CLIENT_FINISHED.len();
+        if captured.len() != expected_len
+            || captured[..CLIENT_HELLO.len()] != CLIENT_HELLO[..]
+            || captured[CLIENT_HELLO.len()..] != CLIENT_FINISHED[..]
+        {
+            return Err(());
+        }
+        Ok(())
+    })
 }
 
 /// Baseline stub: same rodata footprint as `run_aes_ed25519_facade`,
@@ -183,24 +205,26 @@ pub fn baseline_aes_ed25519_facade() -> bool {
 pub fn run_chacha_ed25519_facade() -> Result<(), ()> {
     use fixture_chacha_ed25519_facade::*;
     use krabitls::client::canned::{CannedTransport, SeededRng};
-    use krabitls::client::{ClientParams, DefaultScratch, DefaultStream};
+    use krabitls::client::{ClientParams, DefaultStream};
 
-    let mut scratch = DefaultScratch::new();
-    let mut rng = SeededRng::new(0);
-    let transport = CannedTransport::<512>::new(&SERVER_STREAM);
-    let params = ClientParams::self_signed("tls-fixture.local");
+    facade_scratch::with(|scratch| {
+        let mut rng = SeededRng::new(0);
+        let transport = CannedTransport::<512>::new(&SERVER_STREAM);
+        let params = ClientParams::self_signed("tls-fixture.local");
 
-    let tls = DefaultStream::connect(&params, &mut scratch, transport, &mut rng).map_err(|_| ())?;
+        let tls =
+            DefaultStream::connect(&params, scratch, transport, &mut rng).map_err(|_| ())?;
 
-    let captured = tls.transport().captured_tx();
-    let expected_len = CLIENT_HELLO.len() + CLIENT_FINISHED.len();
-    if captured.len() != expected_len
-        || captured[..CLIENT_HELLO.len()] != CLIENT_HELLO[..]
-        || captured[CLIENT_HELLO.len()..] != CLIENT_FINISHED[..]
-    {
-        return Err(());
-    }
-    Ok(())
+        let captured = tls.transport().captured_tx();
+        let expected_len = CLIENT_HELLO.len() + CLIENT_FINISHED.len();
+        if captured.len() != expected_len
+            || captured[..CLIENT_HELLO.len()] != CLIENT_HELLO[..]
+            || captured[CLIENT_HELLO.len()..] != CLIENT_FINISHED[..]
+        {
+            return Err(());
+        }
+        Ok(())
+    })
 }
 
 #[cfg(all(
@@ -234,25 +258,27 @@ pub fn baseline_chacha_ed25519_facade() -> bool {
 pub fn run_aes_rsa2048_facade() -> Result<(), ()> {
     use fixture_aes_rsa2048_facade::*;
     use krabitls::client::canned::{CannedTransport, SeededRng};
-    use krabitls::client::{ClientParams, DefaultScratch, DefaultStream, RuntimeSuitePolicy};
+    use krabitls::client::{ClientParams, DefaultStream, RuntimeSuitePolicy};
 
-    let mut scratch = DefaultScratch::new();
-    let mut rng = SeededRng::new(0);
-    let transport = CannedTransport::<512>::new(&SERVER_STREAM);
-    let params =
-        ClientParams::self_signed("tls-fixture.local").suite_policy(RuntimeSuitePolicy::Default);
+    facade_scratch::with(|scratch| {
+        let mut rng = SeededRng::new(0);
+        let transport = CannedTransport::<512>::new(&SERVER_STREAM);
+        let params = ClientParams::self_signed("tls-fixture.local")
+            .suite_policy(RuntimeSuitePolicy::Default);
 
-    let tls = DefaultStream::connect(&params, &mut scratch, transport, &mut rng).map_err(|_| ())?;
+        let tls =
+            DefaultStream::connect(&params, scratch, transport, &mut rng).map_err(|_| ())?;
 
-    let captured = tls.transport().captured_tx();
-    let expected_len = CLIENT_HELLO.len() + CLIENT_FINISHED.len();
-    if captured.len() != expected_len
-        || captured[..CLIENT_HELLO.len()] != CLIENT_HELLO[..]
-        || captured[CLIENT_HELLO.len()..] != CLIENT_FINISHED[..]
-    {
-        return Err(());
-    }
-    Ok(())
+        let captured = tls.transport().captured_tx();
+        let expected_len = CLIENT_HELLO.len() + CLIENT_FINISHED.len();
+        if captured.len() != expected_len
+            || captured[..CLIENT_HELLO.len()] != CLIENT_HELLO[..]
+            || captured[CLIENT_HELLO.len()..] != CLIENT_FINISHED[..]
+        {
+            return Err(());
+        }
+        Ok(())
+    })
 }
 
 #[cfg(all(
@@ -287,7 +313,7 @@ pub fn baseline_aes_rsa2048_facade() -> bool {
 pub fn run_aes_ed25519_jedisct_facade() -> Result<(), ()> {
     use fixture_aes_ed25519_facade::*;
     use krabitls::client::canned::{CannedTransport, SeededRng};
-    use krabitls::client::{ClientConfig, ClientParams, ConfigSuitePolicy, Scratch, TlsStream};
+    use krabitls::client::{ClientConfig, ClientParams, ConfigSuitePolicy, TlsStream};
     use krabitls::{DerCert, JedisctCrypto, RustCrypto};
 
     // Local ClientConfig: same as DefaultConfig but with Hkdf swapped to
@@ -302,24 +328,25 @@ pub fn run_aes_ed25519_jedisct_facade() -> Result<(), ()> {
     }
 
     type JedisctStream<'s, T> = TlsStream<'s, T, JedisctConfig, 16384, 16645, 4096>;
-    type JedisctScratch = Scratch<16384, 16645, 4096>;
 
-    let mut scratch = JedisctScratch::new();
-    let mut rng = SeededRng::new(0);
-    let transport = CannedTransport::<512>::new(&SERVER_STREAM);
-    let params = ClientParams::self_signed("tls-fixture.local");
+    facade_scratch::with(|scratch| {
+        let mut rng = SeededRng::new(0);
+        let transport = CannedTransport::<512>::new(&SERVER_STREAM);
+        let params = ClientParams::self_signed("tls-fixture.local");
 
-    let tls = JedisctStream::connect(&params, &mut scratch, transport, &mut rng).map_err(|_| ())?;
+        let tls =
+            JedisctStream::connect(&params, scratch, transport, &mut rng).map_err(|_| ())?;
 
-    let captured = tls.transport().captured_tx();
-    let expected_len = CLIENT_HELLO.len() + CLIENT_FINISHED.len();
-    if captured.len() != expected_len
-        || captured[..CLIENT_HELLO.len()] != CLIENT_HELLO[..]
-        || captured[CLIENT_HELLO.len()..] != CLIENT_FINISHED[..]
-    {
-        return Err(());
-    }
-    Ok(())
+        let captured = tls.transport().captured_tx();
+        let expected_len = CLIENT_HELLO.len() + CLIENT_FINISHED.len();
+        if captured.len() != expected_len
+            || captured[..CLIENT_HELLO.len()] != CLIENT_HELLO[..]
+            || captured[CLIENT_HELLO.len()..] != CLIENT_FINISHED[..]
+        {
+            return Err(());
+        }
+        Ok(())
+    })
 }
 
 #[cfg(all(

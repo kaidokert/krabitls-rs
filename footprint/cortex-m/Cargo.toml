@@ -77,3 +77,8 @@ unexpected_cfgs = { level = "warn", check-cfg = [
     'cfg(thumbv7m)',
     'cfg(thumbv7em)',
 ] }
+
+# Workaround for opt-level=z miscompile in rsa_heapless cios_mont_mul on
+# thumbv7m — locally bisected to an infinite-loop produced under -Oz.
+[profile.release.package.rsa_heapless]
+opt-level = 2

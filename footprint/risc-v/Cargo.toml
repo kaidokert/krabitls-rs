@@ -51,3 +51,8 @@ opt-level = "z"
 # Suppress unwind tables / `.eh_frame`; otherwise the rust-lld RV32 PCREL
 # relocations overflow once the binary grows past a few KiB.
 panic = "abort"
+
+# Workaround: see footprint/cortex-m/Cargo.toml — rsa_heapless miscompiles
+# under opt-level=z on embedded targets.
+[profile.release.package.rsa_heapless]
+opt-level = 2

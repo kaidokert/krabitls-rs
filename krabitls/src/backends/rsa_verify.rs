@@ -186,6 +186,14 @@ impl<'a> signature::Verifier<RsaPkcs1Sig<'a>> for RsaVerifierKey {
     }
 }
 
+// `#[inline(never)]` workaround: under `opt-level=z` on thumbv7m,
+// inlining `build_vk_pair` into `RsaVerifierKey::new` produces a verify
+// path that returns wrong arithmetic on RSA-PSS signatures (RSA M3
+// facade REJECTs at 2-3M cycles, while host x86 and -O2 thumbv7m both
+// ACCEPT). Forcing the function to stay out-of-line keeps inlining-
+// triggered codegen issues away. ~+224 bytes `.text`; cheap vs the
+// ~+21 KiB cost of forcing the whole crate to `opt-level = 2`.
+#[inline(never)]
 fn build_vk_pair<T>(modulus: &[u8], exponent: u32) -> Result<VkPair<T>, RsaVerifyError>
 where
     T: rsa::modmath_support::ModMathInt,
