@@ -52,7 +52,7 @@ opt-level = "z"
 # relocations overflow once the binary grows past a few KiB.
 panic = "abort"
 
-# Workaround: see footprint/cortex-m/Cargo.toml — rsa_heapless miscompiles
-# under opt-level=z on embedded targets.
+# Workaround: see ../../RUSTC_BUG_1_RSA_HEAPLESS_THUMBV7M_HANG.md
+# (same MIR-opt regression hits riscv32imac under `opt-level = "z"`).
 [profile.release.package.rsa_heapless]
 opt-level = 2
