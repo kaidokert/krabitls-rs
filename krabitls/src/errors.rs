@@ -109,7 +109,10 @@ impl<E: core::error::Error + 'static> core::error::Error for ClientHelloError<E>
     fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
             Self::Write(e) => Some(e),
-            _ => None,
+            Self::HostnameTooLong
+            | Self::MessageTooLong
+            | Self::IntegerOverflow
+            | Self::RecordSizeLimitOutOfRange => None,
         }
     }
 }
