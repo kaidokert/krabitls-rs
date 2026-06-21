@@ -13,6 +13,16 @@ homepage = "https://github.com/kaidokert/krabitls-rs"
 keywords = ["embedded", "no-std", "no-heap", "tls"]
 categories = ["cryptography", "no-std", "no-std::no-alloc"]
 
+# docs.rs builds the crate once and serves that build to everyone. Default
+# features omit RSA, ChaCha20, jedisct, and the validity TimeSource, so
+# the rendered API would otherwise hide those types. Force every feature
+# on for the published docs and pass `--cfg docsrs` so feature-gated
+# items can grow `#[cfg_attr(docsrs, doc(cfg(feature = "X")))]` badges
+# without affecting normal builds.
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
 [features]
 default = ["cert-der", "cipher-aes"]
 # Expose internal helpers that aren't part of the TLS 1.3 API

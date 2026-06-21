@@ -11,6 +11,8 @@ pub enum RuntimeSuitePolicy {
     #[default]
     Default,
     AesOnly,
+    #[cfg(feature = "chacha20")]
+    ChaChaOnly,
 }
 
 /// Trust root. `pub(crate)`; constructors are the only way in.

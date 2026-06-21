@@ -168,7 +168,7 @@ impl<H: HkdfSha256> Default for TranscriptHash<H> {
     }
 }
 
-/// Errors returnable by [`TranscriptHash::update_record`].
+/// Errors returnable by `TranscriptHash::update_record`.
 #[derive(Debug, PartialEq, Eq, Clone, Copy, thiserror::Error)]
 pub enum TranscriptError {
     /// `update_record` was called with a slice shorter than the 5-byte TLS

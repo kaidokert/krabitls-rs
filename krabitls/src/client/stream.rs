@@ -360,8 +360,12 @@ fn effective_suite_list<C: ClientConfig>(runtime: RuntimeSuitePolicy) -> crate::
         #[cfg(all(feature = "cipher-aes", feature = "chacha20"))]
         (ConfigSuitePolicy::AesAndChaCha, RuntimeSuitePolicy::AesOnly) => crate::SuiteList::AesOnly,
         #[cfg(all(feature = "cipher-aes", feature = "chacha20"))]
+        (ConfigSuitePolicy::AesAndChaCha, RuntimeSuitePolicy::ChaChaOnly) => {
+            crate::SuiteList::ChaChaOnly
+        }
+        #[cfg(all(feature = "cipher-aes", feature = "chacha20"))]
         (ConfigSuitePolicy::AesAndChaCha, RuntimeSuitePolicy::Default) => crate::SuiteList::Default,
-        #[cfg(all(not(feature = "cipher-aes"), feature = "chacha20"))]
+        #[cfg(feature = "chacha20")]
         (ConfigSuitePolicy::ChaChaOnly, _) => crate::SuiteList::ChaChaOnly,
     }
 }
