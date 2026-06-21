@@ -1,9 +1,18 @@
 //! Facade error tree. See per-enum docs.
 
-use crate::ConnectionError;
-use crate::IdentityError;
+// Re-export every leaf error type that surfaces through `ConnectionError`'s
+// variants, so callers can name and match on the full chain through
+// `client::error::*` without reaching into private modules.
+pub use crate::aead::{DecryptError, EncryptError};
+pub use crate::client_flight::ClientFinishedError;
+pub use crate::connection::ConnectionError;
+pub use crate::hkdf::{HkdfLabelError, TranscriptError};
+pub use crate::identity::IdentityError;
 #[cfg(feature = "validity")]
-use crate::ValidityError;
+pub use crate::identity::ValidityError;
+pub use crate::reassembler::ReassemblyError;
+pub use crate::server_flight::FlightError;
+pub use crate::{ClientHelloError, ParseError};
 
 /// Outermost error returned by every public `TlsStream` method.
 #[non_exhaustive]

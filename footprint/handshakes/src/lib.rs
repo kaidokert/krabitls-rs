@@ -309,9 +309,9 @@ pub fn baseline_aes_rsa2048_facade() -> bool {
 ))]
 pub fn run_aes_ed25519_jedisct_facade() -> Result<(), ()> {
     use fixture_aes_ed25519_facade::*;
+    use krabitls::backends::{DerCert, JedisctCrypto, RustCrypto};
     use krabitls::client::canned::{CannedTransport, SeededRng};
     use krabitls::client::{ClientConfig, ClientParams, ConfigSuitePolicy, TlsStream};
-    use krabitls::{DerCert, JedisctCrypto, RustCrypto};
 
     // Local ClientConfig: same as DefaultConfig but with Hkdf swapped to
     // JedisctCrypto so the HKDF / SHA-256 path goes through jedisct1.

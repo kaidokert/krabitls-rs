@@ -23,11 +23,16 @@ macro_rules! secret_newtype {
             }
 
             /// Borrow the underlying bytes.
+            // Macro-generated; not every secret_newtype instance has a
+            // reader for every accessor (Secret uses both; AeadIv only
+            // as_bytes; AeadKey/AeadKey32 are themselves test-only).
+            #[allow(dead_code)]
             pub fn as_bytes(&self) -> &[u8; $n] {
                 &*self.0
             }
 
             /// Borrow the underlying zeroizing buffer.
+            #[allow(dead_code)]
             pub fn as_zeroizing(&self) -> &ZeroBuf<$n> {
                 &self.0
             }
@@ -99,28 +104,31 @@ impl core::fmt::Debug for TranscriptDigest {
     }
 }
 
+// AeadKey + AeadKey32 are test-only newtypes. Production code holds the
+// raw key bytes inside `Zeroizing<S::KeyBytes>` (see `aead::RecordKeys`)
+// directly; these wrappers exist so the secret-bearing-newtype test
+// surface stays uniform across types.
+#[cfg(test)]
 secret_newtype! {
     /// 16-byte AES-128-GCM key. Output of [`crate::traffic_keys`].
     /// Not `Copy`; zeroes on drop.
     AeadKey(16)
 }
 
+#[cfg(test)]
 impl core::fmt::Debug for AeadKey {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str("AeadKey([redacted; 16])")
     }
 }
 
-#[cfg(feature = "chacha20")]
+#[cfg(all(test, feature = "chacha20"))]
 secret_newtype! {
-    /// 32-byte ChaCha20-Poly1305 key. Wired as
-    /// `RecordKeys<ChaCha20Poly1305Sha256>::key`; surfaced publicly so
-    /// callers can name the type behind the suite's `CipherSuite::Key`
-    /// associated type (parallel to [`AeadKey`] for AES-128-GCM).
+    /// 32-byte ChaCha20-Poly1305 key. Parallel to [`AeadKey`].
     AeadKey32(32)
 }
 
-#[cfg(feature = "chacha20")]
+#[cfg(all(test, feature = "chacha20"))]
 impl core::fmt::Debug for AeadKey32 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str("AeadKey32([redacted; 32])")

@@ -289,7 +289,7 @@ fn ascii_eq_ignore_case(a: &[u8], b: &[u8]) -> bool {
 // Gated on feature = "validity" — embedded builds without a clock pay
 // no code-size cost for either the check or the TimeSource trait.
 
-/// Reasons [`verify_validity`] may reject a cert.
+/// Reasons the cert-validity check may reject a cert.
 #[cfg(feature = "validity")]
 #[derive(Debug, PartialEq, Eq, Clone, Copy, thiserror::Error)]
 pub enum ValidityError {

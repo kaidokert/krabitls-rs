@@ -1,7 +1,7 @@
 //! Caller-owned, no-alloc per-connection storage. Buffer sizes are const
 //! generics; backend choice ([`super::ClientConfig`]) is orthogonal.
 
-use crate::ServerFlightReassembler;
+use crate::reassembler::ServerFlightReassembler;
 
 /// 5-byte TLS record header.
 pub(crate) const TLS_HEADER: usize = 5;
@@ -34,11 +34,10 @@ pub const MIN_RECV: usize = {
 };
 
 /// Minimum `SEND` that holds the engine's largest single internally-
-/// generated record. Today that's the Client Finished, sized exactly
-/// by [`crate::CLIENT_FINISHED_LEN`] — alerts and one-byte app records
-/// fit well under it.
+/// generated record. Today that's the Client Finished — alerts and
+/// one-byte app records fit well under it.
 pub const MIN_SEND_STANDARD: usize = max_const_3(
-    crate::CLIENT_FINISHED_LEN,
+    crate::client_flight::CLIENT_FINISHED_LEN,
     TLS_HEADER + AEAD_TAG + 2 + 1, // 2-byte alert + content_type byte
     TLS_HEADER + AEAD_TAG + 1 + 1, // 1-byte app + content_type byte
 );
@@ -59,7 +58,7 @@ const fn max_const_3(a: usize, b: usize, c: usize) -> usize {
 /// Per-connection scratch storage, parameterized over the three buffer
 /// dimensions.
 ///
-/// - `FLIGHT` — capacity of the [`ServerFlightReassembler`]. Bounds the
+/// - `FLIGHT` — capacity of the server-flight reassembly buffer. Bounds the
 ///   largest reassembled handshake message (Certificate dominates).
 ///   Public RSA chains: 5–8 KiB. Self-signed Ed25519 leaf: 300–600 B.
 /// - `RECV` — single full-record receive buffer. Caps incoming protected
@@ -98,21 +97,3 @@ impl<const FLIGHT: usize, const RECV: usize, const SEND: usize> Default
 /// Public-internet profile — sized for arbitrary RSA chains and a
 /// full-size receive record. ~37 KiB total.
 pub type DefaultScratch = Scratch<16384, 16645, 4096>;
-
-/// Controlled-peer Ed25519 profile — sized for a self-signed leaf and
-/// 4 KiB protected records. ~6.6 KiB total.
-pub type EmbeddedEd25519Scratch = Scratch<1024, 4096, 1024>;
-
-/// Test-fixture profile. `FLIGHT = 512` is too small for any real
-/// certificate chain; only use against synthetic / captured fixtures.
-/// ~3.6 KiB total.
-pub type MinimalScratch = Scratch<512, 2048, 512>;
-
-/// Override `RECV` only; default `FLIGHT`/`SEND`.
-pub type CustomRecv<const RECV: usize> = Scratch<16384, RECV, 4096>;
-
-/// One-axis ergonomic override for the send buffer size.
-pub type CustomSend<const SEND: usize> = Scratch<16384, 16645, SEND>;
-
-/// One-axis ergonomic override for the flight-reassembly capacity.
-pub type CustomFlight<const FLIGHT: usize> = Scratch<FLIGHT, 16645, 4096>;

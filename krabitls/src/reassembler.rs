@@ -109,18 +109,19 @@ impl<const N: usize> ServerFlightReassembler<N> {
         None
     }
 
+    // Test-only accessors. `len` deleted (callers worked on slices
+    // through `flight_bytes()`).
+    #[cfg(test)]
     pub fn as_slice(&self) -> &[u8] {
         &self.buf
     }
 
-    pub fn len(&self) -> usize {
-        self.buf.len()
-    }
-
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.buf.is_empty()
     }
 
+    #[cfg(test)]
     pub fn clear(&mut self) {
         self.buf.clear();
     }

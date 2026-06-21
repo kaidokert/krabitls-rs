@@ -24,11 +24,18 @@ pub mod rsa_verify;
 pub mod time;
 
 pub use aead::AeadError;
+pub use cert::{CertParseError, CertParser, CertView};
+// Used internally by der_cert.rs (the cert-parser backend); nothing
+// external uses the `crate::traits::RsaCertSigAlg` re-export path
+// because backends reach for `crate::traits::cert::RsaCertSigAlg`
+// directly. Re-export here for documentation symmetry with the other
+// cert types — `#[allow(unused_imports)]` suppresses the lint that
+// fires because no in-crate code resolves through `traits::`.
+#[allow(unused_imports)]
 #[cfg(feature = "rsa")]
 pub use cert::RsaCertSigAlg;
-pub use cert::{CertParseError, CertParser, CertView};
 pub use ed25519_verify::Ed25519VerifierProvider;
 pub use hkdf::{HkdfExpandError, HkdfSha256};
 pub use rsa_verify::RsaVerifierProvider;
 #[cfg(feature = "validity")]
-pub use time::{FixedTime, TimeSource};
+pub use time::TimeSource;

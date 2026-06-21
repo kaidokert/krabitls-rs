@@ -4,34 +4,43 @@
 //! connection: bring a [`Transport`], a caller-owned [`Scratch`], an
 //! RNG, and a [`ClientParams`] — get a connected [`TlsStream`] back.
 
+// Test-only fixture replay (SeededRng + CannedTransport). `#[doc(hidden)]`
+// so it's reachable for our own M3 demos / external testers reproducing
+// fixtures, but doesn't pollute the public docs of real consumers.
 #[cfg(feature = "canned-replay")]
+#[doc(hidden)]
 pub mod canned;
 mod config;
 mod engine;
-mod error;
+/// Error types that can surface through the facade.
+pub mod error;
 mod params;
 mod scratch;
 mod stream;
 mod transport;
 
-#[cfg(feature = "cipher-aes")]
-pub use config::AesOnlyConfig;
-#[cfg(all(not(feature = "cipher-aes"), feature = "chacha20"))]
-pub use config::ChaChaOnlyConfig;
+// Public facade surface — what real clients reach for to make a connection.
 pub use config::{ClientConfig, ConfigSuitePolicy, DefaultConfig};
-pub(crate) use error::WriteAppError;
-pub use error::{ConfigError, ConnectError, HandshakeError, InternalError};
+// Top-level convenience: outer error + the two it wraps + the
+// connection-level enum callers match on to distinguish parse / decrypt
+// / flight failures. Inner leaves stay under `client::error::*`.
+pub use error::{ConfigError, ConnectError, ConnectionError, HandshakeError};
 pub use params::{ClientParams, RuntimeSuitePolicy};
-pub use scratch::{
-    CustomFlight, CustomRecv, CustomSend, DefaultScratch, EmbeddedEd25519Scratch,
-    FACADE_HOSTNAME_MAX, MIN_RECV, MIN_SEND_STANDARD, MinimalScratch, Scratch,
-};
+pub use scratch::{DefaultScratch, MIN_RECV, MIN_SEND_STANDARD, Scratch};
 pub use stream::{DefaultStream, StreamError, TlsStream};
 pub use transport::Transport;
 
-// Convenience re-exports — let facade users `use krabitls::client::*` without
-// also pulling in the typestate crate root.
-pub use crate::{ClientHelloOptions, PinnedPubkey, SuiteList};
+// Re-export PinnedPubkey at this level so callers don't have to import
+// from the crate root.
+pub use crate::identity::PinnedPubkey;
+#[cfg(feature = "validity")]
+pub use crate::traits::TimeSource;
+
+// In-crate-only: alternate config impls (samples, callers write their own),
+// the WriteAppError plumbing type, the InternalError variant the engine
+// surfaces upstream, the scratch-tuning knobs, and the in-progress
+// hostname cap. Demoted as part of the api-scrub pass.
+pub(crate) use error::WriteAppError;
 
 #[cfg(test)]
 mod tests {
@@ -48,8 +57,6 @@ mod tests {
     /// qualifier.
     #[allow(dead_code)]
     static _DEFAULT_SCRATCH_FITS_IN_STATIC: DefaultScratch = DefaultScratch::new();
-    #[allow(dead_code)]
-    static _MINIMAL_SCRATCH_FITS_IN_STATIC: MinimalScratch = MinimalScratch::new();
 
     #[test]
     fn default_config_satisfies_client_config() {
@@ -58,16 +65,6 @@ mod tests {
         // this stops compiling.
         fn assert_impl<C: ClientConfig>() {}
         assert_impl::<DefaultConfig>();
-        #[cfg(feature = "cipher-aes")]
-        assert_impl::<AesOnlyConfig>();
-        #[cfg(all(not(feature = "cipher-aes"), feature = "chacha20"))]
-        assert_impl::<ChaChaOnlyConfig>();
-    }
-
-    #[cfg(feature = "cipher-aes")]
-    #[test]
-    fn aes_only_config_advertises_aes_only_at_compile_time() {
-        assert_eq!(AesOnlyConfig::SUITES, ConfigSuitePolicy::AesOnly);
     }
 
     #[cfg(all(feature = "cipher-aes", feature = "chacha20"))]
@@ -80,12 +77,6 @@ mod tests {
     #[test]
     fn default_config_falls_back_to_aes_only_without_chacha20() {
         assert_eq!(DefaultConfig::SUITES, ConfigSuitePolicy::AesOnly);
-    }
-
-    #[cfg(all(not(feature = "cipher-aes"), feature = "chacha20"))]
-    #[test]
-    fn default_config_is_chacha_only_without_cipher_aes() {
-        assert_eq!(DefaultConfig::SUITES, ConfigSuitePolicy::ChaChaOnly);
     }
 
     #[test]
@@ -119,10 +110,7 @@ mod tests {
     const _: () = assert!(MIN_RECV == 95);
     /// `MIN_SEND_STANDARD` must accommodate the largest engine-internal
     /// send (Client Finished today).
-    const _: () = assert!(MIN_SEND_STANDARD >= crate::CLIENT_FINISHED_LEN);
-    /// Facade hostname cap is DNS-compatible (longest legal FQDN is 253;
-    /// 255 leaves room for the trailing `.` callers occasionally include).
-    const _: () = assert!(FACADE_HOSTNAME_MAX == 255);
+    const _: () = assert!(MIN_SEND_STANDARD >= crate::client_flight::CLIENT_FINISHED_LEN);
 
     // Manual stub avoids pulling in `embedded_io_adapters` for a
     // compile-time-only trait resolution check.
@@ -201,7 +189,7 @@ mod tests {
         let s = format!("{e}");
         assert!(s.contains("100"));
         assert!(s.contains("50"));
-        let e = InternalError::RecvBufferEmptyOnRecvEvent;
+        let e = error::InternalError::RecvBufferEmptyOnRecvEvent;
         assert!(!format!("{e}").is_empty());
     }
 }

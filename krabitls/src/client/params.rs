@@ -1,9 +1,9 @@
 //! Per-connection trust + policy. Constructors couple trust mode to its material.
 
-use crate::PinnedPubkey;
+use crate::identity::PinnedPubkey;
 
 #[cfg(feature = "validity")]
-use crate::TimeSource;
+use crate::traits::TimeSource;
 
 /// Runtime narrowing of the compile-time suite advertisement.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
