@@ -797,7 +797,7 @@ mod tests {
     #[cfg(feature = "chacha20")]
     use crate::newtype::AeadKey32;
     use crate::newtype::{AeadIv, AeadKey, Secret, TranscriptDigest, ZeroBuf};
-    use crate::server_flight::{FlightError, extract_cert_der, parse_server_flight};
+    use crate::server_flight::{FlightError, extract_cert_der, extract_chain, parse_server_flight};
     use crate::traits::{CertParseError, CertParser, CertView, HkdfSha256};
     use embedded_io::SliceWriteError;
 
@@ -2080,6 +2080,37 @@ mod tests {
         body[17..22].copy_from_slice(&[6, 7, 8, 9, 10]);
         let leaf = extract_cert_der(&body).expect("first cert");
         assert_eq!(leaf, &[1, 2, 3, 4, 5]);
+    }
+
+    fn make_cert_body(n: usize) -> Vec<u8> {
+        let entry_size = 3 + 1 + 2;
+        let list_len = (n * entry_size) as u32;
+        let mut body = Vec::with_capacity(4 + n * entry_size);
+        body.push(0);
+        body.extend_from_slice(&list_len.to_be_bytes()[1..4]);
+        for i in 0..n {
+            body.extend_from_slice(&[0, 0, 1]);
+            body.push((i + 1) as u8);
+            body.extend_from_slice(&[0, 0]);
+        }
+        body
+    }
+
+    #[test]
+    fn extract_chain_returns_all_entries() {
+        let body = make_cert_body(3);
+        let chain = extract_chain::<8>(&body).expect("chain parses");
+        assert_eq!(chain.len(), 3);
+        assert_eq!(chain[0], &[1u8][..]);
+        assert_eq!(chain[1], &[2u8][..]);
+        assert_eq!(chain[2], &[3u8][..]);
+    }
+
+    #[test]
+    fn extract_chain_rejects_overflow() {
+        let body = make_cert_body(3);
+        let err = extract_chain::<2>(&body).expect_err("must reject overflow");
+        assert_eq!(err, FlightError::CertChainTooLong);
     }
 
     // Seed-0 RSA fixture cert is PKCS#1-v1.5-signed; rsa_pss_only rejects

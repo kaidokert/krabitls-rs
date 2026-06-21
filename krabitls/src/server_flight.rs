@@ -82,6 +82,11 @@ pub enum FlightError {
     /// once (e.g. duplicate `record_size_limit` in EncryptedExtensions).
     #[error("duplicate extension 0x{ext_type:04x} in handshake message")]
     DuplicateExtension { ext_type: u16 },
+    /// Server's Certificate message carried more `CertificateEntry` entries
+    /// than the caller-supplied `MAX_CERT_CHAIN_LEN` bound. Truncating
+    /// would silently drop tail certs an attacker may have appended.
+    #[error("cert chain length exceeded the configured maximum")]
+    CertChainTooLong,
 }
 
 impl From<heapless::CapacityError> for FlightError {
@@ -93,9 +98,9 @@ impl From<heapless::CapacityError> for FlightError {
 /// Walk the 4-message server flight in the decrypted plaintext.
 ///
 /// Validates ordering (`EE -> Cert -> CV -> Finished`) and message framing,
-/// then returns body/full slices for each. The `EncryptedExtensions` and
-/// `Certificate` payloads are *not* further parsed here — `extract_cert_der`
-/// handles the leaf-extraction tolerance for public-server chains.
+/// then returns body/full slices for each. `EncryptedExtensions` and
+/// `Certificate` payloads aren't further parsed here — see
+/// [`extract_chain`] / [`extract_cert_der`] for the `Certificate` body.
 pub fn parse_server_flight(content: &[u8]) -> Result<ServerFlightView<'_>, FlightError> {
     let mut r = HsReader::new(content);
 
@@ -190,11 +195,25 @@ impl<'a> HsReader<'a> {
     }
 }
 
-/// Pull the leaf DER bytes out of a TLS 1.3 `Certificate` body.
+/// Default upper bound on `CertificateEntry` count. 8 covers real-world
+/// chains including CA-migration cross-signs (leaf + 2 intermediates +
+/// cross-signed root + slack).
+//
+// TODO: promote to a TlsStream const generic so callers configure
+// the bound per-binary instead of a hardcoded module-level cap.
+// Deletes when extract_cert_der's callers move to extract_chain
+// with the const threaded through from TlsStream.
+pub const MAX_CERT_CHAIN_LEN: usize = 8;
+
+/// Walk a TLS 1.3 `Certificate` body and return every `CertificateEntry`'s
+/// `cert_data` as borrowed slices, in wire order (index 0 = leaf).
+/// Per-entry `Extensions` blobs are skipped.
 ///
-/// Leaf-only: returns the first `CertificateEntry`'s `cert_data`. Per-entry
-/// extensions and any chain entries that follow are tolerated and ignored.
-pub fn extract_cert_der(cert_body: &[u8]) -> Result<&[u8], FlightError> {
+/// Capacity-overflow is REJECTED (`FlightError::CertChainTooLong`), not
+/// truncated — a silently-truncated tail is an MITM hook.
+pub fn extract_chain<const MAX: usize>(
+    cert_body: &[u8],
+) -> Result<heapless::Vec<&[u8], MAX>, FlightError> {
     if cert_body.is_empty() {
         return Err(FlightError::Truncated);
     }
@@ -206,37 +225,44 @@ pub fn extract_cert_der(cert_body: &[u8]) -> Result<&[u8], FlightError> {
     let list_len = usize::try_from(read_u24(&cert_body[after_ctx..after_ctx + 3]))
         .map_err(|_| FlightError::Truncated)?;
     let list_start = after_ctx + 3;
-    // `list_start + list_len > cert_body.len()` reformulated to avoid
-    // overflow on 16-bit `usize`: the `cert_body.len() < after_ctx + 3`
-    // check above guarantees `cert_body.len() >= list_start`, so the
-    // subtraction is safe.
+    // Subtraction safe: prior guard ensures cert_body.len() >= list_start.
     if list_len > cert_body.len() - list_start {
         return Err(FlightError::Truncated);
     }
-    let list_end = list_start + list_len;
-    let list = &cert_body[list_start..list_end];
+    let list = &cert_body[list_start..list_start + list_len];
 
-    // Use the leaf only; tolerate chain entries and per-entry extensions.
-    if list.len() < 3 {
-        return Err(FlightError::Truncated);
+    let mut chain: heapless::Vec<&[u8], MAX> = heapless::Vec::new();
+    let mut pos = 0;
+    while pos < list.len() {
+        if list.len() - pos < 3 {
+            return Err(FlightError::Truncated);
+        }
+        let cert_data_len =
+            usize::try_from(read_u24(&list[pos..pos + 3])).map_err(|_| FlightError::Truncated)?;
+        let cert_start = pos + 3;
+        // Need cert_data_len bytes for cert + 2 bytes for the extensions length.
+        if list.len() - cert_start < cert_data_len || list.len() - cert_start - cert_data_len < 2 {
+            return Err(FlightError::Truncated);
+        }
+        let cert_end = cert_start + cert_data_len;
+        chain
+            .push(&list[cert_start..cert_end])
+            .map_err(|_| FlightError::CertChainTooLong)?;
+        let exts_len = u16::from_be_bytes([list[cert_end], list[cert_end + 1]]) as usize;
+        if list.len() - cert_end - 2 < exts_len {
+            return Err(FlightError::Truncated);
+        }
+        pos = cert_end + 2 + exts_len;
     }
-    let cert_data_len =
-        usize::try_from(read_u24(&list[0..3])).map_err(|_| FlightError::Truncated)?;
-    // `cert_end + 2 = 3 + cert_data_len + 2 = 5 + cert_data_len > list.len()`
-    // reformulated to avoid overflow on 16-bit `usize`: bail if the list
-    // is too short for the 3+2 framing bytes or if cert_data_len doesn't
-    // fit the remaining window.
-    if list.len() < 5 || cert_data_len > list.len() - 5 {
-        return Err(FlightError::Truncated);
-    }
-    let cert_end = 3 + cert_data_len;
-    let exts_len = u16::from_be_bytes([list[cert_end], list[cert_end + 1]]) as usize;
-    // `cert_end + 2 + exts_len > list.len()` reformulated against
-    // overflow: the previous guard ensures `list.len() >= cert_end + 2`.
-    if exts_len > list.len() - cert_end - 2 {
-        return Err(FlightError::Truncated);
-    }
-    Ok(&list[3..cert_end])
+    Ok(chain)
+}
+
+/// Pull the leaf DER bytes out of a TLS 1.3 `Certificate` body.
+/// Leaf-only convenience over [`extract_chain`]; inherits its
+/// overflow-rejection.
+pub fn extract_cert_der(cert_body: &[u8]) -> Result<&[u8], FlightError> {
+    let chain = extract_chain::<MAX_CERT_CHAIN_LEN>(cert_body)?;
+    chain.first().copied().ok_or(FlightError::Truncated)
 }
 
 /// Read a big-endian 24-bit length without truncating on 16-bit targets.
