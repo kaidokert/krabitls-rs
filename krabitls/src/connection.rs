@@ -32,11 +32,10 @@ use crate::server_flight::verify_server_flight;
 use crate::traits::{CertParser, Ed25519VerifierProvider, HkdfSha256, RsaVerifierProvider};
 use crate::{ClientHelloError, ParseError, parse_server_hello};
 
-// Read only by `close_notify` on Live, which is itself test-only now
-// that the facade engine handles graceful shutdown in its own loop.
-#[allow(dead_code)]
+// Only consumer is `close_notify` on Live, whose gate is matched here.
+#[cfg(all(test, not(feature = "chacha20"), not(feature = "rsa")))]
 const CT_ALERT: u8 = 0x15;
-#[allow(dead_code)]
+#[cfg(all(test, not(feature = "chacha20"), not(feature = "rsa")))]
 const CLOSE_NOTIFY_ALERT: [u8; 2] = [0x01, 0x00];
 /// Middlebox-compat ChangeCipherSpec — dropped without bumping seq_in.
 const CT_CHANGE_CIPHER_SPEC: u8 = 0x14;
@@ -258,7 +257,15 @@ pub struct WaitServerFlight<S: CipherSuite, M: HandshakeMode = Live> {
 pub struct ServerFlightDone<S: CipherSuite, M: HandshakeMode = Live> {
     pub(crate) hs: Secret,
     pub(crate) c_hs_ts: Secret,
+    // `s_hs_ts` and `server_pubkey` are stored by `verify_server_flight`'s
+    // construction site but never read in production (finish_handshake
+    // only consumes `hs` and `c_hs_ts`). They're load-bearing for the
+    // cfg(test) `server_pubkey()` accessor + a direct field-read in this
+    // file's tests. Carried in the typestate rather than dropped so the
+    // test surface still has something to inspect.
+    #[allow(dead_code)]
     pub(crate) s_hs_ts: Secret,
+    #[allow(dead_code)]
     pub(crate) server_pubkey: ServerPubkeyOwned,
     pub(crate) _suite: PhantomData<S>,
     pub(crate) _mode: PhantomData<M>,
@@ -297,9 +304,9 @@ impl ServerPubkeyOwned {
         }
     }
 
-    // Only caller is the test-only `server_pubkey()` accessor on
-    // ServerFlightDone — part of the replay-fixture surface.
-    #[allow(dead_code)]
+    // Only caller is the cfg(test) `server_pubkey()` accessor on
+    // ServerFlightDone — same gate.
+    #[cfg(all(test, not(feature = "chacha20"), not(feature = "rsa")))]
     pub fn as_view(&self) -> ServerPubkey<'_> {
         match self {
             Self::Ed25519(pk) => ServerPubkey::ed25519(*pk),
@@ -597,8 +604,8 @@ where
 // WaitServerFlight -> ServerFlightDone
 // ============================================================================
 
-// Only caller is `feed_server_record` below — itself test-only.
-#[allow(dead_code)]
+// Only caller is `feed_server_record` below — same gate.
+#[cfg(all(test, not(feature = "chacha20"), not(feature = "rsa")))]
 fn feed_server_record_inner<const N: usize, F>(
     record: &[u8],
     seq_in: &mut u64,
@@ -691,10 +698,9 @@ where
 {
     /// CCS records skipped without bumping seq_in.
     // The facade engine has its own record-feed path (decrypt_record_inplace
-    // + manual reassembly); this typestate-style method only has callers
-    // in this file's #[cfg(test)] block. Kept until the typestate replay
-    // surface is either re-engaged or fully removed.
-    #[allow(dead_code)]
+    // + manual reassembly). Only callers of this typestate-style method
+    // are this file's tests, gated `not(chacha20)+not(rsa)`.
+    #[cfg(all(test, not(feature = "chacha20"), not(feature = "rsa")))]
     pub fn feed_server_record<const N: usize>(
         &mut self,
         record: &[u8],
@@ -800,23 +806,13 @@ where
     H: HkdfSha256,
     M: HandshakeMode,
 {
-    // Replay-fixture accessors: exposes typestate-internal state for
-    // capturing canned handshakes. Only this file's tests consume them
-    // today (the facade engine reaches into its own state, not the
-    // typestate's). Kept against future fixture-generation work.
-    #[allow(dead_code)]
+    // Test-only accessor — used by this file's `replay_state_matches`
+    // test. s_hs_traffic_secret / c_hs_traffic_secret / build_client_finished
+    // had zero callers and were removed entirely. Gate matches the
+    // caller test's cfg.
+    #[cfg(all(test, not(feature = "chacha20"), not(feature = "rsa")))]
     pub fn server_pubkey(&self) -> ServerPubkey<'_> {
         self.state.server_pubkey.as_view()
-    }
-
-    #[allow(dead_code)]
-    pub fn s_hs_traffic_secret(&self) -> &Secret {
-        &self.state.s_hs_ts
-    }
-
-    #[allow(dead_code)]
-    pub fn c_hs_traffic_secret(&self) -> &Secret {
-        &self.state.c_hs_ts
     }
 }
 
@@ -831,26 +827,6 @@ where
         let th = self.transcript.snapshot();
         let ms = master_secret::<H>(&self.state.hs)?;
         Ok(application_traffic_secrets::<H>(&ms, &th)?)
-    }
-}
-
-impl<S, H, M> TlsConnection<ServerFlightDone<S, M>, H>
-where
-    S: CipherSuite,
-    H: HkdfSha256,
-    M: HandshakeMode,
-{
-    /// No transition; skips `ms` + app-traffic derivation. Replay-harness use;
-    /// production callers want [`Self::finish_handshake`].
-    #[allow(dead_code)]
-    pub fn build_client_finished<'a>(
-        &self,
-        out_buf: &'a mut [u8],
-    ) -> Result<&'a [u8], ConnectionError> {
-        let th = self.transcript.snapshot();
-        let record =
-            RecordKeys::<S>::build_client_finished::<H>(&self.state.c_hs_ts, &th, 0, out_buf)?;
-        Ok(record)
     }
 }
 

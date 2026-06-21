@@ -33,11 +33,9 @@ pub(crate) fn decrypt_record<'a, S: CipherSuite>(
     })
 }
 
-// Only invoked from `RecordKeys::decrypt_record` (also dead-code-tagged
-// — see below) and from the test-only standalone `decrypt_record` above.
-// All call sites are themselves either tests or part of the typestate
-// surface that the facade engine doesn't drive.
-#[allow(dead_code)]
+// Only invoked from cfg(test) callers: the standalone `decrypt_record`
+// above and `RecordKeys::decrypt_record` (also cfg(test)).
+#[cfg(test)]
 fn decrypt_record_with<'a, F>(
     record: &[u8],
     iv: &AeadIv,
@@ -476,9 +474,10 @@ impl<S: CipherSuite> RecordKeys<S> {
     }
 
     /// Decrypt one `application_data` record under this suite's AEAD.
-    // Only callers are `feed_server_record_inner` and tests in this file.
-    // The facade engine uses `decrypt_record_inplace` instead.
-    #[allow(dead_code)]
+    // Only callers are this file's tests and the cfg(test)
+    // `feed_server_record_inner` in connection.rs. The facade engine uses
+    // `decrypt_record_inplace` instead.
+    #[cfg(test)]
     pub fn decrypt_record<'a>(
         &self,
         record: &[u8],
