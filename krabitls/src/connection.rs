@@ -12,6 +12,7 @@ use crate::aead::Aes128GcmSha256;
 use crate::aead::ChaCha20Poly1305Sha256;
 use crate::aead::split_inner_plaintext;
 use crate::aead::{CipherSuite, RecordKeys};
+use crate::aead::{DecryptError, EncryptError};
 use crate::backends::RustCrypto;
 use crate::client_flight::ClientFinishedError;
 #[cfg(feature = "cipher-aes")]
@@ -25,14 +26,17 @@ use crate::hkdf::{
 };
 use crate::newtype::{Secret, ZeroBuf};
 use crate::reassembler::{ReassemblyError, ServerFlightReassembler};
+use crate::server_flight::FlightError;
 use crate::server_flight::ServerPubkey;
 use crate::server_flight::verify_server_flight;
 use crate::traits::{CertParser, Ed25519VerifierProvider, HkdfSha256, RsaVerifierProvider};
-use crate::{
-    ClientHelloError, DecryptError, EncryptError, FlightError, ParseError, parse_server_hello,
-};
+use crate::{ClientHelloError, ParseError, parse_server_hello};
 
+// Read only by `close_notify` on Live, which is itself test-only now
+// that the facade engine handles graceful shutdown in its own loop.
+#[allow(dead_code)]
 const CT_ALERT: u8 = 0x15;
+#[allow(dead_code)]
 const CLOSE_NOTIFY_ALERT: [u8; 2] = [0x01, 0x00];
 /// Middlebox-compat ChangeCipherSpec — dropped without bumping seq_in.
 const CT_CHANGE_CIPHER_SPEC: u8 = 0x14;
@@ -230,6 +234,11 @@ mod sealed {
 pub trait HandshakeMode: sealed::Sealed {}
 
 pub struct Live;
+// Replay-mode marker for the deprecated typestate handshake. Nothing
+// currently instantiates `TlsConnection<..., Replay>` (the facade only
+// flies `Live`); kept so the typestate surface can be re-engaged for
+// fixture-replay work without a re-introduction commit.
+#[allow(dead_code)]
 pub struct Replay;
 impl sealed::Sealed for Live {}
 impl sealed::Sealed for Replay {}
@@ -257,6 +266,11 @@ pub struct ServerFlightDone<S: CipherSuite, M: HandshakeMode = Live> {
 
 #[derive(Debug, Clone)]
 #[allow(clippy::large_enum_variant)]
+// Fields are only read by `from_view`/`as_view` below — both of which
+// are themselves part of the replay-fixture surface (no facade-engine
+// caller). Kept so the typestate's ServerFlightDone can carry a
+// concrete pubkey for replay tooling.
+#[allow(dead_code)]
 pub enum ServerPubkeyOwned {
     Ed25519([u8; 32]),
     #[cfg(feature = "rsa")]
@@ -283,6 +297,9 @@ impl ServerPubkeyOwned {
         }
     }
 
+    // Only caller is the test-only `server_pubkey()` accessor on
+    // ServerFlightDone — part of the replay-fixture surface.
+    #[allow(dead_code)]
     pub fn as_view(&self) -> ServerPubkey<'_> {
         match self {
             Self::Ed25519(pk) => ServerPubkey::ed25519(*pk),
@@ -334,11 +351,6 @@ where
 // Init -> WaitServerHello
 // ============================================================================
 
-pub type WriteClientHelloToSliceResult<'a, H> = Result<
-    (&'a [u8], TlsConnection<WaitServerHello, H>),
-    ConnectionError<embedded_io::SliceWriteError>,
->;
-
 /// Carries `written_len` rather than `&buf[..n]` so the borrow ends before the next state.
 pub type WriteClientHelloToSliceWithResult<H> = Result<
     (usize, TlsConnection<WaitServerHello, H>),
@@ -357,38 +369,6 @@ where
                 x25519_priv,
             },
         }
-    }
-
-    /// Use [`crate::client_hello_len`] to size `buf` exactly; too-small
-    /// surfaces as `ClientHelloError::Write(SliceWriteError::Full)`.
-    pub fn write_client_hello_to_slice<'a>(
-        self,
-        buf: &'a mut [u8],
-        x25519_pub: &[u8; 32],
-        hostname: Option<&[u8]>,
-    ) -> WriteClientHelloToSliceResult<'a, H> {
-        let total = buf.len();
-        let mut cursor = &mut *buf;
-        let next = self.write_client_hello(&mut cursor, x25519_pub, hostname)?;
-        let written = total - cursor.len();
-        Ok((&buf[..written], next))
-    }
-
-    pub fn write_client_hello<W: Write>(
-        self,
-        out: &mut W,
-        x25519_pub: &[u8; 32],
-        hostname: Option<&[u8]>,
-    ) -> Result<TlsConnection<WaitServerHello, H>, ConnectionError<W::Error>> {
-        self.write_client_hello_with(
-            out,
-            x25519_pub,
-            &crate::ClientHelloOptions {
-                hostname,
-                record_size_limit: None,
-                suites: crate::SuiteList::Default,
-            },
-        )
     }
 
     pub fn write_client_hello_with<W: Write>(
@@ -497,7 +477,16 @@ impl<H> NegotiatedSuite<H>
 where
     H: HkdfSha256,
 {
-    #[cfg(feature = "cipher-aes")]
+    // Test-only typestate accessor; the facade engine matches on the
+    // NegotiatedSuite enum directly. Only kept for tests that drive the
+    // typestate through a known cipher choice. Test gating mirrors the
+    // test functions that use it (e.g. `feed_server_record_and_finalize_smoke`).
+    #[cfg(all(
+        test,
+        feature = "cipher-aes",
+        not(feature = "chacha20"),
+        not(feature = "rsa")
+    ))]
     pub fn assume_aes_128_gcm(
         self,
     ) -> Result<TlsConnection<WaitServerFlight<Aes128GcmSha256>, H>, ConnectionError> {
@@ -507,20 +496,6 @@ where
             Self::ChaCha20Poly1305(_) => Err(ConnectionError::WrongSuite {
                 expected: CIPHER_AES_128_GCM_SHA256,
                 got: CIPHER_CHACHA20_POLY1305_SHA256,
-            }),
-        }
-    }
-
-    #[cfg(feature = "chacha20")]
-    pub fn assume_chacha20_poly1305(
-        self,
-    ) -> Result<TlsConnection<WaitServerFlight<ChaCha20Poly1305Sha256>, H>, ConnectionError> {
-        match self {
-            Self::ChaCha20Poly1305(c) => Ok(c),
-            #[cfg(feature = "cipher-aes")]
-            Self::Aes128Gcm(_) => Err(ConnectionError::WrongSuite {
-                expected: CIPHER_CHACHA20_POLY1305_SHA256,
-                got: CIPHER_AES_128_GCM_SHA256,
             }),
         }
     }
@@ -622,6 +597,8 @@ where
 // WaitServerFlight -> ServerFlightDone
 // ============================================================================
 
+// Only caller is `feed_server_record` below — itself test-only.
+#[allow(dead_code)]
 fn feed_server_record_inner<const N: usize, F>(
     record: &[u8],
     seq_in: &mut u64,
@@ -713,6 +690,11 @@ where
     M: HandshakeMode,
 {
     /// CCS records skipped without bumping seq_in.
+    // The facade engine has its own record-feed path (decrypt_record_inplace
+    // + manual reassembly); this typestate-style method only has callers
+    // in this file's #[cfg(test)] block. Kept until the typestate replay
+    // surface is either re-engaged or fully removed.
+    #[allow(dead_code)]
     pub fn feed_server_record<const N: usize>(
         &mut self,
         record: &[u8],
@@ -818,16 +800,21 @@ where
     H: HkdfSha256,
     M: HandshakeMode,
 {
+    // Replay-fixture accessors: exposes typestate-internal state for
+    // capturing canned handshakes. Only this file's tests consume them
+    // today (the facade engine reaches into its own state, not the
+    // typestate's). Kept against future fixture-generation work.
+    #[allow(dead_code)]
     pub fn server_pubkey(&self) -> ServerPubkey<'_> {
         self.state.server_pubkey.as_view()
     }
 
-    /// Exposed for replay-fixture capture.
+    #[allow(dead_code)]
     pub fn s_hs_traffic_secret(&self) -> &Secret {
         &self.state.s_hs_ts
     }
 
-    /// Exposed for replay-fixture capture.
+    #[allow(dead_code)]
     pub fn c_hs_traffic_secret(&self) -> &Secret {
         &self.state.c_hs_ts
     }
@@ -855,6 +842,7 @@ where
 {
     /// No transition; skips `ms` + app-traffic derivation. Replay-harness use;
     /// production callers want [`Self::finish_handshake`].
+    #[allow(dead_code)]
     pub fn build_client_finished<'a>(
         &self,
         out_buf: &'a mut [u8],
@@ -986,6 +974,9 @@ where
         Ok(record)
     }
 
+    // Test-only path; the facade engine uses `decrypt_record_inplace`.
+    // Gate matches the cfg on the test function that calls it.
+    #[cfg(all(test, not(feature = "chacha20"), not(feature = "rsa")))]
     pub fn decrypt_record<'a>(
         &mut self,
         record: &[u8],
@@ -1024,6 +1015,9 @@ where
         Ok((content_len, ct))
     }
 
+    // Test-only path; the facade engine handles close_notify in its own
+    // event loop. Gate matches the cfg on the test function that calls it.
+    #[cfg(all(test, not(feature = "chacha20"), not(feature = "rsa")))]
     pub fn close_notify(mut self, out_buf: &mut [u8]) -> Result<&[u8], ConnectionError> {
         self.encrypt_record(&CLOSE_NOTIFY_ALERT, CT_ALERT, out_buf)
     }

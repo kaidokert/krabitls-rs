@@ -1,4 +1,4 @@
-//! Default backend implementations of the [`crate::traits`] swap-point
+//! Default backend implementations of the crate-internal swap-point
 //! interfaces.
 //!
 //! - [`RustCrypto`] — bundled defaults wired to the RustCrypto crates
@@ -6,31 +6,38 @@
 //!   `ed25519_heapless` for `Ed25519Verify`. Pick this marker when you
 //!   want "the obvious thing." Most callers do.
 //! - [`DerCert`] — `CertParser` impl. With `feature = "cert-der"`
-//!   (default), backed by the `der` crate. Without it, backed by the
-//!   hand-rolled TLV walker in [`tlv`] — drops the `der` dependency at
-//!   the cost of an unaudited parser.
-//! - [`jedisct::JedisctCrypto`] (feature `jedisct`) — alternate
-//!   [`crate::HkdfSha256`] backend using jedisct1's `hmac-sha256`, useful
-//!   when dropping the RustCrypto SHA-256/HKDF chain from the binary.
+//!   (default), backed by the `der` crate. Without it, backed by an
+//!   in-tree hand-rolled TLV walker — drops the `der` dependency at the
+//!   cost of an unaudited parser.
+//! - `JedisctCrypto` (feature `jedisct`) — alternate `HkdfSha256`
+//!   backend using jedisct1's `hmac-sha256`, useful when dropping the
+//!   RustCrypto SHA-256/HKDF chain from the binary.
 
-// `cert-der` toggles which backend is compiled in: on → `der`-crate,
-// off → in-tree TLV walker. Exactly one is always active.
+// Backend submodules are private; reach the public markers via the
+// re-exports at this level (`krabitls::backends::{RustCrypto, ...}`).
 #[cfg(feature = "cert-der")]
-pub mod der_cert;
-#[cfg(not(feature = "cert-der"))]
-pub mod tlv_cert;
-
+pub(crate) mod der_cert;
 #[cfg(feature = "jedisct")]
-pub mod jedisct;
+pub(crate) mod jedisct;
 #[cfg(feature = "rsa")]
-pub mod rsa_verify;
-pub mod rustcrypto;
+pub(crate) mod rsa_verify;
+pub(crate) mod rustcrypto;
 pub(crate) mod tlv;
+#[cfg(not(feature = "cert-der"))]
+pub(crate) mod tlv_cert;
 
 #[cfg(feature = "cert-der")]
 pub use der_cert::DerCert;
 #[cfg(feature = "jedisct")]
 pub use jedisct::JedisctCrypto;
+// Re-exports purely for the external API surface — nothing in-crate
+// uses these paths, so silence the unused-import lint.
+#[allow(unused_imports)]
+#[cfg(all(feature = "rsa", not(feature = "rsa_pss_only")))]
+pub use rsa_verify::RsaPkcs1Sig;
+#[allow(unused_imports)]
+#[cfg(feature = "rsa")]
+pub use rsa_verify::RsaPssSig;
 #[cfg(feature = "rsa")]
 pub use rsa_verify::{RsaVerifierKey, RsaVerifyError};
 pub use rustcrypto::RustCrypto;

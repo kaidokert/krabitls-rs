@@ -24,9 +24,11 @@ pub trait TimeSource {
 /// [`TimeSource`] impl that always returns the same value. Useful for tests,
 /// for embedded deployments that pin to firmware build time, and for the
 /// "we know the device was last in contact with NTP at T, treat that as
-/// our floor" pattern.
+/// our floor" pattern. Test-only in this crate; sample for downstream.
+#[cfg(test)]
 pub struct FixedTime(pub u64);
 
+#[cfg(test)]
 impl TimeSource for FixedTime {
     fn now_unix_secs(&self) -> u64 {
         self.0

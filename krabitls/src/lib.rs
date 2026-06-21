@@ -6,11 +6,11 @@
 
 #![cfg_attr(not(test), no_std)]
 
-// Internal modules. External callers should reach for the curated
-// re-exports at the crate root, not the module paths. Only `consts`
-// (further down) is exposed as a namespace, intentionally.
+// Internal modules. External callers go through `krabitls::client`
+// (the connection facade) and `krabitls::backends` (config markers).
+// Everything else here is implementation detail.
 pub(crate) mod aead;
-pub(crate) mod backends;
+pub mod backends;
 pub mod client;
 pub(crate) mod client_flight;
 pub(crate) mod connection;
@@ -21,35 +21,7 @@ pub(crate) mod reassembler;
 pub(crate) mod server_flight;
 pub(crate) mod traits;
 
-// Public surface — typestate API + the trait/backend/error types it
-// surfaces. The sans-io free functions, RecordKeys, and the verify-chain
-// helpers are pub(crate) at their source modules; reach them through
-// `TlsConnection` instead.
-#[cfg(feature = "cipher-aes")]
-pub use aead::Aes128GcmSha256;
-#[cfg(feature = "chacha20")]
-pub use aead::ChaCha20Poly1305Sha256;
-pub use aead::{CipherSuite, DecryptError, DefaultCipher, EncryptError};
-pub use backends::DerCert;
-#[cfg(feature = "jedisct")]
-pub use backends::JedisctCrypto;
-pub use backends::RustCrypto;
-#[cfg(all(feature = "rsa", not(feature = "rsa_pss_only")))]
-pub use backends::rsa_verify::RsaPkcs1Sig;
-#[cfg(feature = "rsa")]
-pub use backends::rsa_verify::RsaPssSig;
-#[cfg(feature = "rsa")]
-pub use backends::{RsaVerifierKey, RsaVerifyError};
-pub use client_flight::{CLIENT_FINISHED_LEN, ClientFinishedError};
-pub use connection::{
-    AppData, ConnectionError, FlightStep, HandshakeMode, Init, Live, NegotiatedSuite, Replay,
-    ServerFlightDone, ServerPubkeyOwned, TlsConnection, VerifyMode, WaitServerFlight,
-    WaitServerHello,
-};
-pub use hkdf::{HkdfLabelError, TranscriptError, TranscriptHash};
-pub use reassembler::{ReassemblyError, ServerFlightReassembler};
-// Lib-test convenience re-exports — internal helpers reachable via `crate::foo`
-// inside the in-crate tests module. External callers go through TlsConnection.
+// In-crate convenience re-exports for the test harness.
 #[cfg(all(test, feature = "cipher-aes"))]
 pub(crate) use aead::RecordKeys;
 #[cfg(test)]
@@ -60,25 +32,8 @@ pub(crate) use hkdf::{application_traffic_secrets, master_secret};
 pub(crate) use hkdf::{
     derive_secret, handshake_secret, handshake_traffic_secrets, hkdf_expand_label,
 };
-pub use identity::{IdentityError, PinnedPubkey, verify_hostname, verify_pinned_pubkey};
-#[cfg(feature = "validity")]
-pub use identity::{ValidityError, verify_validity};
-#[cfg(feature = "chacha20")]
-pub use newtype::AeadKey32;
-pub use newtype::{AeadIv, AeadKey, Secret, TranscriptDigest, ZeroBuf};
 #[cfg(all(test, feature = "cipher-aes"))]
 pub(crate) use server_flight::{verify_self_signed_cert, verify_server_flight};
-// `extract_cert_der` + `parse_server_flight` stay pub for callers doing
-// cert-content inspection (SAN / pin / validity) after the typestate verify.
-pub use server_flight::{FlightError, ServerPubkey, extract_cert_der, parse_server_flight};
-#[cfg(feature = "rsa")]
-pub use traits::RsaCertSigAlg;
-pub use traits::{
-    AeadError, CertParseError, CertParser, CertView, Ed25519VerifierProvider, HkdfExpandError,
-    HkdfSha256, RsaVerifierProvider,
-};
-#[cfg(feature = "validity")]
-pub use traits::{FixedTime, TimeSource};
 
 use embedded_io::Write;
 
@@ -122,6 +77,7 @@ pub const fn hex_decode<const N: usize>(s: &str) -> [u8; N] {
 }
 
 #[cfg(any(test, feature = "dev-utils"))]
+#[cfg(any(test, feature = "dev-utils"))]
 const fn hex_nibble(c: u8) -> u8 {
     match c {
         b'0'..=b'9' => c - b'0',
@@ -131,7 +87,7 @@ const fn hex_nibble(c: u8) -> u8 {
     }
 }
 
-pub mod consts {
+pub(crate) mod consts {
     pub const CT_HANDSHAKE: u8 = 22;
     pub const CT_APPLICATION_DATA: u8 = 23;
 
@@ -149,6 +105,11 @@ pub mod consts {
     pub const SIG_SCHEME_ED25519: u16 = 0x0807;
     /// `rsa_pss_rsae_sha256` — RSASSA-PSS with the leaf's RSAE key encoding,
     /// MGF1-SHA-256, salt_len = hash output (32 B). RFC 8446 §4.2.3.
+    // Only readers are at lib.rs and server_flight.rs, both gated on
+    // `feature = "rsa"`. Without that feature there is no reader in the
+    // crate, so the lint fires — but the constant must keep existing for
+    // the rsa-enabled build to compile.
+    #[allow(dead_code)]
     pub const SIG_SCHEME_RSA_PSS_RSAE_SHA256: u16 = 0x0804;
 
     pub const EXT_SERVER_NAME: u16 = 0;
@@ -225,11 +186,18 @@ const EXT_RECORD_SIZE_LIMIT_TOTAL: u16 = 4 + 2;
 /// to honour a caller's `ClientParams::aes_only()` request without
 /// recompiling the crate.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub enum SuiteList {
+pub(crate) enum SuiteList {
     #[default]
     Default,
     #[cfg(feature = "cipher-aes")]
     AesOnly,
+    // Only constructor is in `client::stream::effective_suite_list`
+    // under the chacha-only cfg `not(cipher-aes) + chacha20`. With the
+    // default-features `--features chacha20` build (which keeps
+    // cipher-aes on) the constructor arm is cfg'd out, so the lint
+    // fires there even though the variant is genuinely reachable in
+    // `--no-default-features --features chacha20` builds.
+    #[allow(dead_code)]
     #[cfg(feature = "chacha20")]
     ChaChaOnly,
 }
@@ -237,7 +205,7 @@ pub enum SuiteList {
 /// Options for the opts-aware ClientHello writer and its typestate
 /// wrapper, [`crate::TlsConnection::<Init>::write_client_hello_to_slice_with`].
 #[derive(Debug, Clone, Copy, Default)]
-pub struct ClientHelloOptions<'a> {
+pub(crate) struct ClientHelloOptions<'a> {
     /// SNI hostname bytes. `None` omits the extension.
     pub hostname: Option<&'a [u8]>,
     /// RFC 8449 `record_size_limit` value to advertise. `None` omits the
@@ -250,6 +218,8 @@ pub struct ClientHelloOptions<'a> {
 
 impl<'a> ClientHelloOptions<'a> {
     /// Legacy default: no `record_size_limit`, no SNI, default suite list.
+    /// Test-only helper; production constructs the struct field-by-field.
+    #[cfg(test)]
     pub const fn legacy() -> Self {
         Self {
             hostname: None,
@@ -331,7 +301,7 @@ const fn ch_total_len(
 /// hostname option, using the compile-time default suite list and no
 /// `record_size_limit` extension. Use [`client_hello_len_with`] when
 /// emitting opts-driven extensions or narrowing the suite advertisement.
-pub const fn client_hello_len(hostname_len: Option<usize>) -> usize {
+pub(crate) const fn client_hello_len(hostname_len: Option<usize>) -> usize {
     ch_total_len(SuiteList::Default, hostname_len, false)
 }
 
@@ -340,7 +310,7 @@ pub const fn client_hello_len(hostname_len: Option<usize>) -> usize {
 /// supplied options. Single source of truth shared with the writer — the
 /// two cannot drift on the new (`record_size_limit` / `SuiteList::AesOnly`)
 /// paths.
-pub const fn client_hello_len_with(opts: &ClientHelloOptions<'_>) -> usize {
+pub(crate) const fn client_hello_len_with(opts: &ClientHelloOptions<'_>) -> usize {
     let sni_host_len = match opts.hostname {
         None => None,
         Some(h) => Some(h.len()),
@@ -355,7 +325,7 @@ pub const fn client_hello_len_with(opts: &ClientHelloOptions<'_>) -> usize {
 ///
 /// Composed from per-field lengths above — adding or dropping an extension
 /// flows through `CH_EXTENSIONS_FIXED_TOTAL` automatically.
-pub const CLIENT_HELLO_LEN: usize = client_hello_len(None);
+pub(crate) const CLIENT_HELLO_LEN: usize = client_hello_len(None);
 
 // Sanity pin on CLIENT_HELLO_LEN under each feature combo. AES-only and
 // ChaCha-only builds advertise a single suite (117 / +2 for `feature =
@@ -411,7 +381,7 @@ trait WriteExt: Write {
 
 impl<W: Write + ?Sized> WriteExt for W {}
 
-/// Error returned by [`WriteExt::write_u24`].
+/// Error returned by the in-crate `WriteExt::write_u24` helper.
 //
 // NOTE: Not `#[derive(thiserror::Error)]` because thiserror's
 // `#[error("{0}")]` forces `Display` onto the generic field, which would
@@ -672,7 +642,7 @@ pub(crate) fn write_client_hello_with<W: Write>(
 /// so the random and X25519 share don't need to be copied out unless the
 /// caller chooses to.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub struct ServerHelloView<'a> {
+pub(crate) struct ServerHelloView<'a> {
     /// `ServerHello.random` (32 bytes).
     pub random: &'a [u8; 32],
     /// Echoed `legacy_session_id` — empty in our profile.
@@ -958,11 +928,23 @@ impl<'a> Reader<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::aead::{decrypt_record, encrypt_record};
-    use crate::hkdf::traffic_keys;
+    #[cfg(feature = "cipher-aes")]
+    use crate::aead::Aes128GcmSha256;
+    #[cfg(feature = "chacha20")]
+    use crate::aead::ChaCha20Poly1305Sha256;
+    use crate::aead::{DecryptError, decrypt_record, encrypt_record};
+    #[cfg(feature = "jedisct")]
+    use crate::backends::JedisctCrypto;
+    #[cfg(feature = "rsa")]
+    use crate::backends::RsaVerifierKey;
+    use crate::backends::{DerCert, RustCrypto};
+    use crate::client_flight::CLIENT_FINISHED_LEN;
+    use crate::hkdf::{HkdfLabelError, TranscriptError, TranscriptHash, traffic_keys};
     #[cfg(feature = "chacha20")]
     use crate::newtype::AeadKey32;
-    use crate::newtype::{AeadIv, AeadKey, Secret, TranscriptDigest};
+    use crate::newtype::{AeadIv, AeadKey, Secret, TranscriptDigest, ZeroBuf};
+    use crate::server_flight::{FlightError, extract_cert_der, parse_server_flight};
+    use crate::traits::{CertParseError, CertParser, CertView, HkdfSha256};
     use embedded_io::SliceWriteError;
 
     // Captured from tls_fixture/packets/001_c2s_ClientHello.bin (seed 0).

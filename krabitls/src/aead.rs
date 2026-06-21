@@ -33,6 +33,11 @@ pub(crate) fn decrypt_record<'a, S: CipherSuite>(
     })
 }
 
+// Only invoked from `RecordKeys::decrypt_record` (also dead-code-tagged
+// — see below) and from the test-only standalone `decrypt_record` above.
+// All call sites are themselves either tests or part of the typestate
+// surface that the facade engine doesn't drive.
+#[allow(dead_code)]
 fn decrypt_record_with<'a, F>(
     record: &[u8],
     iv: &AeadIv,
@@ -290,6 +295,10 @@ mod sealed {
 
 /// TLS 1.3 cipher suite marker. Sealed.
 pub trait CipherSuite: sealed::Sealed + Sized {
+    // Trait constant set by every impl but never read through `<S>::ID`
+    // anywhere internally — kept because it's part of the trait contract
+    // and would be a breaking change to remove from any downstream impl.
+    #[allow(dead_code)]
     const ID: u16;
     type KeyBytes: zeroize::Zeroize;
     type Cipher: AeadInPlace
@@ -304,11 +313,11 @@ pub trait CipherSuite: sealed::Sealed + Sized {
 /// Compile-time default cipher. Tests and other call sites that need
 /// "some concrete cipher" (and are not exercising AES- or ChaCha-specific
 /// wire behavior) refer to this alias rather than naming a specific
-/// suite. Resolves to whichever cipher feature is enabled.
-#[cfg(feature = "cipher-aes")]
-pub type DefaultCipher = Aes128GcmSha256;
-#[cfg(all(not(feature = "cipher-aes"), feature = "chacha20"))]
-pub type DefaultCipher = ChaCha20Poly1305Sha256;
+/// suite. Resolves to whichever cipher feature is enabled. Test-only.
+#[cfg(all(test, feature = "cipher-aes"))]
+pub(crate) type DefaultCipher = Aes128GcmSha256;
+#[cfg(all(test, not(feature = "cipher-aes"), feature = "chacha20"))]
+pub(crate) type DefaultCipher = ChaCha20Poly1305Sha256;
 
 /// `TLS_AES_128_GCM_SHA256` (`0x1301`). Gated on `feature = "cipher-aes"`.
 #[cfg(feature = "cipher-aes")]
@@ -467,6 +476,9 @@ impl<S: CipherSuite> RecordKeys<S> {
     }
 
     /// Decrypt one `application_data` record under this suite's AEAD.
+    // Only callers are `feed_server_record_inner` and tests in this file.
+    // The facade engine uses `decrypt_record_inplace` instead.
+    #[allow(dead_code)]
     pub fn decrypt_record<'a>(
         &self,
         record: &[u8],

@@ -1,9 +1,15 @@
 //! Facade error tree. See per-enum docs.
 
-use crate::ConnectionError;
-use crate::IdentityError;
+// Re-export the lower-level error types that show up in our error chain.
+// Callers may need to match on them (e.g. distinguishing a parse failure
+// from a decrypt failure), so they must be reachable as public items.
+pub use crate::aead::{DecryptError, EncryptError};
+pub use crate::connection::ConnectionError;
+pub use crate::identity::IdentityError;
 #[cfg(feature = "validity")]
-use crate::ValidityError;
+pub use crate::identity::ValidityError;
+pub use crate::server_flight::FlightError;
+pub use crate::{ClientHelloError, ParseError};
 
 /// Outermost error returned by every public `TlsStream` method.
 #[non_exhaustive]

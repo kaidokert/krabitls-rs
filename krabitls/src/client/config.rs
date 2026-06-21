@@ -51,32 +51,3 @@ impl ClientConfig for DefaultConfig {
     #[cfg(all(not(feature = "cipher-aes"), feature = "chacha20"))]
     const SUITES: ConfigSuitePolicy = ConfigSuitePolicy::ChaChaOnly;
 }
-
-/// Compile-time AES-only config; suppresses ChaCha dispatch even with `feature = "chacha20"`.
-#[cfg(feature = "cipher-aes")]
-#[derive(Debug, Clone, Copy)]
-pub struct AesOnlyConfig;
-
-#[cfg(feature = "cipher-aes")]
-impl ClientConfig for AesOnlyConfig {
-    type Hkdf = RustCrypto;
-    type CertParser = DerCert;
-    type Ed25519 = RustCrypto;
-    type Rsa = RustCrypto;
-    const SUITES: ConfigSuitePolicy = ConfigSuitePolicy::AesOnly;
-}
-
-/// Compile-time ChaCha-only config; mirror of [`AesOnlyConfig`] for the
-/// `chacha20`-only build (`--no-default-features --features chacha20`).
-#[cfg(all(not(feature = "cipher-aes"), feature = "chacha20"))]
-#[derive(Debug, Clone, Copy)]
-pub struct ChaChaOnlyConfig;
-
-#[cfg(all(not(feature = "cipher-aes"), feature = "chacha20"))]
-impl ClientConfig for ChaChaOnlyConfig {
-    type Hkdf = RustCrypto;
-    type CertParser = DerCert;
-    type Ed25519 = RustCrypto;
-    type Rsa = RustCrypto;
-    const SUITES: ConfigSuitePolicy = ConfigSuitePolicy::ChaChaOnly;
-}

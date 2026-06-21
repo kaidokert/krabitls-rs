@@ -2,43 +2,27 @@
 name = "krabitls_cli"
 version = "0.1.0"
 edition = "2024"
+autobins = false
 
 [features]
-# The CLI always has std::time::SystemTime so validity-checking is a free
-# default — turn krabitls's `validity` feature on unconditionally.
+# `validity` is free because std::time::SystemTime is always available on
+# the CLI build target.
 default = ["krabitls/validity"]
 rsa = ["krabitls/rsa"]
 # Advertise TLS_CHACHA20_POLY1305_SHA256 alongside AES-128-GCM-SHA256.
 chacha20 = ["krabitls/chacha20"]
 
 [dependencies]
-clap = { version = "4.6.1", features = ["derive"] }
-ed25519_heapless = { version = "0.2.0", default-features = false, features = ["fixed-bigint", "sha512-sha2"] }
-fixed-bigint = { version = "0.3", default-features = false, features = ["use-unsafe"] }
-# `replay` exposes typestate constructors for entering at WaitServerHello /
-# WaitServerFlight / AppData with pre-derived secrets — needed by the
-# fixture-driver CLI's stateless-per-command flow.
-krabitls = { version = "0.1.0", path = "../krabitls", features = ["replay", "ip-host"] }
-sha2 = { version = "0.10", default-features = false }
-zeroize = { version = "1.8", default-features = false }
+krabitls = { version = "0.1.0", path = "../krabitls" }
 log = "0.4"
 env_logger = { version = "0.11", default-features = false, features = ["auto-color", "humantime"] }
-# Cross-platform OS RNG. Previously the CLI opened `/dev/urandom` directly,
-# which silently failed on non-Unix hosts.
+# Cross-platform OS RNG (wrapped as a `rand_core::CryptoRng` for the facade).
 getrandom = "0.3"
-# `krabitls_facade` wraps `getrandom` as a `rand_core::CryptoRng` to satisfy
-# the `TlsStream::connect` signature.
 rand_core = { version = "0.10", default-features = false }
 
-# The `krabitls_connect` binary needs RSA verify support to talk to most
-# public-internet servers (Cloudflare / general CDN fronts serve RSA leaf
-# certs). Build with `cargo run --bin krabitls_connect --features rsa`.
+# The only CLI binary. Talks to public-internet servers via the
+# `krabitls::client` facade. RSA verify is required because most public
+# servers present RSA leaf certs.
 [[bin]]
 name = "krabitls_connect"
-required-features = ["rsa"]
-
-# `krabitls_facade` is the high-level facade binary. Same RSA-verify
-# requirement as krabitls_connect for public-internet servers.
-[[bin]]
-name = "krabitls_facade"
 required-features = ["rsa"]

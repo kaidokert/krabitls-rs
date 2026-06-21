@@ -15,9 +15,10 @@ use crate::connection::{
     AppData, FlightStep, NegotiatedSuite, ServerFlightDone, VerifyMode, WaitServerFlight,
     WaitServerHello,
 };
+use crate::connection::{ConnectionError, TlsConnection};
+use crate::identity::{verify_hostname, verify_pinned_pubkey};
+use crate::server_flight::{extract_cert_der, parse_server_flight};
 use crate::traits::CertParser;
-use crate::{ConnectionError, TlsConnection, extract_cert_der, parse_server_flight};
-use crate::{verify_hostname, verify_pinned_pubkey};
 
 const CT_APPLICATION_DATA: u8 = 0x17;
 const CT_HANDSHAKE: u8 = 0x16;
@@ -376,7 +377,7 @@ impl<'s, C: ClientConfig, const FLIGHT: usize, const RECV: usize, const SEND: us
     ) -> Result<(), HandshakeError> {
         if outer_type != CT_HANDSHAKE {
             return Err(HandshakeError::Connection(ConnectionError::Decrypt(
-                crate::DecryptError::UnexpectedContentType(outer_type),
+                crate::aead::DecryptError::UnexpectedContentType(outer_type),
             )));
         }
 
@@ -551,7 +552,9 @@ impl<'s, C: ClientConfig, const FLIGHT: usize, const RECV: usize, const SEND: us
         let cert_der = extract_cert_der(view.cert_body)
             .map_err(|e| HandshakeError::Connection(ConnectionError::Flight(e)))?;
         let cert_view = <C::CertParser as CertParser>::parse(cert_der).map_err(|e| {
-            HandshakeError::Connection(ConnectionError::Flight(crate::FlightError::BadCert(e)))
+            HandshakeError::Connection(ConnectionError::Flight(
+                crate::server_flight::FlightError::BadCert(e),
+            ))
         })?;
 
         if let TrustRoot::Pinned(pin) = &params.trust {
@@ -562,13 +565,14 @@ impl<'s, C: ClientConfig, const FLIGHT: usize, const RECV: usize, const SEND: us
         #[cfg(feature = "validity")]
         if let Some(time) = params.time {
             // Shim `&dyn TimeSource` into `impl TimeSource`.
-            struct DynTime<'t>(&'t dyn crate::TimeSource);
-            impl crate::TimeSource for DynTime<'_> {
+            struct DynTime<'t>(&'t dyn crate::traits::TimeSource);
+            impl crate::traits::TimeSource for DynTime<'_> {
                 fn now_unix_secs(&self) -> u64 {
                     self.0.now_unix_secs()
                 }
             }
-            crate::verify_validity(&cert_view, &DynTime(time)).map_err(HandshakeError::Validity)?;
+            crate::identity::verify_validity(&cert_view, &DynTime(time))
+                .map_err(HandshakeError::Validity)?;
         }
 
         Ok(())
@@ -704,7 +708,7 @@ impl<'s, C: ClientConfig, const FLIGHT: usize, const RECV: usize, const SEND: us
             CT_ALERT => {
                 if content_len < 2 {
                     return Err(HandshakeError::Connection(ConnectionError::Decrypt(
-                        crate::DecryptError::Truncated,
+                        crate::aead::DecryptError::Truncated,
                     )));
                 }
                 let level = self.scratch.recv_record[body_offset];
@@ -731,7 +735,7 @@ impl<'s, C: ClientConfig, const FLIGHT: usize, const RECV: usize, const SEND: us
                 while offset < end {
                     if end - offset < 4 {
                         return Err(HandshakeError::Connection(ConnectionError::Decrypt(
-                            crate::DecryptError::Truncated,
+                            crate::aead::DecryptError::Truncated,
                         )));
                     }
                     let msg_type = self.scratch.recv_record[offset];
@@ -745,11 +749,11 @@ impl<'s, C: ClientConfig, const FLIGHT: usize, const RECV: usize, const SEND: us
                         .checked_add(4)
                         .and_then(|x| x.checked_add(len))
                         .ok_or(HandshakeError::Connection(ConnectionError::Decrypt(
-                            crate::DecryptError::Truncated,
+                            crate::aead::DecryptError::Truncated,
                         )))?;
                     if msg_end > end {
                         return Err(HandshakeError::Connection(ConnectionError::Decrypt(
-                            crate::DecryptError::Truncated,
+                            crate::aead::DecryptError::Truncated,
                         )));
                     }
                     if msg_type != HS_NEW_SESSION_TICKET {
@@ -1183,7 +1187,9 @@ mod tests {
         let err = e.handle_inner_content(0, 3, CT_HANDSHAKE).unwrap_err();
         assert!(matches!(
             err,
-            HandshakeError::Connection(ConnectionError::Decrypt(crate::DecryptError::Truncated))
+            HandshakeError::Connection(ConnectionError::Decrypt(
+                crate::aead::DecryptError::Truncated
+            ))
         ));
     }
 
@@ -1200,7 +1206,9 @@ mod tests {
         let err = e.handle_inner_content(0, 20, CT_HANDSHAKE).unwrap_err();
         assert!(matches!(
             err,
-            HandshakeError::Connection(ConnectionError::Decrypt(crate::DecryptError::Truncated))
+            HandshakeError::Connection(ConnectionError::Decrypt(
+                crate::aead::DecryptError::Truncated
+            ))
         ));
     }
 
@@ -1267,7 +1275,9 @@ mod tests {
         let err = e.handle_inner_content(0, 1, CT_ALERT).unwrap_err();
         assert!(matches!(
             err,
-            HandshakeError::Connection(ConnectionError::Decrypt(crate::DecryptError::Truncated))
+            HandshakeError::Connection(ConnectionError::Decrypt(
+                crate::aead::DecryptError::Truncated
+            ))
         ));
     }
 
@@ -1294,11 +1304,11 @@ mod tests {
     #[cfg(feature = "replay")]
     mod replay {
         use super::*;
-        use crate::Secret;
         use crate::aead::Aes128GcmSha256;
         use crate::backends::RustCrypto;
         use crate::client::WriteAppError;
         use crate::connection::AppData;
+        use crate::newtype::Secret;
 
         fn app_engine(
             scratch: &mut DefaultScratch,

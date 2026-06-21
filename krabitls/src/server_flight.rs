@@ -16,6 +16,10 @@ const HS_CERTIFICATE_VERIFY: u8 = 15;
 const HS_FINISHED: u8 = 20;
 
 /// Parsed server-flight messages, borrowing into decrypted plaintext.
+// `ee_body` is parsed and retained for struct symmetry; the only reader
+// is a test assertion in lib.rs:2313. Production verify reads `ee_full`
+// (the framed version) for transcript hashing.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct ServerFlightView<'a> {
     pub ee_full: &'a [u8],
@@ -457,20 +461,13 @@ impl<'a> ServerPubkey<'a> {
     }
 
     /// If the variant is Ed25519, return the 32-byte pubkey.
+    /// Test-only accessor; production paths match on the enum directly.
+    #[cfg(test)]
     pub fn as_ed25519(&self) -> Option<[u8; 32]> {
         match self {
             ServerPubkey::Ed25519(pk, _) => Some(*pk),
             #[cfg(feature = "rsa")]
             ServerPubkey::Rsa { .. } => None,
-        }
-    }
-
-    /// If the variant is RSA, return the `(modulus, exponent)` pair.
-    #[cfg(feature = "rsa")]
-    pub fn as_rsa(&self) -> Option<(&'a [u8], u32)> {
-        match self {
-            ServerPubkey::Rsa { modulus, exponent } => Some((*modulus, *exponent)),
-            ServerPubkey::Ed25519(_, _) => None,
         }
     }
 }

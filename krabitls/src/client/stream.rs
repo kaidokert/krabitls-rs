@@ -1,7 +1,7 @@
 //! Blocking TLS 1.3 client handle. Sans-randomness — caller supplies the RNG.
 
-use crate::TlsConnection;
 use crate::connection::Init;
+use crate::connection::TlsConnection;
 
 use super::engine::{EngineEvent, EngineState, TlsEngine};
 use super::error::{ConfigError, ConnectError, HandshakeError, InternalError, WriteAppError};
@@ -62,7 +62,7 @@ where
         validate_construction::<RECV, SEND>(params)?;
 
         let mut client_random = [0u8; 32];
-        let mut x25519_priv = crate::ZeroBuf::<32>::new([0u8; 32]);
+        let mut x25519_priv = crate::newtype::ZeroBuf::<32>::new([0u8; 32]);
         rng.try_fill_bytes(&mut client_random)
             .map_err(|_| HandshakeError::Rng)?;
         rng.try_fill_bytes(&mut *x25519_priv)
@@ -367,9 +367,10 @@ fn effective_suite_list<C: ClientConfig>(runtime: RuntimeSuitePolicy) -> crate::
 }
 
 fn map_client_hello_error<E>(
-    e: crate::ConnectionError<embedded_io::SliceWriteError>,
+    e: crate::connection::ConnectionError<embedded_io::SliceWriteError>,
 ) -> ConnectError<E> {
-    use crate::{ClientHelloError, ConnectionError};
+    use crate::ClientHelloError;
+    use crate::connection::ConnectionError;
     match e {
         ConnectionError::ClientHello(ClientHelloError::HostnameTooLong) => {
             ConnectError::Config(ConfigError::HostnameTooLong)
