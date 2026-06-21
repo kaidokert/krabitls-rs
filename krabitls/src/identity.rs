@@ -6,6 +6,7 @@
 //! certificate chains.
 
 use crate::traits::cert::CertView;
+use subtle::ConstantTimeEq;
 
 /// Reasons a server-identity check may fail.
 #[derive(Debug, PartialEq, Eq, Clone, Copy, thiserror::Error)]
@@ -49,7 +50,7 @@ pub fn verify_pinned_pubkey(
 ) -> Result<(), IdentityError> {
     match (cert_view, pin) {
         (CertView::Ed25519 { pubkey, .. }, PinnedPubkey::Ed25519(expected)) => {
-            if **pubkey == *expected {
+            if bool::from((**pubkey).ct_eq(expected)) {
                 Ok(())
             } else {
                 Err(IdentityError::PinMismatch)
@@ -65,7 +66,13 @@ pub fn verify_pinned_pubkey(
                 exponent: pe,
             },
         ) => {
-            if modulus == pm && exponent == pe {
+            // RSA key size is public; length mismatch can short-circuit
+            // without breaking the CT contract.
+            if modulus.len() != pm.len() {
+                return Err(IdentityError::PinMismatch);
+            }
+            // `&` (not `&&`) — bitwise on `Choice`, both halves always run.
+            if bool::from(modulus.ct_eq(pm) & exponent.ct_eq(pe)) {
                 Ok(())
             } else {
                 Err(IdentityError::PinMismatch)
@@ -317,7 +324,7 @@ pub enum ValidityError {
 /// considered valid *at the boundaries* — same as every other widely-
 /// deployed verifier.
 #[cfg(feature = "validity")]
-pub fn verify_validity<T: crate::traits::time::TimeSource>(
+pub fn verify_validity<T: crate::traits::time::TimeSource + ?Sized>(
     cert_view: &crate::traits::cert::CertView<'_>,
     time: &T,
 ) -> Result<(), ValidityError> {
@@ -666,6 +673,121 @@ mod tests {
         let view = ed25519_view(&pk);
         assert_eq!(
             verify_pinned_pubkey(&view, &PinnedPubkey::Ed25519(other)),
+            Err(IdentityError::PinMismatch)
+        );
+    }
+
+    #[test]
+    fn pin_mismatch_ed25519_last_byte() {
+        let pk = [0x42u8; 32];
+        let mut other = pk;
+        other[31] = 0x43;
+        let view = ed25519_view(&pk);
+        assert_eq!(
+            verify_pinned_pubkey(&view, &PinnedPubkey::Ed25519(other)),
+            Err(IdentityError::PinMismatch)
+        );
+    }
+
+    #[cfg(feature = "rsa")]
+    #[test]
+    fn pin_match_rsa() {
+        let modulus = [0xAAu8; 256];
+        let view = CertView::Rsa {
+            tbs: &[],
+            signature: &[],
+            modulus: &modulus,
+            exponent: 65537,
+            san: None,
+            validity_der: &[],
+            outer_sig_alg: Some(crate::traits::cert::RsaCertSigAlg::PssSha256),
+        };
+        assert_eq!(
+            verify_pinned_pubkey(
+                &view,
+                &PinnedPubkey::Rsa {
+                    modulus: &modulus,
+                    exponent: 65537
+                }
+            ),
+            Ok(())
+        );
+    }
+
+    #[cfg(feature = "rsa")]
+    #[test]
+    fn pin_mismatch_rsa_modulus_last_byte() {
+        let modulus = [0xAAu8; 256];
+        let mut other = modulus;
+        other[255] = 0xAB;
+        let view = CertView::Rsa {
+            tbs: &[],
+            signature: &[],
+            modulus: &modulus,
+            exponent: 65537,
+            san: None,
+            validity_der: &[],
+            outer_sig_alg: Some(crate::traits::cert::RsaCertSigAlg::PssSha256),
+        };
+        assert_eq!(
+            verify_pinned_pubkey(
+                &view,
+                &PinnedPubkey::Rsa {
+                    modulus: &other,
+                    exponent: 65537
+                }
+            ),
+            Err(IdentityError::PinMismatch)
+        );
+    }
+
+    #[cfg(feature = "rsa")]
+    #[test]
+    fn pin_mismatch_rsa_exponent() {
+        let modulus = [0xAAu8; 256];
+        let view = CertView::Rsa {
+            tbs: &[],
+            signature: &[],
+            modulus: &modulus,
+            exponent: 65537,
+            san: None,
+            validity_der: &[],
+            outer_sig_alg: Some(crate::traits::cert::RsaCertSigAlg::PssSha256),
+        };
+        assert_eq!(
+            verify_pinned_pubkey(
+                &view,
+                &PinnedPubkey::Rsa {
+                    modulus: &modulus,
+                    exponent: 3
+                }
+            ),
+            Err(IdentityError::PinMismatch)
+        );
+    }
+
+    #[cfg(feature = "rsa")]
+    #[test]
+    fn pin_mismatch_rsa_modulus_length() {
+        let modulus_2048 = [0xAAu8; 256];
+        let modulus_1024 = [0xAAu8; 128];
+        let view = CertView::Rsa {
+            tbs: &[],
+            signature: &[],
+            modulus: &modulus_2048,
+            exponent: 65537,
+            san: None,
+            validity_der: &[],
+            outer_sig_alg: Some(crate::traits::cert::RsaCertSigAlg::PssSha256),
+        };
+        assert_eq!(
+            verify_pinned_pubkey(
+                &view,
+                &PinnedPubkey::Rsa {
+                    modulus: &modulus_1024,
+                    exponent: 65537
+                }
+            ),
             Err(IdentityError::PinMismatch)
         );
     }

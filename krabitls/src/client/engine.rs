@@ -564,15 +564,7 @@ impl<'s, C: ClientConfig, const FLIGHT: usize, const RECV: usize, const SEND: us
 
         #[cfg(feature = "validity")]
         if let Some(time) = params.time {
-            // Shim `&dyn TimeSource` into `impl TimeSource`.
-            struct DynTime<'t>(&'t dyn crate::traits::TimeSource);
-            impl crate::traits::TimeSource for DynTime<'_> {
-                fn now_unix_secs(&self) -> u64 {
-                    self.0.now_unix_secs()
-                }
-            }
-            crate::identity::verify_validity(&cert_view, &DynTime(time))
-                .map_err(HandshakeError::Validity)?;
+            crate::identity::verify_validity(&cert_view, time).map_err(HandshakeError::Validity)?;
         }
 
         Ok(())
