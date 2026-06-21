@@ -77,7 +77,6 @@ pub const fn hex_decode<const N: usize>(s: &str) -> [u8; N] {
 }
 
 #[cfg(any(test, feature = "dev-utils"))]
-#[cfg(any(test, feature = "dev-utils"))]
 const fn hex_nibble(c: u8) -> u8 {
     match c {
         b'0'..=b'9' => c - b'0',
@@ -106,10 +105,8 @@ pub(crate) mod consts {
     /// `rsa_pss_rsae_sha256` — RSASSA-PSS with the leaf's RSAE key encoding,
     /// MGF1-SHA-256, salt_len = hash output (32 B). RFC 8446 §4.2.3.
     // Only readers are at lib.rs and server_flight.rs, both gated on
-    // `feature = "rsa"`. Without that feature there is no reader in the
-    // crate, so the lint fires — but the constant must keep existing for
-    // the rsa-enabled build to compile.
-    #[allow(dead_code)]
+    // `feature = "rsa"` — so the constant tracks the same gate.
+    #[cfg(feature = "rsa")]
     pub const SIG_SCHEME_RSA_PSS_RSAE_SHA256: u16 = 0x0804;
 
     pub const EXT_SERVER_NAME: u16 = 0;

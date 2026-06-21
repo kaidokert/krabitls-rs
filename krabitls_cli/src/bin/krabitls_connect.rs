@@ -95,23 +95,22 @@ fn decode_hex(s: &str) -> std::result::Result<Vec<u8>, String> {
 struct OsRng;
 
 impl rand_core::TryRng for OsRng {
-    type Error = core::convert::Infallible;
+    type Error = getrandom::Error;
 
     fn try_next_u32(&mut self) -> std::result::Result<u32, Self::Error> {
         let mut buf = [0u8; 4];
-        getrandom::fill(&mut buf).expect("OS RNG failed");
+        getrandom::fill(&mut buf)?;
         Ok(u32::from_le_bytes(buf))
     }
 
     fn try_next_u64(&mut self) -> std::result::Result<u64, Self::Error> {
         let mut buf = [0u8; 8];
-        getrandom::fill(&mut buf).expect("OS RNG failed");
+        getrandom::fill(&mut buf)?;
         Ok(u64::from_le_bytes(buf))
     }
 
     fn try_fill_bytes(&mut self, dst: &mut [u8]) -> std::result::Result<(), Self::Error> {
-        getrandom::fill(dst).expect("OS RNG failed");
-        Ok(())
+        getrandom::fill(dst)
     }
 }
 
@@ -242,7 +241,13 @@ fn describe_connect_error(e: &ConnectError<std::io::Error>) -> String {
 fn parse_host_port(s: &str) -> std::result::Result<(String, u16), String> {
     // An explicit `:<port>` must parse; otherwise the bare host gets 443.
     // IPv6 literals are not supported (no bracket handling).
+    if s.is_empty() {
+        return Err("host is empty".into());
+    }
     if let Some((h, p)) = s.rsplit_once(':') {
+        if h.is_empty() {
+            return Err(format!("host is empty in {s:?}"));
+        }
         let port = p
             .parse::<u16>()
             .map_err(|_| format!("invalid port in {s:?}: {p:?}"))?;
@@ -253,15 +258,21 @@ fn parse_host_port(s: &str) -> std::result::Result<(String, u16), String> {
 
 fn print_usage() {
     eprintln!(
-        "usage: krabitls_connect [--pin <hex>] <host>[:<port>]\n\
+        "usage: krabitls_connect {{--pin <hex> | --self-signed}} <host>[:<port>]\n\
          \n\
          Drives a TLS 1.3 handshake via krabitls::client::TlsStream and emits an\n\
-         HTTP/1.0 GET. Sibling of krabitls_connect; intended as the canonical\n\
-         end-to-end exercise of the facade.\n\
+         HTTP/1.0 GET.\n\
          \n\
-         Options:\n\
-           --pin <hex>    Pin server pubkey. Length: 32 (Ed25519), 128 (RSA-1024),\n\
-                          256 (RSA-2048). Hex without 0x prefix.\n"
+         A trust mode must be specified explicitly. There is no CA bundle in\n\
+         krabitls, so an unattended no-pin connect would silently trust whatever\n\
+         pubkey the peer presents (MITM-vulnerable). Choose one:\n\
+         \n\
+           --pin <hex>     Pin server pubkey. Length: 32 (Ed25519), 128 (RSA-1024),\n\
+                           256 (RSA-2048). Hex without 0x prefix. Use against public\n\
+                           CA-issued certs: SAN match + pubkey pin.\n\
+           --self-signed   Trust the leaf's outer self-signature. Use against local\n\
+                           fixtures / controlled servers whose cert is self-signed.\n\
+                           Will reject a chain-rooted (CA-issued) cert.\n"
     );
 }
 
@@ -271,6 +282,7 @@ fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
     let mut host_arg: Option<String> = None;
     let mut pin: Option<Pin> = None;
+    let mut self_signed = false;
     while let Some(a) = args.next() {
         if a == "--pin" {
             let Some(hex_str) = args.next() else {
@@ -285,6 +297,8 @@ fn main() -> ExitCode {
                     return ExitCode::from(2);
                 }
             }
+        } else if a == "--self-signed" {
+            self_signed = true;
         } else if a == "--help" || a == "-h" {
             print_usage();
             return ExitCode::SUCCESS;
@@ -302,6 +316,18 @@ fn main() -> ExitCode {
         print_usage();
         return ExitCode::from(2);
     };
+    if pin.is_some() && self_signed {
+        eprintln!("error: --pin and --self-signed are mutually exclusive");
+        return ExitCode::from(2);
+    }
+    if pin.is_none() && !self_signed {
+        eprintln!(
+            "error: no trust mode supplied. Use --pin <hex> (public CA-issued certs)\n\
+             or --self-signed (local fixtures). Defaulting to either silently\n\
+             would be MITM-vulnerable."
+        );
+        return ExitCode::from(2);
+    }
     let (host, port) = match parse_host_port(&spec) {
         Ok(t) => t,
         Err(e) => {

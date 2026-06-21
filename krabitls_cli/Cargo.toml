@@ -13,11 +13,13 @@ rsa = ["krabitls/rsa"]
 chacha20 = ["krabitls/chacha20"]
 
 [dependencies]
-krabitls = { version = "0.1.0", path = "../krabitls" }
+krabitls = { version = "0.1.0", path = "../krabitls", features = ["ip-host"] }
 log = "0.4"
 env_logger = { version = "0.11", default-features = false, features = ["auto-color", "humantime"] }
 # Cross-platform OS RNG (wrapped as a `rand_core::CryptoRng` for the facade).
-getrandom = "0.3"
+# `std` feature enables `core::error::Error` impl on `getrandom::Error`,
+# which `rand_core::TryRng::Error` requires.
+getrandom = { version = "0.3", features = ["std"] }
 rand_core = { version = "0.10", default-features = false }
 
 # The only CLI binary. Talks to public-internet servers via the

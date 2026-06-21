@@ -1,13 +1,16 @@
 //! Facade error tree. See per-enum docs.
 
-// Re-export the lower-level error types that show up in our error chain.
-// Callers may need to match on them (e.g. distinguishing a parse failure
-// from a decrypt failure), so they must be reachable as public items.
+// Re-export every leaf error type that surfaces through `ConnectionError`'s
+// variants, so callers can name and match on the full chain through
+// `client::error::*` without reaching into private modules.
 pub use crate::aead::{DecryptError, EncryptError};
+pub use crate::client_flight::ClientFinishedError;
 pub use crate::connection::ConnectionError;
+pub use crate::hkdf::{HkdfLabelError, TranscriptError};
 pub use crate::identity::IdentityError;
 #[cfg(feature = "validity")]
 pub use crate::identity::ValidityError;
+pub use crate::reassembler::ReassemblyError;
 pub use crate::server_flight::FlightError;
 pub use crate::{ClientHelloError, ParseError};
 

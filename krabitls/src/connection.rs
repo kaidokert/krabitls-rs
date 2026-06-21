@@ -233,15 +233,16 @@ mod sealed {
 pub trait HandshakeMode: sealed::Sealed {}
 
 pub struct Live;
-// Replay-mode marker for the deprecated typestate handshake. Nothing
-// currently instantiates `TlsConnection<..., Replay>` (the facade only
-// flies `Live`); kept so the typestate surface can be re-engaged for
-// fixture-replay work without a re-introduction commit.
-#[allow(dead_code)]
+// Replay-mode marker. All `Replay`-typed code paths sit behind
+// `feature = "replay"`; mirror that gate on the marker itself so the
+// non-replay build never compiles the type at all.
+#[cfg(feature = "replay")]
 pub struct Replay;
 impl sealed::Sealed for Live {}
+#[cfg(feature = "replay")]
 impl sealed::Sealed for Replay {}
 impl HandshakeMode for Live {}
+#[cfg(feature = "replay")]
 impl HandshakeMode for Replay {}
 
 pub struct WaitServerFlight<S: CipherSuite, M: HandshakeMode = Live> {
