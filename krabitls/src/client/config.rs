@@ -16,7 +16,7 @@ pub enum ConfigSuitePolicy {
     #[cfg(all(feature = "cipher-aes", feature = "chacha20"))]
     AesAndChaCha,
     /// ChaCha20-Poly1305 only.
-    #[cfg(all(not(feature = "cipher-aes"), feature = "chacha20"))]
+    #[cfg(feature = "chacha20")]
     ChaChaOnly,
 }
 

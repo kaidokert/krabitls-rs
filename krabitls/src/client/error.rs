@@ -6,13 +6,13 @@
 pub use crate::aead::{DecryptError, EncryptError};
 pub use crate::client_flight::ClientFinishedError;
 pub use crate::connection::ConnectionError;
+pub use crate::errors::{ClientHelloError, ParseError};
 pub use crate::hkdf::{HkdfLabelError, TranscriptError};
 pub use crate::identity::IdentityError;
 #[cfg(feature = "validity")]
 pub use crate::identity::ValidityError;
 pub use crate::reassembler::ReassemblyError;
 pub use crate::server_flight::FlightError;
-pub use crate::{ClientHelloError, ParseError};
 
 /// Outermost error returned by every public `TlsStream` method.
 #[non_exhaustive]
