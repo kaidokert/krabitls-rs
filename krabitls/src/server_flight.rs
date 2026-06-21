@@ -199,10 +199,10 @@ impl<'a> HsReader<'a> {
 /// chains including CA-migration cross-signs (leaf + 2 intermediates +
 /// cross-signed root + slack).
 //
-// TODO: promote to a TlsStream const generic per
-// notes/VERIFY_STRATEGY_PLAN.md (PR 3). Temporary scaffolding for
-// extract_cert_der's leaf-only wrapper; deletes when callers move to
-// extract_chain::<MAX_CHAIN> with the threaded value.
+// TODO: promote to a TlsStream const generic so callers configure
+// the bound per-binary instead of a hardcoded module-level cap.
+// Deletes when extract_cert_der's callers move to extract_chain
+// with the const threaded through from TlsStream.
 pub const MAX_CERT_CHAIN_LEN: usize = 8;
 
 /// Walk a TLS 1.3 `Certificate` body and return every `CertificateEntry`'s
