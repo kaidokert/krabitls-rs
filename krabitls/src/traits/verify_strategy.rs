@@ -158,7 +158,6 @@ where
 #[allow(dead_code)]
 pub struct Trusted<'slot, E: Ed25519VerifierProvider, R: RsaVerifierProvider> {
     prepared: &'slot PreparedVerifier<E, R>,
-    _r: core::marker::PhantomData<fn() -> R>,
 }
 
 impl<'slot, E, R> Trusted<'slot, E, R>
@@ -169,10 +168,7 @@ where
     /// Constructor — strategies build this from the slot they just wrote.
     #[allow(dead_code)]
     pub fn new(prepared: &'slot PreparedVerifier<E, R>) -> Self {
-        Self {
-            prepared,
-            _r: core::marker::PhantomData,
-        }
+        Self { prepared }
     }
 
     #[allow(dead_code)]
