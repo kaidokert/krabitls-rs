@@ -182,9 +182,9 @@ impl<'s, C: ClientConfig, const FLIGHT: usize, const RECV: usize, const SEND: us
 
     /// Drive the handshake phase one event. Priority:
     /// `Send > HandshakeDone > AppData > Closed > Recv`. Loop, never recursion.
-    pub(crate) fn step_handshake(
+    pub(crate) fn step_handshake<V>(
         &mut self,
-        params: &ClientParams<'_>,
+        params: &ClientParams<'_, V>,
     ) -> Result<EngineEvent, HandshakeError> {
         loop {
             if self.is_send_pending() {
@@ -324,12 +324,12 @@ impl<'s, C: ClientConfig, const FLIGHT: usize, const RECV: usize, const SEND: us
         })
     }
 
-    fn dispatch_handshake_record(
+    fn dispatch_handshake_record<V>(
         &mut self,
         start: usize,
         end: usize,
         outer_type: u8,
-        params: &ClientParams<'_>,
+        params: &ClientParams<'_, V>,
     ) -> Result<(), HandshakeError> {
         match &self.state {
             EngineState::WaitServerHello(_) => {
@@ -412,11 +412,11 @@ impl<'s, C: ClientConfig, const FLIGHT: usize, const RECV: usize, const SEND: us
 
     /// In-place feed of a flight record. On `FlightStep::Ready`, drives
     /// the finalize → identity → finish transition.
-    fn handle_flight_record(
+    fn handle_flight_record<V>(
         &mut self,
         start: usize,
         end: usize,
-        params: &ClientParams<'_>,
+        params: &ClientParams<'_, V>,
     ) -> Result<(), HandshakeError> {
         // RFC 8449 limit applies to protected records only; CCS is
         // handled by `feed_server_record_inplace` without decryption.
@@ -459,7 +459,10 @@ impl<'s, C: ClientConfig, const FLIGHT: usize, const RECV: usize, const SEND: us
 
     /// Consume `WaitFlight*` → finalize → identity check → finish,
     /// installing `App*` with the Client Finished queued for send.
-    fn finalize_and_finish(&mut self, params: &ClientParams<'_>) -> Result<(), HandshakeError> {
+    fn finalize_and_finish<V>(
+        &mut self,
+        params: &ClientParams<'_, V>,
+    ) -> Result<(), HandshakeError> {
         if let Some(peer_limit) = self
             .scratch
             .reassembler
@@ -539,7 +542,7 @@ impl<'s, C: ClientConfig, const FLIGHT: usize, const RECV: usize, const SEND: us
 
     /// Pin + hostname + validity, after protocol signature verify and
     /// before app keys are derived.
-    fn verify_identity(&self, params: &ClientParams<'_>) -> Result<(), HandshakeError> {
+    fn verify_identity<V>(&self, params: &ClientParams<'_, V>) -> Result<(), HandshakeError> {
         let flight = self
             .scratch
             .reassembler

@@ -43,6 +43,26 @@ pub enum PinnedPubkey<'a> {
     _Phantom(core::marker::PhantomData<&'a ()>),
 }
 
+impl<'a> PinnedPubkey<'a> {
+    /// Convert to the owned form held by the verify strategy.
+    /// Fails with `ModulusTooLong` when an `Rsa` variant carries a
+    /// modulus longer than
+    /// [`crate::backends::pin_or_self_signed::MAX_RSA_MODULUS_BYTES`].
+    /// Under `not(feature = "rsa")` the error enum is uninhabited.
+    pub fn to_owned_pin(
+        &self,
+    ) -> Result<crate::backends::PinnedPubkeyOwned, crate::backends::PinnedPubkeyOwnedError> {
+        match self {
+            PinnedPubkey::Ed25519(pk) => Ok(crate::backends::PinnedPubkeyOwned::ed25519(*pk)),
+            #[cfg(feature = "rsa")]
+            PinnedPubkey::Rsa { modulus, exponent } => {
+                crate::backends::PinnedPubkeyOwned::rsa(modulus, *exponent)
+            }
+            PinnedPubkey::_Phantom(_) => unreachable!("_Phantom is not externally constructible"),
+        }
+    }
+}
+
 /// Compare the cert's public key to a pinned reference.
 pub fn verify_pinned_pubkey(
     cert_view: &CertView<'_>,

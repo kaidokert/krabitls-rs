@@ -15,25 +15,33 @@ use super::{ClientConfig, ClientParams, ConfigSuitePolicy, RuntimeSuitePolicy, T
 type X25519Bn = fixed_bigint::FixedUInt<u32, 16, fixed_bigint::Ct>;
 
 /// TLS 1.3 client handle.
+///
+/// `V` is the verify strategy the connection uses; `MAX_CHAIN` is the
+/// upper bound on the server cert chain depth the strategy accepts.
+/// Both have default values pinned by [`DefaultStream`].
 pub struct TlsStream<
     's,
     T,
     C: ClientConfig,
+    V,
     const FLIGHT: usize,
     const RECV: usize,
     const SEND: usize,
+    const MAX_CHAIN: usize,
 > where
     T: Transport,
 {
     engine: TlsEngine<'s, C, FLIGHT, RECV, SEND>,
     transport: T,
+    _v: core::marker::PhantomData<fn() -> V>,
 }
 
 /// Standard profile alias paired with `DefaultScratch`.
-pub type DefaultStream<'s, T> = TlsStream<'s, T, super::DefaultConfig, 16384, 16645, 4096>;
+pub type DefaultStream<'s, T> =
+    TlsStream<'s, T, super::DefaultConfig, super::DefaultVerify, 16384, 16645, 4096, 8>;
 
-impl<'s, T, C, const FLIGHT: usize, const RECV: usize, const SEND: usize>
-    TlsStream<'s, T, C, FLIGHT, RECV, SEND>
+impl<'s, T, C, V, const FLIGHT: usize, const RECV: usize, const SEND: usize, const MAX_CHAIN: usize>
+    TlsStream<'s, T, C, V, FLIGHT, RECV, SEND, MAX_CHAIN>
 where
     T: Transport,
     C: ClientConfig,
@@ -51,7 +59,7 @@ where
     /// - [`ConnectError::UnexpectedEof`] when the transport returns
     ///   `Ok(0)` mid-handshake.
     pub fn connect<R>(
-        params: &ClientParams<'_>,
+        params: &ClientParams<'_, V>,
         scratch: &'s mut Scratch<FLIGHT, RECV, SEND>,
         transport: T,
         rng: &mut R,
@@ -59,7 +67,7 @@ where
     where
         R: rand_core::TryCryptoRng,
     {
-        validate_construction::<RECV, SEND>(params)?;
+        validate_construction::<_, RECV, SEND>(params)?;
 
         let mut client_random = [0u8; 32];
         let mut x25519_priv = crate::newtype::ZeroBuf::<32>::new([0u8; 32]);
@@ -100,7 +108,11 @@ where
         );
         drive_handshake(&mut engine, &mut transport, params)?;
 
-        Ok(Self { engine, transport })
+        Ok(Self {
+            engine,
+            transport,
+            _v: core::marker::PhantomData,
+        })
     }
 
     /// Read app data into `out`. `Ok(0)` = peer `close_notify`.
@@ -255,8 +267,8 @@ where
     }
 }
 
-impl<T, C, const FLIGHT: usize, const RECV: usize, const SEND: usize> Drop
-    for TlsStream<'_, T, C, FLIGHT, RECV, SEND>
+impl<T, C, V, const FLIGHT: usize, const RECV: usize, const SEND: usize, const MAX_CHAIN: usize>
+    Drop for TlsStream<'_, T, C, V, FLIGHT, RECV, SEND, MAX_CHAIN>
 where
     T: Transport,
     C: ClientConfig,
@@ -271,10 +283,10 @@ where
 // Engine drive loop for the handshake phase
 // ============================================================================
 
-fn drive_handshake<C, T, const FLIGHT: usize, const RECV: usize, const SEND: usize>(
+fn drive_handshake<C, T, V, const FLIGHT: usize, const RECV: usize, const SEND: usize>(
     engine: &mut TlsEngine<'_, C, FLIGHT, RECV, SEND>,
     transport: &mut T,
-    params: &ClientParams<'_>,
+    params: &ClientParams<'_, V>,
 ) -> Result<(), ConnectError<T::Error>>
 where
     T: Transport,
@@ -330,8 +342,8 @@ where
 // Pre-flight + opts derivation
 // ============================================================================
 
-fn validate_construction<const RECV: usize, const SEND: usize>(
-    params: &ClientParams<'_>,
+fn validate_construction<V, const RECV: usize, const SEND: usize>(
+    params: &ClientParams<'_, V>,
 ) -> Result<(), ConfigError> {
     if params.hostname.len() > FACADE_HOSTNAME_MAX {
         return Err(ConfigError::HostnameTooLong);
@@ -392,8 +404,8 @@ fn map_client_hello_error<E>(
 // embedded_io blanket impls
 // ============================================================================
 
-impl<T, C, const FLIGHT: usize, const RECV: usize, const SEND: usize> embedded_io::ErrorType
-    for TlsStream<'_, T, C, FLIGHT, RECV, SEND>
+impl<T, C, V, const FLIGHT: usize, const RECV: usize, const SEND: usize, const MAX_CHAIN: usize>
+    embedded_io::ErrorType for TlsStream<'_, T, C, V, FLIGHT, RECV, SEND, MAX_CHAIN>
 where
     T: Transport,
     T::Error: embedded_io::Error + 'static,
@@ -402,8 +414,8 @@ where
     type Error = StreamError<T::Error>;
 }
 
-impl<T, C, const FLIGHT: usize, const RECV: usize, const SEND: usize> embedded_io::Read
-    for TlsStream<'_, T, C, FLIGHT, RECV, SEND>
+impl<T, C, V, const FLIGHT: usize, const RECV: usize, const SEND: usize, const MAX_CHAIN: usize>
+    embedded_io::Read for TlsStream<'_, T, C, V, FLIGHT, RECV, SEND, MAX_CHAIN>
 where
     T: Transport,
     T::Error: embedded_io::Error + 'static,
@@ -414,8 +426,8 @@ where
     }
 }
 
-impl<T, C, const FLIGHT: usize, const RECV: usize, const SEND: usize> embedded_io::Write
-    for TlsStream<'_, T, C, FLIGHT, RECV, SEND>
+impl<T, C, V, const FLIGHT: usize, const RECV: usize, const SEND: usize, const MAX_CHAIN: usize>
+    embedded_io::Write for TlsStream<'_, T, C, V, FLIGHT, RECV, SEND, MAX_CHAIN>
 where
     T: Transport,
     T::Error: embedded_io::Error + 'static,

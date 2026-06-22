@@ -158,7 +158,7 @@ fn run(host: &str, port: u16, pin: Option<&Pin>) -> Result<()> {
     }
     let time_source = SystemTimeSource;
     let params = if let Some(p) = pin {
-        ClientParams::pinned(host, p.as_pinned())
+        ClientParams::pinned(host, p.as_pinned()).map_err(|e| format!("invalid --pin: {e}"))?
     } else {
         ClientParams::self_signed(host)
     }

@@ -311,7 +311,9 @@ pub fn run_aes_ed25519_jedisct_facade() -> Result<(), ()> {
     use fixture_aes_ed25519_facade::*;
     use krabitls::backends::{DerCert, JedisctCrypto, RustCrypto};
     use krabitls::client::canned::{CannedTransport, SeededRng};
-    use krabitls::client::{ClientConfig, ClientParams, ConfigSuitePolicy, TlsStream};
+    use krabitls::client::{
+        ClientConfig, ClientParams, ConfigSuitePolicy, DefaultVerify, TlsStream,
+    };
 
     // Local ClientConfig: same as DefaultConfig but with Hkdf swapped to
     // JedisctCrypto so the HKDF / SHA-256 path goes through jedisct1.
@@ -324,7 +326,8 @@ pub fn run_aes_ed25519_jedisct_facade() -> Result<(), ()> {
         const SUITES: ConfigSuitePolicy = ConfigSuitePolicy::AesOnly;
     }
 
-    type JedisctStream<'s, T> = TlsStream<'s, T, JedisctConfig, 16384, 16645, 4096>;
+    type JedisctStream<'s, T> =
+        TlsStream<'s, T, JedisctConfig, DefaultVerify, 16384, 16645, 4096, 8>;
 
     facade_scratch::with(|scratch| {
         let mut rng = SeededRng::new(0);
