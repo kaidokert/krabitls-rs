@@ -1,6 +1,6 @@
 //! Per-connection trust + policy. Constructors couple trust mode to its material.
 
-use crate::backends::{DerCert, PinOrSelfSigned};
+use crate::backends::{DerCert, PinOrSelfSigned, PinnedPubkeyOwnedError};
 use crate::identity::PinnedPubkey;
 use crate::traits::verify_strategy::SafeStrategy;
 
@@ -67,16 +67,24 @@ impl<'a> ClientParams<'a, DefaultVerify> {
     /// 5. Server Finished MAC
     ///
     /// `hostname` is also used as the SNI value in ClientHello.
-    pub fn pinned(hostname: &'a str, pin: PinnedPubkey<'a>) -> Self {
-        let owned = pin.to_owned_pin();
-        Self {
+    ///
+    /// Returns `Err(ModulusTooLong)` for an `Rsa` pin whose modulus
+    /// exceeds `MAX_RSA_MODULUS_BYTES` (the supported RSA-1024 /
+    /// RSA-2048 sizes always fit). Under `not(feature = "rsa")` the
+    /// error enum is uninhabited.
+    pub fn pinned(
+        hostname: &'a str,
+        pin: PinnedPubkey<'a>,
+    ) -> Result<Self, PinnedPubkeyOwnedError> {
+        let owned = pin.to_owned_pin()?;
+        Ok(Self {
             hostname,
             trust: TrustRoot::Pinned(pin),
             verify: SafeStrategy::new(PinOrSelfSigned::pinned(owned)),
             #[cfg(feature = "validity")]
             time: None,
             suite_policy: RuntimeSuitePolicy::Default,
-        }
+        })
     }
 
     /// Self-signed trust for controlled-peer deployments. Verification at

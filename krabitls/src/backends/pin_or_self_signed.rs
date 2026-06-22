@@ -57,10 +57,14 @@ impl PinnedPubkeyOwned {
     }
 }
 
-/// Errors constructing [`PinnedPubkeyOwned`].
-#[cfg(feature = "rsa")]
+/// Errors constructing [`PinnedPubkeyOwned`]. Always-present so the
+/// fallible `to_owned_pin` / `ClientParams::pinned` return type is
+/// stable across feature sets; under `not(feature = "rsa")` the enum
+/// is uninhabited and the `Result` always succeeds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum PinnedPubkeyOwnedError {
+    #[cfg(feature = "rsa")]
     #[error("RSA modulus exceeds MAX_RSA_MODULUS_BYTES")]
     ModulusTooLong,
 }
