@@ -55,11 +55,12 @@ pub trait VerifierKeyMaterial<K> {
     fn matches(&self, candidate: K) -> subtle::Choice;
 }
 
-use crate::traits::cert::CertView;
+use crate::traits::cert::{CertParseError, CertParser, CertView};
 use crate::traits::ed25519_verify::Ed25519VerifierProvider;
 use crate::traits::rsa_verify::RsaVerifierProvider;
 #[cfg(feature = "validity")]
 use crate::traits::time::TimeSource;
+use signature::Verifier;
 
 /// Prepared verifier the strategy hands back for the TLS stack to use in
 /// CertificateVerify. Stored by value in a caller-supplied slot so the
@@ -167,6 +168,192 @@ pub trait VerifyStrategy<E: Ed25519VerifierProvider, R: RsaVerifierProvider> {
         slot: &'slot mut Option<PreparedVerifier<E, R>>,
         #[cfg(feature = "validity")] time: Option<&dyn TimeSource>,
     ) -> Result<Trusted<'slot, E, R>, Self::Error>;
+}
+
+/// The safe path: answer "do I accept this chain" and let
+/// [`SafeStrategy`] handle the per-link signature verification and the
+/// leaf pubkey prep generically.
+///
+/// Implementing this and wrapping in `SafeStrategy<Self, C>` avoids
+/// three classes of mistake the direct [`VerifyStrategy`] path can hit:
+/// returning a [`PreparedVerifier`] built from material outside the
+/// chain, forgetting to verify per-link signatures, and tangling the
+/// slot-lifetime plumbing.
+pub trait TrustRootDecision<E: Ed25519VerifierProvider, R: RsaVerifierProvider> {
+    type Error: core::error::Error + Clone + PartialEq;
+
+    /// `chain` has already been parsed and structurally validated by
+    /// [`SafeStrategy`] (each link `chain[i]`'s outer sig verified
+    /// against `chain[i+1]`'s pubkey). Return Ok if `chain[chain.len()-1]`
+    /// is an acceptable trust root.
+    fn accept_chain<'src>(
+        &self,
+        chain: &[CertView<'src>],
+        #[cfg(feature = "validity")] time: Option<&dyn TimeSource>,
+    ) -> Result<(), Self::Error>;
+}
+
+/// Adapter from [`TrustRootDecision`] to [`VerifyStrategy`].
+pub struct SafeStrategy<T, C: CertParser> {
+    pub decision: T,
+    _parser: core::marker::PhantomData<C>,
+}
+
+impl<T, C: CertParser> SafeStrategy<T, C> {
+    #[allow(dead_code)]
+    pub fn new(decision: T) -> Self {
+        Self {
+            decision,
+            _parser: core::marker::PhantomData,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum SafeStrategyError<TE> {
+    #[error("cert parse failed: {0}")]
+    Parse(#[from] CertParseError),
+    #[error("chain exceeded SafeStrategy's per-call capacity")]
+    ChainTooLong,
+    #[error("per-link signature did not verify")]
+    LinkSignatureInvalid,
+    #[cfg(feature = "rsa")]
+    #[error("intermediate cert outer signatureAlgorithm not recognized")]
+    UnknownLinkSigAlg,
+    #[cfg(feature = "rsa")]
+    #[error("RSA verifier construction failed for intermediate cert")]
+    RsaVerifierInvalid,
+    /// Trust-root decision returned an error.
+    #[error("trust root rejected: {0}")]
+    Decision(TE),
+}
+
+/// Per-call cap on parsed `CertView`s. Real chains rarely exceed 4
+/// (leaf + intermediate + cross-sign + root); 8 leaves slack.
+const SAFE_STRATEGY_CHAIN_CAP: usize = 8;
+
+impl<T, C, E, R> VerifyStrategy<E, R> for SafeStrategy<T, C>
+where
+    T: TrustRootDecision<E, R>,
+    C: CertParser,
+    E: Ed25519VerifierProvider,
+    R: RsaVerifierProvider,
+{
+    type Error = SafeStrategyError<T::Error>;
+
+    fn verify_chain<'chain, 'src, 'slot>(
+        &self,
+        chain: CertChainView<'chain, 'src>,
+        slot: &'slot mut Option<PreparedVerifier<E, R>>,
+        #[cfg(feature = "validity")] time: Option<&dyn TimeSource>,
+    ) -> Result<Trusted<'slot, E, R>, Self::Error> {
+        let mut views: heapless::Vec<CertView<'src>, SAFE_STRATEGY_CHAIN_CAP> =
+            heapless::Vec::new();
+        for cert_der in chain.certs {
+            let view = C::parse(cert_der).map_err(SafeStrategyError::Parse)?;
+            views
+                .push(view)
+                .map_err(|_| SafeStrategyError::ChainTooLong)?;
+        }
+
+        for i in 0..views.len().saturating_sub(1) {
+            verify_link::<E, R>(&views[i], &views[i + 1])?;
+        }
+
+        self.decision
+            .accept_chain(
+                &views,
+                #[cfg(feature = "validity")]
+                time,
+            )
+            .map_err(SafeStrategyError::Decision)?;
+
+        let leaf_prepared: PreparedVerifier<E, R> = match &views[0] {
+            CertView::Ed25519 { pubkey, .. } => {
+                PreparedVerifier::ed25519(E::prepare_ed25519(pubkey))
+            }
+            #[cfg(feature = "rsa")]
+            CertView::Rsa {
+                modulus, exponent, ..
+            } => PreparedVerifier::Rsa(
+                R::prepare_rsa(modulus, *exponent)
+                    .map_err(|_| SafeStrategyError::RsaVerifierInvalid)?,
+            ),
+        };
+        *slot = Some(leaf_prepared);
+        Ok(Trusted::new(slot.as_ref().unwrap()))
+    }
+}
+
+/// Per-link verify failure. Wider [`SafeStrategyError`] converts via `From`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LinkErr {
+    LinkSignatureInvalid,
+    #[cfg(feature = "rsa")]
+    UnknownLinkSigAlg,
+    #[cfg(feature = "rsa")]
+    RsaVerifierInvalid,
+}
+
+impl<TE> From<LinkErr> for SafeStrategyError<TE> {
+    fn from(e: LinkErr) -> Self {
+        match e {
+            LinkErr::LinkSignatureInvalid => SafeStrategyError::LinkSignatureInvalid,
+            #[cfg(feature = "rsa")]
+            LinkErr::UnknownLinkSigAlg => SafeStrategyError::UnknownLinkSigAlg,
+            #[cfg(feature = "rsa")]
+            LinkErr::RsaVerifierInvalid => SafeStrategyError::RsaVerifierInvalid,
+        }
+    }
+}
+
+fn verify_link<E, R>(child: &CertView<'_>, parent: &CertView<'_>) -> Result<(), LinkErr>
+where
+    E: Ed25519VerifierProvider,
+    R: RsaVerifierProvider,
+{
+    let (child_tbs, child_sig): (&[u8], &[u8]) = match child {
+        CertView::Ed25519 { tbs, signature, .. } => (*tbs, &signature[..]),
+        #[cfg(feature = "rsa")]
+        CertView::Rsa { tbs, signature, .. } => (*tbs, *signature),
+    };
+    match parent {
+        CertView::Ed25519 { pubkey, .. } => {
+            let v = E::prepare_ed25519(pubkey);
+            let sig: &[u8; 64] = child_sig
+                .try_into()
+                .map_err(|_| LinkErr::LinkSignatureInvalid)?;
+            v.verify(child_tbs, sig)
+                .map_err(|_| LinkErr::LinkSignatureInvalid)
+        }
+        #[cfg(feature = "rsa")]
+        CertView::Rsa {
+            modulus, exponent, ..
+        } => {
+            #[cfg(not(feature = "rsa_pss_only"))]
+            use crate::backends::rsa_verify::RsaPkcs1Sig;
+            use crate::backends::rsa_verify::RsaPssSig;
+            use crate::traits::cert::RsaCertSigAlg;
+            // Padding scheme is identified by the CHILD's signatureAlgorithm
+            // (the alg the parent USED to sign the child).
+            let alg = match child {
+                CertView::Ed25519 { .. } => return Err(LinkErr::UnknownLinkSigAlg),
+                CertView::Rsa { outer_sig_alg, .. } => {
+                    outer_sig_alg.ok_or(LinkErr::UnknownLinkSigAlg)?
+                }
+            };
+            let v = R::prepare_rsa(modulus, *exponent).map_err(|_| LinkErr::RsaVerifierInvalid)?;
+            match alg {
+                #[cfg(not(feature = "rsa_pss_only"))]
+                RsaCertSigAlg::Pkcs1v15Sha256 => v
+                    .verify(child_tbs, &RsaPkcs1Sig(child_sig))
+                    .map_err(|_| LinkErr::LinkSignatureInvalid),
+                RsaCertSigAlg::PssSha256 => v
+                    .verify(child_tbs, &RsaPssSig(child_sig))
+                    .map_err(|_| LinkErr::LinkSignatureInvalid),
+            }
+        }
+    }
 }
 
 #[cfg(test)]
