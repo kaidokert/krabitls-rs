@@ -789,7 +789,7 @@ mod tests {
     use crate::aead::{DecryptError, decrypt_record, encrypt_record};
     #[cfg(feature = "jedisct")]
     use crate::backends::JedisctCrypto;
-    #[cfg(feature = "rsa")]
+    #[cfg(all(feature = "rsa", not(feature = "rsa_pss_only"), feature = "cipher-aes"))]
     use crate::backends::RsaVerifierKey;
     use crate::backends::{DerCert, RustCrypto};
     use crate::client_flight::CLIENT_FINISHED_LEN;

@@ -29,6 +29,7 @@
 
 use fixed_bigint::FixedUInt;
 use rsa::modmath_support::{ModMathParams, ModMathValue, public_key_from_be_bytes};
+#[cfg(not(feature = "rsa_pss_only"))]
 use rsa::pkcs1v15::{GenericSignature as Pkcs1Sig, GenericVerifyingKey as Pkcs1Vk};
 use rsa::pss::{GenericSignature as PssSig, GenericVerifyingKey as PssVk};
 use rsa::signature::hazmat::PrehashVerifier;
@@ -90,6 +91,7 @@ pub struct VkPair<T>
 where
     T: rsa::modmath_support::ModMathInt,
 {
+    #[cfg(not(feature = "rsa_pss_only"))]
     pkcs1: Pkcs1Vk<Sha256, ModMathValue<T>, ModMathParams<T>>,
     pss: PssVk<Sha256, ModMathValue<T>, ModMathParams<T>>,
 }
@@ -110,6 +112,7 @@ impl RsaVerifierKey {
     }
 
     /// Verify a PKCS#1-v1.5-SHA-256 signature against this cached key.
+    #[cfg(not(feature = "rsa_pss_only"))]
     pub fn verify_pkcs1v15_sha256(
         &self,
         message: &[u8],
@@ -217,7 +220,12 @@ where
 {
     let key = public_key_from_be_bytes::<T>(modulus, exponent).map_err(|_| RsaVerifyError)?;
     // Clone reuses RSA precomputation instead of rebuilding it.
+    #[cfg(not(feature = "rsa_pss_only"))]
     let pkcs1 = Pkcs1Vk::<Sha256, _, _>::new(key.clone());
     let pss = PssVk::<Sha256, _, _>::new(key);
-    Ok(VkPair { pkcs1, pss })
+    Ok(VkPair {
+        #[cfg(not(feature = "rsa_pss_only"))]
+        pkcs1,
+        pss,
+    })
 }
