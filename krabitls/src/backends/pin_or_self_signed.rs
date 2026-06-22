@@ -216,6 +216,10 @@ where
     E: Ed25519VerifierProvider,
     R: RsaVerifierProvider,
 {
+    // `R` is bound even without `feature = "rsa"` so callers can specify
+    // both backends in one go; mark it used so clippy's
+    // `extra_unused_type_parameters` doesn't fire under non-rsa builds.
+    let _ = core::marker::PhantomData::<R>;
     match leaf {
         CertView::Ed25519 {
             tbs,

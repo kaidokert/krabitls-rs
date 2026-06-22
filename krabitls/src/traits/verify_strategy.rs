@@ -321,6 +321,7 @@ where
     E: Ed25519VerifierProvider,
     R: RsaVerifierProvider,
 {
+    let _ = core::marker::PhantomData::<R>;
     let (child_tbs, child_sig): (&[u8], &[u8]) = match child {
         CertView::Ed25519 { tbs, signature, .. } => (*tbs, &signature[..]),
         #[cfg(feature = "rsa")]

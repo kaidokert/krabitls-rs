@@ -39,10 +39,14 @@ pub use crate::traits::TimeSource;
 // Strategy surface — what custom-verifier callers need to roll their own
 // trust-root decision (or instantiate the bundled `SafeStrategy`).
 pub use crate::backends::{PinOrSelfSigned, PinnedPubkeyOwned};
+// Provider traits are part of the strategy's generic bounds — custom
+// `VerifyStrategy<E, R>` impls have to name `Ed25519VerifierProvider` /
+// `RsaVerifierProvider` in their `where` clauses.
 pub use crate::traits::verify_strategy::{
     CertChainView, PreparedVerifier, SafeStrategy, SafeStrategyError, TrustRootDecision, Trusted,
     VerifierKeyMaterial, VerifyStrategy,
 };
+pub use crate::traits::{Ed25519VerifierProvider, RsaVerifierProvider};
 
 // In-crate-only: alternate config impls (samples, callers write their own),
 // the WriteAppError plumbing type, the InternalError variant the engine
