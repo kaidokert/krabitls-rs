@@ -31,7 +31,8 @@ use crate::reassembler::{ReassemblyError, ServerFlightReassembler};
 use crate::server_flight::FlightError;
 use crate::server_flight::ServerPubkey;
 use crate::server_flight::verify_server_flight;
-use crate::traits::{CertParser, Ed25519VerifierProvider, HkdfSha256, RsaVerifierProvider};
+use crate::traits::verify_strategy::PreparedVerifier;
+use crate::traits::{CertView, Ed25519VerifierProvider, HkdfSha256, RsaVerifierProvider};
 
 // Only consumer is `close_notify` on Live, whose gate is matched here.
 #[cfg(all(test, not(feature = "chacha20"), not(feature = "rsa")))]
@@ -325,15 +326,6 @@ impl ServerPubkeyOwned {
 pub enum FlightStep {
     Pending,
     Ready,
-}
-
-/// Cert outer-sig policy for [`TlsConnection::finalize_server_flight`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VerifyMode {
-    /// Verify outer sig with the cert's own pubkey.
-    SelfSigned,
-    /// Skip outer sig; caller trusts via pin / SAN / OOB. CV + Finished still verified.
-    TrustOnPin,
 }
 
 pub struct AppData<S: CipherSuite> {
@@ -728,27 +720,33 @@ where
         })
     }
 
-    /// Verify CV + Finished (plus self-sig if [`VerifyMode::SelfSigned`])
-    /// and advance to [`ServerFlightDone`].
+    /// Verify CV + Finished against the caller-supplied prepared verifier
+    /// and advance to [`ServerFlightDone`]. The typestate boundary
+    /// defensively re-checks `prepared.matches_cert(leaf_view)` so a
+    /// non-engine caller can't sneak in a verifier built from one cert
+    /// while the stored `server_pubkey` comes from another.
     pub fn finalize_server_flight<
         const N: usize,
-        P: CertParser,
         E: Ed25519VerifierProvider,
         R: RsaVerifierProvider,
     >(
         mut self,
         reassembler: &ServerFlightReassembler<N>,
-        mode: VerifyMode,
+        prepared: &PreparedVerifier<E, R>,
+        leaf_view: &CertView<'_>,
     ) -> Result<TlsConnection<ServerFlightDone<S, M>, H>, ConnectionError> {
+        if !bool::from(prepared.matches_cert(leaf_view)) {
+            return Err(ConnectionError::Flight(FlightError::CertVerifyInvalid));
+        }
         let plaintext = reassembler
             .flight_bytes()
             .ok_or(ConnectionError::IncompleteFlight)?;
-        let verify_self_sig = matches!(mode, VerifyMode::SelfSigned);
-        let verified = verify_server_flight::<H, P, E, R>(
+        let verified = verify_server_flight::<H, E, R>(
             &mut self.transcript,
             plaintext,
             &self.state.s_hs_ts,
-            verify_self_sig,
+            prepared,
+            leaf_view,
         )?;
         let server_pubkey = ServerPubkeyOwned::from_view(&verified.server_pubkey)?;
         Ok(TlsConnection {
@@ -1194,10 +1192,25 @@ mod tests {
         0x4c, 0x3f,
     ];
 
+    fn fixture_prepared() -> PreparedVerifier<RustCrypto, RustCrypto> {
+        PreparedVerifier::ed25519(<RustCrypto as Ed25519VerifierProvider>::prepare_ed25519(
+            &EXPECTED_SERVER_ID_PUB,
+        ))
+    }
+
+    fn fixture_leaf_view() -> CertView<'static> {
+        CertView::Ed25519 {
+            tbs: &[],
+            signature: &[0u8; 64],
+            pubkey: &EXPECTED_SERVER_ID_PUB,
+            san: None,
+            validity_der: &[],
+        }
+    }
+
     #[cfg(all(not(feature = "chacha20"), not(feature = "rsa")))]
     #[test]
     fn feed_server_record_and_finalize_smoke() {
-        use crate::backends::DerCert;
         use crate::reassembler::ServerFlightReassembler;
 
         let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
@@ -1221,9 +1234,10 @@ mod tests {
         assert_eq!(step, FlightStep::Ready);
 
         let done = conn
-            .finalize_server_flight::<512, DerCert, RustCrypto, RustCrypto>(
+            .finalize_server_flight::<512, RustCrypto, RustCrypto>(
                 &reassembler,
-                VerifyMode::SelfSigned,
+                &fixture_prepared(),
+                &fixture_leaf_view(),
             )
             .expect("finalize_server_flight");
         match &done.state.server_pubkey {
@@ -1236,7 +1250,6 @@ mod tests {
     #[cfg(all(not(feature = "chacha20"), not(feature = "rsa")))]
     #[test]
     fn finalize_without_flight_is_incomplete() {
-        use crate::backends::DerCert;
         use crate::reassembler::ServerFlightReassembler;
 
         let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
@@ -1253,9 +1266,10 @@ mod tests {
             .unwrap();
 
         let reassembler: ServerFlightReassembler<512> = ServerFlightReassembler::new();
-        let err = match conn.finalize_server_flight::<512, DerCert, RustCrypto, RustCrypto>(
+        let err = match conn.finalize_server_flight::<512, RustCrypto, RustCrypto>(
             &reassembler,
-            VerifyMode::SelfSigned,
+            &fixture_prepared(),
+            &fixture_leaf_view(),
         ) {
             Ok(_) => panic!("expected IncompleteFlight"),
             Err(e) => e,
@@ -1399,7 +1413,6 @@ mod tests {
     #[cfg(all(not(feature = "chacha20"), not(feature = "rsa")))]
     #[test]
     fn finish_handshake_byte_identical_client_finished() {
-        use crate::backends::DerCert;
         use crate::reassembler::ServerFlightReassembler;
 
         let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
@@ -1419,9 +1432,10 @@ mod tests {
         conn.feed_server_record(&FIXTURE_PACKET_3, &mut reassembler, &mut scratch)
             .unwrap();
         let conn = conn
-            .finalize_server_flight::<512, DerCert, RustCrypto, RustCrypto>(
+            .finalize_server_flight::<512, RustCrypto, RustCrypto>(
                 &reassembler,
-                VerifyMode::SelfSigned,
+                &fixture_prepared(),
+                &fixture_leaf_view(),
             )
             .unwrap();
 
@@ -1433,7 +1447,6 @@ mod tests {
     #[cfg(all(not(feature = "chacha20"), not(feature = "rsa")))]
     #[test]
     fn app_data_encrypt_record_byte_identical_packet_5() {
-        use crate::backends::DerCert;
         use crate::consts::CT_APPLICATION_DATA;
         use crate::reassembler::ServerFlightReassembler;
 
@@ -1454,9 +1467,10 @@ mod tests {
         conn.feed_server_record(&FIXTURE_PACKET_3, &mut reassembler, &mut scratch)
             .unwrap();
         let conn = conn
-            .finalize_server_flight::<512, DerCert, RustCrypto, RustCrypto>(
+            .finalize_server_flight::<512, RustCrypto, RustCrypto>(
                 &reassembler,
-                VerifyMode::SelfSigned,
+                &fixture_prepared(),
+                &fixture_leaf_view(),
             )
             .unwrap();
 
@@ -1474,7 +1488,6 @@ mod tests {
     #[cfg(all(not(feature = "chacha20"), not(feature = "rsa")))]
     #[test]
     fn app_data_decrypt_record_round_trips_packet_6() {
-        use crate::backends::DerCert;
         use crate::consts::CT_APPLICATION_DATA;
         use crate::reassembler::ServerFlightReassembler;
 
@@ -1495,9 +1508,10 @@ mod tests {
         conn.feed_server_record(&FIXTURE_PACKET_3, &mut reassembler, &mut scratch)
             .unwrap();
         let conn = conn
-            .finalize_server_flight::<512, DerCert, RustCrypto, RustCrypto>(
+            .finalize_server_flight::<512, RustCrypto, RustCrypto>(
                 &reassembler,
-                VerifyMode::SelfSigned,
+                &fixture_prepared(),
+                &fixture_leaf_view(),
             )
             .unwrap();
 
@@ -1517,7 +1531,6 @@ mod tests {
     #[cfg(all(not(feature = "chacha20"), not(feature = "rsa")))]
     #[test]
     fn close_notify_emits_encrypted_alert_record() {
-        use crate::backends::DerCert;
         use crate::reassembler::ServerFlightReassembler;
 
         let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
@@ -1537,9 +1550,10 @@ mod tests {
         conn.feed_server_record(&FIXTURE_PACKET_3, &mut reassembler, &mut scratch)
             .unwrap();
         let conn = conn
-            .finalize_server_flight::<512, DerCert, RustCrypto, RustCrypto>(
+            .finalize_server_flight::<512, RustCrypto, RustCrypto>(
                 &reassembler,
-                VerifyMode::SelfSigned,
+                &fixture_prepared(),
+                &fixture_leaf_view(),
             )
             .unwrap();
         let mut fin_buf = [0u8; 64];

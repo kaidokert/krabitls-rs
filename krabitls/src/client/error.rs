@@ -119,6 +119,18 @@ pub enum HandshakeError {
     /// Indicates the RNG itself failed (e.g. a deterministic test RNG
     /// exhausted its precomputed entropy); the connection cannot proceed.
     Rng,
+
+    /// The configured [`VerifyStrategy`](crate::traits::verify_strategy::VerifyStrategy)
+    /// rejected the server's cert chain. The strategy's own error type
+    /// carries the detail and is not preserved here — strategies that
+    /// need programmatic distinguishability should log inside their impl.
+    StrategyRejected,
+
+    /// The prepared verifier returned by the strategy did not match the
+    /// SPKI of `chain[0]`. Catches strategies that hand back a verifier
+    /// built from material outside the chain (intentional MITM hook or
+    /// just a buggy impl).
+    StrategyPubkeyMismatch,
 }
 
 impl From<ConnectionError> for HandshakeError {
@@ -169,6 +181,10 @@ impl core::fmt::Display for HandshakeError {
             }
             Self::Internal(e) => write!(f, "internal: {e}"),
             Self::Rng => f.write_str("caller-supplied RNG returned an error"),
+            Self::StrategyRejected => f.write_str("verify strategy rejected the server cert chain"),
+            Self::StrategyPubkeyMismatch => {
+                f.write_str("strategy's prepared verifier did not match chain[0]'s SPKI")
+            }
         }
     }
 }
@@ -188,7 +204,9 @@ impl core::error::Error for HandshakeError {
             | Self::Busy
             | Self::NotReady
             | Self::PostHandshakeNotSupported
-            | Self::Rng => None,
+            | Self::Rng
+            | Self::StrategyRejected
+            | Self::StrategyPubkeyMismatch => None,
         }
     }
 }

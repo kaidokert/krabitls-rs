@@ -798,8 +798,37 @@ mod tests {
     use crate::newtype::AeadKey32;
     use crate::newtype::{AeadIv, AeadKey, Secret, TranscriptDigest, ZeroBuf};
     use crate::server_flight::{FlightError, extract_cert_der, extract_chain, parse_server_flight};
-    use crate::traits::{CertParseError, CertParser, CertView, HkdfSha256};
+    use crate::traits::verify_strategy::PreparedVerifier;
+    use crate::traits::{
+        CertParseError, CertParser, CertView, Ed25519VerifierProvider, HkdfSha256,
+    };
     use embedded_io::SliceWriteError;
+
+    /// Ed25519 pubkey in the seed-0 self-signed leaf cert. Same constant
+    /// as in connection.rs::tests; hoisted here so the verify-helper
+    /// can stay test-module-level.
+    #[cfg(feature = "cipher-aes")]
+    const FIXTURE_LEAF_ED25519_PUB: [u8; 32] = [
+        0x9d, 0xfe, 0x2a, 0xb0, 0x3e, 0x35, 0x70, 0x4b, 0x9c, 0xfb, 0x93, 0xb6, 0x03, 0xa6, 0x61,
+        0x18, 0x82, 0x17, 0xa6, 0xb5, 0xfd, 0x6a, 0x1f, 0x75, 0xe6, 0x16, 0x1a, 0x39, 0xe0, 0x53,
+        0x4c, 0x3f,
+    ];
+
+    #[cfg(feature = "cipher-aes")]
+    fn fixture_prepared_ed25519<E: Ed25519VerifierProvider>() -> PreparedVerifier<E, RustCrypto> {
+        PreparedVerifier::ed25519(E::prepare_ed25519(&FIXTURE_LEAF_ED25519_PUB))
+    }
+
+    #[cfg(feature = "cipher-aes")]
+    fn fixture_leaf_ed25519() -> CertView<'static> {
+        CertView::Ed25519 {
+            tbs: &[],
+            signature: &[0u8; 64],
+            pubkey: &FIXTURE_LEAF_ED25519_PUB,
+            san: None,
+            validity_der: &[],
+        }
+    }
 
     // Captured from tls_fixture/packets/001_c2s_ClientHello.bin (seed 0).
     const FIXTURE_RANDOM: [u8; 32] = [
@@ -1861,11 +1890,12 @@ mod tests {
         let mut transcript = TranscriptHash::<RustCrypto>::new();
         transcript.update_record(&FIXTURE_CLIENT_HELLO).unwrap();
         transcript.update_record(&FIXTURE_SERVER_HELLO).unwrap();
-        verify_server_flight::<RustCrypto, DerCert, RustCrypto, RustCrypto>(
+        verify_server_flight::<RustCrypto, RustCrypto, RustCrypto>(
             &mut transcript,
             content,
             &make_fixture_s_hs_traffic_secret(),
-            true,
+            &fixture_prepared_ed25519::<RustCrypto>(),
+            &fixture_leaf_ed25519(),
         )
         .unwrap();
         let ms = master_secret::<RustCrypto>(&make_fixture_handshake_secret()).unwrap();
@@ -2234,11 +2264,12 @@ mod tests {
             let mut transcript = TranscriptHash::<RustCrypto>::new();
             transcript.update_record(&FIXTURE_CLIENT_HELLO).unwrap();
             transcript.update_record(&FIXTURE_SERVER_HELLO).unwrap();
-            let result = verify_server_flight::<RustCrypto, DerCert, RustCrypto, RustCrypto>(
+            let result = verify_server_flight::<RustCrypto, RustCrypto, RustCrypto>(
                 &mut transcript,
                 content,
                 &make_fixture_s_hs_traffic_secret(),
-                true,
+                &fixture_prepared_ed25519::<RustCrypto>(),
+                &fixture_leaf_ed25519(),
             )
             .expect("verify_server_flight");
             assert_eq!(
@@ -2249,10 +2280,10 @@ mod tests {
 
         #[test]
         fn ed25519_verify_trait_propagates_to_certificate_verify() {
-            // Run the full flight pipeline with AlwaysReject. The cert self-sig
-            // check is the first place E::verify gets called, so that's what
-            // fires — but the point is "if I swap the backend, behavior
-            // changes," which proves the type param flows through.
+            // Swap the backend on the prepared verifier — AlwaysReject's
+            // `verify` returns Err, so CV must fail with
+            // `CertVerifyInvalid`. Confirms `E` flows through to the
+            // CV-check path.
             let key = make_fixture_s_hs_key();
             let iv = make_fixture_s_hs_iv();
             let mut pt_buf = [0u8; 400];
@@ -2268,14 +2299,15 @@ mod tests {
             let mut transcript = TranscriptHash::<RustCrypto>::new();
             transcript.update_record(&FIXTURE_CLIENT_HELLO).unwrap();
             transcript.update_record(&FIXTURE_SERVER_HELLO).unwrap();
-            let err = verify_server_flight::<RustCrypto, DerCert, AlwaysReject, RustCrypto>(
+            let err = verify_server_flight::<RustCrypto, AlwaysReject, RustCrypto>(
                 &mut transcript,
                 content,
                 &make_fixture_s_hs_traffic_secret(),
-                true,
+                &fixture_prepared_ed25519::<AlwaysReject>(),
+                &fixture_leaf_ed25519(),
             )
             .unwrap_err();
-            assert_eq!(err, FlightError::CertSelfSignatureInvalid);
+            assert_eq!(err, FlightError::CertVerifyInvalid);
         }
 
         #[test]
@@ -2302,11 +2334,12 @@ mod tests {
             let mut transcript = TranscriptHash::<RustCrypto>::new();
             transcript.update_record(&FIXTURE_CLIENT_HELLO).unwrap();
             transcript.update_record(&FIXTURE_SERVER_HELLO).unwrap();
-            let err = verify_server_flight::<RustCrypto, DerCert, RustCrypto, RustCrypto>(
+            let err = verify_server_flight::<RustCrypto, RustCrypto, RustCrypto>(
                 &mut transcript,
                 &tampered[..content.len()],
                 &make_fixture_s_hs_traffic_secret(),
-                true,
+                &fixture_prepared_ed25519::<RustCrypto>(),
+                &fixture_leaf_ed25519(),
             )
             .unwrap_err();
             assert_eq!(err, FlightError::FinishedMacInvalid);
@@ -2381,11 +2414,12 @@ mod tests {
             let mut transcript = TranscriptHash::<RustCrypto>::new();
             transcript.update_record(&FIXTURE_CLIENT_HELLO).unwrap();
             transcript.update_record(&FIXTURE_SERVER_HELLO).unwrap();
-            verify_server_flight::<RustCrypto, DerCert, RustCrypto, RustCrypto>(
+            verify_server_flight::<RustCrypto, RustCrypto, RustCrypto>(
                 &mut transcript,
                 content,
                 &make_fixture_s_hs_traffic_secret(),
-                true,
+                &fixture_prepared_ed25519::<RustCrypto>(),
+                &fixture_leaf_ed25519(),
             )
             .unwrap();
 
@@ -2423,11 +2457,12 @@ mod tests {
             let mut transcript = TranscriptHash::<RustCrypto>::new();
             transcript.update_record(&FIXTURE_CLIENT_HELLO).unwrap();
             transcript.update_record(&FIXTURE_SERVER_HELLO).unwrap();
-            verify_server_flight::<RustCrypto, DerCert, RustCrypto, RustCrypto>(
+            verify_server_flight::<RustCrypto, RustCrypto, RustCrypto>(
                 &mut transcript,
                 content,
                 &make_fixture_s_hs_traffic_secret(),
-                true,
+                &fixture_prepared_ed25519::<RustCrypto>(),
+                &fixture_leaf_ed25519(),
             )
             .unwrap();
 
@@ -2533,16 +2568,35 @@ mod tests {
             let (content, ct) = split_inner_plaintext(pt).unwrap();
             assert_eq!(ct, consts::CT_HANDSHAKE);
 
-            // Walk the inner flight + verify cert (RSASSA-PSS self-sig) +
-            // CertificateVerify (rsa_pss_rsae_sha256) + Finished MAC.
+            // Strategy-replacement: parse leaf and build the RSA
+            // prepared verifier the production path would get back from
+            // `SafeStrategy<PinOrSelfSigned, DerCert>::verify_chain`.
+            let flight_pre = parse_server_flight(content).expect("parse_server_flight");
+            let leaf_der = extract_cert_der(flight_pre.cert_body).expect("extract_cert_der");
+            let leaf_view = <DerCert as CertParser>::parse(leaf_der).expect("parse RSA leaf");
+            let prepared = match &leaf_view {
+                CertView::Rsa {
+                    modulus, exponent, ..
+                } => PreparedVerifier::Rsa(
+                    <RustCrypto as crate::traits::RsaVerifierProvider>::prepare_rsa(
+                        modulus, *exponent,
+                    )
+                    .expect("prepare_rsa"),
+                ),
+                CertView::Ed25519 { .. } => panic!("fixture is RSA"),
+            };
+
+            // Walk the inner flight + verify CertificateVerify
+            // (rsa_pss_rsae_sha256) + Finished MAC.
             let mut transcript = TranscriptHash::<RustCrypto>::new();
             transcript.update_record(&FIXTURE_RSA_CLIENT_HELLO).unwrap();
             transcript.update_record(&FIXTURE_RSA_SERVER_HELLO).unwrap();
-            verify_server_flight::<RustCrypto, DerCert, RustCrypto, RustCrypto>(
+            verify_server_flight::<RustCrypto, RustCrypto, RustCrypto>(
                 &mut transcript,
                 content,
                 &s_hs_ts,
-                true,
+                &prepared,
+                &leaf_view,
             )
             .expect("verify RSA server flight");
         }

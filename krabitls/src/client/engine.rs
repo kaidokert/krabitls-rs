@@ -2,7 +2,6 @@
 //! drives. Pure orchestration over the existing typestate API.
 
 use super::error::{HandshakeError, InternalError};
-use super::params::TrustRoot;
 use super::scratch::{
     AEAD_TAG, MIN_RECORD_SIZE_LIMIT, PROTO_MAX_INNER_PLAINTEXT, RECORD_OVERHEAD, TLS_HEADER,
 };
@@ -12,13 +11,13 @@ use crate::aead::Aes128GcmSha256;
 #[cfg(feature = "chacha20")]
 use crate::aead::ChaCha20Poly1305Sha256;
 use crate::connection::{
-    AppData, FlightStep, NegotiatedSuite, ServerFlightDone, VerifyMode, WaitServerFlight,
-    WaitServerHello,
+    AppData, FlightStep, NegotiatedSuite, ServerFlightDone, WaitServerFlight, WaitServerHello,
 };
 use crate::connection::{ConnectionError, TlsConnection};
-use crate::identity::{verify_hostname, verify_pinned_pubkey};
-use crate::server_flight::{extract_cert_der, parse_server_flight};
+use crate::identity::verify_hostname;
+use crate::server_flight::{extract_chain, parse_server_flight};
 use crate::traits::CertParser;
+use crate::traits::verify_strategy::{CertChainView, PreparedVerifier, VerifyStrategy};
 
 const CT_APPLICATION_DATA: u8 = 0x17;
 const CT_HANDSHAKE: u8 = 0x16;
@@ -109,6 +108,7 @@ pub(crate) struct TlsEngine<
     const FLIGHT: usize,
     const RECV: usize,
     const SEND: usize,
+    const MAX_CHAIN: usize,
 > {
     pub(crate) scratch: &'s mut Scratch<FLIGHT, RECV, SEND>,
     pub(crate) state: EngineState<C>,
@@ -131,8 +131,14 @@ pub(crate) struct TlsEngine<
     pub(crate) peer_recv_limit: u16,
 }
 
-impl<'s, C: ClientConfig, const FLIGHT: usize, const RECV: usize, const SEND: usize>
-    TlsEngine<'s, C, FLIGHT, RECV, SEND>
+impl<
+    's,
+    C: ClientConfig,
+    const FLIGHT: usize,
+    const RECV: usize,
+    const SEND: usize,
+    const MAX_CHAIN: usize,
+> TlsEngine<'s, C, FLIGHT, RECV, SEND, MAX_CHAIN>
 {
     pub(crate) fn new(
         scratch: &'s mut Scratch<FLIGHT, RECV, SEND>,
@@ -185,7 +191,10 @@ impl<'s, C: ClientConfig, const FLIGHT: usize, const RECV: usize, const SEND: us
     pub(crate) fn step_handshake<V>(
         &mut self,
         params: &ClientParams<'_, V>,
-    ) -> Result<EngineEvent, HandshakeError> {
+    ) -> Result<EngineEvent, HandshakeError>
+    where
+        V: VerifyStrategy<C::Ed25519, C::Rsa>,
+    {
         loop {
             if self.is_send_pending() {
                 let remaining = self.send_pending_len - self.send_acked;
@@ -240,8 +249,14 @@ pub(crate) enum Framed {
 // Dispatch helpers
 // ============================================================================
 
-impl<'s, C: ClientConfig, const FLIGHT: usize, const RECV: usize, const SEND: usize>
-    TlsEngine<'s, C, FLIGHT, RECV, SEND>
+impl<
+    's,
+    C: ClientConfig,
+    const FLIGHT: usize,
+    const RECV: usize,
+    const SEND: usize,
+    const MAX_CHAIN: usize,
+> TlsEngine<'s, C, FLIGHT, RECV, SEND, MAX_CHAIN>
 {
     /// Reclaim the consumed prefix of `recv_record` by moving the tail
     /// to offset 0. Requires I6 (no parked plaintext).
@@ -330,7 +345,10 @@ impl<'s, C: ClientConfig, const FLIGHT: usize, const RECV: usize, const SEND: us
         end: usize,
         outer_type: u8,
         params: &ClientParams<'_, V>,
-    ) -> Result<(), HandshakeError> {
+    ) -> Result<(), HandshakeError>
+    where
+        V: VerifyStrategy<C::Ed25519, C::Rsa>,
+    {
         match &self.state {
             EngineState::WaitServerHello(_) => {
                 self.handle_server_hello(start, end, outer_type)?;
@@ -411,13 +429,16 @@ impl<'s, C: ClientConfig, const FLIGHT: usize, const RECV: usize, const SEND: us
     }
 
     /// In-place feed of a flight record. On `FlightStep::Ready`, drives
-    /// the finalize → identity → finish transition.
+    /// the strategy → identity → finalize → finish transition.
     fn handle_flight_record<V>(
         &mut self,
         start: usize,
         end: usize,
         params: &ClientParams<'_, V>,
-    ) -> Result<(), HandshakeError> {
+    ) -> Result<(), HandshakeError>
+    where
+        V: VerifyStrategy<C::Ed25519, C::Rsa>,
+    {
         // RFC 8449 limit applies to protected records only; CCS is
         // handled by `feed_server_record_inplace` without decryption.
         let outer_type = self.scratch.recv_record[start];
@@ -457,12 +478,12 @@ impl<'s, C: ClientConfig, const FLIGHT: usize, const RECV: usize, const SEND: us
         Ok(())
     }
 
-    /// Consume `WaitFlight*` → finalize → identity check → finish,
+    /// Consume `WaitFlight*` → strategy + identity → finalize → finish,
     /// installing `App*` with the Client Finished queued for send.
-    fn finalize_and_finish<V>(
-        &mut self,
-        params: &ClientParams<'_, V>,
-    ) -> Result<(), HandshakeError> {
+    fn finalize_and_finish<V>(&mut self, params: &ClientParams<'_, V>) -> Result<(), HandshakeError>
+    where
+        V: VerifyStrategy<C::Ed25519, C::Rsa>,
+    {
         if let Some(peer_limit) = self
             .scratch
             .reassembler
@@ -475,19 +496,63 @@ impl<'s, C: ClientConfig, const FLIGHT: usize, const RECV: usize, const SEND: us
             self.peer_recv_limit = peer_limit;
         }
 
-        let verify_mode = match params.trust {
-            TrustRoot::Pinned(_) => VerifyMode::TrustOnPin,
-            TrustRoot::SelfSigned => VerifyMode::SelfSigned,
-        };
+        // Strategy-driven trust + stack-owned identity binding. Runs
+        // before `finalize_server_flight` so a rejected chain aborts
+        // before any transcript advance commits to derived keys.
+        let flight_bytes =
+            self.scratch
+                .reassembler
+                .flight_bytes()
+                .ok_or(HandshakeError::Connection(
+                    ConnectionError::IncompleteFlight,
+                ))?;
+        let flight_view = parse_server_flight(flight_bytes)
+            .map_err(|e| HandshakeError::Connection(ConnectionError::Flight(e)))?;
+        let chain = extract_chain::<MAX_CHAIN>(flight_view.cert_body)
+            .map_err(|e| HandshakeError::Connection(ConnectionError::Flight(e)))?;
+        let chain_view = CertChainView { certs: &chain };
+
+        let mut slot: Option<PreparedVerifier<C::Ed25519, C::Rsa>> = None;
+        let trusted = params
+            .verify
+            .verify_chain(
+                chain_view,
+                &mut slot,
+                #[cfg(feature = "validity")]
+                params.time,
+            )
+            .map_err(|_| HandshakeError::StrategyRejected)?;
+
+        // Cross-check: a strategy that returns a prepared verifier built
+        // from non-chain bytes (intentional or otherwise) gets caught
+        // here before any signature lands against it. `.first()` covers
+        // the (impossible-via-`SafeStrategy`) case where a custom impl
+        // returns Ok on an empty chain.
+        let leaf_der =
+            chain
+                .first()
+                .copied()
+                .ok_or(HandshakeError::Connection(ConnectionError::Flight(
+                    crate::server_flight::FlightError::Truncated,
+                )))?;
+        let leaf_view = <C::CertParser as CertParser>::parse(leaf_der)
+            .map_err(|e| HandshakeError::Connection(ConnectionError::Flight(e.into())))?;
+        if !bool::from(trusted.prepared().matches_cert(&leaf_view)) {
+            return Err(HandshakeError::StrategyPubkeyMismatch);
+        }
+        verify_hostname(&leaf_view, params.hostname)?;
+
+        let prepared = trusted.prepared();
 
         let prev = core::mem::replace(&mut self.state, EngineState::Closed);
         let done = match prev {
             #[cfg(feature = "cipher-aes")]
             EngineState::WaitFlightAes(conn) => {
                 let d = conn
-                    .finalize_server_flight::<FLIGHT, C::CertParser, C::Ed25519, C::Rsa>(
+                    .finalize_server_flight::<FLIGHT, C::Ed25519, C::Rsa>(
                         &self.scratch.reassembler,
-                        verify_mode,
+                        prepared,
+                        &leaf_view,
                     )
                     .map_err(HandshakeError::Connection)?;
                 FlightDone::<C>::Aes(d)
@@ -495,9 +560,10 @@ impl<'s, C: ClientConfig, const FLIGHT: usize, const RECV: usize, const SEND: us
             #[cfg(feature = "chacha20")]
             EngineState::WaitFlightChaCha(conn) => {
                 let d = conn
-                    .finalize_server_flight::<FLIGHT, C::CertParser, C::Ed25519, C::Rsa>(
+                    .finalize_server_flight::<FLIGHT, C::Ed25519, C::Rsa>(
                         &self.scratch.reassembler,
-                        verify_mode,
+                        prepared,
+                        &leaf_view,
                     )
                     .map_err(HandshakeError::Connection)?;
                 FlightDone::<C>::ChaCha(d)
@@ -507,10 +573,6 @@ impl<'s, C: ClientConfig, const FLIGHT: usize, const RECV: usize, const SEND: us
                 return Err(HandshakeError::Internal(InternalError::FinalizeWrongState));
             }
         };
-
-        // Identity check runs before app keys are derived so a failure
-        // aborts before any AppData state exists.
-        self.verify_identity(params)?;
 
         let cf_len = match done {
             #[cfg(feature = "cipher-aes")]
@@ -539,39 +601,6 @@ impl<'s, C: ClientConfig, const FLIGHT: usize, const RECV: usize, const SEND: us
         self.handshake_finished_pending_ack = true;
         Ok(())
     }
-
-    /// Pin + hostname + validity, after protocol signature verify and
-    /// before app keys are derived.
-    fn verify_identity<V>(&self, params: &ClientParams<'_, V>) -> Result<(), HandshakeError> {
-        let flight = self
-            .scratch
-            .reassembler
-            .flight_bytes()
-            .ok_or(HandshakeError::Connection(
-                ConnectionError::IncompleteFlight,
-            ))?;
-        let view = parse_server_flight(flight)
-            .map_err(|e| HandshakeError::Connection(ConnectionError::Flight(e)))?;
-        let cert_der = extract_cert_der(view.cert_body)
-            .map_err(|e| HandshakeError::Connection(ConnectionError::Flight(e)))?;
-        let cert_view = <C::CertParser as CertParser>::parse(cert_der).map_err(|e| {
-            HandshakeError::Connection(ConnectionError::Flight(
-                crate::server_flight::FlightError::BadCert(e),
-            ))
-        })?;
-
-        if let TrustRoot::Pinned(pin) = &params.trust {
-            verify_pinned_pubkey(&cert_view, pin)?;
-        }
-        verify_hostname(&cert_view, params.hostname)?;
-
-        #[cfg(feature = "validity")]
-        if let Some(time) = params.time {
-            crate::identity::verify_validity(&cert_view, time).map_err(HandshakeError::Validity)?;
-        }
-
-        Ok(())
-    }
 }
 
 enum FlightDone<C: ClientConfig> {
@@ -585,8 +614,14 @@ enum FlightDone<C: ClientConfig> {
 // Data-phase loop + public lifecycle
 // ============================================================================
 
-impl<'s, C: ClientConfig, const FLIGHT: usize, const RECV: usize, const SEND: usize>
-    TlsEngine<'s, C, FLIGHT, RECV, SEND>
+impl<
+    's,
+    C: ClientConfig,
+    const FLIGHT: usize,
+    const RECV: usize,
+    const SEND: usize,
+    const MAX_CHAIN: usize,
+> TlsEngine<'s, C, FLIGHT, RECV, SEND, MAX_CHAIN>
 {
     /// Drive the data phase one event. Priority `Send > AppData > Closed > Recv`.
     pub(crate) fn step(&mut self) -> Result<EngineEvent, HandshakeError> {
@@ -991,7 +1026,7 @@ mod tests {
     /// live typestate.
     fn closed_engine(
         scratch: &mut DefaultScratch,
-    ) -> TlsEngine<'_, DefaultConfig, 16384, 16645, 4096> {
+    ) -> TlsEngine<'_, DefaultConfig, 16384, 16645, 4096, 8> {
         TlsEngine::new(scratch, EngineState::Closed, 16384, 16384)
     }
 
@@ -1307,7 +1342,7 @@ mod tests {
 
         fn app_engine(
             scratch: &mut DefaultScratch,
-        ) -> TlsEngine<'_, DefaultConfig, 16384, 16645, 4096> {
+        ) -> TlsEngine<'_, DefaultConfig, 16384, 16645, 4096, 8> {
             let c_ap_ts = Secret::from([0x42u8; 32]);
             let s_ap_ts = Secret::from([0x43u8; 32]);
             let conn = TlsConnection::<AppData<Aes128GcmSha256>, RustCrypto>::from_app_secrets(
