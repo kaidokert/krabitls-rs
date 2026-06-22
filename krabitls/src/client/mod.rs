@@ -88,19 +88,34 @@ mod tests {
     }
 
     #[test]
-    fn client_params_constructors_are_infallible() {
+    fn client_params_ed25519_pin_constructs_cleanly() {
         let pin = PinnedPubkey::Ed25519([0u8; 32]);
-        let _pinned = ClientParams::pinned("example.com", pin);
+        ClientParams::pinned("example.com", pin).expect("Ed25519 pin");
         let _self_signed = ClientParams::self_signed("example.com");
     }
 
     #[test]
     fn client_params_builder_chains() {
         let pin = PinnedPubkey::Ed25519([0u8; 32]);
-        let params =
-            ClientParams::pinned("example.com", pin).suite_policy(RuntimeSuitePolicy::AesOnly);
+        let params = ClientParams::pinned("example.com", pin)
+            .expect("Ed25519 pin")
+            .suite_policy(RuntimeSuitePolicy::AesOnly);
         assert_eq!(params.suite_policy, RuntimeSuitePolicy::AesOnly);
         assert_eq!(params.hostname(), "example.com");
+    }
+
+    #[cfg(feature = "rsa")]
+    #[test]
+    fn client_params_rsa_pin_with_oversized_modulus_errors() {
+        // 257-byte modulus exceeds MAX_RSA_MODULUS_BYTES (256) — must
+        // surface as `ModulusTooLong`, never panic.
+        let oversize = [0u8; 257];
+        let pin = PinnedPubkey::Rsa {
+            modulus: &oversize,
+            exponent: 65537,
+        };
+        let err = ClientParams::pinned("example.com", pin).expect_err("oversize must reject");
+        assert_eq!(err, crate::backends::PinnedPubkeyOwnedError::ModulusTooLong);
     }
 
     #[test]

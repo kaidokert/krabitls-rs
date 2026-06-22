@@ -7,6 +7,7 @@
 
 use crate::traits::cert::CertView;
 #[cfg(test)]
+#[cfg(test)]
 use subtle::ConstantTimeEq;
 
 /// Reasons a server-identity check may fail.
@@ -46,18 +47,18 @@ pub enum PinnedPubkey<'a> {
 
 impl<'a> PinnedPubkey<'a> {
     /// Convert to the owned form held by the verify strategy.
-    /// Panics if the RSA modulus exceeds
-    /// [`crate::backends::pin_or_self_signed::MAX_RSA_MODULUS_BYTES`] —
-    /// can only happen if the caller fabricates a `PinnedPubkey::Rsa`
-    /// with an oversized modulus; the supported RSA-1024 / RSA-2048
-    /// sizes fit.
-    pub fn to_owned_pin(&self) -> crate::backends::PinnedPubkeyOwned {
+    /// Fails with `ModulusTooLong` when an `Rsa` variant carries a
+    /// modulus longer than
+    /// [`crate::backends::pin_or_self_signed::MAX_RSA_MODULUS_BYTES`].
+    /// Under `not(feature = "rsa")` the error enum is uninhabited.
+    pub fn to_owned_pin(
+        &self,
+    ) -> Result<crate::backends::PinnedPubkeyOwned, crate::backends::PinnedPubkeyOwnedError> {
         match self {
-            PinnedPubkey::Ed25519(pk) => crate::backends::PinnedPubkeyOwned::ed25519(*pk),
+            PinnedPubkey::Ed25519(pk) => Ok(crate::backends::PinnedPubkeyOwned::ed25519(*pk)),
             #[cfg(feature = "rsa")]
             PinnedPubkey::Rsa { modulus, exponent } => {
                 crate::backends::PinnedPubkeyOwned::rsa(modulus, *exponent)
-                    .expect("RSA modulus exceeds MAX_RSA_MODULUS_BYTES")
             }
             PinnedPubkey::_Phantom(_) => unreachable!("_Phantom is not externally constructible"),
         }
