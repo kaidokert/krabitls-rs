@@ -261,6 +261,10 @@ where
         if chain.certs.is_empty() {
             return Err(SafeStrategyError::EmptyChain);
         }
+        // Cap upfront so we don't parse certs we'd reject at push time.
+        if chain.certs.len() > SAFE_STRATEGY_CHAIN_CAP {
+            return Err(SafeStrategyError::ChainTooLong);
+        }
 
         let mut views: heapless::Vec<CertView<'src>, SAFE_STRATEGY_CHAIN_CAP> =
             heapless::Vec::new();
