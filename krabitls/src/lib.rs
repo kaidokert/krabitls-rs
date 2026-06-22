@@ -2113,8 +2113,6 @@ mod tests {
         assert_eq!(err, FlightError::CertChainTooLong);
     }
 
-    // Seed-0 RSA fixture cert is PKCS#1-v1.5-signed; rsa_pss_only rejects
-    // that OID at parse time, so the fixture tests don't apply there.
     /// Fixture-bound AES tests: each test decrypts or encrypts a
     /// captured wire fixture generated with AES-128-GCM, so the
     /// cipher choice is intrinsic.
@@ -2529,7 +2527,7 @@ mod tests {
             let (content, ct) = split_inner_plaintext(pt).unwrap();
             assert_eq!(ct, consts::CT_HANDSHAKE);
 
-            // Walk the inner flight + verify cert (RSA-PKCS#1-v1.5 self-sig) +
+            // Walk the inner flight + verify cert (RSASSA-PSS self-sig) +
             // CertificateVerify (rsa_pss_rsae_sha256) + Finished MAC.
             let mut transcript = TranscriptHash::<RustCrypto>::new();
             transcript.update_record(&FIXTURE_RSA_CLIENT_HELLO).unwrap();
