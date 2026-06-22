@@ -11,7 +11,8 @@
 /// so this reuse stays cheap.
 pub trait Ed25519VerifierProvider {
     /// Per-key prepared form, ready to verify `[u8; 64]` Ed25519 signatures.
-    type Verifier: signature::Verifier<[u8; 64]>;
+    type Verifier: signature::Verifier<[u8; 64]>
+        + crate::traits::verify_strategy::VerifierKeyMaterial<[u8; 32]>;
 
     /// Build a verifier bound to `pubkey`. Expected to do any expensive
     /// precompute (Montgomery curve params, etc.) once per call.
