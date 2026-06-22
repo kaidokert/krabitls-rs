@@ -43,6 +43,26 @@ pub enum PinnedPubkey<'a> {
     _Phantom(core::marker::PhantomData<&'a ()>),
 }
 
+impl<'a> PinnedPubkey<'a> {
+    /// Convert to the owned form held by the verify strategy.
+    /// Panics if the RSA modulus exceeds
+    /// [`crate::backends::pin_or_self_signed::MAX_RSA_MODULUS_BYTES`] —
+    /// can only happen if the caller fabricates a `PinnedPubkey::Rsa`
+    /// with an oversized modulus; the supported RSA-1024 / RSA-2048
+    /// sizes fit.
+    pub fn to_owned_pin(&self) -> crate::backends::PinnedPubkeyOwned {
+        match self {
+            PinnedPubkey::Ed25519(pk) => crate::backends::PinnedPubkeyOwned::ed25519(*pk),
+            #[cfg(feature = "rsa")]
+            PinnedPubkey::Rsa { modulus, exponent } => {
+                crate::backends::PinnedPubkeyOwned::rsa(modulus, *exponent)
+                    .expect("RSA modulus exceeds MAX_RSA_MODULUS_BYTES")
+            }
+            PinnedPubkey::_Phantom(_) => unreachable!("_Phantom is not externally constructible"),
+        }
+    }
+}
+
 /// Compare the cert's public key to a pinned reference.
 pub fn verify_pinned_pubkey(
     cert_view: &CertView<'_>,

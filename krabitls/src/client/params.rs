@@ -1,9 +1,15 @@
 //! Per-connection trust + policy. Constructors couple trust mode to its material.
 
+use crate::backends::{DerCert, PinOrSelfSigned};
 use crate::identity::PinnedPubkey;
+use crate::traits::verify_strategy::SafeStrategy;
 
 #[cfg(feature = "validity")]
 use crate::traits::TimeSource;
+
+/// Default `V` for [`ClientParams`] / [`super::DefaultStream`]: pin or
+/// self-signed via the bundled `SafeStrategy<PinOrSelfSigned, DerCert>`.
+pub type DefaultVerify = SafeStrategy<PinOrSelfSigned, DerCert>;
 
 /// Runtime narrowing of the compile-time suite advertisement.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -23,10 +29,15 @@ pub(crate) enum TrustRoot<'a> {
 }
 
 /// Per-connection trust + policy bundle. Construct via [`Self::pinned`] / [`Self::self_signed`].
-#[derive(Clone, Copy)]
-pub struct ClientParams<'a> {
+#[derive(Clone)]
+pub struct ClientParams<'a, V = DefaultVerify> {
     pub(crate) hostname: &'a str,
     pub(crate) trust: TrustRoot<'a>,
+    // `verify` is the new strategy holder; constructed here but not yet
+    // read by the verify path (that's the follow-on change). `allow` until
+    // the verify path moves over.
+    #[allow(dead_code)]
+    pub(crate) verify: V,
     #[cfg(feature = "validity")]
     pub(crate) time: Option<&'a dyn TimeSource>,
     pub(crate) suite_policy: RuntimeSuitePolicy,
@@ -35,7 +46,7 @@ pub struct ClientParams<'a> {
 // Manual `Debug` impl: `dyn TimeSource` doesn't carry a `Debug` bound, so
 // derive doesn't work. Stub the time field out — `Some`/`None` is the
 // only useful signal anyway.
-impl<'a> core::fmt::Debug for ClientParams<'a> {
+impl<'a, V> core::fmt::Debug for ClientParams<'a, V> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let mut d = f.debug_struct("ClientParams");
         d.field("hostname", &self.hostname)
@@ -47,7 +58,7 @@ impl<'a> core::fmt::Debug for ClientParams<'a> {
     }
 }
 
-impl<'a> ClientParams<'a> {
+impl<'a> ClientParams<'a, DefaultVerify> {
     /// Pin-based trust. Verification at `connect()`:
     /// 1. `CertificateVerify` signature
     /// 2. Cert pubkey matches `pin`
@@ -57,9 +68,11 @@ impl<'a> ClientParams<'a> {
     ///
     /// `hostname` is also used as the SNI value in ClientHello.
     pub fn pinned(hostname: &'a str, pin: PinnedPubkey<'a>) -> Self {
+        let owned = pin.to_owned_pin();
         Self {
             hostname,
             trust: TrustRoot::Pinned(pin),
+            verify: SafeStrategy::new(PinOrSelfSigned::pinned(owned)),
             #[cfg(feature = "validity")]
             time: None,
             suite_policy: RuntimeSuitePolicy::Default,
@@ -80,12 +93,15 @@ impl<'a> ClientParams<'a> {
         Self {
             hostname,
             trust: TrustRoot::SelfSigned,
+            verify: SafeStrategy::new(PinOrSelfSigned::self_signed()),
             #[cfg(feature = "validity")]
             time: None,
             suite_policy: RuntimeSuitePolicy::Default,
         }
     }
+}
 
+impl<'a, V> ClientParams<'a, V> {
     /// Attach a [`TimeSource`] to enable certificate validity-window
     /// (`notBefore` / `notAfter`) checks during handshake. Without this,
     /// validity check is skipped.

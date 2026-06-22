@@ -25,7 +25,7 @@ pub use config::{ClientConfig, ConfigSuitePolicy, DefaultConfig};
 // connection-level enum callers match on to distinguish parse / decrypt
 // / flight failures. Inner leaves stay under `client::error::*`.
 pub use error::{ConfigError, ConnectError, ConnectionError, HandshakeError};
-pub use params::{ClientParams, RuntimeSuitePolicy};
+pub use params::{ClientParams, DefaultVerify, RuntimeSuitePolicy};
 pub use scratch::{DefaultScratch, MIN_RECV, MIN_SEND_STANDARD, Scratch};
 pub use stream::{DefaultStream, StreamError, TlsStream};
 pub use transport::Transport;
