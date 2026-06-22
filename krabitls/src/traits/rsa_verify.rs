@@ -19,14 +19,22 @@ use crate::backends::rsa_verify::{RsaPssSig, RsaVerifyError};
 pub trait RsaVerifierProvider {
     /// Per-key prepared form. Implements `signature::Verifier<RsaPssSig<'_>>`
     /// (always) plus `signature::Verifier<RsaPkcs1Sig<'_>>` (unless
-    /// `feature = "rsa_pss_only"` is on).
+    /// `feature = "rsa_pss_only"` is on). Also implements
+    /// `VerifierKeyMaterial<RsaKeyMaterial<'_>>` for the strategy /
+    /// stack SPKI cross-check.
     #[cfg(all(feature = "rsa", not(feature = "rsa_pss_only")))]
     type Verifier: for<'a> signature::Verifier<RsaPssSig<'a>>
-        + for<'a> signature::Verifier<RsaPkcs1Sig<'a>>;
+        + for<'a> signature::Verifier<RsaPkcs1Sig<'a>>
+        + for<'a> crate::traits::verify_strategy::VerifierKeyMaterial<
+            crate::traits::verify_strategy::RsaKeyMaterial<'a>,
+        >;
 
     /// PSS-only build (rsa_pss_only feature).
     #[cfg(all(feature = "rsa", feature = "rsa_pss_only"))]
-    type Verifier: for<'a> signature::Verifier<RsaPssSig<'a>>;
+    type Verifier: for<'a> signature::Verifier<RsaPssSig<'a>>
+        + for<'a> crate::traits::verify_strategy::VerifierKeyMaterial<
+            crate::traits::verify_strategy::RsaKeyMaterial<'a>,
+        >;
 
     /// Build a verifier from raw RSA pubkey bytes. Expected to do the
     /// modular precompute (Montgomery params) once.

@@ -8,6 +8,7 @@ use zeroize::Zeroizing;
 use crate::traits::ed25519_verify::Ed25519VerifierProvider;
 use crate::traits::{HkdfExpandError, HkdfSha256};
 use signature::Verifier;
+use subtle::ConstantTimeEq;
 
 pub struct RustCrypto;
 
@@ -49,6 +50,12 @@ impl Verifier<[u8; 64]> for PreparedEd25519 {
         } else {
             Err(signature::Error::new())
         }
+    }
+}
+
+impl crate::traits::verify_strategy::VerifierKeyMaterial<[u8; 32]> for PreparedEd25519 {
+    fn matches(&self, candidate: [u8; 32]) -> subtle::Choice {
+        self.pubkey.ct_eq(&candidate)
     }
 }
 

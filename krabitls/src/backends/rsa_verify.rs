@@ -34,6 +34,7 @@ use rsa::pkcs1v15::{GenericSignature as Pkcs1Sig, GenericVerifyingKey as Pkcs1Vk
 use rsa::pss::{GenericSignature as PssSig, GenericVerifyingKey as PssVk};
 use rsa::signature::hazmat::PrehashVerifier;
 use sha2_v11::{Digest, Sha256};
+use subtle::ConstantTimeEq;
 
 /// Verification failure (kept opaque on purpose — surfaces as
 /// `FlightError::CertSelfSignatureInvalid` or `CertVerifyInvalid` upstream).
@@ -75,13 +76,25 @@ type U2048 = FixedUInt<u32, 64>;
 /// `signature::Verifier<RsaPssSig>` / `signature::Verifier<RsaPkcs1Sig>`
 /// trait impls.
 // no_alloc: keep the large variant inline rather than boxing it.
+//
+// `modulus_be` + `exponent` are retained alongside the Montgomery
+// precompute so the strategy<->stack SPKI cross-check can byte-compare
+// against the leaf cert without re-serializing from the FixedUInt limbs.
 #[allow(clippy::large_enum_variant)]
 pub enum RsaVerifierKey {
     /// 1024-bit RSA key. Compiled out under `feature = "rsa_2048_only"`.
     #[cfg(not(feature = "rsa_2048_only"))]
-    U1024(VkPair<U1024>),
+    U1024 {
+        vk: VkPair<U1024>,
+        modulus_be: [u8; 128],
+        exponent: u32,
+    },
     /// 2048-bit RSA key.
-    U2048(VkPair<U2048>),
+    U2048 {
+        vk: VkPair<U2048>,
+        modulus_be: [u8; 256],
+        exponent: u32,
+    },
 }
 
 /// Pre-built PKCS#1-v1.5 + PSS verifying keys at a single modulus size.
@@ -101,12 +114,24 @@ impl RsaVerifierKey {
     pub fn new(modulus: &[u8], exponent: u32) -> Result<Self, RsaVerifyError> {
         match modulus.len() {
             #[cfg(not(feature = "rsa_2048_only"))]
-            128 => Ok(RsaVerifierKey::U1024(build_vk_pair::<U1024>(
-                modulus, exponent,
-            )?)),
-            256 => Ok(RsaVerifierKey::U2048(build_vk_pair::<U2048>(
-                modulus, exponent,
-            )?)),
+            128 => {
+                let mut modulus_be = [0u8; 128];
+                modulus_be.copy_from_slice(modulus);
+                Ok(RsaVerifierKey::U1024 {
+                    vk: build_vk_pair::<U1024>(modulus, exponent)?,
+                    modulus_be,
+                    exponent,
+                })
+            }
+            256 => {
+                let mut modulus_be = [0u8; 256];
+                modulus_be.copy_from_slice(modulus);
+                Ok(RsaVerifierKey::U2048 {
+                    vk: build_vk_pair::<U2048>(modulus, exponent)?,
+                    modulus_be,
+                    exponent,
+                })
+            }
             _ => Err(RsaVerifyError),
         }
     }
@@ -121,21 +146,21 @@ impl RsaVerifierKey {
         let prehash = Sha256::digest(message);
         match self {
             #[cfg(not(feature = "rsa_2048_only"))]
-            RsaVerifierKey::U1024(vks) => {
+            RsaVerifierKey::U1024 { vk, .. } => {
                 if signature.len() != 128 {
                     return Err(RsaVerifyError);
                 }
                 let sig = Pkcs1Sig::from(U1024::from_be_bytes(signature));
-                vks.pkcs1
+                vk.pkcs1
                     .verify_prehash(&prehash, &sig)
                     .map_err(|_| RsaVerifyError)
             }
-            RsaVerifierKey::U2048(vks) => {
+            RsaVerifierKey::U2048 { vk, .. } => {
                 if signature.len() != 256 {
                     return Err(RsaVerifyError);
                 }
                 let sig = Pkcs1Sig::from(U2048::from_be_bytes(signature));
-                vks.pkcs1
+                vk.pkcs1
                     .verify_prehash(&prehash, &sig)
                     .map_err(|_| RsaVerifyError)
             }
@@ -152,25 +177,57 @@ impl RsaVerifierKey {
         let prehash = Sha256::digest(message);
         match self {
             #[cfg(not(feature = "rsa_2048_only"))]
-            RsaVerifierKey::U1024(vks) => {
+            RsaVerifierKey::U1024 { vk, .. } => {
                 if signature.len() != 128 {
                     return Err(RsaVerifyError);
                 }
                 let sig = PssSig::from(U1024::from_be_bytes(signature));
-                vks.pss
+                vk.pss
                     .verify_prehash(&prehash, &sig)
                     .map_err(|_| RsaVerifyError)
             }
-            RsaVerifierKey::U2048(vks) => {
+            RsaVerifierKey::U2048 { vk, .. } => {
                 if signature.len() != 256 {
                     return Err(RsaVerifyError);
                 }
                 let sig = PssSig::from(U2048::from_be_bytes(signature));
-                vks.pss
+                vk.pss
                     .verify_prehash(&prehash, &sig)
                     .map_err(|_| RsaVerifyError)
             }
         }
+    }
+}
+
+impl
+    crate::traits::verify_strategy::VerifierKeyMaterial<
+        crate::traits::verify_strategy::RsaKeyMaterial<'_>,
+    > for RsaVerifierKey
+{
+    fn matches(
+        &self,
+        candidate: crate::traits::verify_strategy::RsaKeyMaterial<'_>,
+    ) -> subtle::Choice {
+        let (mod_bytes, exp) = match self {
+            #[cfg(not(feature = "rsa_2048_only"))]
+            RsaVerifierKey::U1024 {
+                modulus_be,
+                exponent,
+                ..
+            } => (&modulus_be[..], *exponent),
+            RsaVerifierKey::U2048 {
+                modulus_be,
+                exponent,
+                ..
+            } => (&modulus_be[..], *exponent),
+        };
+        // Key size is public — length mismatch short-circuits before the
+        // CT body compare. CT only matters for equal-length inputs.
+        if candidate.modulus.len() != mod_bytes.len() {
+            return subtle::Choice::from(0);
+        }
+        // `&` (not `&&`): bitwise on `Choice`, both halves always run.
+        mod_bytes.ct_eq(candidate.modulus) & exp.ct_eq(&candidate.exponent)
     }
 }
 

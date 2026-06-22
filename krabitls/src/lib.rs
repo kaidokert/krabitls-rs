@@ -1652,6 +1652,12 @@ mod tests {
         }
     }
     #[cfg(feature = "cipher-aes")]
+    impl crate::traits::verify_strategy::VerifierKeyMaterial<[u8; 32]> for AlwaysRejectVerifier {
+        fn matches(&self, _: [u8; 32]) -> subtle::Choice {
+            subtle::Choice::from(0)
+        }
+    }
+    #[cfg(feature = "cipher-aes")]
     impl crate::traits::Ed25519VerifierProvider for AlwaysReject {
         type Verifier = AlwaysRejectVerifier;
         fn prepare_ed25519(_: &[u8; 32]) -> Self::Verifier {
