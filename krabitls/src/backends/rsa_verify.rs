@@ -76,10 +76,8 @@ type U2048 = FixedUInt<u32, 64>;
 /// `signature::Verifier<RsaPssSig>` / `signature::Verifier<RsaPkcs1Sig>`
 /// trait impls.
 // no_alloc: keep the large variant inline rather than boxing it.
-//
-// `modulus_be` + `exponent` are retained alongside the Montgomery
-// precompute so the strategy<->stack SPKI cross-check can byte-compare
-// against the leaf cert without re-serializing from the FixedUInt limbs.
+// Retains modulus + exponent so the SPKI cross-check is a byte-compare
+// rather than a re-serialization from the FixedUInt limbs.
 #[allow(clippy::large_enum_variant)]
 pub enum RsaVerifierKey {
     /// 1024-bit RSA key. Compiled out under `feature = "rsa_2048_only"`.

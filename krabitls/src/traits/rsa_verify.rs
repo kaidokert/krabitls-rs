@@ -19,9 +19,7 @@ use crate::backends::rsa_verify::{RsaPssSig, RsaVerifyError};
 pub trait RsaVerifierProvider {
     /// Per-key prepared form. Implements `signature::Verifier<RsaPssSig<'_>>`
     /// (always) plus `signature::Verifier<RsaPkcs1Sig<'_>>` (unless
-    /// `feature = "rsa_pss_only"` is on). Also implements
-    /// `VerifierKeyMaterial<RsaKeyMaterial<'_>>` for the strategy /
-    /// stack SPKI cross-check.
+    /// `feature = "rsa_pss_only"` is on).
     #[cfg(all(feature = "rsa", not(feature = "rsa_pss_only")))]
     type Verifier: for<'a> signature::Verifier<RsaPssSig<'a>>
         + for<'a> signature::Verifier<RsaPkcs1Sig<'a>>

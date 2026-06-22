@@ -11,8 +11,6 @@
 /// so this reuse stays cheap.
 pub trait Ed25519VerifierProvider {
     /// Per-key prepared form, ready to verify `[u8; 64]` Ed25519 signatures.
-    /// Also implements `VerifierKeyMaterial<[u8; 32]>` for the strategy /
-    /// stack SPKI cross-check.
     type Verifier: signature::Verifier<[u8; 64]>
         + crate::traits::verify_strategy::VerifierKeyMaterial<[u8; 32]>;
 

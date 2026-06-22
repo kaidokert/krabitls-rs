@@ -2,9 +2,7 @@
 //!
 //! Strategies decide which cert chains they accept; the TLS stack owns
 //! identity binding (SAN match) and protocol invariants (CertificateVerify,
-//! Finished MAC). The bundled default strategy reproducing today's
-//! pin-or-self-signed behavior lives alongside the wiring; users with
-//! different trust policies implement [`VerifyStrategy`] themselves.
+//! Finished MAC).
 
 /// The server public key carried by the verified certificate.
 #[derive(Debug, Clone, Copy)]
@@ -34,19 +32,7 @@ impl<'a> ServerPubkey<'a> {
 }
 
 /// Borrowed view of the server's TLS 1.3 `Certificate` handshake message.
-///
 /// `certs[0]` is always the leaf; `certs[1..]` are upstream signers.
-/// The slice itself lives in the caller's stack frame; the inner byte
-/// slices borrow into the handshake reassembler.
-///
-/// Both lifetimes are explicit because the outer slice and the inner
-/// slices have different scopes — the outer slice's `heapless::Vec`
-/// is built inside `verify_server_flight`, the inner bytes live in
-/// the longer-lived reassembler buffer.
-// Inline tests exercise `CertChainView`, `PreparedVerifier`, `Trusted`,
-// and `VerifyStrategy` — `dead_code` doesn't see test-module usage, so
-// the staged items wear `allow(dead_code)` until `verify_server_flight`
-// (next change) wires them through production paths.
 #[allow(dead_code)]
 pub struct CertChainView<'chain, 'src: 'chain> {
     pub certs: &'chain [&'src [u8]],
@@ -62,17 +48,9 @@ pub struct RsaKeyMaterial<'a> {
 }
 
 /// Constant-time compare of a prepared verifier's stored key material
-/// against the bytes the TLS stack just re-parsed from `chain[0]`.
-///
-/// Implemented per algorithm: Ed25519 verifiers carry the 32-byte
-/// pubkey by value; RSA verifiers carry `(modulus, exponent)` and the
-/// comparison is byte-wise CT (after a public length short-circuit).
-///
-/// **The contract MUST hold: returning `Choice::from(1)` implies the
-/// verifier was built from key material that matches `candidate`.** A
-/// buggy impl that lies here makes the SPKI cross-check a no-op, which
-/// makes a buggy [`VerifyStrategy`] able to MITM the connection by
-/// returning a prepared verifier sourced from outside the chain.
+/// against `candidate`. Returning `Choice::from(1)` MUST imply the
+/// verifier was built from material that matches — the SPKI cross-check
+/// in `verify_server_flight` trusts this. A lying impl is an MITM vector.
 pub trait VerifierKeyMaterial<K> {
     fn matches(&self, candidate: K) -> subtle::Choice;
 }
@@ -98,9 +76,6 @@ where
     E: Ed25519VerifierProvider,
     R: RsaVerifierProvider,
 {
-    /// Build an Ed25519 variant. Hides the `PhantomData<R>` plumbing
-    /// needed to thread `R` through the type signature when `feature = "rsa"`
-    /// is off.
     #[allow(dead_code)]
     pub fn ed25519(verifier: E::Verifier) -> Self {
         PreparedVerifier::Ed25519(verifier, core::marker::PhantomData)
@@ -113,10 +88,9 @@ where
     E: Ed25519VerifierProvider,
     R: RsaVerifierProvider,
 {
-    /// Constant-time compare this verifier's stored key material against
-    /// what `view` decodes to. The TLS stack runs this after the strategy
-    /// returns so a buggy strategy can't pass off a verifier built from
-    /// outside the chain.
+    /// Cross-check this prepared verifier matches `view`'s pubkey. The
+    /// stack runs this after the strategy returns — a lying strategy
+    /// can't sneak in a verifier built from non-chain bytes.
     #[allow(dead_code)]
     pub fn matches_cert(&self, view: &CertView<'_>) -> subtle::Choice {
         match (self, view) {
@@ -131,10 +105,8 @@ where
     E: Ed25519VerifierProvider,
     R: RsaVerifierProvider,
 {
-    /// Constant-time compare this verifier's stored key material against
-    /// what `view` decodes to. The TLS stack runs this after the strategy
-    /// returns so a buggy strategy can't pass off a verifier built from
-    /// outside the chain. Algorithm-mismatched arms return `Choice::from(0)`.
+    /// Cross-check this prepared verifier matches `view`'s pubkey.
+    /// Algorithm mismatch returns `Choice::from(0)`.
     #[allow(dead_code)]
     pub fn matches_cert(&self, view: &CertView<'_>) -> subtle::Choice {
         match (self, view) {
@@ -165,7 +137,6 @@ where
     E: Ed25519VerifierProvider,
     R: RsaVerifierProvider,
 {
-    /// Constructor — strategies build this from the slot they just wrote.
     #[allow(dead_code)]
     pub fn new(prepared: &'slot PreparedVerifier<E, R>) -> Self {
         Self { prepared }
@@ -179,20 +150,17 @@ where
 
 /// The pluggable verification surface.
 ///
-/// Strategies decide which cert chains they trust. They DO NOT do SAN
-/// hostname matching — the TLS stack runs `verify_hostname` against
-/// `chain[0]` after a successful strategy return, unconditionally.
-/// The trait deliberately omits `hostname` from the signature so the
-/// invariant is structural rather than disciplinary.
+/// Strategies decide chain trust. SAN hostname matching is NOT part of
+/// the strategy's job — the TLS stack runs `verify_hostname` against
+/// `chain[0]` unconditionally after the strategy returns. The trait
+/// omits `hostname` from the signature so this is enforced structurally.
 #[allow(dead_code)]
 pub trait VerifyStrategy<E: Ed25519VerifierProvider, R: RsaVerifierProvider> {
     type Error: core::error::Error + Clone + PartialEq;
 
     /// Inspect `chain` and decide whether to accept it. On Ok, write the
-    /// leaf's prepared verifier into `slot` (by value) and return a
-    /// [`Trusted`] borrowing from it.
-    ///
-    /// `time` is `Option` because not every deployment has a clock.
+    /// leaf's prepared verifier into `slot` and return a [`Trusted`]
+    /// borrowing from it.
     fn verify_chain<'chain, 'src, 'slot>(
         &self,
         chain: CertChainView<'chain, 'src>,
@@ -213,10 +181,6 @@ mod tests {
         0xf0, 0x01,
     ];
 
-    /// Minimal strategy: returns an Ed25519 `PreparedVerifier` built from
-    /// the caller-supplied pubkey. Lets each test drive what the strategy
-    /// "claims" the leaf pubkey is, so the cross-check against `chain[0]`'s
-    /// actual pubkey can be exercised both ways.
     struct ProduceEd25519 {
         pubkey: [u8; 32],
     }
