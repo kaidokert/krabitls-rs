@@ -4,7 +4,13 @@
 //! accepts a leaf whose outer signature verifies against its own pubkey.
 //! Both are single-cert-chain only; rejects anything longer.
 
+#[cfg(all(feature = "rsa", not(feature = "rsa_pss_only")))]
+use crate::backends::rsa_verify::RsaPkcs1Sig;
+#[cfg(feature = "rsa")]
+use crate::backends::rsa_verify::RsaPssSig;
 use crate::traits::cert::CertView;
+#[cfg(feature = "rsa")]
+use crate::traits::cert::RsaCertSigAlg;
 #[cfg(feature = "validity")]
 use crate::traits::time::TimeSource;
 use crate::traits::verify_strategy::TrustRootDecision;
@@ -141,7 +147,7 @@ where
         let leaf = &chain[0];
 
         match &self.mode {
-            Mode::Pinned(pin) => verify_pin::<E, R>(leaf, pin)?,
+            Mode::Pinned(pin) => verify_pin(leaf, pin)?,
             Mode::SelfSigned => verify_self_sig::<E, R>(leaf)?,
         }
 
@@ -152,17 +158,7 @@ where
     }
 }
 
-fn verify_pin<E, R>(
-    leaf: &CertView<'_>,
-    pin: &PinnedPubkeyOwned,
-) -> Result<(), PinOrSelfSignedError>
-where
-    E: Ed25519VerifierProvider,
-    R: RsaVerifierProvider,
-{
-    // E / R unused in this helper but required by the impl signature; carry
-    // a phantom touch so the bound resolves.
-    let _ = core::marker::PhantomData::<(E, R)>;
+fn verify_pin(leaf: &CertView<'_>, pin: &PinnedPubkeyOwned) -> Result<(), PinOrSelfSignedError> {
     match (leaf, pin) {
         (CertView::Ed25519 { pubkey, .. }, PinnedPubkeyOwned::Ed25519(expected)) => {
             if bool::from((**pubkey).ct_eq(expected)) {
@@ -220,10 +216,6 @@ where
             exponent,
             ..
         } => {
-            #[cfg(not(feature = "rsa_pss_only"))]
-            use crate::backends::rsa_verify::RsaPkcs1Sig;
-            use crate::backends::rsa_verify::RsaPssSig;
-            use crate::traits::cert::RsaCertSigAlg;
             let alg = outer_sig_alg.ok_or(PinOrSelfSignedError::UnknownSigAlg)?;
             let v = R::prepare_rsa(modulus, *exponent)
                 .map_err(|_| PinOrSelfSignedError::RsaVerifierInvalid)?;

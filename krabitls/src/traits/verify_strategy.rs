@@ -55,6 +55,12 @@ pub trait VerifierKeyMaterial<K> {
     fn matches(&self, candidate: K) -> subtle::Choice;
 }
 
+#[cfg(all(feature = "rsa", not(feature = "rsa_pss_only")))]
+use crate::backends::rsa_verify::RsaPkcs1Sig;
+#[cfg(feature = "rsa")]
+use crate::backends::rsa_verify::RsaPssSig;
+#[cfg(feature = "rsa")]
+use crate::traits::cert::RsaCertSigAlg;
 use crate::traits::cert::{CertParseError, CertParser, CertView};
 use crate::traits::ed25519_verify::Ed25519VerifierProvider;
 use crate::traits::rsa_verify::RsaVerifierProvider;
@@ -215,6 +221,8 @@ pub enum SafeStrategyError<TE> {
     Parse(#[from] CertParseError),
     #[error("chain exceeded SafeStrategy's per-call capacity")]
     ChainTooLong,
+    #[error("chain is empty")]
+    EmptyChain,
     #[error("per-link signature did not verify")]
     LinkSignatureInvalid,
     #[cfg(feature = "rsa")]
@@ -247,6 +255,13 @@ where
         slot: &'slot mut Option<PreparedVerifier<E, R>>,
         #[cfg(feature = "validity")] time: Option<&dyn TimeSource>,
     ) -> Result<Trusted<'slot, E, R>, Self::Error> {
+        // Reject empty chains up front. Without this guard a permissive
+        // `TrustRootDecision::accept_chain(&[])` would let the `&views[0]`
+        // access below panic.
+        if chain.certs.is_empty() {
+            return Err(SafeStrategyError::EmptyChain);
+        }
+
         let mut views: heapless::Vec<CertView<'src>, SAFE_STRATEGY_CHAIN_CAP> =
             heapless::Vec::new();
         for cert_der in chain.certs {
@@ -330,10 +345,6 @@ where
         CertView::Rsa {
             modulus, exponent, ..
         } => {
-            #[cfg(not(feature = "rsa_pss_only"))]
-            use crate::backends::rsa_verify::RsaPkcs1Sig;
-            use crate::backends::rsa_verify::RsaPssSig;
-            use crate::traits::cert::RsaCertSigAlg;
             // Padding scheme is identified by the CHILD's signatureAlgorithm
             // (the alg the parent USED to sign the child).
             let alg = match child {
