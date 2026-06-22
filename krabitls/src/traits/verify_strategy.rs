@@ -33,7 +33,6 @@ impl<'a> ServerPubkey<'a> {
 
 /// Borrowed view of the server's TLS 1.3 `Certificate` handshake message.
 /// `certs[0]` is always the leaf; `certs[1..]` are upstream signers.
-#[allow(dead_code)]
 pub struct CertChainView<'chain, 'src: 'chain> {
     pub certs: &'chain [&'src [u8]],
 }
@@ -71,7 +70,6 @@ use signature::Verifier;
 /// Prepared verifier the strategy hands back for the TLS stack to use in
 /// CertificateVerify. Stored by value in a caller-supplied slot so the
 /// `Trusted` return can borrow it.
-#[allow(dead_code)]
 pub enum PreparedVerifier<E: Ed25519VerifierProvider, R: RsaVerifierProvider> {
     Ed25519(E::Verifier, core::marker::PhantomData<fn() -> R>),
     #[cfg(feature = "rsa")]
@@ -83,7 +81,6 @@ where
     E: Ed25519VerifierProvider,
     R: RsaVerifierProvider,
 {
-    #[allow(dead_code)]
     pub fn ed25519(verifier: E::Verifier) -> Self {
         PreparedVerifier::Ed25519(verifier, core::marker::PhantomData)
     }
@@ -98,7 +95,6 @@ where
     /// Cross-check this prepared verifier matches `view`'s pubkey. The
     /// stack runs this after the strategy returns — a lying strategy
     /// can't sneak in a verifier built from non-chain bytes.
-    #[allow(dead_code)]
     pub fn matches_cert(&self, view: &CertView<'_>) -> subtle::Choice {
         match (self, view) {
             (Self::Ed25519(v, _), CertView::Ed25519 { pubkey, .. }) => v.matches(**pubkey),
@@ -114,7 +110,6 @@ where
 {
     /// Cross-check this prepared verifier matches `view`'s pubkey.
     /// Algorithm mismatch returns `Choice::from(0)`.
-    #[allow(dead_code)]
     pub fn matches_cert(&self, view: &CertView<'_>) -> subtle::Choice {
         match (self, view) {
             (Self::Ed25519(v, _), CertView::Ed25519 { pubkey, .. }) => v.matches(**pubkey),
@@ -134,7 +129,6 @@ where
 
 /// Strategy verdict — the TLS stack uses `prepared` for CertificateVerify
 /// after a [`PreparedVerifier::matches_cert`] cross-check against chain[0].
-#[allow(dead_code)]
 pub struct Trusted<'slot, E: Ed25519VerifierProvider, R: RsaVerifierProvider> {
     prepared: &'slot PreparedVerifier<E, R>,
 }
@@ -144,12 +138,10 @@ where
     E: Ed25519VerifierProvider,
     R: RsaVerifierProvider,
 {
-    #[allow(dead_code)]
     pub fn new(prepared: &'slot PreparedVerifier<E, R>) -> Self {
         Self { prepared }
     }
 
-    #[allow(dead_code)]
     pub fn prepared(&self) -> &PreparedVerifier<E, R> {
         self.prepared
     }
@@ -161,7 +153,6 @@ where
 /// the strategy's job — the TLS stack runs `verify_hostname` against
 /// `chain[0]` unconditionally after the strategy returns. The trait
 /// omits `hostname` from the signature so this is enforced structurally.
-#[allow(dead_code)]
 pub trait VerifyStrategy<E: Ed25519VerifierProvider, R: RsaVerifierProvider> {
     type Error: core::error::Error + Clone + PartialEq;
 
@@ -206,7 +197,6 @@ pub struct SafeStrategy<T, C: CertParser> {
 }
 
 impl<T, C: CertParser> SafeStrategy<T, C> {
-    #[allow(dead_code)]
     pub fn new(decision: T) -> Self {
         Self {
             decision,

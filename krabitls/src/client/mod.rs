@@ -36,6 +36,14 @@ pub use crate::identity::PinnedPubkey;
 #[cfg(feature = "validity")]
 pub use crate::traits::TimeSource;
 
+// Strategy surface — what custom-verifier callers need to roll their own
+// trust-root decision (or instantiate the bundled `SafeStrategy`).
+pub use crate::backends::{PinOrSelfSigned, PinnedPubkeyOwned};
+pub use crate::traits::verify_strategy::{
+    CertChainView, PreparedVerifier, SafeStrategy, SafeStrategyError, TrustRootDecision, Trusted,
+    VerifierKeyMaterial, VerifyStrategy,
+};
+
 // In-crate-only: alternate config impls (samples, callers write their own),
 // the WriteAppError plumbing type, the InternalError variant the engine
 // surfaces upstream, the scratch-tuning knobs, and the in-progress

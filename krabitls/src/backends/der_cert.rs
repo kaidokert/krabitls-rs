@@ -274,9 +274,10 @@ fn classify_spki_algorithm(alg_id_bytes: &[u8]) -> Result<SpkiKind, CertParseErr
 /// Classify a `Certificate.signatureAlgorithm` AlgorithmIdentifier as one
 /// of the RSA padding schemes we accept on cert outer signatures. Returns
 /// `Ok(None)` for unrecognized OIDs so CA-issued RSA leaves signed by a
-/// non-RSA issuer (or RSA-SHA384, etc.) still parse — self-sig verify
-/// rejects `None` at verify time, but [`crate::VerifyMode::TrustOnPin`]
-/// never reaches that check. `Err` only on malformed DER framing.
+/// non-RSA issuer (or RSA-SHA384, etc.) still parse — strategy-level
+/// self-sig / per-link verify rejects `None` at verify time; a pin-only
+/// strategy never reaches that check. `Err` only on malformed DER
+/// framing.
 ///
 /// PKCS#1-v1.5 params validated as explicit `NULL` per RFC 4055 §5; PSS
 /// params (when present) are not introspected here — `verify_pss_sha256`

@@ -5,8 +5,11 @@ use crate::consts::SIG_SCHEME_ED25519;
 use crate::consts::SIG_SCHEME_RSA_PSS_RSAE_SHA256;
 use crate::hkdf::{HkdfLabelError, TranscriptHash, hkdf_expand_label};
 use crate::newtype::{Secret, TranscriptDigest, ZeroBuf};
+#[cfg(test)]
+use crate::traits::CertParser;
+use crate::traits::verify_strategy::PreparedVerifier;
 use crate::traits::{
-    CertParseError, CertParser, CertView, Ed25519VerifierProvider, HkdfSha256, RsaVerifierProvider,
+    CertParseError, CertView, Ed25519VerifierProvider, HkdfSha256, RsaVerifierProvider,
 };
 use signature::Verifier as _;
 
@@ -195,14 +198,10 @@ impl<'a> HsReader<'a> {
     }
 }
 
-/// Default upper bound on `CertificateEntry` count. 8 covers real-world
-/// chains including CA-migration cross-signs (leaf + 2 intermediates +
-/// cross-signed root + slack).
-//
-// TODO: promote to a TlsStream const generic so callers configure
-// the bound per-binary instead of a hardcoded module-level cap.
-// Deletes when extract_cert_der's callers move to extract_chain
-// with the const threaded through from TlsStream.
+/// Default upper bound on `CertificateEntry` count, used by the test-only
+/// [`extract_cert_der`] convenience. Production callers thread `MAX_CHAIN`
+/// through from `TlsStream` and call [`extract_chain`] directly.
+#[cfg(test)]
 pub const MAX_CERT_CHAIN_LEN: usize = 8;
 
 /// Walk a TLS 1.3 `Certificate` body and return every `CertificateEntry`'s
@@ -259,7 +258,9 @@ pub fn extract_chain<const MAX: usize>(
 
 /// Pull the leaf DER bytes out of a TLS 1.3 `Certificate` body.
 /// Leaf-only convenience over [`extract_chain`]; inherits its
-/// overflow-rejection.
+/// overflow-rejection. Test-only — production goes through
+/// [`extract_chain`] with the caller's `MAX_CHAIN` budget.
+#[cfg(test)]
 pub fn extract_cert_der(cert_body: &[u8]) -> Result<&[u8], FlightError> {
     let chain = extract_chain::<MAX_CERT_CHAIN_LEN>(cert_body)?;
     chain.first().copied().ok_or(FlightError::Truncated)
@@ -307,6 +308,9 @@ pub(crate) fn verify_self_signed_cert<
 }
 
 /// Verify the cert's outer self-signature against its own pubkey.
+/// Test-only — production uses
+/// [`crate::backends::PinOrSelfSigned`] via the strategy.
+#[cfg(test)]
 pub(crate) fn verify_self_signed_cert_with_cache<
     E: Ed25519VerifierProvider,
     R: RsaVerifierProvider,
@@ -385,6 +389,9 @@ pub(crate) fn verify_certificate_verify<E: Ed25519VerifierProvider, R: RsaVerifi
     )
 }
 
+/// Test-only — production uses [`verify_certificate_verify_with_prepared`]
+/// against a strategy-supplied prepared verifier.
+#[cfg(test)]
 pub(crate) fn verify_certificate_verify_with_cache<
     E: Ed25519VerifierProvider,
     R: RsaVerifierProvider,
@@ -441,6 +448,55 @@ pub(crate) fn verify_certificate_verify_with_cache<
     }
 }
 
+/// Verify `CertificateVerify` against a prepared verifier handed back by
+/// the strategy. The stack has already cross-checked that `prepared`
+/// matches the leaf's SPKI ([`PreparedVerifier::matches_cert`]), so the
+/// `(scheme, prepared)` pairing here suffices to bind the signature to
+/// the certified leaf.
+pub(crate) fn verify_certificate_verify_with_prepared<
+    E: Ed25519VerifierProvider,
+    R: RsaVerifierProvider,
+>(
+    prepared: &PreparedVerifier<E, R>,
+    transcript_hash_ch_through_cert: &TranscriptDigest,
+    cv_body: &[u8],
+) -> Result<(), FlightError> {
+    if cv_body.len() < 4 {
+        return Err(FlightError::Truncated);
+    }
+    let scheme = u16::from_be_bytes([cv_body[0], cv_body[1]]);
+    let sig_len = u16::from_be_bytes([cv_body[2], cv_body[3]]) as usize;
+    if cv_body.len() != 4 + sig_len {
+        return Err(FlightError::TrailingBytes);
+    }
+    let sig_bytes = &cv_body[4..4 + sig_len];
+
+    const CTX: &[u8] = b"TLS 1.3, server CertificateVerify";
+    const SIGNED_LEN: usize = 64 + CTX.len() + 1 + 32;
+    let mut signed: heapless::Vec<u8, SIGNED_LEN> = heapless::Vec::new();
+    signed.extend_from_slice(&[0x20u8; 64])?;
+    signed.extend_from_slice(CTX)?;
+    signed.extend_from_slice(&[0u8])?;
+    signed.extend_from_slice(transcript_hash_ch_through_cert.as_bytes())?;
+
+    match (scheme, prepared) {
+        (SIG_SCHEME_ED25519, PreparedVerifier::Ed25519(v, _)) => {
+            let Ok(signature) = <&[u8; 64]>::try_from(sig_bytes) else {
+                return Err(FlightError::WrongSignatureLength);
+            };
+            v.verify(&signed, signature)
+                .map_err(|_| FlightError::CertVerifyInvalid)
+        }
+        #[cfg(feature = "rsa")]
+        (SIG_SCHEME_RSA_PSS_RSAE_SHA256, PreparedVerifier::Rsa(v)) => {
+            use crate::backends::rsa_verify::RsaPssSig;
+            v.verify(&signed, &RsaPssSig(sig_bytes))
+                .map_err(|_| FlightError::CertVerifyInvalid)
+        }
+        _ => Err(FlightError::UnexpectedSignatureScheme(scheme)),
+    }
+}
+
 /// Verify a server `Finished` body.
 pub(crate) fn verify_server_finished<H: HkdfSha256>(
     s_hs_traffic_secret: &Secret,
@@ -480,74 +536,28 @@ pub(crate) struct ServerFlightVerified<'a> {
 
 /// Verify the server flight and advance the caller's transcript.
 ///
-/// `verify_cert_self_sig` controls whether the cert's outer signature is
-/// checked against its own pubkey. `true` for self-signed certs (controlled
-/// peers, captured fixtures); `false` for CA-issued certs where the caller
-/// establishes trust some other way (pin / SAN / out-of-band).
-pub(crate) fn verify_server_flight<
-    'a,
-    H: HkdfSha256,
-    C: CertParser,
-    E: Ed25519VerifierProvider,
-    R: RsaVerifierProvider,
->(
+/// The caller (typically [`crate::client::TlsStream`]) has already run the
+/// trust-root decision via its [`crate::traits::verify_strategy::VerifyStrategy`]
+/// and produced `prepared` + `leaf_view`. This function does protocol
+/// invariants only: transcript advance for EE/Cert, CertificateVerify
+/// against `prepared`, and Server Finished MAC.
+pub(crate) fn verify_server_flight<'a, H: HkdfSha256, E, R>(
     transcript: &mut TranscriptHash<H>,
     plaintext: &'a [u8],
     s_hs_traffic_secret: &Secret,
-    verify_cert_self_sig: bool,
-) -> Result<ServerFlightVerified<'a>, FlightError> {
+    prepared: &PreparedVerifier<E, R>,
+    leaf_view: &CertView<'a>,
+) -> Result<ServerFlightVerified<'a>, FlightError>
+where
+    E: Ed25519VerifierProvider,
+    R: RsaVerifierProvider,
+{
     let flight = parse_server_flight(plaintext)?;
-
-    let cert_der = extract_cert_der(flight.cert_body)?;
-    let cert_view = C::parse(cert_der)?;
-
-    // Build the verifier ONCE per cert; share across self-sig and CV checks.
-    // The Curve25519Field precompute (~100 k cycles on M3) is bundled in.
-    let ed25519_v = match &cert_view {
-        CertView::Ed25519 { pubkey, .. } => Some(E::prepare_ed25519(pubkey)),
-        #[cfg(feature = "rsa")]
-        CertView::Rsa { .. } => None,
-    };
-
-    // RSA modular precomputation is expensive enough to share. Map a
-    // construction failure to whichever check fires first against it —
-    // `CertSelfSignatureInvalid` when we're about to verify the outer
-    // self-sig, `CertVerifyInvalid` when the cert outer-sig step was
-    // skipped (e.g. `TrustOnPin`) and `CertificateVerify` is next.
-    #[cfg(feature = "rsa")]
-    let rsa_v: Option<R::Verifier> = match &cert_view {
-        CertView::Rsa {
-            modulus, exponent, ..
-        } => Some(R::prepare_rsa(modulus, *exponent).map_err(|_| {
-            if verify_cert_self_sig {
-                FlightError::CertSelfSignatureInvalid
-            } else {
-                FlightError::CertVerifyInvalid
-            }
-        })?),
-        _ => None,
-    };
-
-    if verify_cert_self_sig {
-        verify_self_signed_cert_with_cache::<E, R>(
-            &cert_view,
-            ed25519_v.as_ref(),
-            #[cfg(feature = "rsa")]
-            rsa_v.as_ref(),
-        )?;
-    }
 
     transcript.update(flight.ee_full);
     transcript.update(flight.cert_full);
     let th_after_cert = transcript.snapshot();
-    verify_certificate_verify_with_cache::<E, R>(
-        &cert_view,
-        &th_after_cert,
-        flight.cv_body,
-        ed25519_v.as_ref(),
-        #[cfg(feature = "rsa")]
-        rsa_v.as_ref(),
-    )?;
+    verify_certificate_verify_with_prepared::<E, R>(prepared, &th_after_cert, flight.cv_body)?;
 
     transcript.update(flight.cv_full);
     let th_after_cv = transcript.snapshot();
@@ -555,12 +565,15 @@ pub(crate) fn verify_server_flight<
 
     transcript.update(flight.fin_full);
 
-    let server_pubkey = match cert_view {
-        CertView::Ed25519 { pubkey, .. } => ServerPubkey::ed25519(*pubkey),
+    let server_pubkey = match leaf_view {
+        CertView::Ed25519 { pubkey, .. } => ServerPubkey::ed25519(**pubkey),
         #[cfg(feature = "rsa")]
         CertView::Rsa {
             modulus, exponent, ..
-        } => ServerPubkey::Rsa { modulus, exponent },
+        } => ServerPubkey::Rsa {
+            modulus,
+            exponent: *exponent,
+        },
     };
     Ok(ServerFlightVerified { server_pubkey })
 }

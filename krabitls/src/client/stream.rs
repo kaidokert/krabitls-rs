@@ -2,6 +2,7 @@
 
 use crate::connection::Init;
 use crate::connection::TlsConnection;
+use crate::traits::verify_strategy::VerifyStrategy;
 
 use super::engine::{EngineEvent, EngineState, TlsEngine};
 use super::error::{ConfigError, ConnectError, HandshakeError, InternalError, WriteAppError};
@@ -31,7 +32,7 @@ pub struct TlsStream<
 > where
     T: Transport,
 {
-    engine: TlsEngine<'s, C, FLIGHT, RECV, SEND>,
+    engine: TlsEngine<'s, C, FLIGHT, RECV, SEND, MAX_CHAIN>,
     transport: T,
     _v: core::marker::PhantomData<fn() -> V>,
 }
@@ -66,6 +67,7 @@ where
     ) -> Result<Self, ConnectError<T::Error>>
     where
         R: rand_core::TryCryptoRng,
+        V: VerifyStrategy<C::Ed25519, C::Rsa>,
     {
         validate_construction::<_, RECV, SEND>(params)?;
 
@@ -78,7 +80,8 @@ where
 
         let x25519_pub = ed25519_heapless::x25519_base::<X25519Bn>(&x25519_priv);
 
-        let our_recv_limit = TlsEngine::<'_, C, FLIGHT, RECV, SEND>::default_our_recv_limit();
+        let our_recv_limit =
+            TlsEngine::<'_, C, FLIGHT, RECV, SEND, MAX_CHAIN>::default_our_recv_limit();
         let suites = effective_suite_list::<C>(params.suite_policy);
         let init = TlsConnection::<Init, C::Hkdf>::new(client_random, x25519_priv);
 
@@ -100,7 +103,7 @@ where
 
         // 6. Construct the engine in WaitServerHello state and drive
         //    the handshake-phase loop until HandshakeDone.
-        let mut engine = TlsEngine::<C, FLIGHT, RECV, SEND>::new(
+        let mut engine = TlsEngine::<C, FLIGHT, RECV, SEND, MAX_CHAIN>::new(
             scratch,
             EngineState::WaitServerHello(wait_sh),
             our_recv_limit,
@@ -283,14 +286,23 @@ where
 // Engine drive loop for the handshake phase
 // ============================================================================
 
-fn drive_handshake<C, T, V, const FLIGHT: usize, const RECV: usize, const SEND: usize>(
-    engine: &mut TlsEngine<'_, C, FLIGHT, RECV, SEND>,
+fn drive_handshake<
+    C,
+    T,
+    V,
+    const FLIGHT: usize,
+    const RECV: usize,
+    const SEND: usize,
+    const MAX_CHAIN: usize,
+>(
+    engine: &mut TlsEngine<'_, C, FLIGHT, RECV, SEND, MAX_CHAIN>,
     transport: &mut T,
     params: &ClientParams<'_, V>,
 ) -> Result<(), ConnectError<T::Error>>
 where
     T: Transport,
     C: ClientConfig,
+    V: VerifyStrategy<C::Ed25519, C::Rsa>,
 {
     loop {
         match engine.step_handshake(params)? {

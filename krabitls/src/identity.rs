@@ -6,6 +6,7 @@
 //! certificate chains.
 
 use crate::traits::cert::CertView;
+#[cfg(test)]
 use subtle::ConstantTimeEq;
 
 /// Reasons a server-identity check may fail.
@@ -63,7 +64,10 @@ impl<'a> PinnedPubkey<'a> {
     }
 }
 
-/// Compare the cert's public key to a pinned reference.
+/// Compare the cert's public key to a pinned reference. Used by
+/// [`crate::backends::PinOrSelfSigned`] via [`PinnedPubkeyOwned`] in
+/// production; the borrowed-pin form here is test-only.
+#[cfg(test)]
 pub fn verify_pinned_pubkey(
     cert_view: &CertView<'_>,
     pin: &PinnedPubkey<'_>,
