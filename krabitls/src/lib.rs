@@ -2113,8 +2113,6 @@ mod tests {
         assert_eq!(err, FlightError::CertChainTooLong);
     }
 
-    // Seed-0 RSA fixture cert is PKCS#1-v1.5-signed; rsa_pss_only rejects
-    // that OID at parse time, so the fixture tests don't apply there.
     /// Fixture-bound AES tests: each test decrypts or encrypts a
     /// captured wire fixture generated with AES-128-GCM, so the
     /// cipher choice is intrinsic.
@@ -2500,9 +2498,9 @@ mod tests {
 
         /// Server handshake traffic secret from the RSA fixture.
         const FIXTURE_RSA_S_HS_TRAFFIC_SECRET_BYTES: [u8; 32] = [
-            0x8a, 0x47, 0x0c, 0x72, 0x55, 0x05, 0x3a, 0xc3, 0x11, 0xaf, 0x9a, 0x04, 0xf1, 0xb9,
-            0xa5, 0xd2, 0x9d, 0x51, 0x58, 0x81, 0xf4, 0xf4, 0x22, 0x0e, 0xc0, 0x68, 0xc6, 0x8f,
-            0x66, 0xe0, 0xca, 0xfd,
+            0x39, 0x5f, 0x6c, 0x5d, 0xd9, 0x18, 0xf3, 0x57, 0x7d, 0x3c, 0xf4, 0xa7, 0x10, 0x25,
+            0x11, 0xc7, 0xec, 0x1c, 0x28, 0x80, 0x21, 0xe5, 0x22, 0x47, 0x9c, 0xd4, 0xb1, 0x5f,
+            0x9f, 0x2f, 0xe4, 0xc2,
         ];
 
         fn s_hs_traffic_secret() -> Secret {
@@ -2529,7 +2527,7 @@ mod tests {
             let (content, ct) = split_inner_plaintext(pt).unwrap();
             assert_eq!(ct, consts::CT_HANDSHAKE);
 
-            // Walk the inner flight + verify cert (RSA-PKCS#1-v1.5 self-sig) +
+            // Walk the inner flight + verify cert (RSASSA-PSS self-sig) +
             // CertificateVerify (rsa_pss_rsae_sha256) + Finished MAC.
             let mut transcript = TranscriptHash::<RustCrypto>::new();
             transcript.update_record(&FIXTURE_RSA_CLIENT_HELLO).unwrap();
