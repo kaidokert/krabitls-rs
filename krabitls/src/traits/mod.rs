@@ -22,6 +22,7 @@ pub mod hkdf;
 pub mod rsa_verify;
 #[cfg(feature = "validity")]
 pub mod time;
+pub mod verify_strategy;
 
 pub use aead::AeadError;
 pub use cert::{CertParseError, CertParser, CertView};
@@ -39,3 +40,4 @@ pub use hkdf::{HkdfExpandError, HkdfSha256};
 pub use rsa_verify::RsaVerifierProvider;
 #[cfg(feature = "validity")]
 pub use time::TimeSource;
+pub use verify_strategy::ServerPubkey;

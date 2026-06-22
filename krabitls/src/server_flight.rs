@@ -470,33 +470,7 @@ pub(crate) fn verify_server_finished<H: HkdfSha256>(
     }
 }
 
-/// The server public key carried by the verified certificate.
-#[derive(Debug, Clone, Copy)]
-pub enum ServerPubkey<'a> {
-    /// 32-byte Ed25519 pubkey.
-    Ed25519([u8; 32], core::marker::PhantomData<&'a ()>),
-    /// RSA modulus + exponent.
-    #[cfg(feature = "rsa")]
-    Rsa { modulus: &'a [u8], exponent: u32 },
-}
-
-impl<'a> ServerPubkey<'a> {
-    /// Construct an Ed25519 variant. Hides the `PhantomData` plumbing.
-    pub fn ed25519(pubkey: [u8; 32]) -> Self {
-        ServerPubkey::Ed25519(pubkey, core::marker::PhantomData)
-    }
-
-    /// If the variant is Ed25519, return the 32-byte pubkey.
-    /// Test-only accessor; production paths match on the enum directly.
-    #[cfg(test)]
-    pub fn as_ed25519(&self) -> Option<[u8; 32]> {
-        match self {
-            ServerPubkey::Ed25519(pk, _) => Some(*pk),
-            #[cfg(feature = "rsa")]
-            ServerPubkey::Rsa { .. } => None,
-        }
-    }
-}
+pub use crate::traits::ServerPubkey;
 
 /// End-to-end result of `verify_server_flight`.
 #[derive(Debug, Clone, Copy)]
