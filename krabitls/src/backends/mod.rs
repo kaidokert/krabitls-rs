@@ -19,6 +19,7 @@
 pub(crate) mod der_cert;
 #[cfg(feature = "jedisct")]
 pub(crate) mod jedisct;
+pub(crate) mod pin_or_self_signed;
 #[cfg(feature = "rsa")]
 pub(crate) mod rsa_verify;
 pub(crate) mod rustcrypto;
@@ -32,6 +33,9 @@ pub use der_cert::DerCert;
 pub use jedisct::JedisctCrypto;
 // Re-exports purely for the external API surface — nothing in-crate
 // uses these paths, so silence the unused-import lint.
+#[cfg(feature = "rsa")]
+pub use pin_or_self_signed::PinnedPubkeyOwnedError;
+pub use pin_or_self_signed::{PinOrSelfSigned, PinOrSelfSignedError, PinnedPubkeyOwned};
 #[allow(unused_imports)]
 #[cfg(all(feature = "rsa", not(feature = "rsa_pss_only")))]
 pub use rsa_verify::RsaPkcs1Sig;
