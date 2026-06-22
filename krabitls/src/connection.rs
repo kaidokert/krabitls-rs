@@ -721,9 +721,10 @@ where
     }
 
     /// Verify CV + Finished against the caller-supplied prepared verifier
-    /// (the strategy handed it back from `verify_chain` and the caller has
-    /// already cross-checked it against `leaf_view`'s SPKI) and advance to
-    /// [`ServerFlightDone`].
+    /// and advance to [`ServerFlightDone`]. The typestate boundary
+    /// defensively re-checks `prepared.matches_cert(leaf_view)` so a
+    /// non-engine caller can't sneak in a verifier built from one cert
+    /// while the stored `server_pubkey` comes from another.
     pub fn finalize_server_flight<
         const N: usize,
         E: Ed25519VerifierProvider,
@@ -734,6 +735,9 @@ where
         prepared: &PreparedVerifier<E, R>,
         leaf_view: &CertView<'_>,
     ) -> Result<TlsConnection<ServerFlightDone<S, M>, H>, ConnectionError> {
+        if !bool::from(prepared.matches_cert(leaf_view)) {
+            return Err(ConnectionError::Flight(FlightError::CertVerifyInvalid));
+        }
         let plaintext = reassembler
             .flight_bytes()
             .ok_or(ConnectionError::IncompleteFlight)?;

@@ -141,14 +141,30 @@ where
         chain: &[CertView<'src>],
         #[cfg(feature = "validity")] time: Option<&dyn TimeSource>,
     ) -> Result<(), Self::Error> {
-        if chain.len() != 1 {
-            return Err(PinOrSelfSignedError::MultiCertChain);
-        }
-        let leaf = &chain[0];
+        // SafeStrategy guarantees non-empty (its own `EmptyChain` guard
+        // fires first); `first()` is defense in depth for any
+        // hand-rolled non-SafeStrategy wrapper.
+        let leaf = chain.first().ok_or(PinOrSelfSignedError::MultiCertChain)?;
 
         match &self.mode {
-            Mode::Pinned(pin) => verify_pin(leaf, pin)?,
-            Mode::SelfSigned => verify_self_sig::<E, R>(leaf)?,
+            Mode::Pinned(pin) => {
+                // Pin constrains the leaf; chain depth is irrelevant.
+                // SafeStrategy already chain-verified `chain[0..n-1]`
+                // links, so a `[leaf, intermediate, root]` chain
+                // reaches here with the link structure validated.
+                verify_pin(leaf, pin)?;
+            }
+            Mode::SelfSigned => {
+                // Self-sig semantics only make sense for a length-1
+                // chain: a self-signed leaf has no upstream signer, so
+                // any additional entry is contradictory. (Link verify
+                // would also reject, but this lets us return a more
+                // specific error.)
+                if chain.len() != 1 {
+                    return Err(PinOrSelfSignedError::MultiCertChain);
+                }
+                verify_self_sig::<E, R>(leaf)?;
+            }
         }
 
         #[cfg(feature = "validity")]
@@ -333,8 +349,27 @@ mod tests {
     }
 
     #[test]
-    fn rejects_multi_cert_chain() {
+    fn pinned_accepts_multi_cert_chain_when_leaf_matches() {
+        // Real-world public-server pinning sees `leaf + intermediate(s)`;
+        // the pin only constrains `chain[0]`, so the strategy must
+        // accept and only check the leaf SPKI.
         let strategy = PinOrSelfSigned::pinned(PinnedPubkeyOwned::ed25519(PK_A));
+        let v1 = ed25519_view(&PK_A);
+        let v2 = ed25519_view(&PK_B);
+        let chain = [v1, v2];
+        let result = <PinOrSelfSigned as TrustRootDecision<RustCrypto, RustCrypto>>::accept_chain(
+            &strategy,
+            &chain,
+            #[cfg(feature = "validity")]
+            Some(&FixedTime(NOW)),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn self_signed_rejects_multi_cert_chain() {
+        // Self-sig semantics only apply to a length-1 chain.
+        let strategy = PinOrSelfSigned::self_signed();
         let v1 = ed25519_view(&PK_A);
         let v2 = ed25519_view(&PK_B);
         let chain = [v1, v2];
@@ -344,7 +379,7 @@ mod tests {
             #[cfg(feature = "validity")]
             Some(&FixedTime(NOW)),
         )
-        .expect_err("must reject multi-cert chain");
+        .expect_err("self-signed must reject multi-cert");
         assert_eq!(err, PinOrSelfSignedError::MultiCertChain);
     }
 }

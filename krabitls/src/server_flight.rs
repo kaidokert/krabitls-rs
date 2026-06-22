@@ -408,10 +408,10 @@ pub(crate) fn verify_certificate_verify_with_cache<
     }
     let scheme = u16::from_be_bytes([cv_body[0], cv_body[1]]);
     let sig_len = u16::from_be_bytes([cv_body[2], cv_body[3]]) as usize;
-    if cv_body.len() != 4 + sig_len {
+    if cv_body.len() - 4 != sig_len {
         return Err(FlightError::TrailingBytes);
     }
-    let sig_bytes = &cv_body[4..4 + sig_len];
+    let sig_bytes = &cv_body[4..];
 
     // Domain separation for TLS 1.3 CertificateVerify.
     const CTX: &[u8] = b"TLS 1.3, server CertificateVerify";
@@ -466,10 +466,10 @@ pub(crate) fn verify_certificate_verify_with_prepared<
     }
     let scheme = u16::from_be_bytes([cv_body[0], cv_body[1]]);
     let sig_len = u16::from_be_bytes([cv_body[2], cv_body[3]]) as usize;
-    if cv_body.len() != 4 + sig_len {
+    if cv_body.len() - 4 != sig_len {
         return Err(FlightError::TrailingBytes);
     }
-    let sig_bytes = &cv_body[4..4 + sig_len];
+    let sig_bytes = &cv_body[4..];
 
     const CTX: &[u8] = b"TLS 1.3, server CertificateVerify";
     const SIGNED_LEN: usize = 64 + CTX.len() + 1 + 32;
