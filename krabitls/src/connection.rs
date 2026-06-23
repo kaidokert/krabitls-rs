@@ -985,7 +985,10 @@ where
 // ============================================================================
 
 #[cfg(test)]
-#[allow(dead_code, unused_imports)] // fixtures only used under the no-chacha20 cfg-gated tests
+#[cfg_attr(
+    any(feature = "rsa", feature = "chacha20"),
+    allow(dead_code, unused_imports)
+)]
 mod tests {
     use super::*;
     use crate::backends::RustCrypto;
