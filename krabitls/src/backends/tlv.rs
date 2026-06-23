@@ -17,10 +17,9 @@ pub struct TlvError;
 #[derive(Debug, Clone, Copy)]
 pub struct Tlv<'a> {
     pub tag: u8,
-    // `header_len` is only read by `tlv_cert.rs` (cfg not(feature = "cert-der"));
-    // identity.rs's SAN walker doesn't need it. Keep it as a public
-    // field so the `Tlv` shape is stable across both code paths.
-    #[allow(dead_code)]
+    // Only `tlv_cert.rs` (cfg `not(feature = "cert-der")`) reads
+    // `header_len`; `identity.rs`'s SAN walker uses tag + body only.
+    #[cfg_attr(all(feature = "cert-der", not(test)), allow(dead_code))]
     pub header_len: usize,
     pub body: &'a [u8],
     pub rest: &'a [u8],

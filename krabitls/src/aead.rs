@@ -288,8 +288,6 @@ mod sealed {
 
 /// TLS 1.3 cipher suite marker. Sealed.
 pub trait CipherSuite: sealed::Sealed + Sized {
-    #[allow(dead_code)]
-    const ID: u16;
     type KeyBytes: zeroize::Zeroize;
     type Cipher: AeadInPlace
         + KeyInit
@@ -316,7 +314,6 @@ pub struct Aes128GcmSha256;
 impl sealed::Sealed for Aes128GcmSha256 {}
 #[cfg(feature = "cipher-aes")]
 impl CipherSuite for Aes128GcmSha256 {
-    const ID: u16 = crate::consts::CIPHER_AES_128_GCM_SHA256;
     type KeyBytes = [u8; 16];
     type Cipher = aes_gcm::Aes128Gcm;
     fn make_cipher(key: &zeroize::Zeroizing<[u8; 16]>) -> Self::Cipher {
@@ -340,7 +337,6 @@ pub struct ChaCha20Poly1305Sha256;
 impl sealed::Sealed for ChaCha20Poly1305Sha256 {}
 #[cfg(feature = "chacha20")]
 impl CipherSuite for ChaCha20Poly1305Sha256 {
-    const ID: u16 = crate::consts::CIPHER_CHACHA20_POLY1305_SHA256;
     type KeyBytes = [u8; 32];
     type Cipher = chacha20poly1305::ChaCha20Poly1305;
     fn make_cipher(key: &zeroize::Zeroizing<[u8; 32]>) -> Self::Cipher {
@@ -418,7 +414,6 @@ mod no_cipher {
     impl sealed::Sealed for NoCipher {}
 
     impl CipherSuite for NoCipher {
-        const ID: u16 = 0x0000;
         type KeyBytes = [u8; 16];
         type Cipher = NoopAead;
         fn make_cipher(_: &zeroize::Zeroizing<[u8; 16]>) -> Self::Cipher {

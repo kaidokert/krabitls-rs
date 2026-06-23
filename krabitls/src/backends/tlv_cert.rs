@@ -69,6 +69,13 @@ fn take_tlv<'a>(cursor: &mut &'a [u8]) -> Result<Tlv<'a>, CertParseError> {
     Ok(t)
 }
 
+/// Same as [`take_tlv`] but rejects any tag other than `expected_tag`.
+fn take_expected<'a>(cursor: &mut &'a [u8], expected_tag: u8) -> Result<Tlv<'a>, CertParseError> {
+    let t = read_expected(cursor, expected_tag)?;
+    *cursor = t.rest;
+    Ok(t)
+}
+
 /// Read a BIT STRING: the body's first byte is the unused-bits count
 /// (must be 0 for our purposes), remaining bytes are the bit content.
 fn take_bit_string<'a>(cursor: &mut &'a [u8]) -> Result<&'a [u8], CertParseError> {
@@ -133,21 +140,24 @@ impl CertParser for DerCert {
             return Err(CertParseError::Malformed);
         }
 
-        take_tlv(&mut tbs_r)?;
+        // serialNumber INTEGER.
+        take_expected(&mut tbs_r, TAG_INTEGER)?;
         // TBS sig alg must match outer.
-        let tbs_alg_tlv = read_tlv(tbs_r).map_err(malformed)?;
+        let tbs_alg_tlv = read_expected(tbs_r, TAG_SEQUENCE)?;
         let tbs_sig_alg_bytes = &tbs_r[..tbs_alg_tlv.header_len + tbs_alg_tlv.body.len()];
         tbs_r = tbs_alg_tlv.rest;
         if tbs_sig_alg_bytes != outer_sig_alg_bytes {
             return Err(CertParseError::SignatureAlgorithmMismatch);
         }
-        take_tlv(&mut tbs_r)?;
+        // issuer Name SEQUENCE.
+        take_expected(&mut tbs_r, TAG_SEQUENCE)?;
         // validity SEQUENCE { notBefore, notAfter } — captured for the
         // optional `feature = "validity"` window check.
-        let validity_tlv = read_tlv(tbs_r).map_err(malformed)?;
+        let validity_tlv = read_expected(tbs_r, TAG_SEQUENCE)?;
         let validity_der = &tbs_r[..validity_tlv.header_len + validity_tlv.body.len()];
         tbs_r = validity_tlv.rest;
-        take_tlv(&mut tbs_r)?;
+        // subject Name SEQUENCE.
+        take_expected(&mut tbs_r, TAG_SEQUENCE)?;
 
         let spki_tlv = read_expected(tbs_r, TAG_SEQUENCE)?;
         tbs_r = spki_tlv.rest;

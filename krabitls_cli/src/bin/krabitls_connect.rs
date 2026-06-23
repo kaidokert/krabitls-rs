@@ -22,7 +22,7 @@ type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 enum Pin {
     Ed25519([u8; 32]),
-    #[allow(dead_code)] // only used under feature = "rsa"
+    #[cfg(feature = "rsa")]
     Rsa(Vec<u8>),
 }
 
@@ -36,8 +36,6 @@ impl Pin {
                 modulus,
                 exponent: 65537,
             },
-            #[cfg(not(feature = "rsa"))]
-            Pin::Rsa(_) => panic!("RSA pin requires feature = \"rsa\""),
         }
     }
 }

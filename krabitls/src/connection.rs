@@ -260,9 +260,9 @@ pub struct WaitServerFlight<S: CipherSuite, M: HandshakeMode = Live> {
 pub struct ServerFlightDone<S: CipherSuite, M: HandshakeMode = Live> {
     pub(crate) hs: Secret,
     pub(crate) c_hs_ts: Secret,
-    // Test surface reads these; production typestate doesn't.
-    #[allow(dead_code)]
-    pub(crate) s_hs_ts: Secret,
+    // Read only by the `cfg(all(test, not(chacha20), not(rsa)))` accessor
+    // `server_pubkey()`; carrying the value uniformly costs an
+    // \`#[allow(dead_code)]\` rather than feature-gating the field.
     #[allow(dead_code)]
     pub(crate) server_pubkey: ServerPubkeyOwned,
     pub(crate) _suite: PhantomData<S>,
@@ -741,7 +741,6 @@ where
             state: ServerFlightDone {
                 hs: self.state.hs,
                 c_hs_ts: self.state.c_hs_ts,
-                s_hs_ts: self.state.s_hs_ts,
                 server_pubkey,
                 _suite: PhantomData,
                 _mode: PhantomData,

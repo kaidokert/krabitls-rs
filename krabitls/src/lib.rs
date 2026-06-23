@@ -203,10 +203,6 @@ pub(crate) enum SuiteList {
     Default,
     #[cfg(feature = "cipher-aes")]
     AesOnly,
-    // Constructor is cfg'd to chacha-only builds; lint fires under
-    // default-features chacha20 even though the variant is reachable
-    // in `--no-default-features --features chacha20`.
-    #[allow(dead_code)]
     #[cfg(feature = "chacha20")]
     ChaChaOnly,
 }
