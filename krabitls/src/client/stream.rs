@@ -1,5 +1,7 @@
 //! Blocking TLS 1.3 client handle. Sans-randomness — caller supplies the RNG.
 
+use crate::ClientHelloError;
+use crate::connection::ConnectionError;
 use crate::connection::Init;
 use crate::connection::TlsConnection;
 use crate::traits::verify_strategy::VerifyStrategy;
@@ -385,11 +387,7 @@ fn effective_suite_list<C: ClientConfig>(runtime: RuntimeSuitePolicy) -> crate::
     }
 }
 
-fn map_client_hello_error<E>(
-    e: crate::connection::ConnectionError<embedded_io::SliceWriteError>,
-) -> ConnectError<E> {
-    use crate::ClientHelloError;
-    use crate::connection::ConnectionError;
+fn map_client_hello_error<E>(e: ConnectionError<embedded_io::SliceWriteError>) -> ConnectError<E> {
     match e {
         ConnectionError::ClientHello(ClientHelloError::HostnameTooLong) => {
             ConnectError::Config(ConfigError::HostnameTooLong)

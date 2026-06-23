@@ -3,6 +3,7 @@
 use crate::newtype::{AeadIv, ZeroBuf};
 use ::aead::generic_array::GenericArray;
 use ::aead::{AeadCore, AeadInPlace, KeyInit};
+use subtle::{ConditionallySelectable, ConstantTimeEq};
 
 /// Per-record AEAD nonce: `iv` XOR `seq` (8-byte sequence number,
 /// big-endian, left-padded). RFC 8446 §5.3.
@@ -168,8 +169,6 @@ where
 /// content_type-position, but that value is the public protocol-level
 /// outcome (record-too-large / empty-record), not the padding length.
 pub(crate) fn split_inner_plaintext(inner: &[u8]) -> Result<(&[u8], u8), DecryptError> {
-    use subtle::{ConditionallySelectable, ConstantTimeEq};
-
     // Upfront DoS / overflow guard. Without this a public caller could
     // hand in a multi-GB slice and force a full unconditional scan, and
     // the `(i + 1) as u32` cast below would wrap on `inner.len() > u32::MAX`

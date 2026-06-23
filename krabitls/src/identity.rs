@@ -6,6 +6,10 @@
 //! certificate chains.
 
 use crate::traits::cert::CertView;
+#[cfg(feature = "validity")]
+use der::asn1::{GeneralizedTime, UtcTime};
+#[cfg(feature = "validity")]
+use der::{Decode, Reader, SliceReader, Tag};
 #[cfg(test)]
 #[cfg(test)]
 use subtle::ConstantTimeEq;
@@ -364,8 +368,6 @@ pub fn verify_validity<T: crate::traits::time::TimeSource + ?Sized>(
 /// of the previous hand-rolled `days_to_epoch_secs`.
 #[cfg(feature = "validity")]
 fn parse_validity_der(der_bytes: &[u8]) -> Result<(u64, u64), ValidityError> {
-    use der::{Reader, SliceReader};
-
     let mut outer = SliceReader::new(der_bytes).map_err(|_| ValidityError::Malformed)?;
     let result: der::Result<(u64, u64)> = outer.sequence(|inner| {
         let nb = decode_time_to_unix(inner)?;
@@ -396,9 +398,6 @@ fn parse_validity_der(der_bytes: &[u8]) -> Result<(u64, u64), ValidityError> {
 /// which we narrow to `u64` seconds.
 #[cfg(feature = "validity")]
 fn decode_time_to_unix<'a, R: der::Reader<'a>>(r: &mut R) -> der::Result<u64> {
-    use der::asn1::{GeneralizedTime, UtcTime};
-    use der::{Decode, Tag};
-
     let tag = Tag::peek(r)?;
     let secs = match tag {
         Tag::UtcTime => UtcTime::decode(r)?.to_unix_duration().as_secs(),

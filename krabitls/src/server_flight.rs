@@ -12,6 +12,7 @@ use crate::traits::{
     CertParseError, CertView, Ed25519VerifierProvider, HkdfSha256, RsaVerifierProvider,
 };
 use signature::Verifier as _;
+use subtle::ConstantTimeEq;
 
 const HS_ENCRYPTED_EXTENSIONS: u8 = 8;
 const HS_CERTIFICATE: u8 = 11;
@@ -516,7 +517,6 @@ pub(crate) fn verify_server_finished<H: HkdfSha256>(
     // `subtle::ct_eq` is the canonical CT primitive. A hand-rolled `diff |=`
     // loop is legal for LLVM to vectorize / lower to `memcmp`, which would
     // destroy the constant-time property.
-    use subtle::ConstantTimeEq;
     if bool::from(expected.as_slice().ct_eq(finished_body)) {
         Ok(())
     } else {
