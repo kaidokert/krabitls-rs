@@ -147,6 +147,7 @@ impl core::fmt::Debug for AeadIv {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zeroize::Zeroize;
 
     #[test]
     fn newtype_round_trip() {
@@ -172,7 +173,6 @@ mod tests {
 
     #[test]
     fn secret_zeroizes() {
-        use zeroize::Zeroize;
         let mut s = Secret::from([0x42; 32]);
         s.zeroize();
         assert_eq!(s.as_bytes(), &[0u8; 32]);

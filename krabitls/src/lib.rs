@@ -737,7 +737,7 @@ mod tests {
     use crate::aead::Aes128GcmSha256;
     #[cfg(feature = "chacha20")]
     use crate::aead::ChaCha20Poly1305Sha256;
-    use crate::aead::{DecryptError, decrypt_record, encrypt_record};
+    use crate::aead::{DecryptError, NoCipher, decrypt_record, encrypt_record};
     #[cfg(feature = "jedisct")]
     use crate::backends::JedisctCrypto;
     #[cfg(all(feature = "rsa", not(feature = "rsa_pss_only"), feature = "cipher-aes"))]
@@ -1816,7 +1816,6 @@ mod tests {
         // Two valid records glued together — caller MUST pass exactly one.
         // TrailingBytes is checked BEFORE the AEAD call so the cipher
         // never runs. Use NoCipher so the test is cipher-feature-agnostic.
-        use crate::aead::NoCipher;
         let key = ZeroBuf::<16>::new([0u8; 16]);
         let iv = AeadIv::new(ZeroBuf::<12>::new([0u8; 12]));
         let mut extra = [0u8; 416];
@@ -1872,7 +1871,6 @@ mod tests {
         // TLSCiphertext.length cap (2^14 + 256). Out buffer size doesn't
         // matter — RecordTooLarge fires before BufferTooSmall. Size check
         // runs before the AEAD call; NoCipher keeps the test cipher-agnostic.
-        use crate::aead::NoCipher;
         let big = vec![0u8; (1 << 14) + 256];
         let mut out = [0u8; 1];
         let err = encrypt_record::<NoCipher>(
@@ -1925,7 +1923,6 @@ mod tests {
         // the AEAD tag + content_type are added, but violates the §5.1
         // plaintext cap — must surface as RecordTooLarge. NoCipher keeps
         // the test cipher-agnostic.
-        use crate::aead::NoCipher;
         let just_over = vec![0u8; (1 << 14) + 1];
         let mut out = vec![0u8; (1 << 14) + 256 + 5];
         let err = encrypt_record::<NoCipher>(

@@ -33,6 +33,7 @@ use crate::server_flight::ServerPubkey;
 use crate::server_flight::verify_server_flight;
 use crate::traits::verify_strategy::PreparedVerifier;
 use crate::traits::{CertView, Ed25519VerifierProvider, HkdfSha256, RsaVerifierProvider};
+use subtle::ConstantTimeEq;
 
 // Only consumer is `close_notify` on Live, whose gate is matched here.
 #[cfg(all(test, not(feature = "chacha20"), not(feature = "rsa")))]
@@ -82,22 +83,27 @@ impl<E> ConnectionError<E> {
     where
         F: FnOnce(E) -> U,
     {
-        use ConnectionError::*;
         match self {
-            ClientHello(ch) => ClientHello(ch.map_writer(f)),
-            Parse(p) => Parse(p),
-            Hkdf(h) => Hkdf(h),
-            Flight(fl) => Flight(fl),
-            Decrypt(d) => Decrypt(d),
-            Encrypt(en) => Encrypt(en),
-            Transcript(t) => Transcript(t),
-            Reassembly(r) => Reassembly(r),
-            ClientFinished(cf) => ClientFinished(cf),
-            WrongSuite { expected, got } => WrongSuite { expected, got },
-            IncompleteFlight => IncompleteFlight,
-            UnexpectedSuite { selected_id } => UnexpectedSuite { selected_id },
-            Alert { level, description } => Alert { level, description },
-            UnknownContentType(c) => UnknownContentType(c),
+            ConnectionError::ClientHello(ch) => ConnectionError::ClientHello(ch.map_writer(f)),
+            ConnectionError::Parse(p) => ConnectionError::Parse(p),
+            ConnectionError::Hkdf(h) => ConnectionError::Hkdf(h),
+            ConnectionError::Flight(fl) => ConnectionError::Flight(fl),
+            ConnectionError::Decrypt(d) => ConnectionError::Decrypt(d),
+            ConnectionError::Encrypt(en) => ConnectionError::Encrypt(en),
+            ConnectionError::Transcript(t) => ConnectionError::Transcript(t),
+            ConnectionError::Reassembly(r) => ConnectionError::Reassembly(r),
+            ConnectionError::ClientFinished(cf) => ConnectionError::ClientFinished(cf),
+            ConnectionError::WrongSuite { expected, got } => {
+                ConnectionError::WrongSuite { expected, got }
+            }
+            ConnectionError::IncompleteFlight => ConnectionError::IncompleteFlight,
+            ConnectionError::UnexpectedSuite { selected_id } => {
+                ConnectionError::UnexpectedSuite { selected_id }
+            }
+            ConnectionError::Alert { level, description } => {
+                ConnectionError::Alert { level, description }
+            }
+            ConnectionError::UnknownContentType(c) => ConnectionError::UnknownContentType(c),
         }
     }
 }
@@ -499,8 +505,6 @@ where
         mut self,
         sh_record: &[u8],
     ) -> Result<NegotiatedSuite<H>, ConnectionError> {
-        use subtle::ConstantTimeEq;
-
         let sh = parse_server_hello(sh_record)?;
         // Selected suite must have been in the advertised cipher_suites list.
         let advertised_ok = match sh.cipher_suite {
@@ -992,6 +996,8 @@ where
 mod tests {
     use super::*;
     use crate::backends::RustCrypto;
+    use crate::consts::CT_APPLICATION_DATA;
+    use crate::reassembler::ServerFlightReassembler;
 
     // Seed-0 fixtures duplicated from `lib.rs` — keep in sync.
     const FIXTURE_RANDOM: [u8; 32] = [
@@ -1195,8 +1201,6 @@ mod tests {
     #[cfg(all(not(feature = "chacha20"), not(feature = "rsa")))]
     #[test]
     fn feed_server_record_and_finalize_smoke() {
-        use crate::reassembler::ServerFlightReassembler;
-
         let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
         let conn: TlsConnection<Init, RustCrypto> = TlsConnection::new(FIXTURE_RANDOM, priv_zb);
         let mut out_buf = [0u8; 256];
@@ -1234,8 +1238,6 @@ mod tests {
     #[cfg(all(not(feature = "chacha20"), not(feature = "rsa")))]
     #[test]
     fn finalize_without_flight_is_incomplete() {
-        use crate::reassembler::ServerFlightReassembler;
-
         let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
         let conn: TlsConnection<Init, RustCrypto> = TlsConnection::new(FIXTURE_RANDOM, priv_zb);
         let mut out_buf = [0u8; 256];
@@ -1264,8 +1266,6 @@ mod tests {
     #[cfg(all(not(feature = "chacha20"), not(feature = "rsa")))]
     #[test]
     fn feed_server_record_skips_ccs_without_bumping_seq() {
-        use crate::reassembler::ServerFlightReassembler;
-
         let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
         let conn: TlsConnection<Init, RustCrypto> = TlsConnection::new(FIXTURE_RANDOM, priv_zb);
         let mut out_buf = [0u8; 256];
@@ -1300,8 +1300,6 @@ mod tests {
     #[cfg(all(not(feature = "chacha20"), not(feature = "rsa")))]
     #[test]
     fn feed_server_record_inplace_matches_copying() {
-        use crate::reassembler::ServerFlightReassembler;
-
         let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
         let conn: TlsConnection<Init, RustCrypto> = TlsConnection::new(FIXTURE_RANDOM, priv_zb);
         let mut out_buf = [0u8; 256];
@@ -1348,8 +1346,6 @@ mod tests {
     #[cfg(all(not(feature = "chacha20"), not(feature = "rsa")))]
     #[test]
     fn feed_server_record_inplace_skips_ccs_without_bumping_seq() {
-        use crate::reassembler::ServerFlightReassembler;
-
         let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
         let conn: TlsConnection<Init, RustCrypto> = TlsConnection::new(FIXTURE_RANDOM, priv_zb);
         let mut out_buf = [0u8; 256];
@@ -1397,8 +1393,6 @@ mod tests {
     #[cfg(all(not(feature = "chacha20"), not(feature = "rsa")))]
     #[test]
     fn finish_handshake_byte_identical_client_finished() {
-        use crate::reassembler::ServerFlightReassembler;
-
         let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
         let conn: TlsConnection<Init, RustCrypto> = TlsConnection::new(FIXTURE_RANDOM, priv_zb);
         let mut out = [0u8; 256];
@@ -1431,9 +1425,6 @@ mod tests {
     #[cfg(all(not(feature = "chacha20"), not(feature = "rsa")))]
     #[test]
     fn app_data_encrypt_record_byte_identical_packet_5() {
-        use crate::consts::CT_APPLICATION_DATA;
-        use crate::reassembler::ServerFlightReassembler;
-
         let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
         let conn: TlsConnection<Init, RustCrypto> = TlsConnection::new(FIXTURE_RANDOM, priv_zb);
         let mut ch_buf = [0u8; 256];
@@ -1472,9 +1463,6 @@ mod tests {
     #[cfg(all(not(feature = "chacha20"), not(feature = "rsa")))]
     #[test]
     fn app_data_decrypt_record_round_trips_packet_6() {
-        use crate::consts::CT_APPLICATION_DATA;
-        use crate::reassembler::ServerFlightReassembler;
-
         let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
         let conn: TlsConnection<Init, RustCrypto> = TlsConnection::new(FIXTURE_RANDOM, priv_zb);
         let mut ch_buf = [0u8; 256];
@@ -1515,8 +1503,6 @@ mod tests {
     #[cfg(all(not(feature = "chacha20"), not(feature = "rsa")))]
     #[test]
     fn close_notify_emits_encrypted_alert_record() {
-        use crate::reassembler::ServerFlightReassembler;
-
         let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
         let conn: TlsConnection<Init, RustCrypto> = TlsConnection::new(FIXTURE_RANDOM, priv_zb);
         let mut ch_buf = [0u8; 256];

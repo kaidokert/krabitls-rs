@@ -15,7 +15,8 @@ use std::time::Duration;
 
 use getrandom::SysRng;
 use krabitls::client::{
-    ClientParams, ConnectError, DefaultScratch, DefaultStream, RuntimeSuitePolicy, Transport,
+    ClientParams, ConnectError, DefaultScratch, DefaultStream, PinnedPubkey, RuntimeSuitePolicy,
+    Transport,
 };
 use log::{error, info};
 
@@ -28,8 +29,7 @@ enum Pin {
 }
 
 impl Pin {
-    fn as_pinned(&self) -> krabitls::client::PinnedPubkey<'_> {
-        use krabitls::client::PinnedPubkey;
+    fn as_pinned(&self) -> PinnedPubkey<'_> {
         match self {
             Pin::Ed25519(pk) => PinnedPubkey::Ed25519(*pk),
             #[cfg(feature = "rsa")]

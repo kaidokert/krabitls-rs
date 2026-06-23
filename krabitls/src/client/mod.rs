@@ -51,6 +51,7 @@ pub(crate) use error::WriteAppError;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use embedded_io::{ErrorType, Read, ReadExactError, Write};
 
     // Compile-time smoke tests: these don't assert anything at runtime,
     // they just force the type system to confirm the public surface
@@ -137,8 +138,6 @@ mod tests {
     // compile-time-only trait resolution check.
     #[test]
     fn embedded_io_blanket_impl_resolves() {
-        use embedded_io::{ErrorType, Read, ReadExactError, Write};
-
         #[derive(Debug)]
         struct Stub;
 

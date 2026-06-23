@@ -5,6 +5,7 @@
 //! pinned public keys and SAN hostname matching. It does not build or verify
 //! certificate chains.
 
+use crate::backends::tlv::read_tlv;
 use crate::traits::cert::CertView;
 #[cfg(feature = "validity")]
 use der::asn1::{GeneralizedTime, UtcTime};
@@ -249,8 +250,6 @@ struct SanEntryWalker<'a> {
 
 impl<'a> SanEntryWalker<'a> {
     fn next(&mut self) -> Option<Result<&'a [u8], IdentityError>> {
-        use crate::backends::tlv::read_tlv;
-
         while !self.rest.is_empty() {
             let t = match read_tlv(self.rest) {
                 Ok(t) => t,
