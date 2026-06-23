@@ -19,10 +19,11 @@ import sys
 # (suite label, sig label, example, no_default_features, cargo --features list)
 # Every row pins features explicitly: no defaults, exactly one cipher,
 # exactly one sig algorithm. `tlv_cert` (the `not(cert-der)` fallback)
-# is picked over the heavier `der`-crate parser.
+# is picked over the heavier `der`-crate parser. Order is
+# smallest-to-largest footprint.
 ROWS = [
-    ("AES-128-GCM",       "Ed25519",      "krabitls",        True, ["cipher-aes", "canned-replay"]),
     ("ChaCha20-Poly1305", "Ed25519",      "krabitls_chacha", True, ["chacha20", "canned-replay"]),
+    ("AES-128-GCM",       "Ed25519",      "krabitls",        True, ["cipher-aes", "canned-replay"]),
     ("AES-128-GCM",       "RSA-2048-PSS", "krabitls_rsa",    True, ["cipher-aes", "rsa", "canned-replay"]),
 ]
 
