@@ -1,5 +1,7 @@
 ### KrabiTLS
 
+[![crate](https://img.shields.io/crates/v/krabitls.svg)](https://crates.io/crates/krabitls)
+[![documentation](https://docs.rs/krabitls/badge.svg)](https://docs.rs/krabitls/)
 [![Rust](https://github.com/kaidokert/krabitls-rs/actions/workflows/rust.yml/badge.svg)](https://github.com/kaidokert/krabitls-rs/actions/workflows/rust.yml)
 [![Footprint](https://github.com/kaidokert/krabitls-rs/actions/workflows/footprint.yml/badge.svg)](https://github.com/kaidokert/krabitls-rs/actions/workflows/footprint.yml)
 
