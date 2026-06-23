@@ -20,12 +20,12 @@ reflects only the crypto + protocol cost.
 
 | Target   | Suite             | Sig          | .text (KiB) | Stack (B) |
 |----------|-------------------|--------------|------------:|----------:|
-| M3       | AES-128-GCM       | Ed25519      |        32.7 |      5764 |
-| M3       | ChaCha20-Poly1305 | Ed25519      |        28.2 |      5716 |
-| M3       | AES-128-GCM       | RSA-2048-PSS |        42.6 |     15316 |
-| RV32IMAC | AES-128-GCM       | Ed25519      |        42.9 |      5716 |
-| RV32IMAC | ChaCha20-Poly1305 | Ed25519      |        35.5 |      5668 |
-| RV32IMAC | AES-128-GCM       | RSA-2048-PSS |        60.9 |     15256 |
+| M3       | ChaCha20-Poly1305 | Ed25519      |        35.4 |     10692 |
+| M3       | AES-128-GCM       | Ed25519      |        40.1 |     15844 |
+| M3       | AES-128-GCM       | RSA-2048-PSS |        53.8 |     27280 |
+| RV32IMAC | ChaCha20-Poly1305 | Ed25519      |        53.8 |     10436 |
+| RV32IMAC | AES-128-GCM       | Ed25519      |        63.3 |     15604 |
+| RV32IMAC | AES-128-GCM       | RSA-2048-PSS |        86.4 |     30484 |
 
 ## License
 

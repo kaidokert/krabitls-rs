@@ -17,13 +17,14 @@ import subprocess
 import sys
 
 # (suite label, sig label, example, no_default_features, cargo --features list)
-# Every row pins its features explicitly: the ChaCha row drops defaults so
-# AES is genuinely absent from `.text` (otherwise the cipher-aes dep stays
-# linked and the "ChaCha-only" measurement is dishonest).
+# Every row pins features explicitly: no defaults, exactly one cipher,
+# exactly one sig algorithm. `tlv_cert` (the `not(cert-der)` fallback)
+# is picked over the heavier `der`-crate parser. Order is
+# smallest-to-largest footprint.
 ROWS = [
-    ("AES-128-GCM",       "Ed25519",      "krabitls",        False, ["canned-replay"]),
-    ("ChaCha20-Poly1305", "Ed25519",      "krabitls_chacha", True,  ["chacha20", "cert-der", "canned-replay"]),
-    ("AES-128-GCM",       "RSA-2048-PSS", "krabitls_rsa",    False, ["rsa", "canned-replay"]),
+    ("ChaCha20-Poly1305", "Ed25519",      "krabitls_chacha", True, ["chacha20", "canned-replay"]),
+    ("AES-128-GCM",       "Ed25519",      "krabitls",        True, ["cipher-aes", "canned-replay"]),
+    ("AES-128-GCM",       "RSA-2048-PSS", "krabitls_rsa",    True, ["cipher-aes", "rsa", "canned-replay"]),
 ]
 
 # (label, directory, cargo --target)

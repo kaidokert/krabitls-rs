@@ -19,7 +19,7 @@
 //! let params = ClientParams::pinned(
 //!     "example.com",
 //!     PinnedPubkey::Ed25519(server_pubkey),
-//! );
+//! )?;
 //!
 //! let mut tls = DefaultStream::connect(
 //!     &params, &mut scratch, transport, &mut rng,
