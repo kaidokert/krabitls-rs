@@ -13,10 +13,14 @@
 //! the strategy. `identity.rs::tests` covers `verify_hostname` at the
 //! unit level; that's the correct granularity for SAN logic.
 
+// `validity` excluded: these fixtures use `self_signed`/strategy paths without a
+// `TimeSource`, which the validity check rejects with `MissingClock`. Validity is
+// covered at the unit level elsewhere.
 #![cfg(all(
     feature = "cipher-aes",
     not(feature = "rsa"),
-    not(feature = "chacha20")
+    not(feature = "chacha20"),
+    not(feature = "validity")
 ))]
 
 use std::sync::Arc;
