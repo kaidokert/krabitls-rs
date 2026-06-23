@@ -95,9 +95,9 @@ impl<const N: usize> ServerFlightReassembler<N> {
             // than silently truncating on 16-bit targets.
             let len = usize::try_from(u32::from_be_bytes([0, buf[i + 1], buf[i + 2], buf[i + 3]]))
                 .ok()?;
-            // Rewrite of `i + 4 + len > buf.len()` to avoid overflow on
-            // 16-bit `usize`: the loop guarantees `i + 4 <= buf.len()`,
-            // so `buf.len() - i - 4` can't underflow.
+            // On 16-bit `usize`, computing `i + 4 + len` could overflow;
+            // the loop guarantees `i + 4 <= buf.len()` so the subtraction
+            // form is safe.
             if len > buf.len() - i - 4 {
                 return None;
             }
@@ -109,8 +109,7 @@ impl<const N: usize> ServerFlightReassembler<N> {
         None
     }
 
-    // Test-only accessors. `len` deleted (callers worked on slices
-    // through `flight_bytes()`).
+    // Test-only accessors.
     #[cfg(test)]
     pub fn as_slice(&self) -> &[u8] {
         &self.buf
@@ -157,7 +156,6 @@ impl<const N: usize> ServerFlightReassembler<N> {
         }
         let ee_body = &buf[4..4 + ee_body_len];
 
-        // EncryptedExtensions body: u16 extensions_total, then extensions.
         if ee_body.len() < 2 {
             return Err(FlightError::Truncated);
         }
@@ -268,7 +266,6 @@ mod tests {
     #[test]
     fn multi_record_concat_completes() {
         let mut r: ServerFlightReassembler<512> = ServerFlightReassembler::new();
-        // Record 1: EE + part of Cert
         let cert_full = cert(60);
         let cert_slice = cert_full.as_slice();
         let mut rec1 = heapless::Vec::<u8, 128>::new();
@@ -276,13 +273,11 @@ mod tests {
         rec1.extend_from_slice(&cert_slice[..30]).unwrap();
         r.push_content(&rec1).unwrap();
         assert!(!r.is_complete());
-        // Record 2: rest of Cert + CV
         let mut rec2 = heapless::Vec::<u8, 256>::new();
         rec2.extend_from_slice(&cert_slice[30..]).unwrap();
         rec2.extend_from_slice(cv(70).as_slice()).unwrap();
         r.push_content(&rec2).unwrap();
         assert!(!r.is_complete());
-        // Record 3: Finished
         r.push_content(fin(32).as_slice()).unwrap();
         assert!(r.is_complete());
     }
@@ -302,7 +297,6 @@ mod tests {
         combined.extend_from_slice(cv(70).as_slice()).unwrap();
         combined.extend_from_slice(fin(32).as_slice()).unwrap();
         let flight_only_len = combined.len();
-        // Synthesize a NewSessionTicket-shaped trailing message.
         let nst = alloc_helper::msg(4, 8);
         combined.extend_from_slice(nst.as_slice()).unwrap();
 
@@ -313,7 +307,6 @@ mod tests {
         );
         let flight = r.flight_bytes().expect("flight_bytes after Finished");
         assert_eq!(flight.len(), flight_only_len);
-        // Trailing bytes still visible via the full buffer.
         assert!(r.as_slice().len() > flight.len());
         assert_eq!(&r.as_slice()[flight.len()..], nst.as_slice());
     }
@@ -405,9 +398,7 @@ mod tests {
 
     #[test]
     fn peek_ee_record_size_limit_skips_unrelated_extensions() {
-        // Build extensions: [unknown_ext(4 bytes payload), record_size_limit].
         let mut exts = heapless::Vec::<u8, 32>::new();
-        // ext type 0x002A (custom), len=4, payload=[0xab; 4]
         exts.extend_from_slice(&[0x00, 0x2A, 0x00, 0x04, 0xab, 0xab, 0xab, 0xab])
             .unwrap();
         exts.extend_from_slice(&record_size_limit_ext(2048))
@@ -436,7 +427,6 @@ mod tests {
 
     #[test]
     fn peek_ee_record_size_limit_wrong_first_msg_type() {
-        // First handshake message is Certificate (11), not EE.
         let mut r: ServerFlightReassembler<512> = ServerFlightReassembler::new();
         let mut combined = heapless::Vec::<u8, 512>::new();
         combined.extend_from_slice(cert(40).as_slice()).unwrap();
@@ -459,7 +449,6 @@ mod tests {
 
     #[test]
     fn peek_ee_record_size_limit_ext_with_wrong_len_rejected() {
-        // record_size_limit with claimed len=3 instead of 2.
         let bad_ext = [
             (EXT_RECORD_SIZE_LIMIT >> 8) as u8,
             (EXT_RECORD_SIZE_LIMIT & 0xff) as u8,
@@ -476,11 +465,10 @@ mod tests {
 
     #[test]
     fn peek_ee_record_size_limit_extensions_total_inconsistent() {
-        // ext_total in EE body claims more bytes than are present.
         let mut body = heapless::Vec::<u8, 32>::new();
-        body.extend_from_slice(&20u16.to_be_bytes()).unwrap(); // ext_total = 20
+        body.extend_from_slice(&20u16.to_be_bytes()).unwrap();
         body.extend_from_slice(&record_size_limit_ext(1024))
-            .unwrap(); // only 6 bytes
+            .unwrap();
         let mut msg = heapless::Vec::<u8, 32>::new();
         msg.push(HS_ENCRYPTED_EXTENSIONS).unwrap();
         let len = body.len() as u32;
@@ -494,8 +482,6 @@ mod tests {
 
     #[test]
     fn peek_ee_record_size_limit_ext_header_truncated() {
-        // Extension header claims 3 bytes of ext header + ext_len overflows body.
-        // ext_total = 3, then 3 bytes of partial extension header (need 4).
         let mut body = heapless::Vec::<u8, 16>::new();
         body.extend_from_slice(&3u16.to_be_bytes()).unwrap();
         body.extend_from_slice(&[0x00, 0x2A, 0x00]).unwrap();

@@ -17,10 +17,9 @@ pub struct TlvError;
 #[derive(Debug, Clone, Copy)]
 pub struct Tlv<'a> {
     pub tag: u8,
-    // `header_len` is only read by `tlv_cert.rs` (cfg not(feature = "cert-der"));
-    // identity.rs's SAN walker doesn't need it. Keep it as a public
-    // field so the `Tlv` shape is stable across both code paths.
-    #[allow(dead_code)]
+    // Only `tlv_cert.rs` (cfg `not(feature = "cert-der")`) reads
+    // `header_len`; `identity.rs`'s SAN walker uses tag + body only.
+    #[cfg_attr(all(feature = "cert-der", not(test)), allow(dead_code))]
     pub header_len: usize,
     pub body: &'a [u8],
     pub rest: &'a [u8],
@@ -45,10 +44,8 @@ pub fn read_tlv(buf: &[u8]) -> Result<Tlv<'_>, TlvError> {
     }
     let len_first = buf[1];
     let (header_len, body_len) = if len_first & 0x80 == 0 {
-        // Short form: length is the byte itself.
         (2usize, len_first as usize)
     } else {
-        // Long form: low 7 bits = number of length octets.
         let n = (len_first & 0x7F) as usize;
         // n=0 would be indefinite-length, illegal in DER.
         // n>4 means length > 4 GB, not seen in cert/SAN.

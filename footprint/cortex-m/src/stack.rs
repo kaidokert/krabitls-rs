@@ -21,7 +21,7 @@ static PAINT_END: AtomicUsize = AtomicUsize::new(0);
 ///   - the live stack pointer at paint time (keeps the caller's frame intact)
 ///
 /// With this read-SP-then-paint approach we don't need to budget for fat
-/// LTO-inlined frames in a constant; 256 is just an over-the-shoulder margin.
+/// LTO-inlined frames in a constant.
 const SAFE_ZONE_BYTES: usize = 256;
 
 #[inline(always)]
@@ -38,10 +38,7 @@ pub fn check_stack_high_water_mark() -> usize {
 /// usual SAFE margin. Painting below `__ebss` would clobber static / static-
 /// mut data (including the cortex_m crate's "peripherals taken" flag, which
 /// shows up as a `Peripherals::take().unwrap()` panic on the *next* attempt
-/// to claim them). Examples with no static-mut data happen to leave that
-/// flag at its initialized value even when overwritten with 0xAA (the flag
-/// is checked as a non-zero bit), which is why this only surfaces under
-/// examples that have large static buffers.
+/// to claim them).
 unsafe fn safe_stack_end<const SAFE: usize>() -> *mut u8 {
     let ebss = &raw const __ebss as *mut u8;
     unsafe { ebss.add(SAFE) }

@@ -34,8 +34,6 @@ mod facade_scratch {
 // concatenates `SERVER_HELLO || SERVER_FLIGHT` at compile time. Done as
 // a macro because the generic-const form (`fn f<const A, const B>() ->
 // [u8; A + B]`) is gated on the `generic_const_exprs` nightly feature.
-// Declared at the top of the crate so the fixture modules below can
-// resolve it via the unqualified macro name.
 #[cfg(feature = "canned-replay")]
 macro_rules! concat_sh_sf {
     ($sh_len:expr, $sf_len:expr) => {{
@@ -156,7 +154,6 @@ pub fn run_aes_ed25519_facade() -> Result<(), ()> {
 
         let tls = DefaultStream::connect(&params, scratch, transport, &mut rng).map_err(|_| ())?;
 
-        // Captured TX must be CH || CF.
         let captured = tls.transport().captured_tx();
         let expected_len = CLIENT_HELLO.len() + CLIENT_FINISHED.len();
         if captured.len() != expected_len
@@ -315,8 +312,6 @@ pub fn run_aes_ed25519_jedisct_facade() -> Result<(), ()> {
         ClientConfig, ClientParams, ConfigSuitePolicy, DefaultVerify, TlsStream,
     };
 
-    // Local ClientConfig: same as DefaultConfig but with Hkdf swapped to
-    // JedisctCrypto so the HKDF / SHA-256 path goes through jedisct1.
     pub struct JedisctConfig;
     impl ClientConfig for JedisctConfig {
         type Hkdf = JedisctCrypto;
@@ -357,6 +352,5 @@ pub fn run_aes_ed25519_jedisct_facade() -> Result<(), ()> {
 ))]
 #[inline(never)]
 pub fn baseline_aes_ed25519_jedisct_facade() -> bool {
-    // Shares the AES+Ed25519 fixture rodata.
     baseline_aes_ed25519_facade()
 }

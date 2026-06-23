@@ -26,7 +26,7 @@ fn build_finished_plaintext<H: HkdfSha256>(
         finished_mac::<H>(c_hs_traffic_secret, transcript_hash_through_server_finished)?;
     let mut finished_msg = ZeroBuf::<{ 4 + 32 }>::new([0; 4 + 32]);
     finished_msg[0] = HS_FINISHED;
-    finished_msg[1..4].copy_from_slice(&[0x00, 0x00, 0x20]); // length = 32 (big-endian u24)
+    finished_msg[1..4].copy_from_slice(&[0x00, 0x00, 0x20]);
     finished_msg[4..].copy_from_slice(&verify_data[..]);
     Ok(finished_msg)
 }

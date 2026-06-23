@@ -264,7 +264,6 @@ impl<'a> SanEntryWalker<'a> {
                 }
                 return Some(Ok(t.body));
             }
-            // Skip every other GeneralName variant.
         }
         None
     }
@@ -280,13 +279,9 @@ impl<'a> SanEntryWalker<'a> {
 /// - `*` alone, or wildcards in non-leftmost positions, are rejected.
 fn dns_name_matches(pattern: &[u8], hostname: &[u8]) -> bool {
     if let Some(suffix) = pattern.strip_prefix(b"*.") {
-        // Wildcard pattern. The suffix begins with the dot we kept off the
-        // strip, so we need the hostname to be of the form `<label>.<suffix>`
-        // where the label is non-empty and dot-free.
         if suffix.is_empty() || suffix.contains(&b'*') {
             return false;
         }
-        // hostname must be longer than the suffix (at least one label + dot).
         if hostname.len() <= suffix.len() + 1 {
             return false;
         }
@@ -295,7 +290,6 @@ fn dns_name_matches(pattern: &[u8], hostname: &[u8]) -> bool {
         if !ascii_eq_ignore_case(tail, suffix) {
             return false;
         }
-        // label_with_dot ends with '.', preceded by the wildcarded label.
         if label_with_dot.last() != Some(&b'.') {
             return false;
         }
@@ -305,7 +299,6 @@ fn dns_name_matches(pattern: &[u8], hostname: &[u8]) -> bool {
         }
         true
     } else {
-        // No wildcards allowed in non-leftmost positions either.
         if pattern.contains(&b'*') {
             return false;
         }
@@ -316,10 +309,6 @@ fn dns_name_matches(pattern: &[u8], hostname: &[u8]) -> bool {
 fn ascii_eq_ignore_case(a: &[u8], b: &[u8]) -> bool {
     a.eq_ignore_ascii_case(b)
 }
-
-// Cert validity-window check.
-// Gated on feature = "validity" — embedded builds without a clock pay
-// no code-size cost for either the check or the TimeSource trait.
 
 /// Reasons the cert-validity check may reject a cert.
 #[cfg(feature = "validity")]
@@ -577,7 +566,6 @@ mod tests {
     #[cfg(feature = "ip-host")]
     #[test]
     fn verify_hostname_ip_literal_skips_dns_match() {
-        // dNSName "1.1.1.1" must NOT match IP literal 1.1.1.1
         let san = tlv(0x82, b"1.1.1.1");
         let view = ed25519_view_with_san(&san);
         assert_eq!(
@@ -604,25 +592,21 @@ mod tests {
                 validity_der: &[],
             }
         }
-        // IPv4 shape
         let san = dns_san("1.1.1.1");
         assert_eq!(
             verify_hostname(&mk_view(&san), "1.1.1.1"),
             Err(IdentityError::HostnameMismatch)
         );
-        // IPv6 shape (contains `:`)
         let san = dns_san("2001:db8::1");
         assert_eq!(
             verify_hostname(&mk_view(&san), "2001:db8::1"),
             Err(IdentityError::HostnameMismatch)
         );
-        // URL-form bracketed IPv6
         let san = dns_san("[2001:db8::1]");
         assert_eq!(
             verify_hostname(&mk_view(&san), "[2001:db8::1]"),
             Err(IdentityError::HostnameMismatch)
         );
-        // Regular DNS name still matches
         let san = dns_san("example.com");
         assert_eq!(verify_hostname(&mk_view(&san), "example.com"), Ok(()));
     }
@@ -821,7 +805,6 @@ mod tests {
     fn pin_algorithm_mismatch() {
         let pk = [0x42u8; 32];
         let view = ed25519_view(&pk);
-        // Use the phantom-only variant to force a non-matching shape.
         let pin = PinnedPubkey::_Phantom(core::marker::PhantomData);
         assert_eq!(
             verify_pinned_pubkey(&view, &pin),

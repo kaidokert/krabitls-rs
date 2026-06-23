@@ -4,11 +4,7 @@
 
 /// Error returned by the in-crate `WriteExt::write_u24` helper.
 //
-// NOTE: Not `#[derive(thiserror::Error)]` because thiserror's
-// `#[error("{0}")]` forces `Display` onto the generic field, which would
-// propagate `E: Display` as a bound on the struct itself and infect every
-// caller. The manual impl below gates only the Display/Error impls on
-// `E: Display`, leaving the struct generic-bound-free.
+// Manual `Display` / `Error` impls to avoid `thiserror`'s implicit `E: Display` bound on the struct.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub(crate) enum Write24Error<E> {
     /// `n > 0xFF_FFFF` — cannot be encoded as a 24-bit big-endian field.

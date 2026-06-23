@@ -32,7 +32,6 @@ impl CycleCounter {
     /// The demo doesn't enter long critical sections during
     /// measurement and its measured operations all complete in well
     /// under one period, so the race doesn't manifest in practice.
-    /// Flagged by gemini-code-assist on PR#1; tracked as future work.
     fn total_cycles() -> u64 {
         let period = Self::RELOAD_VALUE as u64 + 1;
         loop {
@@ -63,7 +62,6 @@ impl CycleCounter {
         syst.enable_interrupt();
         syst.enable_counter();
 
-        // Wait for the counter to load from the reload register.
         cortex_m::asm::dsb();
         while SYST::get_current() == 0 {
             cortex_m::asm::nop();

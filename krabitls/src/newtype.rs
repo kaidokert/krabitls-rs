@@ -23,9 +23,7 @@ macro_rules! secret_newtype {
             }
 
             /// Borrow the underlying bytes.
-            // Macro-generated; not every secret_newtype instance has a
-            // reader for every accessor (Secret uses both; AeadIv only
-            // as_bytes; AeadKey/AeadKey32 are themselves test-only).
+            // Not every secret-newtype instance exercises every accessor.
             #[allow(dead_code)]
             pub fn as_bytes(&self) -> &[u8; $n] {
                 &*self.0
@@ -57,7 +55,6 @@ secret_newtype! {
     Secret(32)
 }
 
-// Never print raw secret bytes.
 impl core::fmt::Debug for Secret {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str("Secret([redacted; 32])")
@@ -97,17 +94,13 @@ impl From<[u8; 32]> for TranscriptDigest {
     }
 }
 
-// `TranscriptDigest` is public protocol material; print the raw bytes.
 impl core::fmt::Debug for TranscriptDigest {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_tuple("TranscriptDigest").field(&self.0).finish()
     }
 }
 
-// AeadKey + AeadKey32 are test-only newtypes. Production code holds the
-// raw key bytes inside `Zeroizing<S::KeyBytes>` (see `aead::RecordKeys`)
-// directly; these wrappers exist so the secret-bearing-newtype test
-// surface stays uniform across types.
+// Test-only newtypes; production stores keys in `Zeroizing<S::KeyBytes>` directly.
 #[cfg(test)]
 secret_newtype! {
     /// 16-byte AES-128-GCM key. Output of [`crate::traffic_keys`].
@@ -169,8 +162,6 @@ mod tests {
 
     #[test]
     fn from_array_round_trip() {
-        // `From<[u8; N]>` wraps a plain array into the secret-bearing newtype
-        // without callers having to spell out the `ZeroBuf` step.
         let s = Secret::from([0x42; 32]);
         assert_eq!(s.as_bytes(), &[0x42; 32]);
         let key: AeadKey = [0x11; 16].into();
@@ -220,23 +211,13 @@ mod tests {
 
     #[test]
     fn transcript_digest_debug_prints_bytes() {
-        // Sanity-check counterpoint: public material *should* be printable.
         let td = TranscriptDigest::new([0x11; 32]);
         let dbg = format!("{td:?}");
         assert!(dbg.contains("17") || dbg.contains("0x11"));
     }
 
-    // (The `Drop` impl just delegates to `self.0.zeroize()`, which is
-    // exercised directly by `secret_zeroizes` above. A post-drop pointer
-    // peek to "verify" Drop fired is UB in general — Rust may move the
-    // stack slot or the optimizer may elide writes whose effects aren't
-    // observed. Trust the implementation + the Zeroize test.)
-
     #[test]
     fn zero_buf_round_trip() {
-        // ZeroBuf is `Zeroizing<[u8; N]>`. Deref to the array gives us
-        // indexing and `*buf` copy-out for the boundary into other
-        // newtype constructors.
         let mut buf = ZeroBuf::<16>::new([0u8; 16]);
         assert_eq!(*buf, [0u8; 16]);
         buf.copy_from_slice(&[0x42; 16]);

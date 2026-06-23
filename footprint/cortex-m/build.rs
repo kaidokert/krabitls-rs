@@ -15,7 +15,6 @@ fn main() {
         _ => panic!("Unsupported target: {}", target),
     };
 
-    // Put `memory.x` in output directory and add to linker search path
     let out = &PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR not set"));
     File::create(out.join("memory.x"))
         .expect("Failed to create memory.x")
@@ -24,11 +23,9 @@ fn main() {
     println!("cargo:rustc-link-search={}", out.display());
     println!("cargo:rerun-if-changed={}", memory_file);
 
-    // Linker flags for cortex-m-rt
     println!("cargo:rustc-link-arg=--nmagic");
     println!("cargo:rustc-link-arg=-Tlink.x");
 
-    // Set target-specific cfg flags
     if target.contains("thumbv6m") {
         println!("cargo:rustc-cfg=thumbv6m");
     } else if target.contains("thumbv7em") {

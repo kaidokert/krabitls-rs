@@ -1,6 +1,6 @@
 //! Typestate TLS 1.3 client. `TlsConnection<State, H>`'s only legal
 //! next move is the one named by `State` — wrong-method-for-state is a
-//! compile error. Design notes in `TYPESTATE_DESIGN.md`.
+//! compile error.
 
 use core::marker::PhantomData;
 
@@ -260,14 +260,9 @@ pub struct WaitServerFlight<S: CipherSuite, M: HandshakeMode = Live> {
 pub struct ServerFlightDone<S: CipherSuite, M: HandshakeMode = Live> {
     pub(crate) hs: Secret,
     pub(crate) c_hs_ts: Secret,
-    // `s_hs_ts` and `server_pubkey` are stored by `verify_server_flight`'s
-    // construction site but never read in production (finish_handshake
-    // only consumes `hs` and `c_hs_ts`). They're load-bearing for the
-    // cfg(test) `server_pubkey()` accessor + a direct field-read in this
-    // file's tests. Carried in the typestate rather than dropped so the
-    // test surface still has something to inspect.
-    #[allow(dead_code)]
-    pub(crate) s_hs_ts: Secret,
+    // Read only by the `cfg(all(test, not(chacha20), not(rsa)))` accessor
+    // `server_pubkey()`; carrying the value uniformly costs an
+    // \`#[allow(dead_code)]\` rather than feature-gating the field.
     #[allow(dead_code)]
     pub(crate) server_pubkey: ServerPubkeyOwned,
     pub(crate) _suite: PhantomData<S>,
@@ -276,10 +271,7 @@ pub struct ServerFlightDone<S: CipherSuite, M: HandshakeMode = Live> {
 
 #[derive(Debug, Clone)]
 #[allow(clippy::large_enum_variant)]
-// Fields are only read by `from_view`/`as_view` below — both of which
-// are themselves part of the replay-fixture surface (no facade-engine
-// caller). Kept so the typestate's ServerFlightDone can carry a
-// concrete pubkey for replay tooling.
+// Carries a concrete pubkey for replay tooling.
 #[allow(dead_code)]
 pub enum ServerPubkeyOwned {
     Ed25519([u8; 32]),
@@ -478,10 +470,7 @@ impl<H> NegotiatedSuite<H>
 where
     H: HkdfSha256,
 {
-    // Test-only typestate accessor; the facade engine matches on the
-    // NegotiatedSuite enum directly. Only kept for tests that drive the
-    // typestate through a known cipher choice. Test gating mirrors the
-    // test functions that use it (e.g. `feed_server_record_and_finalize_smoke`).
+    // Test-only; production matches on `NegotiatedSuite`.
     #[cfg(all(
         test,
         feature = "cipher-aes",
@@ -691,9 +680,7 @@ where
     M: HandshakeMode,
 {
     /// CCS records skipped without bumping seq_in.
-    // The facade engine has its own record-feed path (decrypt_record_inplace
-    // + manual reassembly). Only callers of this typestate-style method
-    // are this file's tests, gated `not(chacha20)+not(rsa)`.
+    // Test-only; the facade engine has its own record-feed path.
     #[cfg(all(test, not(feature = "chacha20"), not(feature = "rsa")))]
     pub fn feed_server_record<const N: usize>(
         &mut self,
@@ -754,7 +741,6 @@ where
             state: ServerFlightDone {
                 hs: self.state.hs,
                 c_hs_ts: self.state.c_hs_ts,
-                s_hs_ts: self.state.s_hs_ts,
                 server_pubkey,
                 _suite: PhantomData,
                 _mode: PhantomData,
@@ -790,7 +776,6 @@ where
     ) -> Result<&'a [u8], ClientFinishedError>,
     DeriveFn: Fn(&Secret) -> Result<RecordKeys<S>, HkdfLabelError>,
 {
-    // Seq 0 — first c->s record under c_hs AEAD keys.
     let record = build_client_finished(c_hs_ts, th_through_sfin, 0, out_buf)?;
 
     let ms = master_secret::<H>(hs)?;
@@ -807,9 +792,7 @@ where
     M: HandshakeMode,
 {
     // Test-only accessor — used by this file's `replay_state_matches`
-    // test. s_hs_traffic_secret / c_hs_traffic_secret / build_client_finished
-    // had zero callers and were removed entirely. Gate matches the
-    // caller test's cfg.
+    // test. Gate matches the caller test's cfg.
     #[cfg(all(test, not(feature = "chacha20"), not(feature = "rsa")))]
     pub fn server_pubkey(&self) -> ServerPubkey<'_> {
         self.state.server_pubkey.as_view()
@@ -950,8 +933,7 @@ where
         Ok(record)
     }
 
-    // Test-only path; the facade engine uses `decrypt_record_inplace`.
-    // Gate matches the cfg on the test function that calls it.
+    // Test-only; the facade engine uses `decrypt_record_inplace`.
     #[cfg(all(test, not(feature = "chacha20"), not(feature = "rsa")))]
     pub fn decrypt_record<'a>(
         &mut self,
@@ -991,8 +973,7 @@ where
         Ok((content_len, ct))
     }
 
-    // Test-only path; the facade engine handles close_notify in its own
-    // event loop. Gate matches the cfg on the test function that calls it.
+    // Test-only; the facade engine handles close_notify in its own event loop.
     #[cfg(all(test, not(feature = "chacha20"), not(feature = "rsa")))]
     pub fn close_notify(mut self, out_buf: &mut [u8]) -> Result<&[u8], ConnectionError> {
         self.encrypt_record(&CLOSE_NOTIFY_ALERT, CT_ALERT, out_buf)
@@ -1004,7 +985,10 @@ where
 // ============================================================================
 
 #[cfg(test)]
-#[allow(dead_code, unused_imports)] // fixtures only used under the no-chacha20 cfg-gated tests
+#[cfg_attr(
+    any(feature = "rsa", feature = "chacha20"),
+    allow(dead_code, unused_imports)
+)]
 mod tests {
     use super::*;
     use crate::backends::RustCrypto;
@@ -1298,7 +1282,7 @@ mod tests {
         let mut reassembler: ServerFlightReassembler<512> = ServerFlightReassembler::new();
         let mut scratch = [0u8; 400];
 
-        // Middlebox-compat CCS: type=0x14, body = 0x01.
+        // Middlebox-compat CCS.
         let ccs_record = [0x14u8, 0x03, 0x03, 0x00, 0x01, 0x01];
         let step = conn
             .feed_server_record(&ccs_record, &mut reassembler, &mut scratch)
@@ -1564,7 +1548,6 @@ mod tests {
         assert_eq!(alert[0], CT_APPLICATION_DATA);
         assert_eq!(&alert[1..3], &[0x03, 0x03]);
         let body_len = u16::from_be_bytes([alert[3], alert[4]]) as usize;
-        // 2B alert + 1B inner_ct + 16B tag.
         assert_eq!(body_len, 2 + 1 + 16);
         assert_eq!(alert.len(), 5 + body_len);
     }

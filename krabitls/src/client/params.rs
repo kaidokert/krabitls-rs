@@ -31,9 +31,7 @@ pub struct ClientParams<'a, V = DefaultVerify> {
     pub(crate) suite_policy: RuntimeSuitePolicy,
 }
 
-// Manual `Debug` impl: `dyn TimeSource` doesn't carry a `Debug` bound, so
-// derive doesn't work. Stub the time field out — `Some`/`None` is the
-// only useful signal anyway.
+// Manual `Debug` impl: `dyn TimeSource` doesn't carry a `Debug` bound.
 impl<'a, V> core::fmt::Debug for ClientParams<'a, V> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let mut d = f.debug_struct("ClientParams");

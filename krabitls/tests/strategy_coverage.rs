@@ -1,6 +1,6 @@
 //! End-to-end coverage for the `VerifyStrategy` plumbing — exercises
-//! the surface that the cutover landed but that `canned_handshake.rs`
-//! only hits via the default `SafeStrategy<PinOrSelfSigned, DerCert>`:
+//! the surface `canned_handshake.rs` doesn't cover, which only hits
+//! the default `SafeStrategy<PinOrSelfSigned, DerCert>`:
 //!
 //! - [`ClientParams::with_strategy`] with a non-default `V`
 //! - `HandshakeError::StrategyRejected` when the strategy returns `Err`
@@ -86,10 +86,6 @@ fn default_verify() -> DefaultVerify {
     SafeStrategy::new(PinOrSelfSigned::self_signed())
 }
 
-// ============================================================================
-// Test 1: with_strategy() + a non-default V flows through `connect`
-// ============================================================================
-
 /// Wraps any inner strategy and bumps a shared counter on every
 /// `verify_chain` call. Proves the V type-parameter and its slot
 /// lifetime survive the plumbing through `TlsEngine` end-to-end.
@@ -162,10 +158,6 @@ fn connect_with_custom_strategy_observes_one_verify_call() {
     assert_eq!(tls.transport().captured_tx(), expected_tx.as_slice());
 }
 
-// ============================================================================
-// Test 2: strategy returns Err → HandshakeError::StrategyRejected
-// ============================================================================
-
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("AlwaysReject")]
 struct AlwaysRejectError;
@@ -211,10 +203,6 @@ fn strategy_rejected_propagates_to_handshake_error() {
         other => panic!("expected StrategyRejected, got {other:?}"),
     }
 }
-
-// ============================================================================
-// Test 3: lying-strategy → HandshakeError::StrategyPubkeyMismatch
-// ============================================================================
 
 /// Returns a `PreparedVerifier` built from `attacker_pubkey`, ignoring
 /// the real `chain[0]`. The engine's stack-owned `matches_cert`
