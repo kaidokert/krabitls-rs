@@ -13,19 +13,27 @@ No heap allocations, and prefer reduced flash + stack size over speed.
 
 #### Resource usage (as of version 0.1.0)
 
-Cortex-M3 and RV32IMAC footprint. Values are real-minus-baseline deltas from
-the Footprint workflow's step summary. Wire-data scratch buffers live in
-`.bss` (via `footprint_handshakes::with_buffers`), so the stack column
-reflects only the crypto + protocol cost.
+Cortex-M3 and RV32IMAC footprint. Values are real-minus-baseline deltas
+from the Footprint workflow's step summary, driving
+`DefaultStream::connect` end-to-end against the seed-0 canned fixtures
+(real ECDHE + ClientHello write + ServerHello parse + handshake key
+schedule + cert verify + Finished + Drop close_notify path).
+Wire-data scratch buffers live in `.bss` (via
+`footprint_handshakes::with_buffers`), so the stack column reflects only
+the crypto + protocol cost.
+
+Each row drops default features and picks the minimum needed: the
+in-tree `tlv_cert` parser (vs the heavier `cert-der` default), one
+cipher, one signature algorithm.
 
 | Target   | Suite             | Sig          | .text (KiB) | Stack (B) |
 |----------|-------------------|--------------|------------:|----------:|
-| M3       | AES-128-GCM       | Ed25519      |        32.7 |      5764 |
-| M3       | ChaCha20-Poly1305 | Ed25519      |        28.2 |      5716 |
-| M3       | AES-128-GCM       | RSA-2048-PSS |        42.6 |     15316 |
-| RV32IMAC | AES-128-GCM       | Ed25519      |        42.9 |      5716 |
-| RV32IMAC | ChaCha20-Poly1305 | Ed25519      |        35.5 |      5668 |
-| RV32IMAC | AES-128-GCM       | RSA-2048-PSS |        60.9 |     15256 |
+| M3       | AES-128-GCM       | Ed25519      |        40.1 |     15844 |
+| M3       | ChaCha20-Poly1305 | Ed25519      |        35.4 |     10692 |
+| M3       | AES-128-GCM       | RSA-2048-PSS |        53.8 |     27280 |
+| RV32IMAC | AES-128-GCM       | Ed25519      |        63.3 |     15604 |
+| RV32IMAC | ChaCha20-Poly1305 | Ed25519      |        53.8 |     10436 |
+| RV32IMAC | AES-128-GCM       | RSA-2048-PSS |        86.4 |     30484 |
 
 ## License
 
