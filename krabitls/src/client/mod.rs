@@ -51,7 +51,7 @@ pub use crate::traits::{Ed25519VerifierProvider, RsaVerifierProvider};
 // In-crate-only: alternate config impls (samples, callers write their own),
 // the WriteAppError plumbing type, the InternalError variant the engine
 // surfaces upstream, the scratch-tuning knobs, and the in-progress
-// hostname cap. Demoted as part of the api-scrub pass.
+// hostname cap.
 pub(crate) use error::WriteAppError;
 
 #[cfg(test)]

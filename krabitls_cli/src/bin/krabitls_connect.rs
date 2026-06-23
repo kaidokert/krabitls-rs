@@ -20,10 +20,6 @@ use log::{error, info};
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
-// ============================================================================
-// CLI args + pin parsing
-// ============================================================================
-
 enum Pin {
     Ed25519([u8; 32]),
     #[allow(dead_code)] // only used under feature = "rsa"
@@ -87,10 +83,6 @@ fn decode_hex(s: &str) -> std::result::Result<Vec<u8>, String> {
     Ok(out)
 }
 
-// ============================================================================
-// RNG adapter — wrap `getrandom` as a `rand_core::CryptoRng`.
-// ============================================================================
-
 /// OS-backed RNG. `getrandom::fill` is the only randomness source.
 struct OsRng;
 
@@ -116,10 +108,6 @@ impl rand_core::TryRng for OsRng {
 
 impl rand_core::TryCryptoRng for OsRng {}
 
-// ============================================================================
-// Transport adapter — `std::net::TcpStream` -> `krabitls::client::Transport`.
-// ============================================================================
-
 /// `TcpStream` wrapper that satisfies the facade's `Transport` trait.
 struct TcpTransport(TcpStream);
 
@@ -134,10 +122,6 @@ impl Transport for TcpTransport {
         IoWrite::write_all(&mut self.0, buf)
     }
 }
-
-// ============================================================================
-// Main flow
-// ============================================================================
 
 fn run(host: &str, port: u16, pin: Option<&Pin>) -> Result<()> {
     let endpoint = format!("{host}:{port}");
@@ -239,7 +223,6 @@ fn describe_connect_error(e: &ConnectError<std::io::Error>) -> String {
 }
 
 fn parse_host_port(s: &str) -> std::result::Result<(String, u16), String> {
-    // An explicit `:<port>` must parse; otherwise the bare host gets 443.
     // IPv6 literals are not supported (no bracket handling).
     if s.is_empty() {
         return Err("host is empty".into());

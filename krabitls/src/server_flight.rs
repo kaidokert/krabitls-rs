@@ -19,9 +19,8 @@ const HS_CERTIFICATE_VERIFY: u8 = 15;
 const HS_FINISHED: u8 = 20;
 
 /// Parsed server-flight messages, borrowing into decrypted plaintext.
-// `ee_body` is parsed and retained for struct symmetry; the only reader
-// is a test assertion in lib.rs:2313. Production verify reads `ee_full`
-// (the framed version) for transcript hashing.
+// `ee_body` is parsed and retained for struct symmetry; production verify
+// reads `ee_full` (the framed version) for transcript hashing.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct ServerFlightView<'a> {

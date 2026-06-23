@@ -45,10 +45,8 @@ pub fn read_tlv(buf: &[u8]) -> Result<Tlv<'_>, TlvError> {
     }
     let len_first = buf[1];
     let (header_len, body_len) = if len_first & 0x80 == 0 {
-        // Short form: length is the byte itself.
         (2usize, len_first as usize)
     } else {
-        // Long form: low 7 bits = number of length octets.
         let n = (len_first & 0x7F) as usize;
         // n=0 would be indefinite-length, illegal in DER.
         // n>4 means length > 4 GB, not seen in cert/SAN.

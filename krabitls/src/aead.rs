@@ -33,8 +33,6 @@ pub(crate) fn decrypt_record<'a, S: CipherSuite>(
     })
 }
 
-// Only invoked from cfg(test) callers: the standalone `decrypt_record`
-// above and `RecordKeys::decrypt_record` (also cfg(test)).
 #[cfg(test)]
 fn decrypt_record_with<'a, F>(
     record: &[u8],
@@ -66,7 +64,6 @@ where
     if record.len() < 5 + body_len {
         return Err(DecryptError::Truncated);
     }
-    // Reject trailing bytes so callers do not accidentally drop a second record.
     if record.len() != 5 + body_len {
         return Err(DecryptError::TrailingBytes);
     }
@@ -139,8 +136,6 @@ where
     }
     let ct_len = body_len - 16;
 
-    // Split the record so AAD (header) and AEAD buffer (body) are disjoint
-    // mutable borrows.
     let (header, body) = record.split_at_mut(5);
     let (ciphertext, tag_slice) = body.split_at_mut(ct_len);
     let mut tag = [0u8; 16];
@@ -262,7 +257,7 @@ where
         });
     }
 
-    // u16 cast safe given the cap above; header IS the AAD.
+    // u16 cast safe given the cap above.
     let legacy = crate::consts::LEGACY_VERSION.to_be_bytes();
     let body_len_be = (cipher_body_len as u16).to_be_bytes();
     let aad: [u8; 5] = [
@@ -293,9 +288,6 @@ mod sealed {
 
 /// TLS 1.3 cipher suite marker. Sealed.
 pub trait CipherSuite: sealed::Sealed + Sized {
-    // Trait constant set by every impl but never read through `<S>::ID`
-    // anywhere internally — kept because it's part of the trait contract
-    // and would be a breaking change to remove from any downstream impl.
     #[allow(dead_code)]
     const ID: u16;
     type KeyBytes: zeroize::Zeroize;
@@ -373,23 +365,6 @@ pub struct RecordKeys<S: CipherSuite> {
     pub iv: AeadIv,
 }
 
-// ============================================================================
-// Test-only cipher: `NoCipher`
-// ============================================================================
-// `NoCipher` satisfies the `CipherSuite` trait shape (so generic
-// record-layer code compiles) but its AEAD implementation is a no-op:
-// `encrypt` writes nothing, `decrypt` accepts any tag. The type is gated
-// on `#[cfg(test)]`, so production code cannot construct a `NoCipher`
-// and accidentally wire a noop AEAD into a real handshake.
-//
-// Use `NoCipher` for tests that exercise pure record-layer mechanics
-// (length checks, header parse, error paths, padding strip) — they need
-// a type satisfying `CipherSuite` but never actually encrypt or decrypt.
-//
-// Use `DefaultCipher` for tests that round-trip real plaintext through
-// the AEAD. Use the named suites only for tests bound to captured wire
-// fixtures.
-
 #[cfg(test)]
 mod no_cipher {
     use super::*;
@@ -437,15 +412,13 @@ mod no_cipher {
         }
     }
 
-    /// Cipher-agnostic [`CipherSuite`] for tests that don't need real
-    /// crypto. Use for record-layer mechanics tests (size limits,
-    /// header parsing, padding strip, error-path tests).
+    /// Test-only no-op cipher satisfying [`CipherSuite`].
     pub struct NoCipher;
 
     impl sealed::Sealed for NoCipher {}
 
     impl CipherSuite for NoCipher {
-        const ID: u16 = 0x0000; // Reserved / never advertised on the wire
+        const ID: u16 = 0x0000;
         type KeyBytes = [u8; 16];
         type Cipher = NoopAead;
         fn make_cipher(_: &zeroize::Zeroizing<[u8; 16]>) -> Self::Cipher {
@@ -474,9 +447,6 @@ impl<S: CipherSuite> RecordKeys<S> {
     }
 
     /// Decrypt one `application_data` record under this suite's AEAD.
-    // Only callers are this file's tests and the cfg(test)
-    // `feed_server_record_inner` in connection.rs. The facade engine uses
-    // `decrypt_record_inplace` instead.
     #[cfg(test)]
     pub fn decrypt_record<'a>(
         &self,
@@ -609,8 +579,7 @@ mod tests {
 
     #[test]
     fn split_no_padding() {
-        // [content..., content_type] with no trailing zeros.
-        let inner = b"hello\x17"; // 0x17 = application_data
+        let inner = b"hello\x17";
         let (content, ct) = split_inner_plaintext(inner).unwrap();
         assert_eq!(content, b"hello");
         assert_eq!(ct, 0x17);
@@ -618,7 +587,6 @@ mod tests {
 
     #[test]
     fn split_strips_trailing_zeros() {
-        // [content..., content_type, 0, 0, 0]
         let inner = b"hello\x17\x00\x00\x00";
         let (content, ct) = split_inner_plaintext(inner).unwrap();
         assert_eq!(content, b"hello");
@@ -635,7 +603,6 @@ mod tests {
 
     #[test]
     fn split_all_zero_inner_rejected() {
-        // All-zero plaintext = padding with no content_type.
         let inner = [0u8; 16];
         assert_eq!(
             split_inner_plaintext(&inner),
@@ -645,8 +612,7 @@ mod tests {
 
     #[test]
     fn split_oversize_rejected_upfront() {
-        // Reject before iterating, so a malicious caller can't force a
-        // multi-GB scan and the `(i + 1) as u32` cast can't truncate.
+        // DoS / `(i + 1) as u32` cast safety.
         let inner = vec![0xab; TLS_CIPHERTEXT_MAX + 1];
         assert_eq!(
             split_inner_plaintext(&inner),
@@ -656,9 +622,7 @@ mod tests {
 
     #[test]
     fn split_zero_then_nonzero_keeps_zero_as_content() {
-        // Padding only strips from the END. A zero byte in the middle is
-        // legitimate content (e.g. a binary protocol with a null byte).
-        let inner = b"\x00\x00\xab\x17"; // content_type 0x17, content [0, 0, 0xab]
+        let inner = b"\x00\x00\xab\x17";
         let (content, ct) = split_inner_plaintext(inner).unwrap();
         assert_eq!(content, b"\x00\x00\xab");
         assert_eq!(ct, 0x17);
@@ -689,14 +653,12 @@ mod tests {
             .expect("encrypt");
         let record_len = record.len();
 
-        // Copying decrypt.
         let mut copy_pt = [0u8; 128];
         let copy = keys
             .decrypt_record(&record_buf[..record_len], seq, &mut copy_pt)
             .expect("copying decrypt");
         let copy_bytes: heapless::Vec<u8, 128> = heapless::Vec::from_slice(copy).unwrap();
 
-        // In-place decrypt over the same record bytes.
         let mut inplace = [0u8; 128];
         inplace[..record_len].copy_from_slice(&record_buf[..record_len]);
         let pt_len = keys

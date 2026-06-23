@@ -379,8 +379,7 @@ impl<
                 ));
             }
         }
-        // Advance the cursor past the consumed record. Done here rather
-        // than in each handler so a panicking handler can't half-consume.
+        // Centralized so a panicking handler can't half-consume the record.
         self.recv.next_record = end;
         Ok(())
     }
@@ -754,11 +753,10 @@ impl<
                 }
             }
             CT_HANDSHAKE => {
-                // Walk every coalesced 4-byte-header message; permit
-                // only NewSessionTicket (skipped silently — rejecting
-                // would break interop with major CDNs). Any other
-                // msg_type fails even when coalesced after an NST, so
-                // KeyUpdate cannot silently desync the AEAD.
+                // Permit only NewSessionTicket (skipped silently —
+                // rejecting would break interop with major CDNs). Any
+                // other msg_type fails even when coalesced after an
+                // NST, so KeyUpdate cannot silently desync the AEAD.
                 const HS_NEW_SESSION_TICKET: u8 = 4;
                 let end = body_offset + content_len;
                 let mut offset = body_offset;
@@ -1137,8 +1135,6 @@ mod tests {
         e.send_acked = 10;
         e.handshake_finished_pending_ack = true;
         e.pending_handshake_done = true;
-        // closed is already true on a Closed-state engine, but verify
-        // mark_terminal forces it regardless.
         e.closed = false;
         e.mark_terminal();
         assert_eq!(e.send_pending_len, 0);
@@ -1225,10 +1221,8 @@ mod tests {
 
     #[test]
     fn handle_handshake_declared_length_overflows_record_rejected() {
-        // Declared length larger than content_len (fragmented-ticket case).
         let mut scratch = DefaultScratch::new();
         scratch.recv_record[0] = 4;
-        // Declared length 1024 with only 20 bytes of content_len.
         scratch.recv_record[1] = 0;
         scratch.recv_record[2] = 0x04;
         scratch.recv_record[3] = 0x00;
@@ -1244,8 +1238,6 @@ mod tests {
 
     #[test]
     fn handle_handshake_zero_length_record_ok() {
-        // content_len == 0 means the loop body never runs. No messages
-        // to inspect, so this is a no-op return.
         let mut scratch = DefaultScratch::new();
         let mut e = closed_engine(&mut scratch);
         assert!(e.handle_inner_content(0, 0, CT_HANDSHAKE).is_ok());
@@ -1322,14 +1314,7 @@ mod tests {
         ));
     }
 
-    // ---------------------------------------------------------------------
     // Live AppAes engine (replay-gated)
-    //
-    // Constructs a real AppAes typestate via `from_app_secrets` so the
-    // write_app / close paths run against actual AEAD state instead of
-    // a stub. Verifies the wrapper-facing contract that's load-bearing
-    // for the data-phase drive loop.
-    // ---------------------------------------------------------------------
 
     #[cfg(feature = "replay")]
     mod replay {
@@ -1382,7 +1367,6 @@ mod tests {
             let mut e = app_engine(&mut scratch);
             let n = e.write_app(b"hello").unwrap();
             assert_eq!(n, 5);
-            // Encrypted record = 5-byte header + 5 plaintext + 1 inner CT + 16 AEAD tag.
             assert_eq!(e.send_pending_len, 5 + 5 + 1 + 16);
             assert!(e.is_send_pending());
             assert_eq!(e.send_bytes().len(), e.send_pending_len);
@@ -1395,7 +1379,6 @@ mod tests {
             let mut scratch = DefaultScratch::new();
             let mut e = app_engine(&mut scratch);
             assert!(e.close().is_ok());
-            // close_notify payload = [1, 0] → 2 plaintext + 1 inner CT + 16 tag + 5 header.
             assert_eq!(e.send_pending_len, 2 + 1 + 16 + 5);
             assert!(e.closed);
             // Outer record type is application_data (close_notify wrapped).
@@ -1408,7 +1391,6 @@ mod tests {
             let mut e = app_engine(&mut scratch);
             assert!(e.close().is_ok());
             let first_pending = e.send_pending_len;
-            // Second call is a no-op.
             assert!(e.close().is_ok());
             assert_eq!(e.send_pending_len, first_pending);
         }

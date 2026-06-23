@@ -6,8 +6,7 @@
 //! so the trait is the swap point.
 //!
 //! Trait is fixed to SHA-256 (the hash bound to our locked cipher suite
-//! `TLS_AES_128_GCM_SHA256`); generalizing to other hashes is a future
-//! concern.
+//! `TLS_AES_128_GCM_SHA256`).
 //!
 //! The TLS 1.3 key-schedule helpers built on top — `early_secret`,
 //! `handshake_secret`, `derive_secret`, `traffic_keys`,

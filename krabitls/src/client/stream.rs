@@ -94,15 +94,12 @@ where
             .write_client_hello_to_slice_with(&mut scratch.ch, &x25519_pub, &opts)
             .map_err(map_client_hello_error)?;
 
-        // 5. Transmit ClientHello directly — the Send-event path only
-        //    ever carries protected records.
+        // Direct transmit because the Send-event path only carries protected records.
         let mut transport = transport;
         transport
             .write_all(&scratch.ch[..ch_len])
             .map_err(ConnectError::Io)?;
 
-        // 6. Construct the engine in WaitServerHello state and drive
-        //    the handshake-phase loop until HandshakeDone.
         let mut engine = TlsEngine::<C, FLIGHT, RECV, SEND, MAX_CHAIN>::new(
             scratch,
             EngineState::WaitServerHello(wait_sh),
@@ -249,13 +246,7 @@ where
                     }
                 }
                 EngineEvent::AppData => {
-                    // Caller invoked write/close while the engine has
-                    // both a queued send and parked plaintext. Send
-                    // dominates AppData in the engine's event priority,
-                    // so this branch is only reachable after the send
-                    // drains — i.e. the next iteration. Returning Ok
-                    // lets the outer loop observe AppData via a
-                    // subsequent `read()` call.
+                    // Send dominates AppData in the engine's event priority.
                     return Ok(());
                 }
                 EngineEvent::Closed => return Err(ConnectError::Closed),
@@ -452,7 +443,6 @@ where
     }
 
     fn flush(&mut self) -> Result<(), Self::Error> {
-        // No buffering; write_all already drained.
         Ok(())
     }
 }

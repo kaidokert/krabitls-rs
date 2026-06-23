@@ -1,7 +1,6 @@
 //! [`CertParser`] implementation backed by the hand-rolled TLV walker
-//! in [`super::tlv`]. Replaces the previous `der`-crate-based parser
-//! to drop the generic `AnyRef::decode` / `SliceReader` / `Header` /
-//! `Tag` monomorphization chain from `.text`.
+//! in [`super::tlv`]. Avoids the `der` crate's generic monomorphization
+//! chain.
 
 #[cfg(feature = "rsa")]
 use super::tlv::TAG_NULL;
@@ -115,7 +114,6 @@ impl CertParser for DerCert {
             return Err(CertParseError::TrailingBytes);
         }
 
-        // Walk TBS body.
         let mut tbs_r = tbs_body;
 
         // [0] EXPLICIT Version DEFAULT v1 — v3-only client.
@@ -135,26 +133,22 @@ impl CertParser for DerCert {
             return Err(CertParseError::Malformed);
         }
 
-        // serialNumber
         take_tlv(&mut tbs_r)?;
-        // signatureAlgorithm (TBS copy must match outer)
+        // TBS sig alg must match outer.
         let tbs_alg_tlv = read_tlv(tbs_r).map_err(malformed)?;
         let tbs_sig_alg_bytes = &tbs_r[..tbs_alg_tlv.header_len + tbs_alg_tlv.body.len()];
         tbs_r = tbs_alg_tlv.rest;
         if tbs_sig_alg_bytes != outer_sig_alg_bytes {
             return Err(CertParseError::SignatureAlgorithmMismatch);
         }
-        // issuer
         take_tlv(&mut tbs_r)?;
         // validity SEQUENCE { notBefore, notAfter } — captured for the
         // optional `feature = "validity"` window check.
         let validity_tlv = read_tlv(tbs_r).map_err(malformed)?;
         let validity_der = &tbs_r[..validity_tlv.header_len + validity_tlv.body.len()];
         tbs_r = validity_tlv.rest;
-        // subject
         take_tlv(&mut tbs_r)?;
 
-        // SubjectPublicKeyInfo
         let spki_tlv = read_expected(tbs_r, TAG_SEQUENCE)?;
         tbs_r = spki_tlv.rest;
         let mut spki_r = spki_tlv.body;
@@ -166,7 +160,6 @@ impl CertParser for DerCert {
             return Err(CertParseError::TrailingBytes);
         }
 
-        // Optional [1]/[2] unique identifiers + [3] EXPLICIT Extensions.
         let san_bytes = walk_extensions_for_san(tbs_r)?;
 
         match classify_spki_algorithm(spki_alg_bytes)? {
@@ -215,7 +208,6 @@ fn walk_extensions_for_san(mut tbs_r: &[u8]) -> Result<Option<&[u8]>, CertParseE
             || tag == tag_ctx_primitive(2)
             || tag == tag_ctx_constructed(2)
         {
-            // skip issuerUniqueID / subjectUniqueID
             take_tlv(&mut tbs_r)?;
             continue;
         }

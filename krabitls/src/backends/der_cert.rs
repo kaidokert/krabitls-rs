@@ -93,13 +93,9 @@ impl CertParser for DerCert {
         if tbs_sig_alg_bytes != outer_sig_alg_bytes {
             return Err(CertParseError::SignatureAlgorithmMismatch);
         }
-        // Capture validity for optional date checks.
-        // The bytes carry the DER `SEQUENCE { notBefore, notAfter }`;
-        // parsing the UTCTime / GeneralizedTime → epoch seconds happens
-        // on demand only when the validity check runs.
-        tbs_r.tlv_bytes().map_err(map_err)?; // issuer
+        tbs_r.tlv_bytes().map_err(map_err)?;
         let validity_der = tbs_r.tlv_bytes().map_err(map_err)?;
-        tbs_r.tlv_bytes().map_err(map_err)?; // subject
+        tbs_r.tlv_bytes().map_err(map_err)?;
 
         // SubjectPublicKeyInfo ::= SEQUENCE { algorithm AlgorithmIdentifier,
         //                                     subjectPublicKey BIT STRING }
@@ -118,9 +114,6 @@ impl CertParser for DerCert {
             .as_bytes()
             .ok_or(CertParseError::BitStringHasUnusedBits)?;
 
-        // Walk the remaining TBS fields looking for the v3 extensions block
-        // (`[3] EXPLICIT Extensions`). Skip past optional v2 [1]/[2] unique
-        // identifiers. Inside extensions, look for the SubjectAltName OID.
         let san_bytes = walk_extensions_for_san(&mut tbs_r)?;
 
         // Dispatch on the SPKI algorithm — the cert kind is determined by
@@ -191,7 +184,6 @@ fn walk_extensions_for_san<'a>(
                 number: TagNumber(2),
                 ..
             } => {
-                // skip issuerUniqueID / subjectUniqueID
                 tbs_r.tlv_bytes().map_err(map_err)?;
             }
             Tag::ContextSpecific {

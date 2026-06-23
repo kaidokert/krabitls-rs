@@ -12,8 +12,6 @@ use crate::newtype::{AeadIv, Secret, TranscriptDigest, ZeroBuf};
 use crate::traits::{HkdfExpandError, HkdfSha256};
 use digest::Digest;
 
-// TLS 1.3 derivation helpers built on top of the HKDF trait.
-
 /// Maximum size of the encoded `HkdfLabel` struct in TLS 1.3.
 ///
 /// `HkdfLabel = uint16 length || opaque label<7..255> || opaque context<0..255>`.
