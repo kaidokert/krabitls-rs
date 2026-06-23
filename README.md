@@ -4,6 +4,7 @@
 [![documentation](https://docs.rs/krabitls/badge.svg)](https://docs.rs/krabitls/)
 [![Rust](https://github.com/kaidokert/krabitls-rs/actions/workflows/rust.yml/badge.svg)](https://github.com/kaidokert/krabitls-rs/actions/workflows/rust.yml)
 [![Footprint](https://github.com/kaidokert/krabitls-rs/actions/workflows/footprint.yml/badge.svg)](https://github.com/kaidokert/krabitls-rs/actions/workflows/footprint.yml)
+[![Coverage Status](https://coveralls.io/repos/github/kaidokert/krabitls-rs/badge.svg?branch=main)](https://coveralls.io/github/kaidokert/krabitls-rs?branch=main)
 
 A hobby `no_std` TLS 1.3 client for microcontrollers. Don't use it for anything you care about.
 
