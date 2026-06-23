@@ -13,18 +13,10 @@ No heap allocations, and prefer reduced flash + stack size over speed.
 
 #### Resource usage (as of version 0.1.0)
 
-Cortex-M3 and RV32IMAC footprint. Values are real-minus-baseline deltas
-from the Footprint workflow's step summary, driving
-`DefaultStream::connect` end-to-end against the seed-0 canned fixtures
-(real ECDHE + ClientHello write + ServerHello parse + handshake key
-schedule + cert verify + Finished + Drop close_notify path).
-Wire-data scratch buffers live in `.bss` (via
-`footprint_handshakes::with_buffers`), so the stack column reflects only
-the crypto + protocol cost.
-
-Each row drops default features and picks the minimum needed: the
-in-tree `tlv_cert` parser (vs the heavier `cert-der` default), one
-cipher, one signature algorithm.
+Cortex-M3 and RV32IMAC footprint. Values are real-minus-baseline deltas from
+the Footprint workflow's step summary. Wire-data scratch buffers live in
+`.bss` (via `footprint_handshakes::with_buffers`), so the stack column
+reflects only the crypto + protocol cost.
 
 | Target   | Suite             | Sig          | .text (KiB) | Stack (B) |
 |----------|-------------------|--------------|------------:|----------:|

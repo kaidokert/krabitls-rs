@@ -17,12 +17,9 @@ import subprocess
 import sys
 
 # (suite label, sig label, example, no_default_features, cargo --features list)
-# Every row pins its features explicitly: each one drops defaults so we
-# can choose `cipher-aes` vs `chacha20` per row AND skip `cert-der` (the
-# default cert parser pulls in the `der` crate's generic
-# AnyRef/SliceReader/Header/Tag monomorphization chain; `tlv_cert` is the
-# in-tree hand-rolled fallback that activates under `not(cert-der)` and
-# is ~4 KiB smaller on M3 with identical functionality).
+# Every row pins features explicitly: no defaults, exactly one cipher,
+# exactly one sig algorithm. `tlv_cert` (the `not(cert-der)` fallback)
+# is picked over the heavier `der`-crate parser.
 ROWS = [
     ("AES-128-GCM",       "Ed25519",      "krabitls",        True, ["cipher-aes", "canned-replay"]),
     ("ChaCha20-Poly1305", "Ed25519",      "krabitls_chacha", True, ["chacha20", "canned-replay"]),
