@@ -4,12 +4,6 @@
 //! connection: bring a [`Transport`], a caller-owned [`Scratch`], an
 //! RNG, and a [`ClientParams`] — get a connected [`TlsStream`] back.
 
-// Test-only fixture replay (SeededRng + CannedTransport). `#[doc(hidden)]`
-// so it's reachable for our own M3 demos / external testers reproducing
-// fixtures, but doesn't pollute the public docs of real consumers.
-#[cfg(feature = "canned-replay")]
-#[doc(hidden)]
-pub mod canned;
 mod config;
 mod engine;
 /// Error types that can surface through the facade.

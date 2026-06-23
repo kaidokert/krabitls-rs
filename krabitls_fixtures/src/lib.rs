@@ -1,10 +1,14 @@
 //! Deterministic test infrastructure. `SeededRng` mirrors Python
 //! `tls_fixture` seed-mode entropy byte-for-byte; `CannedTransport`
 //! replays captured server flights.
+//!
+//! Unpublished sibling crate: `SeededRng` implements
+//! [`rand_core::TryCryptoRng`] for the facade's `connect()` bound but is a
+//! fixed, seed-derived stream — never use it outside fixture replay.
+#![no_std]
 
+use krabitls::client::Transport;
 use sha2::{Digest, Sha256};
-
-use super::Transport;
 
 /// Pre-image domain separator. Matches
 /// `tls_fixture/tls13.py::derive_bytes`.
@@ -163,7 +167,7 @@ impl<const TX: usize> Transport for CannedTransport<'_, TX> {
 
     /// Returns `Ok(0)` once the canned stream is exhausted; the facade's
     /// drive loop maps that to
-    /// [`ConnectError::UnexpectedEof`](super::ConnectError::UnexpectedEof).
+    /// [`ConnectError::UnexpectedEof`](krabitls::client::ConnectError::UnexpectedEof).
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
         let remaining = self.server_bytes.len() - self.rx_pos;
         if remaining == 0 {

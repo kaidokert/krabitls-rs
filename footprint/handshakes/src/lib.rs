@@ -149,8 +149,8 @@ mod fixture_aes_rsa2048_facade {
 ))]
 use {
     core::hint::black_box,
-    krabitls::client::canned::{CannedTransport, SeededRng},
     krabitls::client::{ClientParams, DefaultStream},
+    krabitls_fixtures::{CannedTransport, SeededRng},
 };
 
 // Only the AES-suite variants (Ed25519, RSA, jedisct) override the suite

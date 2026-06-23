@@ -16,24 +16,27 @@ default = ["cert-der", "cipher-aes"]
 cert-der = ["krabitls/cert-der"]
 # Default AES-128-GCM cipher suite. Forwarded so the cortex-m demo can
 # `--no-default-features --features chacha20` to actually drop `aes-gcm`.
-cipher-aes = ["krabitls/cipher-aes"]
+# `krabitls_fixtures?/cipher-aes` keeps the fixtures crate's transitive
+# krabitls build on the same cipher we measure (no-op when canned-replay off).
+cipher-aes = ["krabitls/cipher-aes", "krabitls_fixtures?/cipher-aes"]
 # Optional ChaCha20-Poly1305 + RSA-PSS variants follow the krabitls feature
 # wiring so each target crate can include or exclude them.
-chacha20 = ["krabitls/chacha20"]
+chacha20 = ["krabitls/chacha20", "krabitls_fixtures?/chacha20"]
 # Footprint replays a PSS-signed RSA-2048 captured cert; enable both
 # rsa_pss_only (drops PKCS#1-v1.5) and rsa_2048_only (drops U1024) so LTO
 # strips the unreachable paths from the M3/RV measurement.
 rsa = ["krabitls/rsa", "krabitls/rsa_pss_only", "krabitls/rsa_2048_only"]
 jedisct = ["krabitls/jedisct"]
 # Full handshake via `DefaultStream::connect` against the captured seed-0
-# fixtures (SeededRng + CannedTransport).
-canned-replay = ["krabitls/canned-replay"]
+# fixtures (SeededRng + CannedTransport), now in the krabitls_fixtures crate.
+canned-replay = ["dep:krabitls_fixtures"]
 # Opt-in size-clawback feature: re-enables IP-literal SAN matching
 # that the embedded default skips (+2 KiB).
 ip-host = ["krabitls/ip-host"]
 
 [dependencies]
 krabitls = { path = "../../krabitls", default-features = false, features = ["dev-utils"] }
+krabitls_fixtures = { path = "../../krabitls_fixtures", default-features = false, optional = true }
 critical-section = "1"
 
 [lints.rust]

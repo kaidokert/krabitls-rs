@@ -14,7 +14,6 @@
 //! unit level; that's the correct granularity for SAN logic.
 
 #![cfg(all(
-    feature = "canned-replay",
     feature = "cipher-aes",
     not(feature = "rsa"),
     not(feature = "chacha20")
@@ -24,12 +23,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use krabitls::backends::RustCrypto;
-use krabitls::client::canned::{CannedTransport, SeededRng};
 use krabitls::client::{
     CertChainView, ClientParams, ConnectError, DefaultConfig, DefaultScratch, DefaultVerify,
     Ed25519VerifierProvider, HandshakeError, PinOrSelfSigned, PreparedVerifier,
     RsaVerifierProvider, SafeStrategy, TlsStream, Trusted, VerifyStrategy,
 };
+use krabitls_fixtures::{CannedTransport, SeededRng};
 
 const CLIENT_HELLO_HEX: &str = include_str!("../../testdata/packets/001_c2s_ClientHello.hex");
 const SERVER_HELLO_HEX: &str = include_str!("../../testdata/packets/002_s2c_ServerHello.hex");

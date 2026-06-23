@@ -21,6 +21,9 @@ repos:
         name: Fmt for krabitls_cli
         args: ['--manifest-path=krabitls_cli/Cargo.toml', '--']
     -   id: fmt
+        name: Fmt for krabitls_fixtures
+        args: ['--manifest-path=krabitls_fixtures/Cargo.toml', '--']
+    -   id: fmt
         name: Fmt for footprint_handshakes
         args: ['--manifest-path=footprint/handshakes/Cargo.toml', '--']
     -   id: fmt
@@ -74,16 +77,31 @@ repos:
         language: system
         pass_filenames: false
         files: ^krabitls/.*\.(rs|toml)$
-    # The canned-replay integration test is cfg-gated on
-    # `not(rsa)` + `not(chacha20)`: the facade's ClientHello wire bytes
-    # change under those features and diverge from the captured seed-0
-    # fixture. Watches `testdata/` so fixture regen retriggers.
+    # The fixture-replay integration tests are cfg-gated on `cipher-aes` +
+    # `not(chacha20)`: the facade's ClientHello wire bytes change under
+    # chacha and diverge from the captured seed-0 fixture. `--all-features`
+    # above can't run them (chacha is on there), so exercise the AES combo
+    # here. Watches `testdata/` so fixture regen retriggers.
     -   id: krabitls-test-canned
-        name: test krabitls (canned-replay, baseline combo)
-        entry: cargo test --manifest-path=krabitls/Cargo.toml --no-default-features --features canned-replay,cert-der,cipher-aes
+        name: test krabitls (fixture replay, AES combo)
+        entry: cargo test --manifest-path=krabitls/Cargo.toml --no-default-features --features cert-der,cipher-aes
         language: system
         pass_filenames: false
-        files: ^(krabitls|testdata)/.*\.(rs|toml|hex|md)$
+        files: ^(krabitls|krabitls_fixtures|testdata)/.*\.(rs|toml|hex|md)$
+
+    # ---- krabitls_fixtures: clippy + KAT tests ----
+    -   id: krabitls-fixtures-clippy
+        name: clippy krabitls_fixtures
+        entry: cargo clippy --manifest-path=krabitls_fixtures/Cargo.toml --all-targets -- -D warnings
+        language: system
+        pass_filenames: false
+        files: ^(krabitls_fixtures|krabitls)/.*\.(rs|toml)$
+    -   id: krabitls-fixtures-test
+        name: test krabitls_fixtures (seed KATs)
+        entry: cargo test --manifest-path=krabitls_fixtures/Cargo.toml
+        language: system
+        pass_filenames: false
+        files: ^(krabitls_fixtures|krabitls)/.*\.(rs|toml)$
 
     # ---- krabitls_cli clippy: 4 combos ----
     -   id: krabitls-cli-clippy-default
