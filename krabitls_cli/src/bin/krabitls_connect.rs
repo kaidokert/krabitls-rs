@@ -13,6 +13,7 @@ use std::net::TcpStream;
 use std::process::ExitCode;
 use std::time::Duration;
 
+use getrandom::SysRng;
 use krabitls::client::{
     ClientParams, ConnectError, DefaultScratch, DefaultStream, RuntimeSuitePolicy, Transport,
 };
@@ -81,31 +82,6 @@ fn decode_hex(s: &str) -> std::result::Result<Vec<u8>, String> {
     Ok(out)
 }
 
-/// OS-backed RNG. `getrandom::fill` is the only randomness source.
-struct OsRng;
-
-impl rand_core::TryRng for OsRng {
-    type Error = getrandom::Error;
-
-    fn try_next_u32(&mut self) -> std::result::Result<u32, Self::Error> {
-        let mut buf = [0u8; 4];
-        getrandom::fill(&mut buf)?;
-        Ok(u32::from_le_bytes(buf))
-    }
-
-    fn try_next_u64(&mut self) -> std::result::Result<u64, Self::Error> {
-        let mut buf = [0u8; 8];
-        getrandom::fill(&mut buf)?;
-        Ok(u64::from_le_bytes(buf))
-    }
-
-    fn try_fill_bytes(&mut self, dst: &mut [u8]) -> std::result::Result<(), Self::Error> {
-        getrandom::fill(dst)
-    }
-}
-
-impl rand_core::TryCryptoRng for OsRng {}
-
 /// `TcpStream` wrapper that satisfies the facade's `Transport` trait.
 struct TcpTransport(TcpStream);
 
@@ -147,7 +123,7 @@ fn run(host: &str, port: u16, pin: Option<&Pin>) -> Result<()> {
     .suite_policy(RuntimeSuitePolicy::Default)
     .time(&time_source);
 
-    let mut rng = OsRng;
+    let mut rng = SysRng;
     let transport = TcpTransport(tcp);
 
     info!("driving TLS 1.3 handshake via TlsStream");
