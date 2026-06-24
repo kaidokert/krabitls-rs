@@ -305,53 +305,64 @@ pub(crate) type DefaultCipher = Aes128GcmSha256;
 #[cfg(all(test, not(feature = "cipher-aes"), feature = "chacha20"))]
 pub(crate) type DefaultCipher = ChaCha20Poly1305Sha256;
 
-/// `TLS_AES_128_GCM_SHA256` (`0x1301`). Gated on `feature = "cipher-aes"`.
+/// `TLS_AES_128_GCM_SHA256` (`0x1301`). The suite type + its `Sealed` /
+/// `CipherSuite` impls are gated once on `feature = "cipher-aes"` via the
+/// module; `pub use` keeps the `aead::Aes128GcmSha256` path stable.
 #[cfg(feature = "cipher-aes")]
-pub struct Aes128GcmSha256;
-#[cfg(feature = "cipher-aes")]
-impl sealed::Sealed for Aes128GcmSha256 {}
-#[cfg(feature = "cipher-aes")]
-impl CipherSuite for Aes128GcmSha256 {
-    type KeyBytes = [u8; 16];
-    type Cipher = aes_gcm::Aes128Gcm;
-    fn make_cipher(key: &zeroize::Zeroizing<[u8; 16]>) -> Self::Cipher {
-        aes_gcm::Aes128Gcm::new(&GenericArray::from(**key))
-    }
-    fn derive_keys<H: crate::traits::HkdfSha256>(
-        traffic_secret: &crate::newtype::Secret,
-    ) -> Result<RecordKeys<Self>, crate::hkdf::HkdfLabelError> {
-        let (key_bytes, iv) = crate::hkdf::traffic_keys::<H, 16>(traffic_secret)?;
-        Ok(RecordKeys {
-            cipher: Self::make_cipher(&key_bytes),
-            iv,
-        })
-    }
-}
+mod aes {
+    use super::*;
 
-/// `TLS_CHACHA20_POLY1305_SHA256` (`0x1303`). Gated on `feature = "chacha20"`.
-#[cfg(feature = "chacha20")]
-pub struct ChaCha20Poly1305Sha256;
-#[cfg(feature = "chacha20")]
-impl sealed::Sealed for ChaCha20Poly1305Sha256 {}
-#[cfg(feature = "chacha20")]
-impl CipherSuite for ChaCha20Poly1305Sha256 {
-    type KeyBytes = [u8; 32];
-    type Cipher = chacha20poly1305::ChaCha20Poly1305;
-    fn make_cipher(key: &zeroize::Zeroizing<[u8; 32]>) -> Self::Cipher {
-        chacha20poly1305::ChaCha20Poly1305::new(
-            &chacha20poly1305::aead::generic_array::GenericArray::from(**key),
-        )
-    }
-    fn derive_keys<H: crate::traits::HkdfSha256>(
-        traffic_secret: &crate::newtype::Secret,
-    ) -> Result<RecordKeys<Self>, crate::hkdf::HkdfLabelError> {
-        let (key_bytes, iv) = crate::hkdf::traffic_keys::<H, 32>(traffic_secret)?;
-        Ok(RecordKeys {
-            cipher: Self::make_cipher(&key_bytes),
-            iv,
-        })
+    pub struct Aes128GcmSha256;
+    impl sealed::Sealed for Aes128GcmSha256 {}
+    impl CipherSuite for Aes128GcmSha256 {
+        type KeyBytes = [u8; 16];
+        type Cipher = aes_gcm::Aes128Gcm;
+        fn make_cipher(key: &zeroize::Zeroizing<[u8; 16]>) -> Self::Cipher {
+            aes_gcm::Aes128Gcm::new(&GenericArray::from(**key))
+        }
+        fn derive_keys<H: crate::traits::HkdfSha256>(
+            traffic_secret: &crate::newtype::Secret,
+        ) -> Result<RecordKeys<Self>, crate::hkdf::HkdfLabelError> {
+            let (key_bytes, iv) = crate::hkdf::traffic_keys::<H, 16>(traffic_secret)?;
+            Ok(RecordKeys {
+                cipher: Self::make_cipher(&key_bytes),
+                iv,
+            })
+        }
     }
 }
+#[cfg(feature = "cipher-aes")]
+pub use aes::Aes128GcmSha256;
+
+/// `TLS_CHACHA20_POLY1305_SHA256` (`0x1303`). Gated once on
+/// `feature = "chacha20"` via the module; `pub use` keeps the path stable.
+#[cfg(feature = "chacha20")]
+mod chacha {
+    use super::*;
+
+    pub struct ChaCha20Poly1305Sha256;
+    impl sealed::Sealed for ChaCha20Poly1305Sha256 {}
+    impl CipherSuite for ChaCha20Poly1305Sha256 {
+        type KeyBytes = [u8; 32];
+        type Cipher = chacha20poly1305::ChaCha20Poly1305;
+        fn make_cipher(key: &zeroize::Zeroizing<[u8; 32]>) -> Self::Cipher {
+            chacha20poly1305::ChaCha20Poly1305::new(
+                &chacha20poly1305::aead::generic_array::GenericArray::from(**key),
+            )
+        }
+        fn derive_keys<H: crate::traits::HkdfSha256>(
+            traffic_secret: &crate::newtype::Secret,
+        ) -> Result<RecordKeys<Self>, crate::hkdf::HkdfLabelError> {
+            let (key_bytes, iv) = crate::hkdf::traffic_keys::<H, 32>(traffic_secret)?;
+            Ok(RecordKeys {
+                cipher: Self::make_cipher(&key_bytes),
+                iv,
+            })
+        }
+    }
+}
+#[cfg(feature = "chacha20")]
+pub use chacha::ChaCha20Poly1305Sha256;
 
 pub struct RecordKeys<S: CipherSuite> {
     pub(crate) cipher: S::Cipher,
