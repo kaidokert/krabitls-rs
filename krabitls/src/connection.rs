@@ -989,8 +989,4 @@ where
 // ============================================================================
 
 #[cfg(test)]
-#[cfg_attr(
-    any(feature = "rsa", feature = "chacha20"),
-    allow(dead_code, unused_imports)
-)]
 mod tests;
