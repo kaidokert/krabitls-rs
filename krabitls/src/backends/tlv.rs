@@ -82,39 +82,38 @@ pub fn read_tlv(buf: &[u8]) -> Result<Tlv<'_>, TlvError> {
     })
 }
 
-// ASN.1 universal class primitive / constructed tags. Only the cert
-// parser uses these — SAN walking only needs the context-specific
-// helper below.
+// Only the in-tree TLV cert parser consumes these; the `der`-crate parser and
+// the SAN walker don't. `tag_ctx_primitive` is the exception — kept out of the
+// module because the SAN walker needs it in every build.
 #[cfg(not(feature = "cert-der"))]
-pub const TAG_BOOLEAN: u8 = 0x01;
-#[cfg(not(feature = "cert-der"))]
-pub const TAG_INTEGER: u8 = 0x02;
-#[cfg(not(feature = "cert-der"))]
-pub const TAG_BIT_STRING: u8 = 0x03;
-#[cfg(not(feature = "cert-der"))]
-pub const TAG_OCTET_STRING: u8 = 0x04;
-#[cfg(all(not(feature = "cert-der"), feature = "rsa"))]
-pub const TAG_NULL: u8 = 0x05;
-#[cfg(not(feature = "cert-der"))]
-pub const TAG_OID: u8 = 0x06;
-#[cfg(not(feature = "cert-der"))]
-pub const TAG_SEQUENCE: u8 = 0x30;
+mod cert_parser_tags {
+    use super::TlvError;
 
-/// `[N]` EXPLICIT (constructed) context-specific tag byte.
-#[cfg(not(feature = "cert-der"))]
-pub const fn tag_ctx_constructed(n: u8) -> u8 {
-    0xA0 | (n & 0x1F)
+    pub const TAG_BOOLEAN: u8 = 0x01;
+    pub const TAG_INTEGER: u8 = 0x02;
+    pub const TAG_BIT_STRING: u8 = 0x03;
+    pub const TAG_OCTET_STRING: u8 = 0x04;
+    #[cfg(feature = "rsa")]
+    pub const TAG_NULL: u8 = 0x05;
+    pub const TAG_OID: u8 = 0x06;
+    pub const TAG_SEQUENCE: u8 = 0x30;
+
+    /// `[N]` EXPLICIT (constructed) context-specific tag byte.
+    pub const fn tag_ctx_constructed(n: u8) -> u8 {
+        0xA0 | (n & 0x1F)
+    }
+
+    /// Peek the tag byte at the start of `buf` without consuming it.
+    pub fn peek_tag(buf: &[u8]) -> Result<u8, TlvError> {
+        buf.first().copied().ok_or(TlvError)
+    }
 }
+#[cfg(not(feature = "cert-der"))]
+pub use cert_parser_tags::*;
 
 /// `[N]` IMPLICIT (primitive) context-specific tag byte.
 pub const fn tag_ctx_primitive(n: u8) -> u8 {
     0x80 | (n & 0x1F)
-}
-
-/// Peek the tag byte at the start of `buf` without consuming it.
-#[cfg(not(feature = "cert-der"))]
-pub fn peek_tag(buf: &[u8]) -> Result<u8, TlvError> {
-    buf.first().copied().ok_or(TlvError)
 }
 
 #[cfg(test)]
