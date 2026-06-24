@@ -3,21 +3,12 @@
 use der::asn1::{AnyRef, BitStringRef, ObjectIdentifier};
 use der::{Decode, Reader, SliceReader, Tag, TagNumber};
 
-#[cfg(feature = "rsa")]
-use crate::traits::cert::RsaCertSigAlg;
 use crate::traits::cert::{CertParseError, CertParser, CertView};
 
 /// Marker type for the `der`-crate-backed cert parser implementation.
 pub struct DerCert;
 
 const ED25519_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.101.112");
-
-#[cfg(feature = "rsa")]
-const RSA_ENCRYPTION_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.1");
-#[cfg(all(feature = "rsa", not(feature = "rsa_pss_only")))]
-const SHA256_WITH_RSA_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.11");
-#[cfg(feature = "rsa")]
-const RSASSA_PSS_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.10");
 
 const SAN_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.5.29.17");
 
@@ -263,137 +254,153 @@ fn classify_spki_algorithm(alg_id_bytes: &[u8]) -> Result<SpkiKind, CertParseErr
     Err(CertParseError::WrongAlgorithmOid)
 }
 
-/// Classify a `Certificate.signatureAlgorithm` AlgorithmIdentifier as one
-/// of the RSA padding schemes we accept on cert outer signatures. Returns
-/// `Ok(None)` for unrecognized OIDs so CA-issued RSA leaves signed by a
-/// non-RSA issuer (or RSA-SHA384, etc.) still parse — strategy-level
-/// self-sig / per-link verify rejects `None` at verify time; a pin-only
-/// strategy never reaches that check. `Err` only on malformed DER
-/// framing.
-///
-/// PKCS#1-v1.5 params validated as explicit `NULL` per RFC 4055 §5; PSS
-/// params (when present) are not introspected here — `verify_pss_sha256`
-/// hard-codes the SHA-256 + MGF1-SHA-256 + 32-byte-salt shape and rejects
-/// mismatched signatures at verify time.
 #[cfg(feature = "rsa")]
-fn classify_rsa_outer_sig_alg(
-    alg_id_bytes: &[u8],
-) -> Result<Option<RsaCertSigAlg>, CertParseError> {
-    let map_err = |_| CertParseError::Malformed;
-    let any = AnyRef::try_from(alg_id_bytes).map_err(map_err)?;
-    if any.header().tag() != Tag::Sequence {
-        return Err(CertParseError::Malformed);
-    }
-    let mut r = SliceReader::new(any.value()).map_err(map_err)?;
-    let oid = ObjectIdentifier::decode(&mut r).map_err(map_err)?;
+mod rsa {
+    use super::*;
+    use crate::traits::cert::RsaCertSigAlg;
+
+    pub(super) const RSA_ENCRYPTION_OID: ObjectIdentifier =
+        ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.1");
     #[cfg(not(feature = "rsa_pss_only"))]
-    if oid == SHA256_WITH_RSA_OID {
-        require_explicit_null_params(&mut r)?;
-        return Ok(Some(RsaCertSigAlg::Pkcs1v15Sha256));
-    }
-    if oid == RSASSA_PSS_OID {
-        // PSS params SEQUENCE may be present (sha256/mgf1/salt=32) or
-        // absent (RFC defaults). Either is OK at parse time; verify-time
-        // shape mismatch is caught by `verify_pss_sha256`. Reject only
-        // truly malformed DER: well-formed param TLV followed by nothing.
-        if !r.is_finished() {
-            let _ = AnyRef::decode(&mut r).map_err(map_err)?;
-            if !r.is_finished() {
-                return Err(CertParseError::Malformed);
-            }
+    const SHA256_WITH_RSA_OID: ObjectIdentifier =
+        ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.11");
+    const RSASSA_PSS_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.10");
+
+    /// Classify a `Certificate.signatureAlgorithm` AlgorithmIdentifier as one
+    /// of the RSA padding schemes we accept on cert outer signatures. Returns
+    /// `Ok(None)` for unrecognized OIDs so CA-issued RSA leaves signed by a
+    /// non-RSA issuer (or RSA-SHA384, etc.) still parse — strategy-level
+    /// self-sig / per-link verify rejects `None` at verify time; a pin-only
+    /// strategy never reaches that check. `Err` only on malformed DER
+    /// framing.
+    ///
+    /// PKCS#1-v1.5 params validated as explicit `NULL` per RFC 4055 §5; PSS
+    /// params (when present) are not introspected here — `verify_pss_sha256`
+    /// hard-codes the SHA-256 + MGF1-SHA-256 + 32-byte-salt shape and rejects
+    /// mismatched signatures at verify time.
+    pub(super) fn classify_rsa_outer_sig_alg(
+        alg_id_bytes: &[u8],
+    ) -> Result<Option<RsaCertSigAlg>, CertParseError> {
+        let map_err = |_| CertParseError::Malformed;
+        let any = AnyRef::try_from(alg_id_bytes).map_err(map_err)?;
+        if any.header().tag() != Tag::Sequence {
+            return Err(CertParseError::Malformed);
         }
-        Ok(Some(RsaCertSigAlg::PssSha256))
-    } else {
-        Ok(None)
+        let mut r = SliceReader::new(any.value()).map_err(map_err)?;
+        let oid = ObjectIdentifier::decode(&mut r).map_err(map_err)?;
+        #[cfg(not(feature = "rsa_pss_only"))]
+        if oid == SHA256_WITH_RSA_OID {
+            require_explicit_null_params(&mut r)?;
+            return Ok(Some(RsaCertSigAlg::Pkcs1v15Sha256));
+        }
+        if oid == RSASSA_PSS_OID {
+            // PSS params SEQUENCE may be present (sha256/mgf1/salt=32) or
+            // absent (RFC defaults). Either is OK at parse time; verify-time
+            // shape mismatch is caught by `verify_pss_sha256`. Reject only
+            // truly malformed DER: well-formed param TLV followed by nothing.
+            if !r.is_finished() {
+                let _ = AnyRef::decode(&mut r).map_err(map_err)?;
+                if !r.is_finished() {
+                    return Err(CertParseError::Malformed);
+                }
+            }
+            Ok(Some(RsaCertSigAlg::PssSha256))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Helper for the RSA `rsaEncryption` SPKI path: require an *explicit* NULL
+    /// TLV (`05 00`) per RFC 3279 §2.3.1, then the reader must be exhausted.
+    /// Absent parameters, non-NULL parameters, and trailing bytes all reject
+    /// with [`CertParseError::AlgorithmHasParameters`].
+    pub(super) fn require_explicit_null_params(
+        r: &mut SliceReader<'_>,
+    ) -> Result<(), CertParseError> {
+        let map_err = |_| CertParseError::Malformed;
+        if r.is_finished() {
+            return Err(CertParseError::AlgorithmHasParameters);
+        }
+        let any = AnyRef::decode(r).map_err(map_err)?;
+        if any.header().tag() != Tag::Null || !any.value().is_empty() {
+            return Err(CertParseError::AlgorithmHasParameters);
+        }
+        if !r.is_finished() {
+            return Err(CertParseError::AlgorithmHasParameters);
+        }
+        Ok(())
+    }
+
+    /// Parse an `RSAPublicKey ::= SEQUENCE { modulus INTEGER, publicExponent
+    /// INTEGER }` (RFC 8017 §A.1.1) out of the SPKI BIT STRING contents. Returns
+    /// the modulus as a stripped-leading-zero big-endian byte slice and the
+    /// exponent as a u32 (both 3 and 65537 fit comfortably).
+    pub(super) fn parse_rsa_pubkey(bit_string: &[u8]) -> Result<(&[u8], u32), CertParseError> {
+        let map_err = |_| CertParseError::BadRsaPubkey;
+        let any = AnyRef::try_from(bit_string).map_err(map_err)?;
+        if any.header().tag() != Tag::Sequence {
+            return Err(CertParseError::BadRsaPubkey);
+        }
+        let mut r = SliceReader::new(any.value()).map_err(map_err)?;
+
+        let modulus_any = AnyRef::decode(&mut r).map_err(map_err)?;
+        if modulus_any.header().tag() != Tag::Integer {
+            return Err(CertParseError::BadRsaPubkey);
+        }
+        let modulus_raw = modulus_any.value();
+        // DER INTEGER encoding adds a leading 0x00 if the high bit is set
+        // (to keep it positive). Strip that for the raw modulus bytes; reject
+        // *redundant* leading zeros (a non-minimal encoding RFC 5280 §4.1.2.7
+        // doesn't permit).
+        let modulus = match modulus_raw {
+            [0x00, rest @ ..] if !rest.is_empty() && (rest[0] & 0x80) != 0 => rest,
+            b => b,
+        };
+        if modulus.is_empty() || modulus[0] == 0 {
+            return Err(CertParseError::BadRsaPubkey);
+        }
+        // Only 1024-bit (128 B) and 2048-bit (256 B) moduli are supported.
+        // Under `rsa_2048_only` reject 128 too so LTO can drop the U1024
+        // monomorphizations from rsa_verify::*.
+        #[cfg(not(feature = "rsa_2048_only"))]
+        let modulus_ok = modulus.len() == 128 || modulus.len() == 256;
+        #[cfg(feature = "rsa_2048_only")]
+        let modulus_ok = modulus.len() == 256;
+        if !modulus_ok {
+            return Err(CertParseError::UnsupportedRsaKeySize);
+        }
+
+        let exponent_any = AnyRef::decode(&mut r).map_err(map_err)?;
+        if exponent_any.header().tag() != Tag::Integer {
+            return Err(CertParseError::BadRsaPubkey);
+        }
+        let exponent_bytes = exponent_any.value();
+        let exp_bytes = match exponent_bytes {
+            [0x00, rest @ ..] if !rest.is_empty() && (rest[0] & 0x80) != 0 => rest,
+            b => b,
+        };
+        if exp_bytes.is_empty() || exp_bytes.len() > 4 || exp_bytes[0] == 0 {
+            return Err(CertParseError::BadRsaPubkey);
+        }
+        let mut exponent: u32 = 0;
+        for &b in exp_bytes {
+            exponent = (exponent << 8) | b as u32;
+        }
+        // RSA public exponent must be odd and ≥ 3 (RFC 8017 §3.1). e=1 is a
+        // no-op; even e is mathematically broken. The realistic values are 3
+        // and 65537, but accept anything in [3, u32::MAX] that's odd.
+        // Bit-op (instead of `% 2 == 0`) sidesteps clippy::manual-is-multiple-of
+        // on newer stable, which needs Rust 1.87+ for the suggested API.
+        if exponent < 3 || (exponent & 1) == 0 {
+            return Err(CertParseError::BadRsaPubkey);
+        }
+        if !r.is_finished() {
+            return Err(CertParseError::BadRsaPubkey);
+        }
+        Ok((modulus, exponent))
     }
 }
-
-/// Helper for the RSA `rsaEncryption` SPKI path: require an *explicit* NULL
-/// TLV (`05 00`) per RFC 3279 §2.3.1, then the reader must be exhausted.
-/// Absent parameters, non-NULL parameters, and trailing bytes all reject
-/// with [`CertParseError::AlgorithmHasParameters`].
 #[cfg(feature = "rsa")]
-fn require_explicit_null_params(r: &mut SliceReader<'_>) -> Result<(), CertParseError> {
-    let map_err = |_| CertParseError::Malformed;
-    if r.is_finished() {
-        return Err(CertParseError::AlgorithmHasParameters);
-    }
-    let any = AnyRef::decode(r).map_err(map_err)?;
-    if any.header().tag() != Tag::Null || !any.value().is_empty() {
-        return Err(CertParseError::AlgorithmHasParameters);
-    }
-    if !r.is_finished() {
-        return Err(CertParseError::AlgorithmHasParameters);
-    }
-    Ok(())
-}
-
-/// Parse an `RSAPublicKey ::= SEQUENCE { modulus INTEGER, publicExponent
-/// INTEGER }` (RFC 8017 §A.1.1) out of the SPKI BIT STRING contents. Returns
-/// the modulus as a stripped-leading-zero big-endian byte slice and the
-/// exponent as a u32 (both 3 and 65537 fit comfortably).
-#[cfg(feature = "rsa")]
-fn parse_rsa_pubkey(bit_string: &[u8]) -> Result<(&[u8], u32), CertParseError> {
-    let map_err = |_| CertParseError::BadRsaPubkey;
-    let any = AnyRef::try_from(bit_string).map_err(map_err)?;
-    if any.header().tag() != Tag::Sequence {
-        return Err(CertParseError::BadRsaPubkey);
-    }
-    let mut r = SliceReader::new(any.value()).map_err(map_err)?;
-
-    let modulus_any = AnyRef::decode(&mut r).map_err(map_err)?;
-    if modulus_any.header().tag() != Tag::Integer {
-        return Err(CertParseError::BadRsaPubkey);
-    }
-    let modulus_raw = modulus_any.value();
-    // DER INTEGER encoding adds a leading 0x00 if the high bit is set
-    // (to keep it positive). Strip that for the raw modulus bytes; reject
-    // *redundant* leading zeros (a non-minimal encoding RFC 5280 §4.1.2.7
-    // doesn't permit).
-    let modulus = match modulus_raw {
-        [0x00, rest @ ..] if !rest.is_empty() && (rest[0] & 0x80) != 0 => rest,
-        b => b,
-    };
-    if modulus.is_empty() || modulus[0] == 0 {
-        return Err(CertParseError::BadRsaPubkey);
-    }
-    // Only 1024-bit (128 B) and 2048-bit (256 B) moduli are supported.
-    // Under `rsa_2048_only` reject 128 too so LTO can drop the U1024
-    // monomorphizations from rsa_verify::*.
-    #[cfg(not(feature = "rsa_2048_only"))]
-    let modulus_ok = modulus.len() == 128 || modulus.len() == 256;
-    #[cfg(feature = "rsa_2048_only")]
-    let modulus_ok = modulus.len() == 256;
-    if !modulus_ok {
-        return Err(CertParseError::UnsupportedRsaKeySize);
-    }
-
-    let exponent_any = AnyRef::decode(&mut r).map_err(map_err)?;
-    if exponent_any.header().tag() != Tag::Integer {
-        return Err(CertParseError::BadRsaPubkey);
-    }
-    let exponent_bytes = exponent_any.value();
-    let exp_bytes = match exponent_bytes {
-        [0x00, rest @ ..] if !rest.is_empty() && (rest[0] & 0x80) != 0 => rest,
-        b => b,
-    };
-    if exp_bytes.is_empty() || exp_bytes.len() > 4 || exp_bytes[0] == 0 {
-        return Err(CertParseError::BadRsaPubkey);
-    }
-    let mut exponent: u32 = 0;
-    for &b in exp_bytes {
-        exponent = (exponent << 8) | b as u32;
-    }
-    // RSA public exponent must be odd and ≥ 3 (RFC 8017 §3.1). e=1 is a
-    // no-op; even e is mathematically broken. The realistic values are 3
-    // and 65537, but accept anything in [3, u32::MAX] that's odd.
-    // Bit-op (instead of `% 2 == 0`) sidesteps clippy::manual-is-multiple-of
-    // on newer stable, which needs Rust 1.87+ for the suggested API.
-    if exponent < 3 || (exponent & 1) == 0 {
-        return Err(CertParseError::BadRsaPubkey);
-    }
-    if !r.is_finished() {
-        return Err(CertParseError::BadRsaPubkey);
-    }
-    Ok((modulus, exponent))
-}
+use rsa::{
+    RSA_ENCRYPTION_OID, classify_rsa_outer_sig_alg, parse_rsa_pubkey, require_explicit_null_params,
+};

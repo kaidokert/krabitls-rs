@@ -2,15 +2,11 @@
 //! in [`super::tlv`]. Avoids the `der` crate's generic monomorphization
 //! chain.
 
-#[cfg(feature = "rsa")]
-use super::tlv::TAG_NULL;
 use super::tlv::{
     TAG_BIT_STRING, TAG_BOOLEAN, TAG_INTEGER, TAG_OCTET_STRING, TAG_OID, TAG_SEQUENCE, Tlv,
     peek_tag, read_tlv, tag_ctx_constructed, tag_ctx_primitive,
 };
 
-#[cfg(feature = "rsa")]
-use crate::traits::cert::RsaCertSigAlg;
 use crate::traits::cert::{CertParseError, CertParser, CertView};
 
 /// Marker type for the hand-rolled-TLV-backed [`CertParser`].
@@ -24,18 +20,6 @@ pub struct DerCert;
 
 /// `1.3.101.112` — Ed25519 (RFC 8410).
 const ED25519_OID: &[u8] = &[0x2B, 0x65, 0x70];
-
-/// `1.2.840.113549.1.1.1` — `rsaEncryption` (RFC 8017).
-#[cfg(feature = "rsa")]
-const RSA_ENCRYPTION_OID: &[u8] = &[0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x01];
-
-/// `1.2.840.113549.1.1.11` — `sha256WithRSAEncryption`.
-#[cfg(all(feature = "rsa", not(feature = "rsa_pss_only")))]
-const SHA256_WITH_RSA_OID: &[u8] = &[0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0B];
-
-/// `1.2.840.113549.1.1.10` — `id-RSASSA-PSS`.
-#[cfg(feature = "rsa")]
-const RSASSA_PSS_OID: &[u8] = &[0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0A];
 
 /// `2.5.29.17` — `id-ce-subjectAltName`.
 const SAN_OID: &[u8] = &[0x55, 0x1D, 0x11];
@@ -283,102 +267,121 @@ fn classify_spki_algorithm(alg_id_bytes: &[u8]) -> Result<SpkiKind, CertParseErr
 
 /// Classify the outer `Certificate.signatureAlgorithm` for the RSA path.
 #[cfg(feature = "rsa")]
-fn classify_rsa_outer_sig_alg(
-    alg_id_bytes: &[u8],
-) -> Result<Option<RsaCertSigAlg>, CertParseError> {
-    let outer = read_expected(alg_id_bytes, TAG_SEQUENCE)?;
-    let mut r = outer.body;
-    let oid_tlv = take_tlv(&mut r)?;
-    if oid_tlv.tag != TAG_OID {
-        return Err(CertParseError::Malformed);
-    }
+mod rsa {
+    use super::*;
+    use crate::backends::tlv::TAG_NULL;
+    use crate::traits::cert::RsaCertSigAlg;
+
+    /// `1.2.840.113549.1.1.1` — `rsaEncryption` (RFC 8017).
+    pub(super) const RSA_ENCRYPTION_OID: &[u8] =
+        &[0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x01];
+
+    /// `1.2.840.113549.1.1.11` — `sha256WithRSAEncryption`.
     #[cfg(not(feature = "rsa_pss_only"))]
-    if oid_tlv.body == SHA256_WITH_RSA_OID {
-        require_explicit_null_params(&mut r)?;
-        return Ok(Some(RsaCertSigAlg::Pkcs1v15Sha256));
-    }
-    if oid_tlv.body == RSASSA_PSS_OID {
-        // PSS params SEQUENCE may be present or absent. Tolerate the
-        // present case: well-formed TLV followed by nothing.
-        if !r.is_empty() {
-            let _ = take_tlv(&mut r)?;
-            if !r.is_empty() {
-                return Err(CertParseError::Malformed);
-            }
+    const SHA256_WITH_RSA_OID: &[u8] = &[0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0B];
+
+    /// `1.2.840.113549.1.1.10` — `id-RSASSA-PSS`.
+    const RSASSA_PSS_OID: &[u8] = &[0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0A];
+
+    pub(super) fn classify_rsa_outer_sig_alg(
+        alg_id_bytes: &[u8],
+    ) -> Result<Option<RsaCertSigAlg>, CertParseError> {
+        let outer = read_expected(alg_id_bytes, TAG_SEQUENCE)?;
+        let mut r = outer.body;
+        let oid_tlv = take_tlv(&mut r)?;
+        if oid_tlv.tag != TAG_OID {
+            return Err(CertParseError::Malformed);
         }
-        Ok(Some(RsaCertSigAlg::PssSha256))
-    } else {
-        Ok(None)
+        #[cfg(not(feature = "rsa_pss_only"))]
+        if oid_tlv.body == SHA256_WITH_RSA_OID {
+            require_explicit_null_params(&mut r)?;
+            return Ok(Some(RsaCertSigAlg::Pkcs1v15Sha256));
+        }
+        if oid_tlv.body == RSASSA_PSS_OID {
+            // PSS params SEQUENCE may be present or absent. Tolerate the
+            // present case: well-formed TLV followed by nothing.
+            if !r.is_empty() {
+                let _ = take_tlv(&mut r)?;
+                if !r.is_empty() {
+                    return Err(CertParseError::Malformed);
+                }
+            }
+            Ok(Some(RsaCertSigAlg::PssSha256))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub(super) fn require_explicit_null_params(r: &mut &[u8]) -> Result<(), CertParseError> {
+        if r.is_empty() {
+            return Err(CertParseError::AlgorithmHasParameters);
+        }
+        let null_tlv = take_tlv(r)?;
+        if null_tlv.tag != TAG_NULL || !null_tlv.body.is_empty() {
+            return Err(CertParseError::AlgorithmHasParameters);
+        }
+        if !r.is_empty() {
+            return Err(CertParseError::AlgorithmHasParameters);
+        }
+        Ok(())
+    }
+
+    /// Parse `RSAPublicKey ::= SEQUENCE { modulus INTEGER, publicExponent INTEGER }`.
+    pub(super) fn parse_rsa_pubkey(bit_string: &[u8]) -> Result<(&[u8], u32), CertParseError> {
+        let map_err = |_| CertParseError::BadRsaPubkey;
+        let outer = read_tlv(bit_string).map_err(map_err)?;
+        if outer.tag != TAG_SEQUENCE {
+            return Err(CertParseError::BadRsaPubkey);
+        }
+        let mut r = outer.body;
+
+        let modulus_tlv = read_tlv(r).map_err(map_err)?;
+        r = modulus_tlv.rest;
+        if modulus_tlv.tag != TAG_INTEGER {
+            return Err(CertParseError::BadRsaPubkey);
+        }
+        let modulus_raw = modulus_tlv.body;
+        let modulus = match modulus_raw {
+            [0x00, rest @ ..] if !rest.is_empty() && (rest[0] & 0x80) != 0 => rest,
+            b => b,
+        };
+        if modulus.is_empty() || modulus[0] == 0 {
+            return Err(CertParseError::BadRsaPubkey);
+        }
+        #[cfg(not(feature = "rsa_2048_only"))]
+        let modulus_ok = modulus.len() == 128 || modulus.len() == 256;
+        #[cfg(feature = "rsa_2048_only")]
+        let modulus_ok = modulus.len() == 256;
+        if !modulus_ok {
+            return Err(CertParseError::UnsupportedRsaKeySize);
+        }
+
+        let exponent_tlv = read_tlv(r).map_err(map_err)?;
+        r = exponent_tlv.rest;
+        if exponent_tlv.tag != TAG_INTEGER {
+            return Err(CertParseError::BadRsaPubkey);
+        }
+        let exp_bytes = match exponent_tlv.body {
+            [0x00, rest @ ..] if !rest.is_empty() && (rest[0] & 0x80) != 0 => rest,
+            b => b,
+        };
+        if exp_bytes.is_empty() || exp_bytes.len() > 4 || exp_bytes[0] == 0 {
+            return Err(CertParseError::BadRsaPubkey);
+        }
+        let mut exponent: u32 = 0;
+        for &b in exp_bytes {
+            exponent = (exponent << 8) | b as u32;
+        }
+        if exponent < 3 || (exponent & 1) == 0 {
+            return Err(CertParseError::BadRsaPubkey);
+        }
+        if !r.is_empty() {
+            return Err(CertParseError::BadRsaPubkey);
+        }
+        Ok((modulus, exponent))
     }
 }
-
 #[cfg(feature = "rsa")]
-fn require_explicit_null_params(r: &mut &[u8]) -> Result<(), CertParseError> {
-    if r.is_empty() {
-        return Err(CertParseError::AlgorithmHasParameters);
-    }
-    let null_tlv = take_tlv(r)?;
-    if null_tlv.tag != TAG_NULL || !null_tlv.body.is_empty() {
-        return Err(CertParseError::AlgorithmHasParameters);
-    }
-    if !r.is_empty() {
-        return Err(CertParseError::AlgorithmHasParameters);
-    }
-    Ok(())
-}
-
-/// Parse `RSAPublicKey ::= SEQUENCE { modulus INTEGER, publicExponent INTEGER }`.
-#[cfg(feature = "rsa")]
-fn parse_rsa_pubkey(bit_string: &[u8]) -> Result<(&[u8], u32), CertParseError> {
-    let map_err = |_| CertParseError::BadRsaPubkey;
-    let outer = read_tlv(bit_string).map_err(map_err)?;
-    if outer.tag != TAG_SEQUENCE {
-        return Err(CertParseError::BadRsaPubkey);
-    }
-    let mut r = outer.body;
-
-    let modulus_tlv = read_tlv(r).map_err(map_err)?;
-    r = modulus_tlv.rest;
-    if modulus_tlv.tag != TAG_INTEGER {
-        return Err(CertParseError::BadRsaPubkey);
-    }
-    let modulus_raw = modulus_tlv.body;
-    let modulus = match modulus_raw {
-        [0x00, rest @ ..] if !rest.is_empty() && (rest[0] & 0x80) != 0 => rest,
-        b => b,
-    };
-    if modulus.is_empty() || modulus[0] == 0 {
-        return Err(CertParseError::BadRsaPubkey);
-    }
-    #[cfg(not(feature = "rsa_2048_only"))]
-    let modulus_ok = modulus.len() == 128 || modulus.len() == 256;
-    #[cfg(feature = "rsa_2048_only")]
-    let modulus_ok = modulus.len() == 256;
-    if !modulus_ok {
-        return Err(CertParseError::UnsupportedRsaKeySize);
-    }
-
-    let exponent_tlv = read_tlv(r).map_err(map_err)?;
-    r = exponent_tlv.rest;
-    if exponent_tlv.tag != TAG_INTEGER {
-        return Err(CertParseError::BadRsaPubkey);
-    }
-    let exp_bytes = match exponent_tlv.body {
-        [0x00, rest @ ..] if !rest.is_empty() && (rest[0] & 0x80) != 0 => rest,
-        b => b,
-    };
-    if exp_bytes.is_empty() || exp_bytes.len() > 4 || exp_bytes[0] == 0 {
-        return Err(CertParseError::BadRsaPubkey);
-    }
-    let mut exponent: u32 = 0;
-    for &b in exp_bytes {
-        exponent = (exponent << 8) | b as u32;
-    }
-    if exponent < 3 || (exponent & 1) == 0 {
-        return Err(CertParseError::BadRsaPubkey);
-    }
-    if !r.is_empty() {
-        return Err(CertParseError::BadRsaPubkey);
-    }
-    Ok((modulus, exponent))
-}
+use rsa::{
+    RSA_ENCRYPTION_OID, classify_rsa_outer_sig_alg, parse_rsa_pubkey, require_explicit_null_params,
+};
