@@ -343,9 +343,7 @@ mod chacha {
         type KeyBytes = [u8; 32];
         type Cipher = chacha20poly1305::ChaCha20Poly1305;
         fn make_cipher(key: &zeroize::Zeroizing<[u8; 32]>) -> Self::Cipher {
-            chacha20poly1305::ChaCha20Poly1305::new(
-                &chacha20poly1305::aead::generic_array::GenericArray::from(**key),
-            )
+            chacha20poly1305::ChaCha20Poly1305::new(&GenericArray::from(**key))
         }
         fn derive_keys<H: crate::traits::HkdfSha256>(
             traffic_secret: &crate::newtype::Secret,
