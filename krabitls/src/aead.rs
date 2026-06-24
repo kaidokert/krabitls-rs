@@ -305,13 +305,11 @@ pub(crate) type DefaultCipher = Aes128GcmSha256;
 #[cfg(all(test, not(feature = "cipher-aes"), feature = "chacha20"))]
 pub(crate) type DefaultCipher = ChaCha20Poly1305Sha256;
 
-/// `TLS_AES_128_GCM_SHA256` (`0x1301`). The suite type + its `Sealed` /
-/// `CipherSuite` impls are gated once on `feature = "cipher-aes"` via the
-/// module; `pub use` keeps the `aead::Aes128GcmSha256` path stable.
 #[cfg(feature = "cipher-aes")]
 mod aes {
     use super::*;
 
+    /// `TLS_AES_128_GCM_SHA256` (`0x1301`).
     pub struct Aes128GcmSha256;
     impl sealed::Sealed for Aes128GcmSha256 {}
     impl CipherSuite for Aes128GcmSha256 {
@@ -334,12 +332,11 @@ mod aes {
 #[cfg(feature = "cipher-aes")]
 pub use aes::Aes128GcmSha256;
 
-/// `TLS_CHACHA20_POLY1305_SHA256` (`0x1303`). Gated once on
-/// `feature = "chacha20"` via the module; `pub use` keeps the path stable.
 #[cfg(feature = "chacha20")]
 mod chacha {
     use super::*;
 
+    /// `TLS_CHACHA20_POLY1305_SHA256` (`0x1303`).
     pub struct ChaCha20Poly1305Sha256;
     impl sealed::Sealed for ChaCha20Poly1305Sha256 {}
     impl CipherSuite for ChaCha20Poly1305Sha256 {

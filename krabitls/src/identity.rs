@@ -308,10 +308,6 @@ fn ascii_eq_ignore_case(a: &[u8], b: &[u8]) -> bool {
     a.eq_ignore_ascii_case(b)
 }
 
-// Cert time-validity. The whole feature — error type, the public check, and
-// the `der`-crate `Time` decoding — lives behind one `#[cfg]` on the module so
-// the `der` `UTCTime`/`GeneralizedTime` machinery never compiles into builds
-// that don't enable `validity`.
 #[cfg(feature = "validity")]
 mod validity {
     use der::asn1::{GeneralizedTime, UtcTime};

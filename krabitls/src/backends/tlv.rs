@@ -82,11 +82,9 @@ pub fn read_tlv(buf: &[u8]) -> Result<Tlv<'_>, TlvError> {
     })
 }
 
-// ASN.1 universal-class tags + the cert-parser-only helpers. Only the
-// in-tree TLV cert parser (`tlv_cert.rs`, `not(cert-der)`) consumes these;
-// the `der`-crate parser and the SAN walker don't. Gated once on the module
-// rather than per-const. `tag_ctx_primitive` stays outside — the SAN walker
-// needs it in every build.
+// Only the in-tree TLV cert parser consumes these; the `der`-crate parser and
+// the SAN walker don't. `tag_ctx_primitive` is the exception — kept out of the
+// module because the SAN walker needs it in every build.
 #[cfg(not(feature = "cert-der"))]
 mod cert_parser_tags {
     use super::TlvError;
