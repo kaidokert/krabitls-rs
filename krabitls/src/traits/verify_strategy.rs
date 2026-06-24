@@ -21,7 +21,7 @@ impl<'a> ServerPubkey<'a> {
     }
 
     /// Test-only accessor; production paths match on the enum directly.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "cipher-aes"))]
     pub fn as_ed25519(&self) -> Option<[u8; 32]> {
         match self {
             ServerPubkey::Ed25519(pk, _) => Some(*pk),

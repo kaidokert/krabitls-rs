@@ -9,7 +9,7 @@ use crate::consts::SIG_SCHEME_ED25519;
 use crate::consts::SIG_SCHEME_RSA_PSS_RSAE_SHA256;
 use crate::hkdf::{HkdfLabelError, TranscriptHash, hkdf_expand_label};
 use crate::newtype::{Secret, TranscriptDigest, ZeroBuf};
-#[cfg(test)]
+#[cfg(all(test, feature = "cipher-aes"))]
 use crate::traits::CertParser;
 #[cfg(all(test, feature = "rsa"))]
 use crate::traits::cert::RsaCertSigAlg;
@@ -29,9 +29,9 @@ const HS_FINISHED: u8 = 20;
 #[derive(Debug, Clone, Copy)]
 pub struct ServerFlightView<'a> {
     pub ee_full: &'a [u8],
-    // Production reads `ee_full` (framed) for transcript hashing; only
-    // tests inspect the body bytes directly.
-    #[cfg_attr(not(test), allow(dead_code))]
+    // Production reads `ee_full` (framed) for transcript hashing; only the
+    // AES fixture tests inspect the body bytes directly.
+    #[cfg_attr(not(all(test, feature = "cipher-aes")), allow(dead_code))]
     pub ee_body: &'a [u8],
     pub cert_full: &'a [u8],
     pub cert_body: &'a [u8],
@@ -315,7 +315,7 @@ pub(crate) fn verify_self_signed_cert<
 /// Verify the cert's outer self-signature against its own pubkey.
 /// Test-only — production uses
 /// [`crate::backends::PinOrSelfSigned`] via the strategy.
-#[cfg(test)]
+#[cfg(all(test, feature = "cipher-aes"))]
 pub(crate) fn verify_self_signed_cert_with_cache<
     E: Ed25519VerifierProvider,
     R: RsaVerifierProvider,

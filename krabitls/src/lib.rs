@@ -738,21 +738,27 @@ mod tests {
     #[cfg(feature = "chacha20")]
     use crate::aead::ChaCha20Poly1305Sha256;
     use crate::aead::{DecryptError, NoCipher, decrypt_record, encrypt_record};
+    #[cfg(feature = "cipher-aes")]
+    use crate::backends::DerCert;
     #[cfg(feature = "jedisct")]
     use crate::backends::JedisctCrypto;
     #[cfg(all(feature = "rsa", not(feature = "rsa_pss_only"), feature = "cipher-aes"))]
     use crate::backends::RsaVerifierKey;
-    use crate::backends::{DerCert, RustCrypto};
+    use crate::backends::RustCrypto;
+    #[cfg(feature = "cipher-aes")]
     use crate::client_flight::CLIENT_FINISHED_LEN;
     use crate::hkdf::{HkdfLabelError, TranscriptError, TranscriptHash, traffic_keys};
     #[cfg(feature = "chacha20")]
     use crate::newtype::AeadKey32;
     use crate::newtype::{AeadIv, AeadKey, Secret, TranscriptDigest, ZeroBuf};
-    use crate::server_flight::{FlightError, extract_cert_der, extract_chain, parse_server_flight};
+    #[cfg(feature = "cipher-aes")]
+    use crate::server_flight::parse_server_flight;
+    use crate::server_flight::{FlightError, extract_cert_der, extract_chain};
+    #[cfg(feature = "cipher-aes")]
     use crate::traits::verify_strategy::PreparedVerifier;
-    use crate::traits::{
-        CertParseError, CertParser, CertView, Ed25519VerifierProvider, HkdfSha256,
-    };
+    #[cfg(feature = "cipher-aes")]
+    use crate::traits::{CertParseError, CertParser, Ed25519VerifierProvider};
+    use crate::traits::{CertView, HkdfSha256};
     use embedded_io::SliceWriteError;
 
     /// Ed25519 pubkey in the seed-0 self-signed leaf cert. Same constant
