@@ -236,22 +236,13 @@ mod sealed {
     pub trait Sealed {}
 }
 
-/// Replay-derived states have a zeroed `hs`; `finish_handshake` /
-/// `derive_app_secrets` impl only for [`Live`].
+/// Typestate marker on `WaitServerFlight`. Only [`Live`] exists — the param
+/// is retained so the handshake states stay generic over it.
 pub trait HandshakeMode: sealed::Sealed {}
 
 pub struct Live;
-// Replay-mode marker. All `Replay`-typed code paths sit behind
-// `feature = "replay"`; mirror that gate on the marker itself so the
-// non-replay build never compiles the type at all.
-#[cfg(feature = "replay")]
-pub struct Replay;
 impl sealed::Sealed for Live {}
-#[cfg(feature = "replay")]
-impl sealed::Sealed for Replay {}
 impl HandshakeMode for Live {}
-#[cfg(feature = "replay")]
-impl HandshakeMode for Replay {}
 
 pub struct WaitServerFlight<S: CipherSuite, M: HandshakeMode = Live> {
     pub(crate) hs: Secret,
@@ -427,32 +418,6 @@ where
         let next = self.write_client_hello_with(&mut cursor, x25519_pub, opts)?;
         let written = total - cursor.len();
         Ok((written, next))
-    }
-}
-
-#[cfg(feature = "replay")]
-impl<H> TlsConnection<WaitServerHello, H>
-where
-    H: HkdfSha256,
-{
-    /// Replay entry from a captured CH record. `x25519_priv` must match
-    /// the pub in that CH. `advertised` must match the CH's
-    /// `cipher_suites` list; pass [`crate::SuiteList::Default`] when the
-    /// captured CH advertised both AES and ChaCha.
-    pub fn from_client_hello_record(
-        ch_record: &[u8],
-        x25519_priv: ZeroBuf<32>,
-        advertised: crate::SuiteList,
-    ) -> Result<Self, ConnectionError> {
-        let mut transcript = TranscriptHash::<H>::new();
-        transcript.update_record(ch_record)?;
-        Ok(Self {
-            transcript,
-            state: WaitServerHello {
-                x25519_priv,
-                advertised,
-            },
-        })
     }
 }
 
@@ -803,52 +768,11 @@ where
     }
 }
 
-impl<S, H> TlsConnection<ServerFlightDone<S, Live>, H>
-where
-    S: CipherSuite,
-    H: HkdfSha256,
-{
-    /// `Live`-only: replay path's `hs` is zeroed. Pairs with [`TlsConnection::from_app_secrets`].
-    #[cfg(feature = "replay")]
-    pub fn derive_app_secrets(&self) -> Result<(Secret, Secret), ConnectionError> {
-        let th = self.transcript.snapshot();
-        let ms = master_secret::<H>(&self.state.hs)?;
-        Ok(application_traffic_secrets::<H>(&ms, &th)?)
-    }
-}
-
 // ============================================================================
-// Replay entry points (feature = "replay")
+// Replay entry point (test-only, `feature = "replay"`)
 // ============================================================================
 
-#[cfg(feature = "replay")]
-impl<S, H> TlsConnection<WaitServerFlight<S, Replay>, H>
-where
-    S: CipherSuite,
-    H: HkdfSha256,
-{
-    /// `transcript` at `H(CH‖SH)`; `hs` zeroed.
-    pub fn from_handshake_secrets(
-        transcript: TranscriptHash<H>,
-        c_hs_ts: Secret,
-        s_hs_ts: Secret,
-    ) -> Result<Self, ConnectionError> {
-        let s_hs_keys = RecordKeys::<S>::derive::<H>(&s_hs_ts)?;
-        Ok(Self {
-            transcript,
-            state: WaitServerFlight {
-                hs: Secret::from([0u8; 32]),
-                c_hs_ts,
-                s_hs_ts,
-                s_hs_keys,
-                seq_in: 0,
-                _mode: PhantomData,
-            },
-        })
-    }
-}
-
-#[cfg(feature = "replay")]
+#[cfg(all(test, feature = "replay"))]
 impl<S, H> TlsConnection<AppData<S>, H>
 where
     S: CipherSuite,
