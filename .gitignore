@@ -4,4 +4,3 @@ notes/
 *.log
 target/
 repro/
-RUSTC_BUG_*.md
