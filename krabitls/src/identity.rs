@@ -253,7 +253,7 @@ mod ip_host {
 
     /// Iterator over iPAddress entries in a SAN `GeneralNames` SEQUENCE.
     /// Yields raw 4-byte (IPv4) or 16-byte (IPv6) network-byte-order octets.
-    pub fn san_ip_addresses(san_bytes: &[u8]) -> SanIpAddressIter<'_> {
+    pub(super) fn san_ip_addresses(san_bytes: &[u8]) -> SanIpAddressIter<'_> {
         SanIpAddressIter(SanEntryWalker {
             rest: san_bytes,
             target_tag: IP_ADDRESS_TAG,
@@ -263,7 +263,7 @@ mod ip_host {
     // GeneralName CHOICE tag byte (RFC 5280 §4.2.1.6): iPAddress = [7] = 0x87.
     pub(super) const IP_ADDRESS_TAG: u8 = crate::backends::tlv::tag_ctx_primitive(7);
 
-    pub struct SanIpAddressIter<'a>(SanEntryWalker<'a>);
+    pub(super) struct SanIpAddressIter<'a>(SanEntryWalker<'a>);
 
     impl<'a> Iterator for SanIpAddressIter<'a> {
         type Item = Result<&'a [u8], IdentityError>;
