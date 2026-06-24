@@ -3,6 +3,8 @@
 use crate::newtype::{AeadIv, ZeroBuf};
 use ::aead::generic_array::GenericArray;
 use ::aead::{AeadCore, AeadInPlace, KeyInit};
+use subtle::{ConditionallySelectable, ConstantTimeEq};
+use zeroize::Zeroize;
 
 /// Per-record AEAD nonce: `iv` XOR `seq` (8-byte sequence number,
 /// big-endian, left-padded). RFC 8446 §5.3.
@@ -92,7 +94,6 @@ where
         Ok(()) => Ok(plaintext),
         Err(_) => {
             // Defensive zeroize: AEADs may have written partial plaintext before tag check failed.
-            use zeroize::Zeroize;
             plaintext.zeroize();
             Err(DecryptError::AeadFailed)
         }
@@ -146,7 +147,6 @@ where
     match aead_decrypt(&nonce, aad, ciphertext, &tag) {
         Ok(()) => Ok(ct_len),
         Err(_) => {
-            use zeroize::Zeroize;
             ciphertext.zeroize();
             Err(DecryptError::AeadFailed)
         }
@@ -168,8 +168,6 @@ where
 /// content_type-position, but that value is the public protocol-level
 /// outcome (record-too-large / empty-record), not the padding length.
 pub(crate) fn split_inner_plaintext(inner: &[u8]) -> Result<(&[u8], u8), DecryptError> {
-    use subtle::{ConditionallySelectable, ConstantTimeEq};
-
     // Upfront DoS / overflow guard. Without this a public caller could
     // hand in a multi-GB slice and force a full unconditional scan, and
     // the `(i + 1) as u32` cast below would wrap on `inner.len() > u32::MAX`
@@ -340,7 +338,6 @@ impl CipherSuite for ChaCha20Poly1305Sha256 {
     type KeyBytes = [u8; 32];
     type Cipher = chacha20poly1305::ChaCha20Poly1305;
     fn make_cipher(key: &zeroize::Zeroizing<[u8; 32]>) -> Self::Cipher {
-        use chacha20poly1305::KeyInit as _;
         chacha20poly1305::ChaCha20Poly1305::new(
             &chacha20poly1305::aead::generic_array::GenericArray::from(**key),
         )
@@ -571,6 +568,7 @@ pub enum DecryptError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::newtype::{AeadIv, ZeroBuf};
 
     #[test]
     fn split_no_padding() {
@@ -625,8 +623,6 @@ mod tests {
 
     #[test]
     fn decrypt_record_inplace_matches_copying() {
-        use crate::newtype::{AeadIv, ZeroBuf};
-
         const N: usize = core::mem::size_of::<<DefaultCipher as CipherSuite>::KeyBytes>();
         let key = ZeroBuf::new([0xa5u8; N]);
         let iv = AeadIv::new(ZeroBuf::new([0x42; 12]));
@@ -666,8 +662,6 @@ mod tests {
     #[cfg(feature = "chacha20")]
     #[test]
     fn decrypt_record_inplace_matches_copying_chacha() {
-        use crate::newtype::{AeadIv, ZeroBuf};
-
         let key = ZeroBuf::new([0xc3u8; 32]);
         let iv = AeadIv::new(ZeroBuf::new([0x99; 12]));
         let content = b"chacha plaintext sample bytes";

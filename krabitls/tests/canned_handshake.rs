@@ -1,10 +1,17 @@
 //! Host integration test that drives `DefaultStream::connect` end-to-end
 //! through the seed-0 fixtures — no real transport, no OS RNG.
 
-#![cfg(feature = "canned-replay")]
+// `validity` is excluded: the seed-0 fixtures call `self_signed(...)` without a
+// `TimeSource`, so the validity check returns `MissingClock`. Validity is
+// covered at the unit level in `identity.rs` / `pin_or_self_signed.rs`.
+#![cfg(all(
+    feature = "cipher-aes",
+    not(feature = "chacha20"),
+    not(feature = "validity")
+))]
 
-use krabitls::client::canned::{CannedTransport, SeededRng};
 use krabitls::client::{ClientParams, DefaultScratch, DefaultStream, RuntimeSuitePolicy};
+use krabitls_fixtures::{CannedTransport, SeededRng};
 
 /// Parse the testdata `.hex` format (skips `#`-comments + whitespace).
 fn parse_hex(s: &str) -> Vec<u8> {

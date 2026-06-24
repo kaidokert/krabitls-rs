@@ -1,0 +1,27 @@
+[package]
+name = "krabitls_fixtures"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.87"
+publish = false
+
+# Deterministic test infrastructure for krabitls: `SeededRng` (seed-mode
+# entropy that mirrors the Python `tls_fixture` byte-for-byte) and
+# `CannedTransport` (in-memory replay of captured server flights). Lives in
+# its own unpublished crate so `SeededRng` — which implements
+# `rand_core::TryCryptoRng` but is NOT a CSPRNG — can never be reached from a
+# real krabitls build.
+
+# krabitls's lib doesn't compile without a cipher suite, so forward one.
+# The fixtures code itself is cipher-independent (only `Transport` + SHA-256);
+# these flags exist purely to let the underlying krabitls build resolve. The
+# consumer (footprint) forwards whichever cipher it measures.
+[features]
+default = ["cipher-aes"]
+cipher-aes = ["krabitls/cipher-aes"]
+chacha20 = ["krabitls/chacha20"]
+
+[dependencies]
+krabitls = { path = "../krabitls", default-features = false }
+sha2 = { version = "0.10", default-features = false }
+rand_core = { version = "0.10", default-features = false }

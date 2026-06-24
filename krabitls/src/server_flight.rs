@@ -1,5 +1,9 @@
 //! Parse and verify the encrypted TLS 1.3 server flight.
 
+#[cfg(all(test, feature = "rsa", not(feature = "rsa_pss_only")))]
+use crate::backends::rsa_verify::RsaPkcs1Sig;
+#[cfg(feature = "rsa")]
+use crate::backends::rsa_verify::RsaPssSig;
 use crate::consts::SIG_SCHEME_ED25519;
 #[cfg(feature = "rsa")]
 use crate::consts::SIG_SCHEME_RSA_PSS_RSAE_SHA256;
@@ -7,11 +11,14 @@ use crate::hkdf::{HkdfLabelError, TranscriptHash, hkdf_expand_label};
 use crate::newtype::{Secret, TranscriptDigest, ZeroBuf};
 #[cfg(test)]
 use crate::traits::CertParser;
+#[cfg(all(test, feature = "rsa"))]
+use crate::traits::cert::RsaCertSigAlg;
 use crate::traits::verify_strategy::PreparedVerifier;
 use crate::traits::{
     CertParseError, CertView, Ed25519VerifierProvider, HkdfSha256, RsaVerifierProvider,
 };
 use signature::Verifier as _;
+use subtle::ConstantTimeEq;
 
 const HS_ENCRYPTED_EXTENSIONS: u8 = 8;
 const HS_CERTIFICATE: u8 = 11;
@@ -334,10 +341,6 @@ pub(crate) fn verify_self_signed_cert_with_cache<
             outer_sig_alg,
             ..
         } => {
-            #[cfg(not(feature = "rsa_pss_only"))]
-            use crate::backends::rsa_verify::RsaPkcs1Sig;
-            use crate::backends::rsa_verify::RsaPssSig;
-            use crate::traits::cert::RsaCertSigAlg;
             // `outer_sig_alg = None` means the cert's outer signatureAlgorithm
             // isn't one we know how to verify (e.g. RSA leaf signed by an
             // ECDSA issuer). Self-sig verify can't proceed.
@@ -432,7 +435,6 @@ pub(crate) fn verify_certificate_verify_with_cache<
         }
         #[cfg(feature = "rsa")]
         (SIG_SCHEME_RSA_PSS_RSAE_SHA256, CertView::Rsa { modulus, .. }) => {
-            use crate::backends::rsa_verify::RsaPssSig;
             // PSS signature length equals the RSA modulus length.
             if sig_len != modulus.len() {
                 return Err(FlightError::WrongSignatureLength);
@@ -486,11 +488,9 @@ pub(crate) fn verify_certificate_verify_with_prepared<
                 .map_err(|_| FlightError::CertVerifyInvalid)
         }
         #[cfg(feature = "rsa")]
-        (SIG_SCHEME_RSA_PSS_RSAE_SHA256, PreparedVerifier::Rsa(v)) => {
-            use crate::backends::rsa_verify::RsaPssSig;
-            v.verify(&signed, &RsaPssSig(sig_bytes))
-                .map_err(|_| FlightError::CertVerifyInvalid)
-        }
+        (SIG_SCHEME_RSA_PSS_RSAE_SHA256, PreparedVerifier::Rsa(v)) => v
+            .verify(&signed, &RsaPssSig(sig_bytes))
+            .map_err(|_| FlightError::CertVerifyInvalid),
         _ => Err(FlightError::UnexpectedSignatureScheme(scheme)),
     }
 }
@@ -516,7 +516,6 @@ pub(crate) fn verify_server_finished<H: HkdfSha256>(
     // `subtle::ct_eq` is the canonical CT primitive. A hand-rolled `diff |=`
     // loop is legal for LLVM to vectorize / lower to `memcmp`, which would
     // destroy the constant-time property.
-    use subtle::ConstantTimeEq;
     if bool::from(expected.as_slice().ct_eq(finished_body)) {
         Ok(())
     } else {

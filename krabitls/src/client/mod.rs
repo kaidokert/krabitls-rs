@@ -4,12 +4,6 @@
 //! connection: bring a [`Transport`], a caller-owned [`Scratch`], an
 //! RNG, and a [`ClientParams`] — get a connected [`TlsStream`] back.
 
-// Test-only fixture replay (SeededRng + CannedTransport). `#[doc(hidden)]`
-// so it's reachable for our own M3 demos / external testers reproducing
-// fixtures, but doesn't pollute the public docs of real consumers.
-#[cfg(feature = "canned-replay")]
-#[doc(hidden)]
-pub mod canned;
 mod config;
 mod engine;
 /// Error types that can surface through the facade.
@@ -57,6 +51,7 @@ pub(crate) use error::WriteAppError;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use embedded_io::{ErrorType, Read, ReadExactError, Write};
 
     // Compile-time smoke tests: these don't assert anything at runtime,
     // they just force the type system to confirm the public surface
@@ -143,8 +138,6 @@ mod tests {
     // compile-time-only trait resolution check.
     #[test]
     fn embedded_io_blanket_impl_resolves() {
-        use embedded_io::{ErrorType, Read, ReadExactError, Write};
-
         #[derive(Debug)]
         struct Stub;
 

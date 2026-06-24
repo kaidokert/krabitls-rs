@@ -128,6 +128,82 @@ mod fixture_aes_rsa2048_facade {
         concat_sh_sf!(SERVER_HELLO.len(), SERVER_FLIGHT.len());
 }
 
+// Shared by every facade variant. Gated to "a valid fixture combo is active"
+// so a contradictory feature pair (which compiles no fixture module, hence no
+// run/baseline function) doesn't drag in unused imports.
+#[cfg(all(
+    feature = "canned-replay",
+    any(
+        all(
+            feature = "cipher-aes",
+            not(feature = "chacha20"),
+            not(feature = "rsa")
+        ),
+        all(
+            feature = "chacha20",
+            not(feature = "cipher-aes"),
+            not(feature = "rsa")
+        ),
+        all(feature = "rsa", feature = "cipher-aes", not(feature = "chacha20")),
+    ),
+))]
+use {
+    core::hint::black_box,
+    krabitls::client::{ClientParams, DefaultStream},
+    krabitls_fixtures::{CannedTransport, SeededRng},
+};
+
+// Only the AES-suite variants (Ed25519, RSA, jedisct) override the suite
+// policy; the chacha variant takes the default.
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "cipher-aes",
+    not(feature = "chacha20")
+))]
+use krabitls::client::RuntimeSuitePolicy;
+
+// Fixture data globs — one captured-suite module each, so these stay per-cfg.
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "cipher-aes",
+    not(feature = "chacha20"),
+    not(feature = "rsa"),
+))]
+use fixture_aes_ed25519_facade::*;
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "rsa",
+    feature = "cipher-aes",
+    not(feature = "chacha20"),
+))]
+use fixture_aes_rsa2048_facade::*;
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "chacha20",
+    not(feature = "cipher-aes"),
+    not(feature = "rsa"),
+))]
+use fixture_chacha_ed25519_facade::*;
+
+// Types unique to the jedisct config (a strict subset of the AES+Ed25519
+// combo, so `ClientParams`/`CannedTransport`/`SeededRng` come from above).
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "jedisct",
+    feature = "cipher-aes",
+    not(feature = "chacha20"),
+    not(feature = "rsa"),
+))]
+use krabitls::backends::{DerCert, JedisctCrypto, RustCrypto};
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "jedisct",
+    feature = "cipher-aes",
+    not(feature = "chacha20"),
+    not(feature = "rsa"),
+))]
+use krabitls::client::{ClientConfig, ConfigSuitePolicy, DefaultVerify, TlsStream};
+
 /// Drive the full facade handshake against canned seed-0 fixtures.
 ///
 /// Composes SH + SF into a `CannedTransport`, then calls
@@ -142,10 +218,6 @@ mod fixture_aes_rsa2048_facade {
     not(feature = "rsa"),
 ))]
 pub fn run_aes_ed25519_facade() -> Result<(), ()> {
-    use fixture_aes_ed25519_facade::*;
-    use krabitls::client::canned::{CannedTransport, SeededRng};
-    use krabitls::client::{ClientParams, DefaultStream, RuntimeSuitePolicy};
-
     facade_scratch::with(|scratch| {
         let mut rng = SeededRng::new(0);
         let transport = CannedTransport::<512>::new(&SERVER_STREAM);
@@ -177,8 +249,6 @@ pub fn run_aes_ed25519_facade() -> Result<(), ()> {
 ))]
 #[inline(never)]
 pub fn baseline_aes_ed25519_facade() -> bool {
-    use core::hint::black_box;
-    use fixture_aes_ed25519_facade::*;
     black_box(&CLIENT_HELLO);
     black_box(&SERVER_HELLO);
     black_box(&SERVER_FLIGHT);
@@ -199,10 +269,6 @@ pub fn baseline_aes_ed25519_facade() -> bool {
     not(feature = "rsa"),
 ))]
 pub fn run_chacha_ed25519_facade() -> Result<(), ()> {
-    use fixture_chacha_ed25519_facade::*;
-    use krabitls::client::canned::{CannedTransport, SeededRng};
-    use krabitls::client::{ClientParams, DefaultStream};
-
     facade_scratch::with(|scratch| {
         let mut rng = SeededRng::new(0);
         let transport = CannedTransport::<512>::new(&SERVER_STREAM);
@@ -230,8 +296,6 @@ pub fn run_chacha_ed25519_facade() -> Result<(), ()> {
 ))]
 #[inline(never)]
 pub fn baseline_chacha_ed25519_facade() -> bool {
-    use core::hint::black_box;
-    use fixture_chacha_ed25519_facade::*;
     black_box(&CLIENT_HELLO);
     black_box(&SERVER_HELLO);
     black_box(&SERVER_FLIGHT);
@@ -251,10 +315,6 @@ pub fn baseline_chacha_ed25519_facade() -> bool {
     not(feature = "chacha20"),
 ))]
 pub fn run_aes_rsa2048_facade() -> Result<(), ()> {
-    use fixture_aes_rsa2048_facade::*;
-    use krabitls::client::canned::{CannedTransport, SeededRng};
-    use krabitls::client::{ClientParams, DefaultStream, RuntimeSuitePolicy};
-
     facade_scratch::with(|scratch| {
         let mut rng = SeededRng::new(0);
         let transport = CannedTransport::<512>::new(&SERVER_STREAM);
@@ -283,8 +343,6 @@ pub fn run_aes_rsa2048_facade() -> Result<(), ()> {
 ))]
 #[inline(never)]
 pub fn baseline_aes_rsa2048_facade() -> bool {
-    use core::hint::black_box;
-    use fixture_aes_rsa2048_facade::*;
     black_box(&CLIENT_HELLO);
     black_box(&SERVER_HELLO);
     black_box(&SERVER_FLIGHT);
@@ -305,13 +363,6 @@ pub fn baseline_aes_rsa2048_facade() -> bool {
     not(feature = "rsa"),
 ))]
 pub fn run_aes_ed25519_jedisct_facade() -> Result<(), ()> {
-    use fixture_aes_ed25519_facade::*;
-    use krabitls::backends::{DerCert, JedisctCrypto, RustCrypto};
-    use krabitls::client::canned::{CannedTransport, SeededRng};
-    use krabitls::client::{
-        ClientConfig, ClientParams, ConfigSuitePolicy, DefaultVerify, TlsStream,
-    };
-
     pub struct JedisctConfig;
     impl ClientConfig for JedisctConfig {
         type Hkdf = JedisctCrypto;

@@ -13,23 +13,26 @@
 //! the strategy. `identity.rs::tests` covers `verify_hostname` at the
 //! unit level; that's the correct granularity for SAN logic.
 
+// `validity` excluded: these fixtures use `self_signed`/strategy paths without a
+// `TimeSource`, which the validity check rejects with `MissingClock`. Validity is
+// covered at the unit level elsewhere.
 #![cfg(all(
-    feature = "canned-replay",
     feature = "cipher-aes",
     not(feature = "rsa"),
-    not(feature = "chacha20")
+    not(feature = "chacha20"),
+    not(feature = "validity")
 ))]
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use krabitls::backends::RustCrypto;
-use krabitls::client::canned::{CannedTransport, SeededRng};
 use krabitls::client::{
     CertChainView, ClientParams, ConnectError, DefaultConfig, DefaultScratch, DefaultVerify,
     Ed25519VerifierProvider, HandshakeError, PinOrSelfSigned, PreparedVerifier,
     RsaVerifierProvider, SafeStrategy, TlsStream, Trusted, VerifyStrategy,
 };
+use krabitls_fixtures::{CannedTransport, SeededRng};
 
 const CLIENT_HELLO_HEX: &str = include_str!("../../testdata/packets/001_c2s_ClientHello.hex");
 const SERVER_HELLO_HEX: &str = include_str!("../../testdata/packets/002_s2c_ServerHello.hex");
