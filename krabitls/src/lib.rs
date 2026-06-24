@@ -165,9 +165,11 @@ use consts::*;
 
 const EXT_SUPPORTED_VERSIONS_TOTAL: u16 = 4 + 3;
 const EXT_SUPPORTED_GROUPS_TOTAL: u16 = 4 + 4;
-// 4-byte ext header + 2-byte list-len + one 2-byte scheme (ed25519), plus a
-// second scheme (rsa_pss) only when `rsa` is on.
-const EXT_SIGNATURE_ALGORITHMS_TOTAL: u16 = 4 + 4 + if cfg!(feature = "rsa") { 2 } else { 0 };
+// Schemes advertised in signature_algorithms: ed25519 always, rsa_pss when
+// `rsa` is on. Single source for both the ext sizing and the writer below.
+const SIG_SCHEME_COUNT: u16 = 1 + cfg!(feature = "rsa") as u16;
+// 4-byte ext header + 2-byte list-len + 2 bytes per scheme.
+const EXT_SIGNATURE_ALGORITHMS_TOTAL: u16 = 4 + 2 + 2 * SIG_SCHEME_COUNT;
 const EXT_KEY_SHARE_TOTAL: u16 = 4 + 38;
 
 // At least one cipher feature must be on. We can't form a valid
@@ -326,7 +328,9 @@ pub(crate) const CLIENT_HELLO_LEN: usize = client_hello_len(None);
 // extra advertised suite + 2 when rsa adds the second sig scheme.
 const _: () = assert!(
     CLIENT_HELLO_LEN
-        == 117 + 2 * (CH_CIPHER_SUITES_COUNT - 1) + if cfg!(feature = "rsa") { 2 } else { 0 }
+        == 117
+            + 2 * CH_CIPHER_SUITES_COUNT.saturating_sub(1)
+            + if cfg!(feature = "rsa") { 2 } else { 0 }
 );
 
 /// Big-endian byte-emission helpers layered on top of [`embedded_io::Write`].
@@ -448,10 +452,8 @@ pub(crate) fn write_client_hello_with<W: Write>(
     out.write_u16(NAMED_GROUP_X25519)?;
 
     out.write_u16(EXT_SIGNATURE_ALGORITHMS)?;
-    // ed25519 always; rsa_pss only under `rsa`. Lengths track the scheme count.
-    let n_sig_schemes: u16 = if cfg!(feature = "rsa") { 2 } else { 1 };
-    out.write_u16(2 + 2 * n_sig_schemes)?; // ext_data: list_len field (2) + schemes
-    out.write_u16(2 * n_sig_schemes)?; // supported_signature_algorithms list_len
+    out.write_u16(2 + 2 * SIG_SCHEME_COUNT)?; // ext_data: list_len field (2) + schemes
+    out.write_u16(2 * SIG_SCHEME_COUNT)?; // supported_signature_algorithms list_len
     out.write_u16(SIG_SCHEME_ED25519)?;
     if cfg!(feature = "rsa") {
         out.write_u16(SIG_SCHEME_RSA_PSS_RSAE_SHA256)?;
