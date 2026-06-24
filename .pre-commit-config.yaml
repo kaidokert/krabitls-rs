@@ -154,14 +154,24 @@ repos:
         language: system
         pass_filenames: false
         files: ^(krabitls_cli|krabitls)/.*\.(rs|toml)$
-    # `cargo hack --feature-powerset` enforces that every realistic
-    # feature combination still compiles. Without it a feature-combo
-    # regression can slip through the handpicked clippy hooks above.
-    # Constraints: at least one cipher, at least one cert parser;
-    # depth 2 keeps the combinatorial cost bounded.
+    # `cargo hack --feature-powerset` enforces that every realistic feature
+    # combination still compiles AND is warning-free, including the test
+    # targets (`--all-targets`). The handpicked clippy hooks above all keep
+    # cipher-aes via default features, so they never check a chacha-only or
+    # replay build — `--all-targets` here catches unused test imports / dead
+    # test helpers that only surface when a feature is *off*. At least one
+    # cipher, at least one cert parser; depth 2 bounds the combinatorics.
     -   id: krabitls-cargo-hack
-        name: cargo hack krabitls (feature-powerset, depth 2)
-        entry: cargo hack check --manifest-path=krabitls/Cargo.toml --feature-powerset --depth 2 --no-dev-deps --at-least-one-of cipher-aes,chacha20 --at-least-one-of cert-der,cert-tlv
+        name: cargo hack krabitls clippy (feature-powerset, all-targets)
+        entry: cargo hack clippy --manifest-path=krabitls/Cargo.toml --feature-powerset --depth 2 --at-least-one-of cipher-aes,chacha20 --all-targets -- -D warnings
+        language: system
+        pass_filenames: false
+        files: ^krabitls/.*\.(rs|toml)$
+    # And that tests actually *run* (not just compile) across the powerset —
+    # catches a combo where a test silently gets cfg'd out or fails.
+    -   id: krabitls-cargo-hack-test
+        name: cargo hack krabitls test (feature-powerset)
+        entry: cargo hack test --manifest-path=krabitls/Cargo.toml --feature-powerset --depth 2 --at-least-one-of cipher-aes,chacha20
         language: system
         pass_filenames: false
         files: ^krabitls/.*\.(rs|toml)$

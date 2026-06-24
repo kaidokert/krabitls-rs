@@ -1316,7 +1316,9 @@ mod tests {
 
     // Live AppAes engine (replay-gated)
 
-    #[cfg(feature = "replay")]
+    // The replay constructors build an AES-128-GCM app-data engine, so this
+    // mod needs cipher-aes in addition to the replay feature.
+    #[cfg(all(feature = "replay", feature = "cipher-aes"))]
     mod replay {
         use super::*;
         use crate::aead::Aes128GcmSha256;
