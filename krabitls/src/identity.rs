@@ -7,11 +7,6 @@
 
 use crate::backends::tlv::read_tlv;
 use crate::traits::cert::CertView;
-#[cfg(feature = "validity")]
-use der::asn1::{GeneralizedTime, UtcTime};
-#[cfg(feature = "validity")]
-use der::{Decode, Reader, SliceReader, Tag};
-#[cfg(test)]
 #[cfg(test)]
 use subtle::ConstantTimeEq;
 
@@ -313,103 +308,111 @@ fn ascii_eq_ignore_case(a: &[u8], b: &[u8]) -> bool {
     a.eq_ignore_ascii_case(b)
 }
 
-/// Reasons the cert-validity check may reject a cert.
+// Cert time-validity. The whole feature — error type, the public check, and
+// the `der`-crate `Time` decoding — lives behind one `#[cfg]` on the module so
+// the `der` `UTCTime`/`GeneralizedTime` machinery never compiles into builds
+// that don't enable `validity`.
 #[cfg(feature = "validity")]
-#[derive(Debug, PartialEq, Eq, Clone, Copy, thiserror::Error)]
-pub enum ValidityError {
-    /// Caller's current time is before the cert's `notBefore`.
-    #[error("cert not yet valid: notBefore={not_before}, now={now}")]
-    NotYetValid { not_before: u64, now: u64 },
-    /// Caller's current time is past the cert's `notAfter`.
-    #[error("cert expired: notAfter={not_after}, now={now}")]
-    Expired { not_after: u64, now: u64 },
-    /// `validity_der` didn't decode as `SEQUENCE { Time, Time }` with
-    /// `Time = UTCTime | GeneralizedTime`.
-    #[error("cert validity field did not decode")]
-    Malformed,
-}
+mod validity {
+    use der::asn1::{GeneralizedTime, UtcTime};
+    use der::{Decode, Reader, SliceReader, Tag};
 
-/// Check the cert's `notBefore` / `notAfter` window against a caller-
-/// supplied [`crate::traits::TimeSource`].
-///
-/// X.509 wire encoding for `Time`: either `UTCTime` (2-digit year,
-/// pivots at 50 per RFC 5280 §4.1.2.5.1) or `GeneralizedTime` (4-digit
-/// year). Both end with the literal `Z` (UTC). krabitls parses both
-/// shapes into Unix epoch seconds and does a closed-interval check.
-///
-/// `Ok(())` means `not_before <= now <= not_after`. The cert is
-/// considered valid *at the boundaries* — same as every other widely-
-/// deployed verifier.
-#[cfg(feature = "validity")]
-pub fn verify_validity<T: crate::traits::time::TimeSource + ?Sized>(
-    cert_view: &crate::traits::cert::CertView<'_>,
-    time: &T,
-) -> Result<(), ValidityError> {
-    let (not_before, not_after) = parse_validity_der(cert_view.validity_der())?;
-    let now = time.now_unix_secs();
-    if now < not_before {
-        return Err(ValidityError::NotYetValid { not_before, now });
+    /// Reasons the cert-validity check may reject a cert.
+    #[derive(Debug, PartialEq, Eq, Clone, Copy, thiserror::Error)]
+    pub enum ValidityError {
+        /// Caller's current time is before the cert's `notBefore`.
+        #[error("cert not yet valid: notBefore={not_before}, now={now}")]
+        NotYetValid { not_before: u64, now: u64 },
+        /// Caller's current time is past the cert's `notAfter`.
+        #[error("cert expired: notAfter={not_after}, now={now}")]
+        Expired { not_after: u64, now: u64 },
+        /// `validity_der` didn't decode as `SEQUENCE { Time, Time }` with
+        /// `Time = UTCTime | GeneralizedTime`.
+        #[error("cert validity field did not decode")]
+        Malformed,
     }
-    if now > not_after {
-        return Err(ValidityError::Expired { not_after, now });
-    }
-    Ok(())
-}
 
-/// Decode the `Validity SEQUENCE { notBefore Time, notAfter Time }`
-/// from the captured DER bytes. Returns `(not_before, not_after)` in
-/// Unix-epoch seconds.
-///
-/// Delegates the `UTCTime` / `GeneralizedTime` parsing to the `der` crate's
-/// built-in types (no extra feature flag — `to_unix_duration()` is on the
-/// default API surface). The leap-year math, two-digit-year pivot (RFC
-/// 5280 §4.1.2.5.1), and per-month day limits all live in `der` instead
-/// of the previous hand-rolled `days_to_epoch_secs`.
-#[cfg(feature = "validity")]
-fn parse_validity_der(der_bytes: &[u8]) -> Result<(u64, u64), ValidityError> {
-    let mut outer = SliceReader::new(der_bytes).map_err(|_| ValidityError::Malformed)?;
-    let result: der::Result<(u64, u64)> = outer.sequence(|inner| {
-        let nb = decode_time_to_unix(inner)?;
-        let na = decode_time_to_unix(inner)?;
-        // RFC 5280 §4.1.2.5: `Validity ::= SEQUENCE { notBefore Time, notAfter Time }`
-        // is *exactly* two Time fields — reject `SEQUENCE { Time, Time, ...trailing }`
-        // so a malformed encoding can't slip through as long as the first two
-        // timestamps happen to bracket `now`.
-        if !inner.is_finished() {
-            return Err(inner.error(der::ErrorKind::TrailingData {
-                decoded: 0u8.into(),
-                remaining: 0u8.into(),
-            }));
+    /// Check the cert's `notBefore` / `notAfter` window against a caller-
+    /// supplied [`crate::traits::TimeSource`].
+    ///
+    /// X.509 wire encoding for `Time`: either `UTCTime` (2-digit year,
+    /// pivots at 50 per RFC 5280 §4.1.2.5.1) or `GeneralizedTime` (4-digit
+    /// year). Both end with the literal `Z` (UTC). krabitls parses both
+    /// shapes into Unix epoch seconds and does a closed-interval check.
+    ///
+    /// `Ok(())` means `not_before <= now <= not_after`. The cert is
+    /// considered valid *at the boundaries* — same as every other widely-
+    /// deployed verifier.
+    pub fn verify_validity<T: crate::traits::time::TimeSource + ?Sized>(
+        cert_view: &crate::traits::cert::CertView<'_>,
+        time: &T,
+    ) -> Result<(), ValidityError> {
+        let (not_before, not_after) = parse_validity_der(cert_view.validity_der())?;
+        let now = time.now_unix_secs();
+        if now < not_before {
+            return Err(ValidityError::NotYetValid { not_before, now });
+        }
+        if now > not_after {
+            return Err(ValidityError::Expired { not_after, now });
+        }
+        Ok(())
+    }
+
+    /// Decode the `Validity SEQUENCE { notBefore Time, notAfter Time }`
+    /// from the captured DER bytes. Returns `(not_before, not_after)` in
+    /// Unix-epoch seconds.
+    ///
+    /// Delegates the `UTCTime` / `GeneralizedTime` parsing to the `der` crate's
+    /// built-in types (no extra feature flag — `to_unix_duration()` is on the
+    /// default API surface). The leap-year math, two-digit-year pivot (RFC
+    /// 5280 §4.1.2.5.1), and per-month day limits all live in `der` instead
+    /// of the previous hand-rolled `days_to_epoch_secs`.
+    fn parse_validity_der(der_bytes: &[u8]) -> Result<(u64, u64), ValidityError> {
+        let mut outer = SliceReader::new(der_bytes).map_err(|_| ValidityError::Malformed)?;
+        let result: der::Result<(u64, u64)> = outer.sequence(|inner| {
+            let nb = decode_time_to_unix(inner)?;
+            let na = decode_time_to_unix(inner)?;
+            // RFC 5280 §4.1.2.5: `Validity ::= SEQUENCE { notBefore Time, notAfter Time }`
+            // is *exactly* two Time fields — reject `SEQUENCE { Time, Time, ...trailing }`
+            // so a malformed encoding can't slip through as long as the first two
+            // timestamps happen to bracket `now`.
+            if !inner.is_finished() {
+                return Err(inner.error(der::ErrorKind::TrailingData {
+                    decoded: 0u8.into(),
+                    remaining: 0u8.into(),
+                }));
+            }
+            Ok((nb, na))
+        });
+        let (nb, na) = result.map_err(|_| ValidityError::Malformed)?;
+        if !outer.is_finished() {
+            return Err(ValidityError::Malformed);
         }
         Ok((nb, na))
-    });
-    let (nb, na) = result.map_err(|_| ValidityError::Malformed)?;
-    if !outer.is_finished() {
-        return Err(ValidityError::Malformed);
     }
-    Ok((nb, na))
-}
 
-/// Decode one X.509 `Time` value from a `der::Reader` cursor into Unix
-/// epoch seconds. The CHOICE `Time ::= UTCTime | GeneralizedTime` is
-/// disambiguated by the leading tag; both `der::asn1::UtcTime` and
-/// `GeneralizedTime` expose `to_unix_duration() -> core::time::Duration`
-/// which we narrow to `u64` seconds.
-#[cfg(feature = "validity")]
-fn decode_time_to_unix<'a, R: der::Reader<'a>>(r: &mut R) -> der::Result<u64> {
-    let tag = Tag::peek(r)?;
-    let secs = match tag {
-        Tag::UtcTime => UtcTime::decode(r)?.to_unix_duration().as_secs(),
-        Tag::GeneralizedTime => GeneralizedTime::decode(r)?.to_unix_duration().as_secs(),
-        _ => {
-            return Err(r.error(der::ErrorKind::TagUnexpected {
-                expected: None,
-                actual: tag,
-            }));
-        }
-    };
-    Ok(secs)
+    /// Decode one X.509 `Time` value from a `der::Reader` cursor into Unix
+    /// epoch seconds. The CHOICE `Time ::= UTCTime | GeneralizedTime` is
+    /// disambiguated by the leading tag; both `der::asn1::UtcTime` and
+    /// `GeneralizedTime` expose `to_unix_duration() -> core::time::Duration`
+    /// which we narrow to `u64` seconds.
+    fn decode_time_to_unix<'a, R: der::Reader<'a>>(r: &mut R) -> der::Result<u64> {
+        let tag = Tag::peek(r)?;
+        let secs = match tag {
+            Tag::UtcTime => UtcTime::decode(r)?.to_unix_duration().as_secs(),
+            Tag::GeneralizedTime => GeneralizedTime::decode(r)?.to_unix_duration().as_secs(),
+            _ => {
+                return Err(r.error(der::ErrorKind::TagUnexpected {
+                    expected: None,
+                    actual: tag,
+                }));
+            }
+        };
+        Ok(secs)
+    }
 }
+#[cfg(feature = "validity")]
+pub use validity::{ValidityError, verify_validity};
 
 #[cfg(test)]
 mod tests {
