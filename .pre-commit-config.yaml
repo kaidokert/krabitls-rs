@@ -163,7 +163,7 @@ repos:
     # cipher, at least one cert parser; depth 2 bounds the combinatorics.
     -   id: krabitls-cargo-hack
         name: cargo hack krabitls clippy (feature-powerset, all-targets)
-        entry: cargo hack clippy --manifest-path=krabitls/Cargo.toml --feature-powerset --depth 2 --at-least-one-of cipher-aes,chacha20 --at-least-one-of cert-der,cert-tlv --all-targets -- -D warnings
+        entry: cargo hack clippy --manifest-path=krabitls/Cargo.toml --feature-powerset --depth 2 --at-least-one-of cipher-aes,chacha20 --all-targets -- -D warnings
         language: system
         pass_filenames: false
         files: ^krabitls/.*\.(rs|toml)$
@@ -171,7 +171,7 @@ repos:
     # catches a combo where a test silently gets cfg'd out or fails.
     -   id: krabitls-cargo-hack-test
         name: cargo hack krabitls test (feature-powerset)
-        entry: cargo hack test --manifest-path=krabitls/Cargo.toml --feature-powerset --depth 2 --at-least-one-of cipher-aes,chacha20 --at-least-one-of cert-der,cert-tlv
+        entry: cargo hack test --manifest-path=krabitls/Cargo.toml --feature-powerset --depth 2 --at-least-one-of cipher-aes,chacha20
         language: system
         pass_filenames: false
         files: ^krabitls/.*\.(rs|toml)$

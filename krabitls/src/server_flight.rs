@@ -1,6 +1,11 @@
 //! Parse and verify the encrypted TLS 1.3 server flight.
 
-#[cfg(all(test, feature = "rsa", not(feature = "rsa_pss_only")))]
+#[cfg(all(
+    test,
+    feature = "cipher-aes",
+    feature = "rsa",
+    not(feature = "rsa_pss_only")
+))]
 use crate::backends::rsa_verify::RsaPkcs1Sig;
 #[cfg(feature = "rsa")]
 use crate::backends::rsa_verify::RsaPssSig;
@@ -11,7 +16,7 @@ use crate::hkdf::{HkdfLabelError, TranscriptHash, hkdf_expand_label};
 use crate::newtype::{Secret, TranscriptDigest, ZeroBuf};
 #[cfg(all(test, feature = "cipher-aes"))]
 use crate::traits::CertParser;
-#[cfg(all(test, feature = "rsa"))]
+#[cfg(all(test, feature = "cipher-aes", feature = "rsa"))]
 use crate::traits::cert::RsaCertSigAlg;
 use crate::traits::verify_strategy::PreparedVerifier;
 use crate::traits::{

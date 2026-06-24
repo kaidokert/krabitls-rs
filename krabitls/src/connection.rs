@@ -772,7 +772,7 @@ where
 // Replay entry point (test-only, `feature = "replay"`)
 // ============================================================================
 
-#[cfg(all(test, feature = "replay"))]
+#[cfg(all(test, feature = "replay", feature = "cipher-aes"))]
 impl<S, H> TlsConnection<AppData<S>, H>
 where
     S: CipherSuite,
