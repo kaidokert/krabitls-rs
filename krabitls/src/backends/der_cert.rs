@@ -6,6 +6,7 @@ use der::{Decode, Reader, SliceReader, Tag, TagNumber};
 use crate::traits::cert::{CertParseError, CertParser, CertView};
 
 /// Marker type for the `der`-crate-backed cert parser implementation.
+#[derive(Debug, Clone, Copy)]
 pub struct DerCert;
 
 const ED25519_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.101.112");

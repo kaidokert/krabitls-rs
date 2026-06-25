@@ -4,3 +4,4 @@ notes/
 *.log
 target/
 repro/
+footprint/handshakes/Cargo.lock

@@ -10,6 +10,7 @@ use super::tlv::{
 use crate::traits::cert::{CertParseError, CertParser, CertView};
 
 /// Marker type for the hand-rolled-TLV-backed [`CertParser`].
+#[derive(Debug, Clone, Copy)]
 pub struct DerCert;
 
 // DER-encoded OID bytes (the OID body, not the TLV — the tag/length

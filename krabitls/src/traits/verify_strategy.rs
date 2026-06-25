@@ -192,6 +192,13 @@ pub trait Clock {
     fn check_validity(&self, leaf: &CertView<'_>) -> Result<(), ValidityRejected>;
 }
 
+/// Cert validity-window check rejected the leaf. Deliberately detail-free so
+/// the always-compiled `Clock` surface carries no `der`-gated `ValidityError`
+/// — keeps the no-`cert-der` build der-free. The concrete reason is available
+/// to a `Clocked` strategy's own logging before it reaches here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ValidityRejected;
+
 /// ZST clock: validity skipped. Empty body → no edge to `verify_validity`.
 #[derive(Debug, Clone, Copy)]
 pub struct NoClock;
@@ -205,6 +212,7 @@ impl Clock for NoClock {
 
 /// Real clock: runs the `notBefore`/`notAfter` window check.
 #[cfg(feature = "cert-der")]
+#[derive(Debug, Clone, Copy)]
 pub struct Clocked<T: TimeSource>(pub T);
 
 #[cfg(feature = "cert-der")]
@@ -214,11 +222,8 @@ impl<T: TimeSource> Clock for Clocked<T> {
     }
 }
 
-/// Cert validity-window check rejected the leaf.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ValidityRejected;
-
 /// Adapter from [`TrustRootDecision`] to [`VerifyStrategy`].
+#[derive(Debug, Clone)]
 pub struct SafeStrategy<T, C: CertParser, K = NoClock> {
     pub decision: T,
     pub clock: K,
@@ -266,7 +271,7 @@ pub enum SafeStrategyError<TE> {
     Decision(TE),
     /// Cert validity-window check rejected the leaf.
     #[error("cert validity-window check failed")]
-    ValidityRejected,
+    Validity,
 }
 
 /// Per-call cap on parsed `CertView`s. Real chains rarely exceed 4
@@ -318,7 +323,7 @@ where
 
         self.clock
             .check_validity(&views[0])
-            .map_err(|_| SafeStrategyError::ValidityRejected)?;
+            .map_err(|_| SafeStrategyError::Validity)?;
 
         let leaf_prepared: PreparedVerifier<E, R> = match &views[0] {
             CertView::Ed25519 { pubkey, .. } => {
