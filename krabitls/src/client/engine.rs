@@ -14,15 +14,11 @@ use crate::connection::{
     AppData, FlightStep, NegotiatedSuite, ServerFlightDone, WaitServerFlight, WaitServerHello,
 };
 use crate::connection::{ConnectionError, TlsConnection};
+use crate::consts::{CLOSE_NOTIFY_ALERT, CT_ALERT, CT_APPLICATION_DATA, CT_HANDSHAKE};
 use crate::identity::verify_hostname;
 use crate::server_flight::{extract_chain, parse_server_flight};
 use crate::traits::CertParser;
 use crate::traits::verify_strategy::{CertChainView, PreparedVerifier, VerifyStrategy};
-
-const CT_APPLICATION_DATA: u8 = 0x17;
-const CT_HANDSHAKE: u8 = 0x16;
-const CT_ALERT: u8 = 0x15;
-const CLOSE_NOTIFY_ALERT: [u8; 2] = [0x01, 0x00];
 
 /// Recv-buffer cursor state.
 ///

@@ -11,8 +11,8 @@ use zeroize::Zeroize;
 pub(crate) fn aead_nonce(iv: &AeadIv, seq: u64) -> ZeroBuf<12> {
     let seq_be = seq.to_be_bytes();
     let mut nonce = ZeroBuf::<12>::new(*iv.as_bytes());
-    for i in 0..8 {
-        nonce[4 + i] ^= seq_be[i];
+    for (n, s) in nonce[4..12].iter_mut().zip(seq_be) {
+        *n ^= s;
     }
     nonce
 }

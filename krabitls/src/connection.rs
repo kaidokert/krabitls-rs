@@ -20,6 +20,9 @@ use crate::consts::CIPHER_AES_128_GCM_SHA256;
 #[cfg(feature = "chacha20")]
 use crate::consts::CIPHER_CHACHA20_POLY1305_SHA256;
 use crate::consts::{CT_APPLICATION_DATA, CT_HANDSHAKE};
+// Test-only: `close_notify` on `Live` is the sole consumer; gate matches it.
+#[cfg(all(test, not(feature = "chacha20"), not(feature = "rsa")))]
+use crate::consts::{CLOSE_NOTIFY_ALERT, CT_ALERT};
 use crate::errors::{ClientHelloError, ParseError};
 use crate::hkdf::{
     HkdfLabelError, TranscriptError, TranscriptHash, application_traffic_secrets, handshake_secret,
@@ -35,11 +38,6 @@ use crate::traits::verify_strategy::PreparedVerifier;
 use crate::traits::{CertView, Ed25519VerifierProvider, HkdfSha256, RsaVerifierProvider};
 use subtle::ConstantTimeEq;
 
-// Only consumer is `close_notify` on Live, whose gate is matched here.
-#[cfg(all(test, not(feature = "chacha20"), not(feature = "rsa")))]
-const CT_ALERT: u8 = 0x15;
-#[cfg(all(test, not(feature = "chacha20"), not(feature = "rsa")))]
-const CLOSE_NOTIFY_ALERT: [u8; 2] = [0x01, 0x00];
 /// Middlebox-compat ChangeCipherSpec — dropped without bumping seq_in.
 const CT_CHANGE_CIPHER_SPEC: u8 = 0x14;
 

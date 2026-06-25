@@ -75,7 +75,12 @@ pub struct Scratch<const FLIGHT: usize, const RECV: usize, const SEND: usize> {
 }
 
 impl<const FLIGHT: usize, const RECV: usize, const SEND: usize> Scratch<FLIGHT, RECV, SEND> {
-    /// Construct a zeroed scratch. `const fn` for `static` placement.
+    /// Construct a zeroed scratch. `const fn` so it can live in a `static`.
+    ///
+    /// A [`DefaultScratch`](super::DefaultScratch) is ~37 KiB — **do not** make
+    /// one a local (`main`, a task loop): it will overflow almost any MCU
+    /// stack. Place it in a `static` (e.g. behind a `Mutex<RefCell<…>>`) or,
+    /// where `alloc` is available, a `Box`.
     pub const fn new() -> Self {
         Self {
             reassembler: ServerFlightReassembler::new(),
