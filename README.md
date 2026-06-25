@@ -8,7 +8,7 @@
 
 A hobby `no_std` TLS 1.3 client for microcontrollers. Don't use it for anything you care about.
 
-- TLS 1.3 and X25519 only; verifies only Ed25519 / RSA-PSS server keys
+- TLS 1.3 and X25519 only; verifies only Ed25519 / RSA server keys
 - Trust model is "pin a pubkey or trust SAN" — no CA bundle, no chain walking
 - Hand-rolled, unaudited, not constant-time, no scalar blinding
 
