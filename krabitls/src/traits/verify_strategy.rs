@@ -475,14 +475,7 @@ mod tests {
     #[cfg(feature = "cert-der")]
     mod clock {
         use super::*;
-        use crate::traits::time::TimeSource;
-
-        struct FixedTime(u64);
-        impl TimeSource for FixedTime {
-            fn now_unix_secs(&self) -> u64 {
-                self.0
-            }
-        }
+        use crate::traits::time::FixedTime;
 
         // `Validity ::= SEQUENCE { UTCTime "260101000000Z",
         // UTCTime "300101000000Z" }` — window 2026-01-01 .. 2030-01-01.
@@ -505,6 +498,11 @@ mod tests {
             }
         }
 
+        // Run a `Clocked` strategy's window check against the 2026..2030 leaf.
+        fn clocked_check(now: u64) -> Result<(), ValidityRejected> {
+            Clocked(FixedTime(now)).check_validity(&leaf(VALIDITY_2026_2030))
+        }
+
         #[test]
         fn noclock_skips_the_window_check() {
             // NoClock accepts regardless of the window (even an empty DER).
@@ -514,26 +512,17 @@ mod tests {
 
         #[test]
         fn clocked_accepts_in_window() {
-            let c = Clocked(FixedTime(T_IN_WINDOW));
-            assert!(c.check_validity(&leaf(VALIDITY_2026_2030)).is_ok());
+            assert!(clocked_check(T_IN_WINDOW).is_ok());
         }
 
         #[test]
         fn clocked_rejects_not_yet_valid() {
-            let c = Clocked(FixedTime(T_BEFORE));
-            assert_eq!(
-                c.check_validity(&leaf(VALIDITY_2026_2030)),
-                Err(ValidityRejected)
-            );
+            assert_eq!(clocked_check(T_BEFORE), Err(ValidityRejected));
         }
 
         #[test]
         fn clocked_rejects_expired() {
-            let c = Clocked(FixedTime(T_AFTER));
-            assert_eq!(
-                c.check_validity(&leaf(VALIDITY_2026_2030)),
-                Err(ValidityRejected)
-            );
+            assert_eq!(clocked_check(T_AFTER), Err(ValidityRejected));
         }
     }
 
