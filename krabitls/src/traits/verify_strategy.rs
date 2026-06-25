@@ -182,20 +182,28 @@ pub trait TrustRootDecision<E: Ed25519VerifierProvider, R: RsaVerifierProvider> 
     /// [`SafeStrategy`] (each link `chain[i]`'s outer sig verified
     /// against `chain[i+1]`'s pubkey). Return Ok if `chain[chain.len()-1]`
     /// is an acceptable trust root.
+    ///
+    /// Cert time-validity is NOT decided here: it's a separate `Clock` slot
+    /// owned by `SafeStrategy`, evaluated over the whole chain only after
+    /// `accept_chain` returns Ok.
     fn accept_chain<'src>(&self, chain: &[CertView<'src>]) -> Result<(), Self::Error>;
 }
 
 /// Cert time-validity check folded into the strategy as a type-level slot.
 /// A `NoClock` monomorphization has an empty `check_validity`, so nothing
 /// references `verify_validity` and the `der` time-decode is DCE'd to zero.
+///
+/// This is a validity-window *policy hook*, not a general trust gate: it runs
+/// per-cert after `TrustRootDecision::accept_chain`, so a custom `Clock` can
+/// only add a rejection on top of the trust-root verdict — never relax one.
 pub trait Clock {
     fn check_validity(&self, leaf: &CertView<'_>) -> Result<(), ValidityRejected>;
 }
 
 /// Cert validity-window check rejected the leaf. Deliberately detail-free so
 /// the always-compiled `Clock` surface carries no `der`-gated `ValidityError`
-/// — keeps the no-`cert-der` build der-free. The concrete reason is available
-/// to a `Clocked` strategy's own logging before it reaches here.
+/// — keeps the no-`cert-der` build der-free. The concrete `ValidityError`
+/// could be surfaced by a custom `Clock` impl before it's erased here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ValidityRejected;
 
