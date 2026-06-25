@@ -8,9 +8,10 @@
 //! # Security
 //!
 //! A hobby project — don't use it for anything you care about. The crypto is
-//! hand-rolled, unaudited, not constant-time, and has no scalar blinding. Trust
-//! is "pin a pubkey or trust SAN" — no CA bundle, no chain walking. See the
-//! README for the full threat model.
+//! hand-rolled, unaudited, not constant-time, and has no scalar blinding. The
+//! bundled trust is pin-a-pubkey or trust-SAN — no CA bundle or chain walking —
+//! but verification is a pluggable `VerifyStrategy`, so a caller can
+//! supply their own. See the README for the full threat model.
 //!
 //! # Quick start
 //!
