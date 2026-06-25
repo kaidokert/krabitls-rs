@@ -472,6 +472,71 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "cert-der")]
+    mod clock {
+        use super::*;
+        use crate::traits::time::TimeSource;
+
+        struct FixedTime(u64);
+        impl TimeSource for FixedTime {
+            fn now_unix_secs(&self) -> u64 {
+                self.0
+            }
+        }
+
+        // `Validity ::= SEQUENCE { UTCTime "260101000000Z",
+        // UTCTime "300101000000Z" }` — window 2026-01-01 .. 2030-01-01.
+        const VALIDITY_2026_2030: &[u8] = &[
+            0x30, 0x1e, 0x17, 0x0d, 0x32, 0x36, 0x30, 0x31, 0x30, 0x31, 0x30, 0x30, 0x30, 0x30,
+            0x30, 0x30, 0x5a, 0x17, 0x0d, 0x33, 0x30, 0x30, 0x31, 0x30, 0x31, 0x30, 0x30, 0x30,
+            0x30, 0x30, 0x30, 0x5a,
+        ];
+        const T_IN_WINDOW: u64 = 1_800_000_000; // 2027
+        const T_BEFORE: u64 = 1_700_000_000; // 2023
+        const T_AFTER: u64 = 2_000_000_000; // 2033
+
+        fn leaf(validity_der: &[u8]) -> CertView<'_> {
+            CertView::Ed25519 {
+                tbs: &[],
+                signature: &[0u8; 64],
+                pubkey: &LEAF_PUBKEY,
+                san: None,
+                validity_der,
+            }
+        }
+
+        #[test]
+        fn noclock_skips_the_window_check() {
+            // NoClock accepts regardless of the window (even an empty DER).
+            assert!(NoClock.check_validity(&leaf(VALIDITY_2026_2030)).is_ok());
+            assert!(NoClock.check_validity(&leaf(&[])).is_ok());
+        }
+
+        #[test]
+        fn clocked_accepts_in_window() {
+            let c = Clocked(FixedTime(T_IN_WINDOW));
+            assert!(c.check_validity(&leaf(VALIDITY_2026_2030)).is_ok());
+        }
+
+        #[test]
+        fn clocked_rejects_not_yet_valid() {
+            let c = Clocked(FixedTime(T_BEFORE));
+            assert_eq!(
+                c.check_validity(&leaf(VALIDITY_2026_2030)),
+                Err(ValidityRejected)
+            );
+        }
+
+        #[test]
+        fn clocked_rejects_expired() {
+            let c = Clocked(FixedTime(T_AFTER));
+            assert_eq!(
+                c.check_validity(&leaf(VALIDITY_2026_2030)),
+                Err(ValidityRejected)
+            );
+        }
+    }
+
     #[test]
     fn slot_pattern_yields_borrow_of_written_verifier() {
         let leaf_bytes = [0u8; 100];

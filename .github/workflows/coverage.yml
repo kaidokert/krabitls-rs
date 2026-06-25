@@ -32,8 +32,17 @@ jobs:
 
       - name: Generate coverage data
         working-directory: krabitls
+        # Merge a few feature combos rather than one `--all-features` run:
+        # `--all-features` turns on chacha20 + rsa, which compile out the facade
+        # integration tests (`canned_handshake` / `strategy_coverage` are gated
+        # `not(chacha20)` / `not(rsa)`), leaving the whole stream/engine path at
+        # 0%. The default run exercises the facade; the rsa / chacha runs add
+        # their crypto + the TLV (no-cert-der) parser.
         run: |
-          cargo llvm-cov --all-features --lcov --output-path lcov.info
+          cargo llvm-cov --no-report
+          cargo llvm-cov --no-report --features rsa
+          cargo llvm-cov --no-report --no-default-features --features chacha20
+          cargo llvm-cov report --lcov --output-path lcov.info
 
       - name: Coveralls GitHub Action
         uses: coverallsapp/github-action@v2
