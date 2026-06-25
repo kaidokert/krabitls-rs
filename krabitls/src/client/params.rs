@@ -2,10 +2,11 @@
 
 use crate::backends::{DerCert, PinOrSelfSigned, PinnedPubkeyOwnedError};
 use crate::identity::PinnedPubkey;
+#[cfg(feature = "cert-der")]
+use crate::traits::time::TimeSource;
+#[cfg(feature = "cert-der")]
+use crate::traits::verify_strategy::Clocked;
 use crate::traits::verify_strategy::SafeStrategy;
-
-#[cfg(feature = "validity")]
-use crate::traits::TimeSource;
 
 /// Default `V` for [`ClientParams`] / [`super::DefaultStream`]: pin or
 /// self-signed via the bundled `SafeStrategy<PinOrSelfSigned, DerCert>`.
@@ -26,20 +27,15 @@ pub enum RuntimeSuitePolicy {
 pub struct ClientParams<'a, V = DefaultVerify> {
     pub(crate) hostname: &'a str,
     pub(crate) verify: V,
-    #[cfg(feature = "validity")]
-    pub(crate) time: Option<&'a dyn TimeSource>,
     pub(crate) suite_policy: RuntimeSuitePolicy,
 }
 
-// Manual `Debug` impl: `dyn TimeSource` doesn't carry a `Debug` bound.
 impl<'a, V> core::fmt::Debug for ClientParams<'a, V> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let mut d = f.debug_struct("ClientParams");
-        d.field("hostname", &self.hostname)
-            .field("suite_policy", &self.suite_policy);
-        #[cfg(feature = "validity")]
-        d.field("time", &self.time.map(|_| "<TimeSource>"));
-        d.finish()
+        f.debug_struct("ClientParams")
+            .field("hostname", &self.hostname)
+            .field("suite_policy", &self.suite_policy)
+            .finish()
     }
 }
 
@@ -48,7 +44,7 @@ impl<'a> ClientParams<'a, DefaultVerify> {
     /// 1. `CertificateVerify` signature
     /// 2. Cert pubkey matches `pin`
     /// 3. SAN `dNSName` / `iPAddress` matches `hostname`
-    /// 4. Validity dates (if `validity` feature + `.time(_)` set)
+    /// 4. Cert validity window (when built with a `Clocked` strategy)
     /// 5. Server Finished MAC
     ///
     /// `hostname` is also used as the SNI value in ClientHello.
@@ -65,8 +61,6 @@ impl<'a> ClientParams<'a, DefaultVerify> {
         Ok(Self {
             hostname,
             verify: SafeStrategy::new(PinOrSelfSigned::pinned(owned)),
-            #[cfg(feature = "validity")]
-            time: None,
             suite_policy: RuntimeSuitePolicy::Default,
         })
     }
@@ -76,7 +70,7 @@ impl<'a> ClientParams<'a, DefaultVerify> {
     /// 1. `CertificateVerify` signature
     /// 2. Outer cert's self-signature (cert signed by its own key)
     /// 3. SAN match
-    /// 4. Validity dates (with `validity` feature + `.time(_)`)
+    /// 4. Cert validity window (when built with a `Clocked` strategy)
     /// 5. Server Finished MAC
     ///
     /// Use only when the peer's certificate is under your control or
@@ -85,12 +79,32 @@ impl<'a> ClientParams<'a, DefaultVerify> {
         Self {
             hostname,
             verify: SafeStrategy::new(PinOrSelfSigned::self_signed()),
-            #[cfg(feature = "validity")]
-            time: None,
             suite_policy: RuntimeSuitePolicy::Default,
         }
     }
+
+    /// Enable the cert validity-window (`notBefore` / `notAfter`) check by
+    /// attaching a clock. Swaps the default [`NoClock`](crate::client::NoClock)
+    /// strategy for a [`Clocked`] one, so the returned params carry a new
+    /// verify type — spell it via [`ClockedVerify`] if you need to name the
+    /// resulting stream. Without this, validity is skipped.
+    #[cfg(feature = "cert-der")]
+    pub fn clocked<T: TimeSource>(
+        self,
+        clock: T,
+    ) -> ClientParams<'a, SafeStrategy<PinOrSelfSigned, DerCert, Clocked<T>>> {
+        ClientParams {
+            hostname: self.hostname,
+            verify: SafeStrategy::with_clock(self.verify.decision, Clocked(clock)),
+            suite_policy: self.suite_policy,
+        }
+    }
 }
+
+/// The verify strategy [`ClientParams::clocked`] produces — the bundled
+/// pin/self-signed decision plus a real clock for the validity check.
+#[cfg(feature = "cert-der")]
+pub type ClockedVerify<T> = SafeStrategy<PinOrSelfSigned, DerCert, Clocked<T>>;
 
 impl<'a, V> ClientParams<'a, V> {
     /// Construct with a caller-supplied verify strategy. Use this when
@@ -101,19 +115,8 @@ impl<'a, V> ClientParams<'a, V> {
         Self {
             hostname,
             verify,
-            #[cfg(feature = "validity")]
-            time: None,
             suite_policy: RuntimeSuitePolicy::Default,
         }
-    }
-
-    /// Attach a [`TimeSource`] to enable certificate validity-window
-    /// (`notBefore` / `notAfter`) checks during handshake. Without this,
-    /// validity check is skipped.
-    #[cfg(feature = "validity")]
-    pub fn time(mut self, t: &'a dyn TimeSource) -> Self {
-        self.time = Some(t);
-        self
     }
 
     /// Narrow the runtime suite advertisement. See

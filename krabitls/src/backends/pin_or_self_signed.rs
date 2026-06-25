@@ -11,8 +11,6 @@ use crate::backends::rsa_verify::RsaPssSig;
 use crate::traits::cert::CertView;
 #[cfg(feature = "rsa")]
 use crate::traits::cert::RsaCertSigAlg;
-#[cfg(feature = "validity")]
-use crate::traits::time::TimeSource;
 use crate::traits::verify_strategy::TrustRootDecision;
 use crate::traits::{Ed25519VerifierProvider, RsaVerifierProvider};
 use signature::Verifier;
@@ -118,14 +116,6 @@ pub enum PinOrSelfSignedError {
     #[cfg(feature = "rsa")]
     #[error("RSA verifier construction failed")]
     RsaVerifierInvalid,
-    /// `feature = "validity"` is on but no `TimeSource` was supplied.
-    #[cfg(feature = "validity")]
-    #[error("validity check requested but no TimeSource supplied")]
-    MissingClock,
-    /// Cert's validity window doesn't include `now`.
-    #[cfg(feature = "validity")]
-    #[error("cert outside validity window")]
-    ValidityFailed,
     /// Cert outer signatureAlgorithm wasn't one we recognize (Ed25519 /
     /// PKCS#1-v1.5 / PSS).
     #[cfg(feature = "rsa")]
@@ -140,11 +130,7 @@ where
 {
     type Error = PinOrSelfSignedError;
 
-    fn accept_chain<'src>(
-        &self,
-        chain: &[CertView<'src>],
-        #[cfg(feature = "validity")] time: Option<&dyn TimeSource>,
-    ) -> Result<(), Self::Error> {
+    fn accept_chain<'src>(&self, chain: &[CertView<'src>]) -> Result<(), Self::Error> {
         // SafeStrategy guarantees non-empty (its own `EmptyChain` guard
         // fires first); `first()` is defense in depth for any
         // hand-rolled non-SafeStrategy wrapper.
@@ -170,9 +156,6 @@ where
                 verify_self_sig::<E, R>(leaf)?;
             }
         }
-
-        #[cfg(feature = "validity")]
-        check_validity(leaf, time)?;
 
         Ok(())
     }
@@ -256,15 +239,6 @@ where
     }
 }
 
-#[cfg(feature = "validity")]
-fn check_validity(
-    leaf: &CertView<'_>,
-    time: Option<&dyn TimeSource>,
-) -> Result<(), PinOrSelfSignedError> {
-    let time = time.ok_or(PinOrSelfSignedError::MissingClock)?;
-    crate::identity::verify_validity(leaf, time).map_err(|_| PinOrSelfSignedError::ValidityFailed)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -273,40 +247,15 @@ mod tests {
     const PK_A: [u8; 32] = [0xAA; 32];
     const PK_B: [u8; 32] = [0xBB; 32];
 
-    /// DER-encoded `Validity ::= SEQUENCE { UTCTime "260101000000Z",
-    /// UTCTime "300101000000Z" }`. Satisfies the validity check when
-    /// `NOW` falls within 2026..2030.
-    #[cfg(feature = "validity")]
-    const VALID_BEFORE_2030_GEN: &[u8] = &[
-        0x30, 0x1e, 0x17, 0x0d, 0x32, 0x36, 0x30, 0x31, 0x30, 0x31, 0x30, 0x30, 0x30, 0x30, 0x30,
-        0x30, 0x5a, 0x17, 0x0d, 0x33, 0x30, 0x30, 0x31, 0x30, 0x31, 0x30, 0x30, 0x30, 0x30, 0x30,
-        0x30, 0x5a,
-    ];
-
     fn ed25519_view(pubkey: &[u8; 32]) -> CertView<'_> {
         CertView::Ed25519 {
             tbs: &[],
             signature: &[0u8; 64],
             pubkey,
             san: None,
-            #[cfg(feature = "validity")]
-            validity_der: VALID_BEFORE_2030_GEN,
-            #[cfg(not(feature = "validity"))]
             validity_der: &[],
         }
     }
-
-    #[cfg(feature = "validity")]
-    struct FixedTime(u64);
-    #[cfg(feature = "validity")]
-    impl TimeSource for FixedTime {
-        fn now_unix_secs(&self) -> u64 {
-            self.0
-        }
-    }
-    /// 2027-06-01T00:00:00Z — within VALID_BEFORE_2030_GEN's window.
-    #[cfg(feature = "validity")]
-    const NOW: u64 = 1_811_894_400;
 
     #[test]
     fn pinned_ed25519_accepts_matching_leaf() {
@@ -314,10 +263,7 @@ mod tests {
         let leaf = ed25519_view(&PK_A);
         let chain = [leaf];
         let result = <PinOrSelfSigned as TrustRootDecision<RustCrypto, RustCrypto>>::accept_chain(
-            &strategy,
-            &chain,
-            #[cfg(feature = "validity")]
-            Some(&FixedTime(NOW)),
+            &strategy, &chain,
         );
         assert!(result.is_ok());
     }
@@ -328,10 +274,7 @@ mod tests {
         let leaf = ed25519_view(&PK_B);
         let chain = [leaf];
         let err = <PinOrSelfSigned as TrustRootDecision<RustCrypto, RustCrypto>>::accept_chain(
-            &strategy,
-            &chain,
-            #[cfg(feature = "validity")]
-            Some(&FixedTime(NOW)),
+            &strategy, &chain,
         )
         .expect_err("must reject mismatched pin");
         assert_eq!(err, PinOrSelfSignedError::PinMismatch);
@@ -346,10 +289,7 @@ mod tests {
             let leaf = ed25519_view(&PK_A);
             let chain = [leaf];
             let err = <PinOrSelfSigned as TrustRootDecision<RustCrypto, RustCrypto>>::accept_chain(
-                &strategy,
-                &chain,
-                #[cfg(feature = "validity")]
-                None,
+                &strategy, &chain,
             )
             .expect_err("must reject algorithm mismatch");
             assert_eq!(err, PinOrSelfSignedError::PinAlgorithmMismatch);
@@ -366,10 +306,7 @@ mod tests {
         let v2 = ed25519_view(&PK_B);
         let chain = [v1, v2];
         let result = <PinOrSelfSigned as TrustRootDecision<RustCrypto, RustCrypto>>::accept_chain(
-            &strategy,
-            &chain,
-            #[cfg(feature = "validity")]
-            Some(&FixedTime(NOW)),
+            &strategy, &chain,
         );
         assert!(result.is_ok());
     }
@@ -382,10 +319,7 @@ mod tests {
         let v2 = ed25519_view(&PK_B);
         let chain = [v1, v2];
         let err = <PinOrSelfSigned as TrustRootDecision<RustCrypto, RustCrypto>>::accept_chain(
-            &strategy,
-            &chain,
-            #[cfg(feature = "validity")]
-            Some(&FixedTime(NOW)),
+            &strategy, &chain,
         )
         .expect_err("self-signed must reject multi-cert");
         assert_eq!(err, PinOrSelfSignedError::MultiCertChain);

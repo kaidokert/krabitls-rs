@@ -51,6 +51,10 @@ required-features = ["rsa", "canned-replay"]
 name = "krabitls_chacha"
 required-features = ["chacha20", "canned-replay"]
 
+[[example]]
+name = "krabitls_validity"
+required-features = ["cert-der", "cipher-aes", "canned-replay"]
+
 [dependencies]
 # `critical-section-single-core` registers a single-core critical-section
 # backend (used by `footprint_handshakes::with_buffers` and by

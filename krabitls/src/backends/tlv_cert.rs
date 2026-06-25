@@ -10,6 +10,7 @@ use super::tlv::{
 use crate::traits::cert::{CertParseError, CertParser, CertView};
 
 /// Marker type for the hand-rolled-TLV-backed [`CertParser`].
+#[derive(Debug, Clone, Copy)]
 pub struct DerCert;
 
 // DER-encoded OID bytes (the OID body, not the TLV — the tag/length
@@ -136,7 +137,7 @@ impl CertParser for DerCert {
         // issuer Name SEQUENCE.
         take_expected(&mut tbs_r, TAG_SEQUENCE)?;
         // validity SEQUENCE { notBefore, notAfter } — captured for the
-        // optional `feature = "validity"` window check.
+        // cert validity-window check (run by a `Clocked` strategy).
         let validity_tlv = read_expected(tbs_r, TAG_SEQUENCE)?;
         let validity_der = &tbs_r[..validity_tlv.header_len + validity_tlv.body.len()];
         tbs_r = validity_tlv.rest;

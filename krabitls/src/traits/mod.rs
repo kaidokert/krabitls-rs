@@ -12,15 +12,14 @@
 //! - [`Ed25519VerifierProvider`] — builds per-key Ed25519 verifiers
 //!   (`signature::Verifier<[u8; 64]>`); default
 //!   [`crate::RustCrypto`] wraps `ed25519_heapless`.
-//! - [`TimeSource`] — wall-clock for cert validity checks (gated on
-//!   `feature = "validity"`).
+//! - [`TimeSource`] — wall-clock for cert validity checks (supply one via a
+//!   `Clocked` strategy; the default `NoClock` skips the check).
 
 pub mod aead;
 pub mod cert;
 pub mod ed25519_verify;
 pub mod hkdf;
 pub mod rsa_verify;
-#[cfg(feature = "validity")]
 pub mod time;
 pub mod verify_strategy;
 
@@ -38,6 +37,5 @@ pub use cert::RsaCertSigAlg;
 pub use ed25519_verify::Ed25519VerifierProvider;
 pub use hkdf::{HkdfExpandError, HkdfSha256};
 pub use rsa_verify::RsaVerifierProvider;
-#[cfg(feature = "validity")]
 pub use time::TimeSource;
 pub use verify_strategy::ServerPubkey;

@@ -19,8 +19,7 @@
 #![cfg(all(
     feature = "cipher-aes",
     not(feature = "rsa"),
-    not(feature = "chacha20"),
-    not(feature = "validity")
+    not(feature = "chacha20")
 ))]
 
 use std::sync::Arc;
@@ -109,15 +108,9 @@ where
         &self,
         chain: CertChainView<'chain, 'src>,
         slot: &'slot mut Option<PreparedVerifier<E, R>>,
-        #[cfg(feature = "validity")] time: Option<&dyn krabitls::client::TimeSource>,
     ) -> Result<Trusted<'slot, E, R>, Self::Error> {
         self.count.fetch_add(1, Ordering::Relaxed);
-        self.inner.verify_chain(
-            chain,
-            slot,
-            #[cfg(feature = "validity")]
-            time,
-        )
+        self.inner.verify_chain(chain, slot)
     }
 }
 
@@ -178,7 +171,6 @@ where
         &self,
         _chain: CertChainView<'chain, 'src>,
         _slot: &'slot mut Option<PreparedVerifier<E, R>>,
-        #[cfg(feature = "validity")] _time: Option<&dyn krabitls::client::TimeSource>,
     ) -> Result<Trusted<'slot, E, R>, Self::Error> {
         Err(AlwaysRejectError)
     }
@@ -226,7 +218,6 @@ impl VerifyStrategy<RustCrypto, RustCrypto> for LyingStrategy {
         &self,
         _chain: CertChainView<'chain, 'src>,
         slot: &'slot mut Option<PreparedVerifier<RustCrypto, RustCrypto>>,
-        #[cfg(feature = "validity")] _time: Option<&dyn krabitls::client::TimeSource>,
     ) -> Result<Trusted<'slot, RustCrypto, RustCrypto>, Self::Error> {
         let prepared = PreparedVerifier::ed25519(
             <RustCrypto as Ed25519VerifierProvider>::prepare_ed25519(&self.attacker_pubkey),

@@ -6,9 +6,9 @@ rust-version = "1.87"
 autobins = false
 
 [features]
-# `validity` is free because std::time::SystemTime is always available on
-# the CLI build target.
-default = ["krabitls/validity"]
+# Cert validity-window checking is always compiled in krabitls; the CLI
+# supplies a `SystemTimeSource` clock so it's active by default.
+default = []
 rsa = ["krabitls/rsa"]
 # Advertise TLS_CHACHA20_POLY1305_SHA256 alongside AES-128-GCM-SHA256.
 chacha20 = ["krabitls/chacha20"]
