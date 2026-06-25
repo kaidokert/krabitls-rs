@@ -15,10 +15,26 @@ use std::time::Duration;
 
 use getrandom::SysRng;
 use krabitls::client::{
-    ClientParams, ConnectError, DefaultScratch, DefaultStream, PinnedPubkey, RuntimeSuitePolicy,
-    Transport,
+    ClientParams, ClockedVerify, ConnectError, DefaultConfig, DefaultScratch, PinnedPubkey,
+    RuntimeSuitePolicy, TimeSource, TlsStream, Transport,
 };
 use log::{error, info};
+
+/// Wall clock from the host OS — enables the cert validity-window check.
+struct SystemTimeSource;
+impl TimeSource for SystemTimeSource {
+    fn now_unix_secs(&self) -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    }
+}
+
+// Stream over the bundled config + a clocked pin/self-signed strategy. Same
+// buffer/chain const generics as `DefaultStream`.
+type ClockedStream<'s, T> =
+    TlsStream<'s, T, DefaultConfig, ClockedVerify<SystemTimeSource>, 16384, 16645, 4096, 8>;
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
@@ -105,29 +121,19 @@ fn run(host: &str, port: u16, pin: Option<&Pin>) -> Result<()> {
     tcp.set_write_timeout(Some(Duration::from_secs(15)))?;
 
     let mut scratch = DefaultScratch::new();
-    struct SystemTimeSource;
-    impl krabitls::client::TimeSource for SystemTimeSource {
-        fn now_unix_secs(&self) -> u64 {
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0)
-        }
-    }
-    let time_source = SystemTimeSource;
     let params = if let Some(p) = pin {
         ClientParams::pinned(host, p.as_pinned()).map_err(|e| format!("invalid --pin: {e}"))?
     } else {
         ClientParams::self_signed(host)
     }
     .suite_policy(RuntimeSuitePolicy::Default)
-    .time(&time_source);
+    .clocked(SystemTimeSource);
 
     let mut rng = SysRng;
     let transport = TcpTransport(tcp);
 
     info!("driving TLS 1.3 handshake via TlsStream");
-    let mut tls = match DefaultStream::connect(&params, &mut scratch, transport, &mut rng) {
+    let mut tls = match ClockedStream::connect(&params, &mut scratch, transport, &mut rng) {
         Ok(s) => s,
         Err(e) => {
             error!("handshake failed: {}", describe_connect_error(&e));

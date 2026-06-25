@@ -44,12 +44,6 @@ rsa = ["dep:rsa_heapless", "dep:sha2_v11"]
 # generic-array` chain. AEAD stays on `aes-gcm` either way — jedisct1
 # has no AES-GCM equivalent in the same family.
 jedisct = ["dep:hmac-sha256"]
-# Cert `notBefore` / `notAfter` validity-window check + the [`TimeSource`]
-# trait. krabitls is sans-io / no-clock; this feature adds the optional
-# contract a caller can use IF it has a clock. Embedded targets without an
-# RTC build with the feature OFF (default) and pay no code-size cost for
-# either the check or the trait.
-validity = ["dep:der"]
 # Advertise TLS_CHACHA20_POLY1305_SHA256 alongside AES-128-GCM-SHA256.
 chacha20 = ["dep:chacha20poly1305"]
 # TLS_AES_128_GCM_SHA256 cipher suite. Default ON. Disable with
@@ -79,10 +73,11 @@ rsa_2048_only = ["rsa"]
 # are gated `all(test, feature = "replay")`, so a production build can't
 # reach them and they never add `.text`.
 replay = []
-# Cert parser backend selector. On (default) → der-crate-backed parser.
-# Off → in-tree hand-rolled TLV walker (drops the `der` dep, ~-4 KiB
-# .text, but the parser is unaudited). Drop with `--no-default-features
-# --features cipher-aes,...` to switch to the TLV path.
+# Cert parser backend selector + `der` gate. On (default) → der-crate-backed
+# parser, and the cert validity-window check (`.clocked()`) is available since
+# it decodes UTCTime/GeneralizedTime through `der`. Off → in-tree TLV walker,
+# `der` dropped entirely (~-4 KiB .text), and validity is unavailable (the
+# default `NoClock` strategy is the only one that compiles).
 cert-der = ["dep:der"]
 # Match IP-literal hostnames against SAN `iPAddress` entries. Without it,
 # IP literals fall through to `HostnameMismatch`. Saves ~2 KiB of

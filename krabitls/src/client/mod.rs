@@ -19,6 +19,8 @@ pub use config::{ClientConfig, ConfigSuitePolicy, DefaultConfig};
 // connection-level enum callers match on to distinguish parse / decrypt
 // / flight failures. Inner leaves stay under `client::error::*`.
 pub use error::{ConfigError, ConnectError, ConnectionError, HandshakeError};
+#[cfg(feature = "cert-der")]
+pub use params::ClockedVerify;
 pub use params::{ClientParams, DefaultVerify, RuntimeSuitePolicy};
 pub use scratch::{DefaultScratch, MIN_RECV, MIN_SEND_STANDARD, Scratch};
 pub use stream::{DefaultStream, StreamError, TlsStream};
@@ -27,7 +29,6 @@ pub use transport::Transport;
 // Re-export PinnedPubkey at this level so callers don't have to import
 // from the crate root.
 pub use crate::identity::PinnedPubkey;
-#[cfg(feature = "validity")]
 pub use crate::traits::TimeSource;
 
 // Strategy surface — what custom-verifier callers need to roll their own
@@ -36,9 +37,11 @@ pub use crate::backends::{PinOrSelfSigned, PinnedPubkeyOwned};
 // Provider traits are part of the strategy's generic bounds — custom
 // `VerifyStrategy<E, R>` impls have to name `Ed25519VerifierProvider` /
 // `RsaVerifierProvider` in their `where` clauses.
+#[cfg(feature = "cert-der")]
+pub use crate::traits::verify_strategy::Clocked;
 pub use crate::traits::verify_strategy::{
-    CertChainView, PreparedVerifier, SafeStrategy, SafeStrategyError, TrustRootDecision, Trusted,
-    VerifierKeyMaterial, VerifyStrategy,
+    CertChainView, NoClock, PreparedVerifier, SafeStrategy, SafeStrategyError, TrustRootDecision,
+    Trusted, VerifierKeyMaterial, VerifyStrategy,
 };
 pub use crate::traits::{Ed25519VerifierProvider, RsaVerifierProvider};
 

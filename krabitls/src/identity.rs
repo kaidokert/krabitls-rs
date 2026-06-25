@@ -314,7 +314,7 @@ fn ascii_eq_ignore_case(a: &[u8], b: &[u8]) -> bool {
     a.eq_ignore_ascii_case(b)
 }
 
-#[cfg(feature = "validity")]
+#[cfg(feature = "cert-der")]
 mod validity {
     use der::asn1::{GeneralizedTime, UtcTime};
     use der::{Decode, Reader, SliceReader, Tag};
@@ -413,7 +413,7 @@ mod validity {
         Ok(secs)
     }
 }
-#[cfg(feature = "validity")]
+#[cfg(feature = "cert-der")]
 pub use validity::{ValidityError, verify_validity};
 
 #[cfg(test)]

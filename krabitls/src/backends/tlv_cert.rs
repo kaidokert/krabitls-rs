@@ -136,7 +136,7 @@ impl CertParser for DerCert {
         // issuer Name SEQUENCE.
         take_expected(&mut tbs_r, TAG_SEQUENCE)?;
         // validity SEQUENCE { notBefore, notAfter } — captured for the
-        // optional `feature = "validity"` window check.
+        // cert validity-window check (run by a `Clocked` strategy).
         let validity_tlv = read_expected(tbs_r, TAG_SEQUENCE)?;
         let validity_der = &tbs_r[..validity_tlv.header_len + validity_tlv.body.len()];
         tbs_r = validity_tlv.rest;

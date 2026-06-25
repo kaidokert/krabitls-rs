@@ -238,6 +238,56 @@ pub fn run_aes_ed25519_facade() -> Result<(), ()> {
     })
 }
 
+/// Same facade as `run_aes_ed25519_facade`, but with a `Clocked` strategy so
+/// the (always-compiled) cert validity-window check is exercised. `.text`
+/// minus the `NoClock` build = the opt-in cost of validity.
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "cipher-aes",
+    feature = "cert-der",
+    not(feature = "chacha20"),
+    not(feature = "rsa"),
+))]
+pub fn run_aes_ed25519_facade_clocked() -> Result<(), ()> {
+    use krabitls::backends::DerCert;
+    use krabitls::client::{
+        Clocked, DefaultConfig, PinOrSelfSigned, SafeStrategy, TimeSource, TlsStream,
+    };
+
+    struct FixedT(u64);
+    impl TimeSource for FixedT {
+        fn now_unix_secs(&self) -> u64 {
+            self.0
+        }
+    }
+
+    type ClockedVerify = SafeStrategy<PinOrSelfSigned, DerCert, Clocked<FixedT>>;
+    type ClockedStream<'s, T> =
+        TlsStream<'s, T, DefaultConfig, ClockedVerify, 16384, 16645, 4096, 8>;
+
+    facade_scratch::with(|scratch| {
+        let mut rng = SeededRng::new(0);
+        let transport = CannedTransport::<512>::new(&SERVER_STREAM);
+        // 2026-06-24T12:00:00Z — inside the fixture cert's validity window.
+        let strategy =
+            SafeStrategy::with_clock(PinOrSelfSigned::self_signed(), Clocked(FixedT(1782302400)));
+        let params = ClientParams::with_strategy("tls-fixture.local", strategy)
+            .suite_policy(RuntimeSuitePolicy::Default);
+
+        let tls = ClockedStream::connect(&params, scratch, transport, &mut rng).map_err(|_| ())?;
+
+        let captured = tls.transport().captured_tx();
+        let expected_len = CLIENT_HELLO.len() + CLIENT_FINISHED.len();
+        if captured.len() != expected_len
+            || captured[..CLIENT_HELLO.len()] != CLIENT_HELLO[..]
+            || captured[CLIENT_HELLO.len()..] != CLIENT_FINISHED[..]
+        {
+            return Err(());
+        }
+        Ok(())
+    })
+}
+
 /// Baseline stub: same rodata footprint as `run_aes_ed25519_facade`,
 /// without driving any crypto. `.text` delta = full facade-driven
 /// handshake cost.

@@ -9,7 +9,7 @@ pub use crate::connection::ConnectionError;
 pub use crate::errors::{ClientHelloError, ParseError};
 pub use crate::hkdf::{HkdfLabelError, TranscriptError};
 pub use crate::identity::IdentityError;
-#[cfg(feature = "validity")]
+#[cfg(feature = "cert-der")]
 pub use crate::identity::ValidityError;
 pub use crate::reassembler::ReassemblyError;
 pub use crate::server_flight::FlightError;
@@ -81,7 +81,7 @@ pub enum HandshakeError {
     Identity(IdentityError),
     /// Certificate validity window (`notBefore` / `notAfter`) check
     /// failed.
-    #[cfg(feature = "validity")]
+    #[cfg(feature = "cert-der")]
     Validity(ValidityError),
 
     /// ClientHello bytes overflowed `scratch.ch`.
@@ -145,7 +145,7 @@ impl From<IdentityError> for HandshakeError {
     }
 }
 
-#[cfg(feature = "validity")]
+#[cfg(feature = "cert-der")]
 impl From<ValidityError> for HandshakeError {
     fn from(e: ValidityError) -> Self {
         Self::Validity(e)
@@ -163,7 +163,7 @@ impl core::fmt::Display for HandshakeError {
         match self {
             Self::Connection(e) => write!(f, "connection: {e}"),
             Self::Identity(e) => write!(f, "identity: {e}"),
-            #[cfg(feature = "validity")]
+            #[cfg(feature = "cert-der")]
             Self::Validity(e) => write!(f, "validity: {e}"),
             Self::ClientHelloTooLong => f.write_str("ClientHello overflowed scratch.ch"),
             Self::RecordTooLarge { limit, got } => write!(
@@ -194,7 +194,7 @@ impl core::error::Error for HandshakeError {
         match self {
             Self::Connection(e) => Some(e),
             Self::Identity(e) => Some(e),
-            #[cfg(feature = "validity")]
+            #[cfg(feature = "cert-der")]
             Self::Validity(e) => Some(e),
             Self::Internal(e) => Some(e),
             Self::ClientHelloTooLong

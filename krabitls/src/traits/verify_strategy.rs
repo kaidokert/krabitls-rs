@@ -63,7 +63,7 @@ use crate::traits::cert::RsaCertSigAlg;
 use crate::traits::cert::{CertParseError, CertParser, CertView};
 use crate::traits::ed25519_verify::Ed25519VerifierProvider;
 use crate::traits::rsa_verify::RsaVerifierProvider;
-#[cfg(feature = "validity")]
+#[cfg(feature = "cert-der")]
 use crate::traits::time::TimeSource;
 use signature::Verifier;
 
@@ -163,7 +163,6 @@ pub trait VerifyStrategy<E: Ed25519VerifierProvider, R: RsaVerifierProvider> {
         &self,
         chain: CertChainView<'chain, 'src>,
         slot: &'slot mut Option<PreparedVerifier<E, R>>,
-        #[cfg(feature = "validity")] time: Option<&dyn TimeSource>,
     ) -> Result<Trusted<'slot, E, R>, Self::Error>;
 }
 
@@ -183,16 +182,46 @@ pub trait TrustRootDecision<E: Ed25519VerifierProvider, R: RsaVerifierProvider> 
     /// [`SafeStrategy`] (each link `chain[i]`'s outer sig verified
     /// against `chain[i+1]`'s pubkey). Return Ok if `chain[chain.len()-1]`
     /// is an acceptable trust root.
-    fn accept_chain<'src>(
-        &self,
-        chain: &[CertView<'src>],
-        #[cfg(feature = "validity")] time: Option<&dyn TimeSource>,
-    ) -> Result<(), Self::Error>;
+    fn accept_chain<'src>(&self, chain: &[CertView<'src>]) -> Result<(), Self::Error>;
 }
 
+/// Cert time-validity check folded into the strategy as a type-level slot.
+/// A `NoClock` monomorphization has an empty `check_validity`, so nothing
+/// references `verify_validity` and the `der` time-decode is DCE'd to zero.
+pub trait Clock {
+    fn check_validity(&self, leaf: &CertView<'_>) -> Result<(), ValidityRejected>;
+}
+
+/// ZST clock: validity skipped. Empty body → no edge to `verify_validity`.
+#[derive(Debug, Clone, Copy)]
+pub struct NoClock;
+
+impl Clock for NoClock {
+    #[inline(always)]
+    fn check_validity(&self, _leaf: &CertView<'_>) -> Result<(), ValidityRejected> {
+        Ok(())
+    }
+}
+
+/// Real clock: runs the `notBefore`/`notAfter` window check.
+#[cfg(feature = "cert-der")]
+pub struct Clocked<T: TimeSource>(pub T);
+
+#[cfg(feature = "cert-der")]
+impl<T: TimeSource> Clock for Clocked<T> {
+    fn check_validity(&self, leaf: &CertView<'_>) -> Result<(), ValidityRejected> {
+        crate::identity::verify_validity(leaf, &self.0).map_err(|_| ValidityRejected)
+    }
+}
+
+/// Cert validity-window check rejected the leaf.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ValidityRejected;
+
 /// Adapter from [`TrustRootDecision`] to [`VerifyStrategy`].
-pub struct SafeStrategy<T, C: CertParser> {
+pub struct SafeStrategy<T, C: CertParser, K = NoClock> {
     pub decision: T,
+    pub clock: K,
     _parser: core::marker::PhantomData<C>,
 }
 
@@ -200,6 +229,17 @@ impl<T, C: CertParser> SafeStrategy<T, C> {
     pub fn new(decision: T) -> Self {
         Self {
             decision,
+            clock: NoClock,
+            _parser: core::marker::PhantomData,
+        }
+    }
+}
+
+impl<T, C: CertParser, K> SafeStrategy<T, C, K> {
+    pub fn with_clock(decision: T, clock: K) -> Self {
+        Self {
+            decision,
+            clock,
             _parser: core::marker::PhantomData,
         }
     }
@@ -224,16 +264,20 @@ pub enum SafeStrategyError<TE> {
     /// Trust-root decision returned an error.
     #[error("trust root rejected: {0}")]
     Decision(TE),
+    /// Cert validity-window check rejected the leaf.
+    #[error("cert validity-window check failed")]
+    ValidityRejected,
 }
 
 /// Per-call cap on parsed `CertView`s. Real chains rarely exceed 4
 /// (leaf + intermediate + cross-sign + root); 8 leaves slack.
 const SAFE_STRATEGY_CHAIN_CAP: usize = 8;
 
-impl<T, C, E, R> VerifyStrategy<E, R> for SafeStrategy<T, C>
+impl<T, C, K, E, R> VerifyStrategy<E, R> for SafeStrategy<T, C, K>
 where
     T: TrustRootDecision<E, R>,
     C: CertParser,
+    K: Clock,
     E: Ed25519VerifierProvider,
     R: RsaVerifierProvider,
 {
@@ -243,7 +287,6 @@ where
         &self,
         chain: CertChainView<'chain, 'src>,
         slot: &'slot mut Option<PreparedVerifier<E, R>>,
-        #[cfg(feature = "validity")] time: Option<&dyn TimeSource>,
     ) -> Result<Trusted<'slot, E, R>, Self::Error> {
         // Reject empty chains up front. Without this guard a permissive
         // `TrustRootDecision::accept_chain(&[])` would let the `&views[0]`
@@ -270,12 +313,12 @@ where
         }
 
         self.decision
-            .accept_chain(
-                &views,
-                #[cfg(feature = "validity")]
-                time,
-            )
+            .accept_chain(&views)
             .map_err(SafeStrategyError::Decision)?;
+
+        self.clock
+            .check_validity(&views[0])
+            .map_err(|_| SafeStrategyError::ValidityRejected)?;
 
         let leaf_prepared: PreparedVerifier<E, R> = match &views[0] {
             CertView::Ed25519 { pubkey, .. } => {
@@ -389,7 +432,6 @@ mod tests {
             &self,
             chain: CertChainView<'chain, 'src>,
             slot: &'slot mut Option<PreparedVerifier<RustCrypto, RustCrypto>>,
-            #[cfg(feature = "validity")] _time: Option<&dyn TimeSource>,
         ) -> Result<Trusted<'slot, RustCrypto, RustCrypto>, ProduceErr> {
             if chain.certs.len() != 1 {
                 return Err(ProduceErr);
@@ -424,12 +466,7 @@ mod tests {
         let mut slot: Option<PreparedVerifier<RustCrypto, RustCrypto>> = None;
 
         let trusted = strategy
-            .verify_chain(
-                view,
-                &mut slot,
-                #[cfg(feature = "validity")]
-                None,
-            )
+            .verify_chain(view, &mut slot)
             .expect("strategy accepts");
 
         let cert = make_view(&LEAF_PUBKEY);
@@ -449,12 +486,7 @@ mod tests {
         let mut slot: Option<PreparedVerifier<RustCrypto, RustCrypto>> = None;
 
         let trusted = strategy
-            .verify_chain(
-                view,
-                &mut slot,
-                #[cfg(feature = "validity")]
-                None,
-            )
+            .verify_chain(view, &mut slot)
             .expect("strategy returns");
 
         let real_leaf = make_view(&LEAF_PUBKEY);
@@ -473,12 +505,7 @@ mod tests {
         };
         let mut slot: Option<PreparedVerifier<RustCrypto, RustCrypto>> = None;
 
-        let result = strategy.verify_chain(
-            view,
-            &mut slot,
-            #[cfg(feature = "validity")]
-            None,
-        );
+        let result = strategy.verify_chain(view, &mut slot);
         match result {
             Err(ProduceErr) => {}
             Ok(_) => panic!("strategy should reject 2-cert chain"),

@@ -51,12 +51,6 @@ repos:
         language: system
         pass_filenames: false
         files: ^krabitls/.*\.(rs|toml)$
-    -   id: krabitls-clippy-validity
-        name: clippy krabitls (validity)
-        entry: cargo clippy --manifest-path=krabitls/Cargo.toml --tests --all-targets --features validity -- -D warnings
-        language: system
-        pass_filenames: false
-        files: ^krabitls/.*\.(rs|toml)$
     -   id: krabitls-clippy-chacha20
         name: clippy krabitls (chacha20)
         entry: cargo clippy --manifest-path=krabitls/Cargo.toml --tests --all-targets --features chacha20 -- -D warnings

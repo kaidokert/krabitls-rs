@@ -395,7 +395,7 @@ mod rsa_tests {
     }
 }
 
-#[cfg(feature = "validity")]
+#[cfg(feature = "cert-der")]
 mod validity_tests {
     use super::super::*;
     use crate::traits::cert::CertView;

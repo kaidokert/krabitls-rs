@@ -514,12 +514,7 @@ impl<
         let mut slot: Option<PreparedVerifier<C::Ed25519, C::Rsa>> = None;
         let trusted = params
             .verify
-            .verify_chain(
-                chain_view,
-                &mut slot,
-                #[cfg(feature = "validity")]
-                params.time,
-            )
+            .verify_chain(chain_view, &mut slot)
             .map_err(|_| HandshakeError::StrategyRejected)?;
 
         // Cross-check: a strategy that returns a prepared verifier built
