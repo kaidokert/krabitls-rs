@@ -124,6 +124,10 @@ const fn hex_nibble(c: u8) -> u8 {
 pub(crate) mod consts {
     pub const CT_HANDSHAKE: u8 = 22;
     pub const CT_APPLICATION_DATA: u8 = 23;
+    pub const CT_ALERT: u8 = 21;
+    /// `warning` (level 1) + `close_notify` (description 0) — the only alert
+    /// krabitls ever sends.
+    pub const CLOSE_NOTIFY_ALERT: [u8; 2] = [0x01, 0x00];
 
     /// RFC 8446 mandates 0x0303 in the record header and in
     /// `ClientHello.legacy_version`, even when negotiating TLS 1.3.
