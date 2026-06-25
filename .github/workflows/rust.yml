@@ -77,8 +77,8 @@ jobs:
       run: cargo clippy --manifest-path=krabitls/Cargo.toml --all-targets -- -D warnings
     - name: Clippy (feature = rsa)
       run: cargo clippy --manifest-path=krabitls/Cargo.toml --all-targets --features rsa -- -D warnings
-    - name: Clippy (feature = validity)
-      run: cargo clippy --manifest-path=krabitls/Cargo.toml --all-targets --features validity -- -D warnings
+    - name: Clippy (no-default, TLV cert parser)
+      run: cargo clippy --manifest-path=krabitls/Cargo.toml --no-default-features --features cipher-aes --all-targets -- -D warnings
     - name: Clippy (feature = chacha20)
       run: cargo clippy --manifest-path=krabitls/Cargo.toml --all-targets --features chacha20 -- -D warnings
     - name: Clippy (feature = chacha20 + rsa)
@@ -94,8 +94,8 @@ jobs:
       run: cargo build --manifest-path=krabitls/Cargo.toml --verbose
     - name: Build (feature = rsa)
       run: cargo build --manifest-path=krabitls/Cargo.toml --features rsa --verbose
-    - name: Build (feature = validity)
-      run: cargo build --manifest-path=krabitls/Cargo.toml --features validity --verbose
+    - name: Build (no-default, TLV cert parser)
+      run: cargo build --manifest-path=krabitls/Cargo.toml --no-default-features --features cipher-aes --verbose
     - name: Build (feature = chacha20)
       run: cargo build --manifest-path=krabitls/Cargo.toml --features chacha20 --verbose
 
@@ -103,8 +103,8 @@ jobs:
       run: cargo test --manifest-path=krabitls/Cargo.toml --verbose
     - name: Test (feature = rsa)
       run: cargo test --manifest-path=krabitls/Cargo.toml --features rsa --verbose
-    - name: Test (feature = validity)
-      run: cargo test --manifest-path=krabitls/Cargo.toml --features validity --verbose
+    - name: Test (no-default, TLV cert parser)
+      run: cargo test --manifest-path=krabitls/Cargo.toml --no-default-features --features cipher-aes --verbose
     - name: Test (feature = chacha20)
       run: cargo test --manifest-path=krabitls/Cargo.toml --features chacha20 --verbose
     - name: Test (all-features)
