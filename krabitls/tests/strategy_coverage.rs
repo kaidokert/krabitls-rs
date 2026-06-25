@@ -13,9 +13,8 @@
 //! the strategy. `identity.rs::tests` covers `verify_hostname` at the
 //! unit level; that's the correct granularity for SAN logic.
 
-// `validity` excluded: these fixtures use `self_signed`/strategy paths without a
-// `TimeSource`, which the validity check rejects with `MissingClock`. Validity is
-// covered at the unit level elsewhere.
+// Gated to AES + Ed25519 (no rsa/chacha fixtures here). The default `NoClock`
+// strategy skips cert validity; the `Clocked` path is unit-tested elsewhere.
 #![cfg(all(
     feature = "cipher-aes",
     not(feature = "rsa"),

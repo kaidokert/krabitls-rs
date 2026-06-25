@@ -15,7 +15,7 @@ keywords = ["embedded", "no-std", "no-heap", "tls"]
 categories = ["cryptography", "no-std", "no-std::no-alloc"]
 
 # docs.rs builds the crate once and serves that build to everyone. Default
-# features omit RSA, ChaCha20, jedisct, and the validity TimeSource, so
+# features omit RSA, ChaCha20, and jedisct, so
 # the rendered API would otherwise hide those types. Force every feature
 # on for the published docs and pass `--cfg docsrs` so feature-gated
 # items can grow `#[cfg_attr(docsrs, doc(cfg(feature = "X")))]` badges

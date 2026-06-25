@@ -9,7 +9,9 @@ use crate::traits::verify_strategy::Clocked;
 use crate::traits::verify_strategy::SafeStrategy;
 
 /// Default `V` for [`ClientParams`] / [`super::DefaultStream`]: pin or
-/// self-signed via the bundled `SafeStrategy<PinOrSelfSigned, DerCert>`.
+/// self-signed via the bundled `SafeStrategy<PinOrSelfSigned, DerCert>`. Uses
+/// the default `NoClock`, so cert validity-window checks are skipped unless the
+/// caller opts in via `ClientParams::clocked`.
 pub type DefaultVerify = SafeStrategy<PinOrSelfSigned, DerCert>;
 
 /// Runtime narrowing of the compile-time suite advertisement.

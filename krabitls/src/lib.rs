@@ -5,6 +5,14 @@
 //! [`backends`] (config markers + RustCrypto trait impls). Everything
 //! else is internal.
 //!
+//! # Security
+//!
+//! Hobby project for a fixed embedded profile — don't use it for anything you
+//! care about. Trust is pin-a-pubkey or trust-SAN (no CA bundle, no chain
+//! walking); validity-window checks are opt-in via `ClientParams::clocked`.
+//! The crypto is hand-rolled, unaudited, not constant-time, and has no scalar
+//! blinding. See the README for the full threat model.
+//!
 //! # Quick start
 //!
 //! Drive a handshake with the bundled [`client::DefaultStream`] +
