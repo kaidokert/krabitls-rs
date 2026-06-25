@@ -6,9 +6,11 @@
 //! on hosts, an RTC peripheral on embedded targets, or a hardcoded
 //! deployment timestamp on devices that don't have any clock at all.
 //!
-//! The trait and the [`crate::identity::verify_validity`] check are always
-//! compiled, but a stream built with the default `NoClock` strategy never
-//! references them, so they dead-code-eliminate to zero on clock-less builds.
+//! The `TimeSource` trait is always compiled; the
+//! [`crate::identity::verify_validity`] check it feeds is gated on
+//! `feature = "cert-der"` (it decodes UTCTime / GeneralizedTime through `der`).
+//! A stream built with the default `NoClock` strategy never references the
+//! check, so it dead-code-eliminates to zero on clock-less builds.
 
 /// Caller-supplied current time, expressed as seconds since the Unix
 /// epoch (1970-01-01T00:00:00Z, UTC).

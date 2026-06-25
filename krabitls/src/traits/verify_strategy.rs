@@ -321,9 +321,14 @@ where
             .accept_chain(&views)
             .map_err(SafeStrategyError::Decision)?;
 
-        self.clock
-            .check_validity(&views[0])
-            .map_err(|_| SafeStrategyError::Validity)?;
+        // Validity applies to the whole presented path, mirroring the per-link
+        // signature check above: an expired/not-yet-valid intermediate fails
+        // the chain, not just the leaf. Empty under `NoClock`, so DCE'd to zero.
+        for cert in views.iter() {
+            self.clock
+                .check_validity(cert)
+                .map_err(|_| SafeStrategyError::Validity)?;
+        }
 
         let leaf_prepared: PreparedVerifier<E, R> = match &views[0] {
             CertView::Ed25519 { pubkey, .. } => {
