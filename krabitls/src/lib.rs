@@ -70,7 +70,7 @@ pub(crate) use hkdf::{
     derive_secret, handshake_secret, handshake_traffic_secrets, hkdf_expand_label,
 };
 #[cfg(all(test, feature = "cipher-aes"))]
-pub(crate) use server_flight::{verify_self_signed_cert, verify_server_flight};
+pub(crate) use server_flight::{tests::verify_self_signed_cert, verify_server_flight};
 
 use embedded_io::Write;
 

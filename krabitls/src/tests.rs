@@ -9,7 +9,8 @@ use crate::hkdf::{HkdfLabelError, TranscriptError, TranscriptHash, traffic_keys}
 #[cfg(feature = "chacha20")]
 use crate::newtype::AeadKey32;
 use crate::newtype::{AeadIv, AeadKey, Secret, TranscriptDigest, ZeroBuf};
-use crate::server_flight::{FlightError, extract_cert_der, extract_chain};
+use crate::server_flight::tests::extract_cert_der;
+use crate::server_flight::{FlightError, extract_chain};
 use crate::traits::{CertView, HkdfSha256};
 use embedded_io::SliceWriteError;
 
@@ -918,8 +919,10 @@ fn certificate_verify_rejects_trailing_bytes() {
         validity_der: &[],
     };
     let th = TranscriptDigest::new([0u8; 32]);
-    let err = server_flight::verify_certificate_verify::<RustCrypto, RustCrypto>(&view, &th, &body)
-        .unwrap_err();
+    let err = server_flight::tests::verify_certificate_verify::<RustCrypto, RustCrypto>(
+        &view, &th, &body,
+    )
+    .unwrap_err();
     assert_eq!(err, FlightError::TrailingBytes);
 }
 
