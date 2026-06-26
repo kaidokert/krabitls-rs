@@ -17,71 +17,6 @@ pub(crate) fn aead_nonce(iv: &AeadIv, seq: u64) -> ZeroBuf<12> {
     nonce
 }
 
-#[cfg(test)]
-fn decrypt_record_with<'a, F>(
-    record: &[u8],
-    iv: &AeadIv,
-    seq: u64,
-    plaintext_buf: &'a mut [u8],
-    aead_decrypt: F,
-) -> Result<&'a [u8], DecryptError>
-where
-    F: FnOnce(&ZeroBuf<12>, &[u8], &mut [u8], &[u8; 16]) -> Result<(), crate::traits::AeadError>,
-{
-    if record.len() < 5 {
-        return Err(DecryptError::Truncated);
-    }
-    let content_type = record[0];
-    if content_type != crate::consts::CT_APPLICATION_DATA {
-        return Err(DecryptError::UnexpectedContentType(content_type));
-    }
-    let legacy_version = u16::from_be_bytes([record[1], record[2]]);
-    if legacy_version != crate::consts::LEGACY_VERSION {
-        return Err(DecryptError::UnexpectedLegacyVersion(legacy_version));
-    }
-    let body_len = u16::from_be_bytes([record[3], record[4]]) as usize;
-    // RFC 8446 §5.2 caps TLSCiphertext.length at 2^14 + 256. Symmetric with
-    // the encrypt path's `TLS_CIPHERTEXT_MAX` enforcement.
-    if body_len > TLS_CIPHERTEXT_MAX {
-        return Err(DecryptError::RecordTooLarge);
-    }
-    if record.len() < 5 + body_len {
-        return Err(DecryptError::Truncated);
-    }
-    if record.len() != 5 + body_len {
-        return Err(DecryptError::TrailingBytes);
-    }
-
-    if body_len < 16 {
-        return Err(DecryptError::Truncated);
-    }
-    let ct_len = body_len - 16;
-    let body = &record[5..5 + body_len];
-    let (ciphertext, tag_slice) = body.split_at(ct_len);
-    let mut tag = [0u8; 16];
-    tag.copy_from_slice(tag_slice);
-
-    if plaintext_buf.len() < ct_len {
-        return Err(DecryptError::BufferTooSmall {
-            needed: ct_len,
-            got: plaintext_buf.len(),
-        });
-    }
-    let plaintext = &mut plaintext_buf[..ct_len];
-    plaintext.copy_from_slice(ciphertext);
-
-    let nonce = aead_nonce(iv, seq);
-    let aad = &record[..5];
-    match aead_decrypt(&nonce, aad, plaintext, &tag) {
-        Ok(()) => Ok(plaintext),
-        Err(_) => {
-            // Defensive zeroize: AEADs may have written partial plaintext before tag check failed.
-            plaintext.zeroize();
-            Err(DecryptError::AeadFailed)
-        }
-    }
-}
-
 /// On `Ok(ct_len)`, the inner plaintext occupies `record[5..5 + ct_len]`.
 /// On `Err`, the plaintext region is zeroed.
 fn decrypt_record_inplace_with<F>(
@@ -406,23 +341,6 @@ impl<S: CipherSuite> RecordKeys<S> {
         S::derive_keys::<H>(traffic_secret)
     }
 
-    /// Decrypt one `application_data` record under this suite's AEAD.
-    #[cfg(test)]
-    pub fn decrypt_record<'a>(
-        &self,
-        record: &[u8],
-        seq: u64,
-        plaintext_buf: &'a mut [u8],
-    ) -> Result<&'a [u8], DecryptError> {
-        decrypt_record_with(
-            record,
-            &self.iv,
-            seq,
-            plaintext_buf,
-            |nonce, aad, pt, tag| run_decrypt::<S>(&self.cipher, nonce, aad, pt, tag),
-        )
-    }
-
     pub fn decrypt_record_inplace(
         &self,
         record: &mut [u8],
@@ -537,6 +455,93 @@ pub enum DecryptError {
 pub(crate) mod tests {
     use super::*;
     use crate::newtype::{AeadIv, ZeroBuf};
+
+    fn decrypt_record_with<'a, F>(
+        record: &[u8],
+        iv: &AeadIv,
+        seq: u64,
+        plaintext_buf: &'a mut [u8],
+        aead_decrypt: F,
+    ) -> Result<&'a [u8], DecryptError>
+    where
+        F: FnOnce(
+            &ZeroBuf<12>,
+            &[u8],
+            &mut [u8],
+            &[u8; 16],
+        ) -> Result<(), crate::traits::AeadError>,
+    {
+        if record.len() < 5 {
+            return Err(DecryptError::Truncated);
+        }
+        let content_type = record[0];
+        if content_type != crate::consts::CT_APPLICATION_DATA {
+            return Err(DecryptError::UnexpectedContentType(content_type));
+        }
+        let legacy_version = u16::from_be_bytes([record[1], record[2]]);
+        if legacy_version != crate::consts::LEGACY_VERSION {
+            return Err(DecryptError::UnexpectedLegacyVersion(legacy_version));
+        }
+        let body_len = u16::from_be_bytes([record[3], record[4]]) as usize;
+        // RFC 8446 §5.2 caps TLSCiphertext.length at 2^14 + 256. Symmetric with
+        // the encrypt path's `TLS_CIPHERTEXT_MAX` enforcement.
+        if body_len > TLS_CIPHERTEXT_MAX {
+            return Err(DecryptError::RecordTooLarge);
+        }
+        if record.len() < 5 + body_len {
+            return Err(DecryptError::Truncated);
+        }
+        if record.len() != 5 + body_len {
+            return Err(DecryptError::TrailingBytes);
+        }
+
+        if body_len < 16 {
+            return Err(DecryptError::Truncated);
+        }
+        let ct_len = body_len - 16;
+        let body = &record[5..5 + body_len];
+        let (ciphertext, tag_slice) = body.split_at(ct_len);
+        let mut tag = [0u8; 16];
+        tag.copy_from_slice(tag_slice);
+
+        if plaintext_buf.len() < ct_len {
+            return Err(DecryptError::BufferTooSmall {
+                needed: ct_len,
+                got: plaintext_buf.len(),
+            });
+        }
+        let plaintext = &mut plaintext_buf[..ct_len];
+        plaintext.copy_from_slice(ciphertext);
+
+        let nonce = aead_nonce(iv, seq);
+        let aad = &record[..5];
+        match aead_decrypt(&nonce, aad, plaintext, &tag) {
+            Ok(()) => Ok(plaintext),
+            Err(_) => {
+                // Defensive zeroize: AEADs may have written partial plaintext before tag check failed.
+                plaintext.zeroize();
+                Err(DecryptError::AeadFailed)
+            }
+        }
+    }
+
+    impl<S: CipherSuite> RecordKeys<S> {
+        /// Decrypt one `application_data` record under this suite's AEAD.
+        pub(crate) fn decrypt_record<'a>(
+            &self,
+            record: &[u8],
+            seq: u64,
+            plaintext_buf: &'a mut [u8],
+        ) -> Result<&'a [u8], DecryptError> {
+            decrypt_record_with(
+                record,
+                &self.iv,
+                seq,
+                plaintext_buf,
+                |nonce, aad, pt, tag| run_decrypt::<S>(&self.cipher, nonce, aad, pt, tag),
+            )
+        }
+    }
 
     /// Decrypt one TLS 1.3 application_data-wrapped record.
     ///

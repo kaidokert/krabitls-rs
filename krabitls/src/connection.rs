@@ -551,49 +551,6 @@ where
 // WaitServerFlight -> ServerFlightDone
 // ============================================================================
 
-// Only caller is `feed_server_record` below — same gate.
-#[cfg(all(test, not(feature = "chacha20"), not(feature = "rsa")))]
-fn feed_server_record_inner<const N: usize, F>(
-    record: &[u8],
-    seq_in: &mut u64,
-    reassembler: &mut ServerFlightReassembler<N>,
-    scratch: &mut [u8],
-    decrypt: F,
-) -> Result<FlightStep, ConnectionError>
-where
-    F: for<'a> FnOnce(&[u8], u64, &'a mut [u8]) -> Result<&'a [u8], DecryptError>,
-{
-    if record.is_empty() {
-        return Err(ConnectionError::Decrypt(DecryptError::Truncated));
-    }
-    match record[0] {
-        CT_CHANGE_CIPHER_SPEC => Ok(if reassembler.is_complete() {
-            FlightStep::Ready
-        } else {
-            FlightStep::Pending
-        }),
-        CT_APPLICATION_DATA => {
-            let inner = decrypt(record, *seq_in, scratch)?;
-            let (content, inner_ct) = split_inner_plaintext(inner)?;
-            if inner_ct != CT_HANDSHAKE {
-                return Err(ConnectionError::Decrypt(
-                    DecryptError::UnexpectedContentType(inner_ct),
-                ));
-            }
-            reassembler.push_content(content)?;
-            *seq_in += 1;
-            Ok(if reassembler.is_complete() {
-                FlightStep::Ready
-            } else {
-                FlightStep::Pending
-            })
-        }
-        other => Err(ConnectionError::Decrypt(
-            DecryptError::UnexpectedContentType(other),
-        )),
-    }
-}
-
 /// `record` must be the full TLS record. On error the buffer is
 /// undefined — MUST NOT inspect.
 fn feed_server_record_inplace_inner<const N: usize, F>(
@@ -643,24 +600,6 @@ where
     H: HkdfSha256,
     M: HandshakeMode,
 {
-    /// CCS records skipped without bumping seq_in.
-    // Test-only; the facade engine has its own record-feed path.
-    #[cfg(all(test, not(feature = "chacha20"), not(feature = "rsa")))]
-    pub fn feed_server_record<const N: usize>(
-        &mut self,
-        record: &[u8],
-        reassembler: &mut ServerFlightReassembler<N>,
-        scratch: &mut [u8],
-    ) -> Result<FlightStep, ConnectionError> {
-        feed_server_record_inner(
-            record,
-            &mut self.state.seq_in,
-            reassembler,
-            scratch,
-            |r, s, b| self.state.s_hs_keys.decrypt_record(r, s, b),
-        )
-    }
-
     pub fn feed_server_record_inplace<const N: usize>(
         &mut self,
         record: &mut [u8],
