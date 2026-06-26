@@ -146,7 +146,9 @@ impl core::fmt::Debug for AeadIv {
 
 #[cfg(test)]
 mod tests {
+    extern crate alloc;
     use super::*;
+    use alloc::format;
     use zeroize::Zeroize;
 
     #[test]
@@ -177,9 +179,6 @@ mod tests {
         s.zeroize();
         assert_eq!(s.as_bytes(), &[0u8; 32]);
     }
-
-    extern crate alloc;
-    use alloc::format;
 
     #[test]
     fn secret_debug_does_not_leak_bytes() {
