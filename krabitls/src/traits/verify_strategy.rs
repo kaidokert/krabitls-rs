@@ -54,12 +54,6 @@ pub trait VerifierKeyMaterial<K> {
     fn matches(&self, candidate: K) -> subtle::Choice;
 }
 
-#[cfg(all(feature = "rsa", not(feature = "rsa_pss_only")))]
-use crate::backends::rsa_verify::RsaPkcs1Sig;
-#[cfg(feature = "rsa")]
-use crate::backends::rsa_verify::RsaPssSig;
-#[cfg(feature = "rsa")]
-use crate::traits::cert::RsaCertSigAlg;
 use crate::traits::cert::{CertParseError, CertParser, CertView};
 use crate::traits::ed25519_verify::Ed25519VerifierProvider;
 use crate::traits::rsa_verify::RsaVerifierProvider;
@@ -86,33 +80,20 @@ where
     }
 }
 
-#[cfg(not(feature = "rsa"))]
 impl<E, R> PreparedVerifier<E, R>
 where
     E: Ed25519VerifierProvider,
     R: RsaVerifierProvider,
 {
-    /// Cross-check this prepared verifier matches `view`'s pubkey. The
-    /// stack runs this after the strategy returns — a lying strategy
-    /// can't sneak in a verifier built from non-chain bytes.
+    /// Cross-check this prepared verifier matches `view`'s pubkey. The stack
+    /// runs this after the strategy returns — a lying strategy can't sneak in
+    /// a verifier built from non-chain bytes. Algorithm mismatch (rsa builds)
+    /// returns `Choice::from(0)`. Under `not(feature = "rsa")` the leaf match
+    /// is exhaustive (Ed25519 only), so no catch-all is needed.
     pub fn matches_cert(&self, view: &CertView<'_>) -> subtle::Choice {
         match (self, view) {
             (Self::Ed25519(v, _), CertView::Ed25519 { pubkey, .. }) => v.matches(**pubkey),
-        }
-    }
-}
-
-#[cfg(feature = "rsa")]
-impl<E, R> PreparedVerifier<E, R>
-where
-    E: Ed25519VerifierProvider,
-    R: RsaVerifierProvider,
-{
-    /// Cross-check this prepared verifier matches `view`'s pubkey.
-    /// Algorithm mismatch returns `Choice::from(0)`.
-    pub fn matches_cert(&self, view: &CertView<'_>) -> subtle::Choice {
-        match (self, view) {
-            (Self::Ed25519(v, _), CertView::Ed25519 { pubkey, .. }) => v.matches(**pubkey),
+            #[cfg(feature = "rsa")]
             (
                 Self::Rsa(v),
                 CertView::Rsa {
@@ -122,6 +103,7 @@ where
                 modulus,
                 exponent: *exponent,
             }),
+            #[cfg(feature = "rsa")]
             _ => subtle::Choice::from(0),
         }
     }
@@ -410,15 +392,8 @@ where
                 }
             };
             let v = R::prepare_rsa(modulus, *exponent).map_err(|_| LinkErr::RsaVerifierInvalid)?;
-            match alg {
-                #[cfg(not(feature = "rsa_pss_only"))]
-                RsaCertSigAlg::Pkcs1v15Sha256 => v
-                    .verify(child_tbs, &RsaPkcs1Sig(child_sig))
-                    .map_err(|_| LinkErr::LinkSignatureInvalid),
-                RsaCertSigAlg::PssSha256 => v
-                    .verify(child_tbs, &RsaPssSig(child_sig))
-                    .map_err(|_| LinkErr::LinkSignatureInvalid),
-            }
+            crate::traits::rsa_verify::verify_cert_sig(&v, child_tbs, child_sig, alg)
+                .map_err(|_| LinkErr::LinkSignatureInvalid)
         }
     }
 }

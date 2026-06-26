@@ -1,12 +1,5 @@
 //! Parse and verify the encrypted TLS 1.3 server flight.
 
-#[cfg(all(
-    test,
-    feature = "cipher-aes",
-    feature = "rsa",
-    not(feature = "rsa_pss_only")
-))]
-use crate::backends::rsa_verify::RsaPkcs1Sig;
 #[cfg(feature = "rsa")]
 use crate::backends::rsa_verify::RsaPssSig;
 use crate::consts::SIG_SCHEME_ED25519;
@@ -16,8 +9,6 @@ use crate::hkdf::{HkdfLabelError, TranscriptHash, hkdf_expand_label};
 use crate::newtype::{Secret, TranscriptDigest, ZeroBuf};
 #[cfg(all(test, feature = "cipher-aes"))]
 use crate::traits::CertParser;
-#[cfg(all(test, feature = "cipher-aes", feature = "rsa"))]
-use crate::traits::cert::RsaCertSigAlg;
 use crate::traits::verify_strategy::PreparedVerifier;
 use crate::traits::{
     CertParseError, CertView, Ed25519VerifierProvider, HkdfSha256, RsaVerifierProvider,
@@ -351,15 +342,8 @@ pub(crate) fn verify_self_signed_cert_with_cache<
             // ECDSA issuer). Self-sig verify can't proceed.
             let alg = outer_sig_alg.ok_or(FlightError::CertSelfSignatureInvalid)?;
             let v = rsa_v.ok_or(FlightError::CertSelfSignatureInvalid)?;
-            match alg {
-                #[cfg(not(feature = "rsa_pss_only"))]
-                RsaCertSigAlg::Pkcs1v15Sha256 => v
-                    .verify(tbs, &RsaPkcs1Sig(signature))
-                    .map_err(|_| FlightError::CertSelfSignatureInvalid)?,
-                RsaCertSigAlg::PssSha256 => v
-                    .verify(tbs, &RsaPssSig(signature))
-                    .map_err(|_| FlightError::CertSelfSignatureInvalid)?,
-            }
+            crate::traits::rsa_verify::verify_cert_sig(v, tbs, signature, alg)
+                .map_err(|_| FlightError::CertSelfSignatureInvalid)?;
         }
     }
     Ok(())
