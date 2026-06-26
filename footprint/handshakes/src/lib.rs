@@ -204,6 +204,27 @@ use krabitls::backends::{DerCert, JedisctCrypto, RustCrypto};
 ))]
 use krabitls::client::{ClientConfig, ConfigSuitePolicy, DefaultVerify, TlsStream};
 
+// Strategy + validity types for `run_aes_ed25519_facade_clocked`. `DerCert`
+// and `TlsStream` also arrive via the jedisct block above when that build is
+// on, so they carry an extra `not(jedisct)` guard to dodge a double import.
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "cipher-aes",
+    feature = "cert-der",
+    not(feature = "chacha20"),
+    not(feature = "rsa"),
+))]
+use krabitls::client::{Clocked, DefaultConfig, PinOrSelfSigned, SafeStrategy, TimeSource};
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "cipher-aes",
+    feature = "cert-der",
+    not(feature = "chacha20"),
+    not(feature = "rsa"),
+    not(feature = "jedisct"),
+))]
+use krabitls::{backends::DerCert, client::TlsStream};
+
 /// Drive the full facade handshake against canned seed-0 fixtures.
 ///
 /// Composes SH + SF into a `CannedTransport`, then calls
@@ -249,11 +270,6 @@ pub fn run_aes_ed25519_facade() -> Result<(), ()> {
     not(feature = "rsa"),
 ))]
 pub fn run_aes_ed25519_facade_clocked() -> Result<(), ()> {
-    use krabitls::backends::DerCert;
-    use krabitls::client::{
-        Clocked, DefaultConfig, PinOrSelfSigned, SafeStrategy, TimeSource, TlsStream,
-    };
-
     struct FixedT(u64);
     impl TimeSource for FixedT {
         fn now_unix_secs(&self) -> u64 {
