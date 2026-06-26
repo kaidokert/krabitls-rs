@@ -50,11 +50,6 @@ impl RecvState {
     pub fn plaintext_parked(&self) -> bool {
         self.plain_start < self.plain_end
     }
-
-    #[cfg(test)]
-    pub fn needs_compaction(&self) -> bool {
-        !self.plaintext_parked() && self.next_record > 0
-    }
 }
 
 /// Wrapped typestate states — one variant per `(handshake-phase × suite)`
@@ -971,13 +966,20 @@ mod tests {
     use super::*;
     use crate::client::{ClientParams, DefaultConfig, DefaultScratch};
 
+    /// `RecvState` compaction-eligibility (invariant I6): drained, with the
+    /// record cursor advanced past 0. Over the private cursor state, so it
+    /// lives here rather than as a method on the production type.
+    fn needs_compaction(r: &RecvState) -> bool {
+        !r.plaintext_parked() && r.next_record > 0
+    }
+
     // RecvState
 
     #[test]
     fn recv_state_default_has_no_parked_plaintext() {
         let r = RecvState::new();
         assert!(!r.plaintext_parked());
-        assert!(!r.needs_compaction());
+        assert!(!needs_compaction(&r));
     }
 
     #[test]
@@ -996,14 +998,14 @@ mod tests {
     fn recv_state_needs_compaction_fires_only_post_drain_with_advanced_cursor() {
         let mut r = RecvState::new();
         // Not parked, next_record == 0 → false.
-        assert!(!r.needs_compaction());
+        assert!(!needs_compaction(&r));
         // Parked → false (I6 only fires post-drain).
         r.plain_end = 10;
         r.next_record = 20;
-        assert!(!r.needs_compaction());
+        assert!(!needs_compaction(&r));
         // Drained but next_record > 0 → true.
         r.plain_end = 0;
-        assert!(r.needs_compaction());
+        assert!(needs_compaction(&r));
     }
 
     // ---------------------------------------------------------------------

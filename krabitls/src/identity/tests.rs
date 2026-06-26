@@ -401,7 +401,8 @@ mod rsa_tests {
 mod validity_tests {
     use super::super::*;
     use crate::traits::cert::CertView;
-    use crate::traits::time::{FixedTime, TimeSource};
+    use crate::traits::time::TimeSource;
+    use crate::traits::time::tests::FixedTime;
 
     /// 2030-01-15T00:00:00Z = 1894665600.
     const T_2030_01_15: u64 = 1894665600;
