@@ -4,13 +4,7 @@
 //! accepts a leaf whose outer signature verifies against its own pubkey.
 //! Both are single-cert-chain only; rejects anything longer.
 
-#[cfg(all(feature = "rsa", not(feature = "rsa_pss_only")))]
-use crate::backends::rsa_verify::RsaPkcs1Sig;
-#[cfg(feature = "rsa")]
-use crate::backends::rsa_verify::RsaPssSig;
 use crate::traits::cert::CertView;
-#[cfg(feature = "rsa")]
-use crate::traits::cert::RsaCertSigAlg;
 use crate::traits::verify_strategy::TrustRootDecision;
 use crate::traits::{Ed25519VerifierProvider, RsaVerifierProvider};
 use signature::Verifier;
@@ -226,15 +220,8 @@ where
             let alg = outer_sig_alg.ok_or(PinOrSelfSignedError::UnknownSigAlg)?;
             let v = R::prepare_rsa(modulus, *exponent)
                 .map_err(|_| PinOrSelfSignedError::RsaVerifierInvalid)?;
-            match alg {
-                #[cfg(not(feature = "rsa_pss_only"))]
-                RsaCertSigAlg::Pkcs1v15Sha256 => v
-                    .verify(tbs, &RsaPkcs1Sig(signature))
-                    .map_err(|_| PinOrSelfSignedError::SelfSignatureInvalid),
-                RsaCertSigAlg::PssSha256 => v
-                    .verify(tbs, &RsaPssSig(signature))
-                    .map_err(|_| PinOrSelfSignedError::SelfSignatureInvalid),
-            }
+            crate::traits::rsa_verify::verify_cert_sig(&v, tbs, signature, alg)
+                .map_err(|_| PinOrSelfSignedError::SelfSignatureInvalid)
         }
     }
 }
