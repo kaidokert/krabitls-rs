@@ -644,3 +644,57 @@ where
         )),
     }
 }
+
+#[cfg(all(not(feature = "chacha20"), not(feature = "rsa")))]
+impl ServerPubkeyOwned {
+    pub(crate) fn as_view(&self) -> ServerPubkey<'_> {
+        match self {
+            Self::Ed25519(pk) => ServerPubkey::ed25519(*pk),
+            #[cfg(feature = "rsa")]
+            Self::Rsa { modulus, exponent } => ServerPubkey::Rsa {
+                modulus: &modulus[..],
+                exponent: *exponent,
+            },
+        }
+    }
+}
+
+#[cfg(all(not(feature = "chacha20"), not(feature = "rsa")))]
+impl<S, H, M> TlsConnection<ServerFlightDone<S, M>, H>
+where
+    S: CipherSuite,
+    H: HkdfSha256,
+    M: HandshakeMode,
+{
+    pub(crate) fn server_pubkey(&self) -> ServerPubkey<'_> {
+        self.state.server_pubkey.as_view()
+    }
+}
+
+#[cfg(all(not(feature = "chacha20"), not(feature = "rsa")))]
+impl<S, H> TlsConnection<AppData<S>, H>
+where
+    S: CipherSuite,
+    H: HkdfSha256,
+{
+    pub(crate) fn decrypt_record<'a>(
+        &mut self,
+        record: &[u8],
+        scratch: &'a mut [u8],
+    ) -> Result<(&'a [u8], u8), ConnectionError> {
+        let inner = self
+            .state
+            .s_ap_keys
+            .decrypt_record(record, self.state.seq_in, scratch)?;
+        let (content_len, ct) = {
+            let (content, ct) = split_inner_plaintext(inner)?;
+            (content.len(), ct)
+        };
+        self.state.seq_in += 1;
+        Ok((&scratch[..content_len], ct))
+    }
+
+    pub(crate) fn close_notify(mut self, out_buf: &mut [u8]) -> Result<&[u8], ConnectionError> {
+        self.encrypt_record(&CLOSE_NOTIFY_ALERT, CT_ALERT, out_buf)
+    }
+}

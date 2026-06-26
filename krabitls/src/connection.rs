@@ -290,20 +290,6 @@ impl ServerPubkeyOwned {
             }
         }
     }
-
-    // Only caller is the cfg(test) `server_pubkey()` accessor on
-    // ServerFlightDone — same gate.
-    #[cfg(all(test, not(feature = "chacha20"), not(feature = "rsa")))]
-    pub fn as_view(&self) -> ServerPubkey<'_> {
-        match self {
-            Self::Ed25519(pk) => ServerPubkey::ed25519(*pk),
-            #[cfg(feature = "rsa")]
-            Self::Rsa { modulus, exponent } => ServerPubkey::Rsa {
-                modulus: &modulus[..],
-                exponent: *exponent,
-            },
-        }
-    }
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -688,20 +674,6 @@ where
     Ok((record, c_ap_keys, s_ap_keys))
 }
 
-impl<S, H, M> TlsConnection<ServerFlightDone<S, M>, H>
-where
-    S: CipherSuite,
-    H: HkdfSha256,
-    M: HandshakeMode,
-{
-    // Test-only accessor — used by this file's `replay_state_matches`
-    // test. Gate matches the caller test's cfg.
-    #[cfg(all(test, not(feature = "chacha20"), not(feature = "rsa")))]
-    pub fn server_pubkey(&self) -> ServerPubkey<'_> {
-        self.state.server_pubkey.as_view()
-    }
-}
-
 // ============================================================================
 // Replay entry point (test-only, `feature = "replay"`)
 // ============================================================================
@@ -795,26 +767,6 @@ where
         Ok(record)
     }
 
-    // Test-only; the facade engine uses `decrypt_record_inplace`.
-    #[cfg(all(test, not(feature = "chacha20"), not(feature = "rsa")))]
-    pub fn decrypt_record<'a>(
-        &mut self,
-        record: &[u8],
-        scratch: &'a mut [u8],
-    ) -> Result<(&'a [u8], u8), ConnectionError> {
-        let inner = self
-            .state
-            .s_ap_keys
-            .decrypt_record(record, self.state.seq_in, scratch)?;
-        // Borrow split: end split_inner_plaintext's borrow before reborrowing scratch.
-        let (content_len, ct) = {
-            let (content, ct) = split_inner_plaintext(inner)?;
-            (content.len(), ct)
-        };
-        self.state.seq_in += 1;
-        Ok((&scratch[..content_len], ct))
-    }
-
     /// Plaintext lands at `record[5..5 + content_len]`; `record` must
     /// be the full record (5-byte header used as AAD). On error
     /// `record` is undefined — MUST NOT inspect.
@@ -833,12 +785,6 @@ where
         };
         self.state.seq_in += 1;
         Ok((content_len, ct))
-    }
-
-    // Test-only; the facade engine handles close_notify in its own event loop.
-    #[cfg(all(test, not(feature = "chacha20"), not(feature = "rsa")))]
-    pub fn close_notify(mut self, out_buf: &mut [u8]) -> Result<&[u8], ConnectionError> {
-        self.encrypt_record(&CLOSE_NOTIFY_ALERT, CT_ALERT, out_buf)
     }
 }
 

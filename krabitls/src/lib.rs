@@ -237,18 +237,6 @@ pub(crate) struct ClientHelloOptions<'a> {
     pub suites: SuiteList,
 }
 
-impl<'a> ClientHelloOptions<'a> {
-    /// Legacy default: no `record_size_limit`, no SNI, default suite list.
-    #[cfg(test)]
-    pub const fn legacy() -> Self {
-        Self {
-            hostname: None,
-            record_size_limit: None,
-            suites: SuiteList::Default,
-        }
-    }
-}
-
 /// Fixed-extension total when the caller supplies no SNI.
 const CH_EXTENSIONS_FIXED_TOTAL: u16 = EXT_SUPPORTED_VERSIONS_TOTAL
     + EXT_SUPPORTED_GROUPS_TOTAL
