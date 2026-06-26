@@ -17,24 +17,6 @@ pub(crate) fn aead_nonce(iv: &AeadIv, seq: u64) -> ZeroBuf<12> {
     nonce
 }
 
-/// Decrypt one TLS 1.3 application_data-wrapped record.
-///
-/// On `Ok` the returned slice is `TLSInnerPlaintext`; call
-/// [`split_inner_plaintext`] to peel off the content_type byte and padding.
-#[cfg(test)]
-pub(crate) fn decrypt_record<'a, S: CipherSuite>(
-    record: &[u8],
-    key: &zeroize::Zeroizing<S::KeyBytes>,
-    iv: &AeadIv,
-    seq: u64,
-    plaintext_buf: &'a mut [u8],
-) -> Result<&'a [u8], DecryptError> {
-    let cipher = S::make_cipher(key);
-    decrypt_record_with(record, iv, seq, plaintext_buf, |nonce, aad, pt, tag| {
-        run_decrypt::<S>(&cipher, nonce, aad, pt, tag)
-    })
-}
-
 #[cfg(test)]
 fn decrypt_record_with<'a, F>(
     record: &[u8],
@@ -196,26 +178,6 @@ pub(crate) fn split_inner_plaintext(inner: &[u8]) -> Result<(&[u8], u8), Decrypt
         return Err(DecryptError::RecordTooLarge);
     }
     Ok((&inner[..end - 1], content_type))
-}
-
-#[cfg(test)]
-pub(crate) fn encrypt_record<'a, S: CipherSuite>(
-    content: &[u8],
-    content_type: u8,
-    key: &zeroize::Zeroizing<S::KeyBytes>,
-    iv: &AeadIv,
-    seq: u64,
-    out_buf: &'a mut [u8],
-) -> Result<&'a [u8], EncryptError> {
-    let cipher = S::make_cipher(key);
-    encrypt_record_with(
-        content,
-        content_type,
-        iv,
-        seq,
-        out_buf,
-        |nonce, aad, buf| run_encrypt::<S>(&cipher, nonce, aad, buf),
-    )
 }
 
 fn encrypt_record_with<'a, F>(
@@ -572,9 +534,45 @@ pub enum DecryptError {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::newtype::{AeadIv, ZeroBuf};
+
+    /// Decrypt one TLS 1.3 application_data-wrapped record.
+    ///
+    /// On `Ok` the returned slice is `TLSInnerPlaintext`; call
+    /// [`split_inner_plaintext`] to peel off the content_type byte and padding.
+    pub(crate) fn decrypt_record<'a, S: CipherSuite>(
+        record: &[u8],
+        key: &zeroize::Zeroizing<S::KeyBytes>,
+        iv: &AeadIv,
+        seq: u64,
+        plaintext_buf: &'a mut [u8],
+    ) -> Result<&'a [u8], DecryptError> {
+        let cipher = S::make_cipher(key);
+        decrypt_record_with(record, iv, seq, plaintext_buf, |nonce, aad, pt, tag| {
+            run_decrypt::<S>(&cipher, nonce, aad, pt, tag)
+        })
+    }
+
+    pub(crate) fn encrypt_record<'a, S: CipherSuite>(
+        content: &[u8],
+        content_type: u8,
+        key: &zeroize::Zeroizing<S::KeyBytes>,
+        iv: &AeadIv,
+        seq: u64,
+        out_buf: &'a mut [u8],
+    ) -> Result<&'a [u8], EncryptError> {
+        let cipher = S::make_cipher(key);
+        encrypt_record_with(
+            content,
+            content_type,
+            iv,
+            seq,
+            out_buf,
+            |nonce, aad, buf| run_encrypt::<S>(&cipher, nonce, aad, buf),
+        )
+    }
 
     #[test]
     fn split_no_padding() {
