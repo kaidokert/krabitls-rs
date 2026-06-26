@@ -107,6 +107,42 @@ where
     pss: PssVk<Sha256, ModMathValue<T>, ModMathParams<T>>,
 }
 
+/// Generate a per-scheme verify method. The two schemes (PKCS#1-v1.5, PSS)
+/// share an identical U1024/U2048 dispatch and differ only in the cached
+/// `VkPair` field and the signature wrapper. Deliberately a `macro_rules!`,
+/// not a generic fn: the expansion is token-identical to the hand-written
+/// form, so codegen does not shift — this file is the thumbv7m Bug-2 trigger
+/// zone and a new monomorphization could re-trip the `-Oz` miscompile.
+macro_rules! verify_scheme {
+    ($(#[$meta:meta])* $name:ident => $field:ident, $sig:ident) => {
+        $(#[$meta])*
+        pub fn $name(&self, message: &[u8], signature: &[u8]) -> Result<(), RsaVerifyError> {
+            let prehash = Sha256::digest(message);
+            match self {
+                #[cfg(not(feature = "rsa_2048_only"))]
+                RsaVerifierKey::U1024 { vk, .. } => {
+                    if signature.len() != 128 {
+                        return Err(RsaVerifyError);
+                    }
+                    let sig = $sig::from(U1024::from_be_bytes(signature));
+                    vk.$field
+                        .verify_prehash(&prehash, &sig)
+                        .map_err(|_| RsaVerifyError)
+                }
+                RsaVerifierKey::U2048 { vk, .. } => {
+                    if signature.len() != 256 {
+                        return Err(RsaVerifyError);
+                    }
+                    let sig = $sig::from(U2048::from_be_bytes(signature));
+                    vk.$field
+                        .verify_prehash(&prehash, &sig)
+                        .map_err(|_| RsaVerifyError)
+                }
+            }
+        }
+    };
+}
+
 impl RsaVerifierKey {
     /// Build cached verifying keys for one RSA public key.
     pub fn new(modulus: &[u8], exponent: u32) -> Result<Self, RsaVerifyError> {
@@ -134,67 +170,17 @@ impl RsaVerifierKey {
         }
     }
 
-    /// Verify a PKCS#1-v1.5-SHA-256 signature against this cached key.
-    #[cfg(not(feature = "rsa_pss_only"))]
-    pub fn verify_pkcs1v15_sha256(
-        &self,
-        message: &[u8],
-        signature: &[u8],
-    ) -> Result<(), RsaVerifyError> {
-        let prehash = Sha256::digest(message);
-        match self {
-            #[cfg(not(feature = "rsa_2048_only"))]
-            RsaVerifierKey::U1024 { vk, .. } => {
-                if signature.len() != 128 {
-                    return Err(RsaVerifyError);
-                }
-                let sig = Pkcs1Sig::from(U1024::from_be_bytes(signature));
-                vk.pkcs1
-                    .verify_prehash(&prehash, &sig)
-                    .map_err(|_| RsaVerifyError)
-            }
-            RsaVerifierKey::U2048 { vk, .. } => {
-                if signature.len() != 256 {
-                    return Err(RsaVerifyError);
-                }
-                let sig = Pkcs1Sig::from(U2048::from_be_bytes(signature));
-                vk.pkcs1
-                    .verify_prehash(&prehash, &sig)
-                    .map_err(|_| RsaVerifyError)
-            }
-        }
-    }
+    verify_scheme!(
+        /// Verify a PKCS#1-v1.5-SHA-256 signature against this cached key.
+        #[cfg(not(feature = "rsa_pss_only"))]
+        verify_pkcs1v15_sha256 => pkcs1, Pkcs1Sig
+    );
 
-    /// Verify an RSA-PSS-SHA-256 signature against this cached key.
-    /// salt_len = hash output (32 bytes) matches `rsa_pss_rsae_sha256`.
-    pub fn verify_pss_sha256(
-        &self,
-        message: &[u8],
-        signature: &[u8],
-    ) -> Result<(), RsaVerifyError> {
-        let prehash = Sha256::digest(message);
-        match self {
-            #[cfg(not(feature = "rsa_2048_only"))]
-            RsaVerifierKey::U1024 { vk, .. } => {
-                if signature.len() != 128 {
-                    return Err(RsaVerifyError);
-                }
-                let sig = PssSig::from(U1024::from_be_bytes(signature));
-                vk.pss
-                    .verify_prehash(&prehash, &sig)
-                    .map_err(|_| RsaVerifyError)
-            }
-            RsaVerifierKey::U2048 { vk, .. } => {
-                if signature.len() != 256 {
-                    return Err(RsaVerifyError);
-                }
-                let sig = PssSig::from(U2048::from_be_bytes(signature));
-                vk.pss
-                    .verify_prehash(&prehash, &sig)
-                    .map_err(|_| RsaVerifyError)
-            }
-        }
-    }
+    verify_scheme!(
+        /// Verify an RSA-PSS-SHA-256 signature against this cached key.
+        /// salt_len = hash output (32 bytes) matches `rsa_pss_rsae_sha256`.
+        verify_pss_sha256 => pss, PssSig
+    );
 }
 
 impl
