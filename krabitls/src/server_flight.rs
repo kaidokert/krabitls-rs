@@ -8,8 +8,6 @@ use crate::consts::SIG_SCHEME_RSA_PSS_RSAE_SHA256;
 use crate::consts::{HS_CERTIFICATE, HS_CERTIFICATE_VERIFY, HS_ENCRYPTED_EXTENSIONS, HS_FINISHED};
 use crate::hkdf::{HkdfLabelError, TranscriptHash, hkdf_expand_label};
 use crate::newtype::{Secret, TranscriptDigest, ZeroBuf};
-#[cfg(all(test, feature = "cipher-aes"))]
-use crate::traits::CertParser;
 use crate::traits::verify_strategy::PreparedVerifier;
 use crate::traits::{
     CertParseError, CertView, Ed25519VerifierProvider, HkdfSha256, RsaVerifierProvider,
@@ -196,12 +194,6 @@ impl<'a> HsReader<'a> {
     }
 }
 
-/// Default upper bound on `CertificateEntry` count, used by the test-only
-/// [`extract_cert_der`] convenience. Production callers thread `MAX_CHAIN`
-/// through from `TlsStream` and call [`extract_chain`] directly.
-#[cfg(test)]
-pub const MAX_CERT_CHAIN_LEN: usize = 8;
-
 /// Walk a TLS 1.3 `Certificate` body and return every `CertificateEntry`'s
 /// `cert_data` as borrowed slices, in wire order (index 0 = leaf).
 /// Per-entry `Extensions` blobs are skipped.
@@ -254,183 +246,10 @@ pub fn extract_chain<const MAX: usize>(
     Ok(chain)
 }
 
-/// Pull the leaf DER bytes out of a TLS 1.3 `Certificate` body.
-/// Leaf-only convenience over [`extract_chain`]; inherits its
-/// overflow-rejection. Test-only — production goes through
-/// [`extract_chain`] with the caller's `MAX_CHAIN` budget.
-#[cfg(test)]
-pub fn extract_cert_der(cert_body: &[u8]) -> Result<&[u8], FlightError> {
-    let chain = extract_chain::<MAX_CERT_CHAIN_LEN>(cert_body)?;
-    chain.first().copied().ok_or(FlightError::Truncated)
-}
-
 /// Read a big-endian 24-bit length without truncating on 16-bit targets.
 fn read_u24(b: &[u8]) -> u32 {
     debug_assert!(b.len() == 3);
     u32::from_be_bytes([0, b[0], b[1], b[2]])
-}
-
-/// Parse + verify a self-signed cert in one shot. Test-only helper.
-#[cfg(all(test, feature = "cipher-aes"))]
-pub(crate) fn verify_self_signed_cert<
-    C: CertParser,
-    E: Ed25519VerifierProvider,
-    R: RsaVerifierProvider,
->(
-    cert_der: &[u8],
-) -> Result<CertView<'_>, FlightError> {
-    let view = C::parse(cert_der)?;
-    let ed25519_v = match &view {
-        CertView::Ed25519 { pubkey, .. } => Some(E::prepare_ed25519(pubkey)),
-        #[cfg(feature = "rsa")]
-        CertView::Rsa { .. } => None,
-    };
-    #[cfg(feature = "rsa")]
-    let rsa_v = match &view {
-        CertView::Rsa {
-            modulus, exponent, ..
-        } => Some(
-            R::prepare_rsa(modulus, *exponent)
-                .map_err(|_| FlightError::CertSelfSignatureInvalid)?,
-        ),
-        _ => None,
-    };
-    verify_self_signed_cert_with_cache::<E, R>(
-        &view,
-        ed25519_v.as_ref(),
-        #[cfg(feature = "rsa")]
-        rsa_v.as_ref(),
-    )?;
-    Ok(view)
-}
-
-/// Verify the cert's outer self-signature against its own pubkey.
-/// Test-only — production uses
-/// [`crate::backends::PinOrSelfSigned`] via the strategy.
-#[cfg(all(test, feature = "cipher-aes"))]
-pub(crate) fn verify_self_signed_cert_with_cache<
-    E: Ed25519VerifierProvider,
-    R: RsaVerifierProvider,
->(
-    view: &CertView<'_>,
-    ed25519_v: Option<&E::Verifier>,
-    #[cfg(feature = "rsa")] rsa_v: Option<&R::Verifier>,
-) -> Result<(), FlightError> {
-    // `R` is bound even without `feature = "rsa"` so callers can specify a
-    // backend choice once at the typestate boundary. The bound is satisfiable
-    // trivially since the trait is empty in that configuration.
-    let _ = core::marker::PhantomData::<R>;
-    match view {
-        CertView::Ed25519 { tbs, signature, .. } => {
-            let v = ed25519_v.ok_or(FlightError::CertSelfSignatureInvalid)?;
-            v.verify(tbs, signature)
-                .map_err(|_| FlightError::CertSelfSignatureInvalid)?;
-        }
-        #[cfg(feature = "rsa")]
-        CertView::Rsa {
-            tbs,
-            signature,
-            outer_sig_alg,
-            ..
-        } => {
-            // `outer_sig_alg = None` means the cert's outer signatureAlgorithm
-            // isn't one we know how to verify (e.g. RSA leaf signed by an
-            // ECDSA issuer). Self-sig verify can't proceed.
-            let alg = outer_sig_alg.ok_or(FlightError::CertSelfSignatureInvalid)?;
-            let v = rsa_v.ok_or(FlightError::CertSelfSignatureInvalid)?;
-            crate::traits::rsa_verify::verify_cert_sig(v, tbs, signature, alg)
-                .map_err(|_| FlightError::CertSelfSignatureInvalid)?;
-        }
-    }
-    Ok(())
-}
-
-/// Verify a `CertificateVerify` body against the transcript hash and public key.
-/// Non-cached CertificateVerify wrapper. Test-only.
-#[cfg(test)]
-pub(crate) fn verify_certificate_verify<E: Ed25519VerifierProvider, R: RsaVerifierProvider>(
-    cert_view: &CertView<'_>,
-    transcript_hash_ch_through_cert: &TranscriptDigest,
-    cv_body: &[u8],
-) -> Result<(), FlightError> {
-    let ed25519_v = match cert_view {
-        CertView::Ed25519 { pubkey, .. } => Some(E::prepare_ed25519(pubkey)),
-        #[cfg(feature = "rsa")]
-        CertView::Rsa { .. } => None,
-    };
-    #[cfg(feature = "rsa")]
-    let rsa_v = match cert_view {
-        CertView::Rsa {
-            modulus, exponent, ..
-        } => Some(R::prepare_rsa(modulus, *exponent).map_err(|_| FlightError::CertVerifyInvalid)?),
-        _ => None,
-    };
-    verify_certificate_verify_with_cache::<E, R>(
-        cert_view,
-        transcript_hash_ch_through_cert,
-        cv_body,
-        ed25519_v.as_ref(),
-        #[cfg(feature = "rsa")]
-        rsa_v.as_ref(),
-    )
-}
-
-/// Test-only — production uses [`verify_certificate_verify_with_prepared`]
-/// against a strategy-supplied prepared verifier.
-#[cfg(test)]
-pub(crate) fn verify_certificate_verify_with_cache<
-    E: Ed25519VerifierProvider,
-    R: RsaVerifierProvider,
->(
-    cert_view: &CertView<'_>,
-    transcript_hash_ch_through_cert: &TranscriptDigest,
-    cv_body: &[u8],
-    ed25519_v: Option<&E::Verifier>,
-    #[cfg(feature = "rsa")] rsa_v: Option<&R::Verifier>,
-) -> Result<(), FlightError> {
-    let _ = core::marker::PhantomData::<R>;
-    if cv_body.len() < 4 {
-        return Err(FlightError::Truncated);
-    }
-    let scheme = u16::from_be_bytes([cv_body[0], cv_body[1]]);
-    let sig_len = u16::from_be_bytes([cv_body[2], cv_body[3]]) as usize;
-    if cv_body.len() - 4 != sig_len {
-        return Err(FlightError::TrailingBytes);
-    }
-    let sig_bytes = &cv_body[4..];
-
-    // Domain separation for TLS 1.3 CertificateVerify.
-    const CTX: &[u8] = b"TLS 1.3, server CertificateVerify";
-    const SIGNED_LEN: usize = 64 + CTX.len() + 1 + 32;
-    let mut signed: heapless::Vec<u8, SIGNED_LEN> = heapless::Vec::new();
-    signed.extend_from_slice(&[0x20u8; 64])?;
-    signed.extend_from_slice(CTX)?;
-    signed.extend_from_slice(&[0u8])?;
-    signed.extend_from_slice(transcript_hash_ch_through_cert.as_bytes())?;
-
-    match (scheme, cert_view) {
-        (SIG_SCHEME_ED25519, CertView::Ed25519 { .. }) => {
-            let Ok(signature) = <&[u8; 64]>::try_from(sig_bytes) else {
-                return Err(FlightError::WrongSignatureLength);
-            };
-            let v = ed25519_v.ok_or(FlightError::CertVerifyInvalid)?;
-            v.verify(&signed, signature)
-                .map_err(|_| FlightError::CertVerifyInvalid)?;
-            Ok(())
-        }
-        #[cfg(feature = "rsa")]
-        (SIG_SCHEME_RSA_PSS_RSAE_SHA256, CertView::Rsa { modulus, .. }) => {
-            // PSS signature length equals the RSA modulus length.
-            if sig_len != modulus.len() {
-                return Err(FlightError::WrongSignatureLength);
-            }
-            let v = rsa_v.ok_or(FlightError::CertVerifyInvalid)?;
-            v.verify(&signed, &RsaPssSig(sig_bytes))
-                .map_err(|_| FlightError::CertVerifyInvalid)?;
-            Ok(())
-        }
-        _ => Err(FlightError::UnexpectedSignatureScheme(scheme)),
-    }
 }
 
 /// Verify `CertificateVerify` against a prepared verifier handed back by
@@ -558,4 +377,188 @@ where
         },
     };
     Ok(ServerFlightVerified { server_pubkey })
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+
+    /// Default `CertificateEntry`-count bound for the leaf-only
+    /// [`extract_cert_der`] convenience. Production threads `MAX_CHAIN` from
+    /// `TlsStream` and calls [`extract_chain`] directly.
+    const MAX_CERT_CHAIN_LEN: usize = 8;
+    #[cfg(feature = "cipher-aes")]
+    use crate::traits::CertParser;
+
+    /// Pull the leaf DER bytes out of a TLS 1.3 `Certificate` body.
+    /// Leaf-only convenience over [`extract_chain`]; inherits its
+    /// overflow-rejection. Test-only — production goes through
+    /// [`extract_chain`] with the caller's `MAX_CHAIN` budget.
+    pub(crate) fn extract_cert_der(cert_body: &[u8]) -> Result<&[u8], FlightError> {
+        let chain = extract_chain::<MAX_CERT_CHAIN_LEN>(cert_body)?;
+        chain.first().copied().ok_or(FlightError::Truncated)
+    }
+
+    /// Parse + verify a self-signed cert in one shot. Test-only helper.
+    #[cfg(feature = "cipher-aes")]
+    pub(crate) fn verify_self_signed_cert<
+        C: CertParser,
+        E: Ed25519VerifierProvider,
+        R: RsaVerifierProvider,
+    >(
+        cert_der: &[u8],
+    ) -> Result<CertView<'_>, FlightError> {
+        let view = C::parse(cert_der)?;
+        let ed25519_v = match &view {
+            CertView::Ed25519 { pubkey, .. } => Some(E::prepare_ed25519(pubkey)),
+            #[cfg(feature = "rsa")]
+            CertView::Rsa { .. } => None,
+        };
+        #[cfg(feature = "rsa")]
+        let rsa_v = match &view {
+            CertView::Rsa {
+                modulus, exponent, ..
+            } => Some(
+                R::prepare_rsa(modulus, *exponent)
+                    .map_err(|_| FlightError::CertSelfSignatureInvalid)?,
+            ),
+            _ => None,
+        };
+        verify_self_signed_cert_with_cache::<E, R>(
+            &view,
+            ed25519_v.as_ref(),
+            #[cfg(feature = "rsa")]
+            rsa_v.as_ref(),
+        )?;
+        Ok(view)
+    }
+
+    /// Verify the cert's outer self-signature against its own pubkey.
+    /// Test-only — production uses
+    /// [`crate::backends::PinOrSelfSigned`] via the strategy.
+    #[cfg(feature = "cipher-aes")]
+    pub(crate) fn verify_self_signed_cert_with_cache<
+        E: Ed25519VerifierProvider,
+        R: RsaVerifierProvider,
+    >(
+        view: &CertView<'_>,
+        ed25519_v: Option<&E::Verifier>,
+        #[cfg(feature = "rsa")] rsa_v: Option<&R::Verifier>,
+    ) -> Result<(), FlightError> {
+        // `R` is bound even without `feature = "rsa"` so callers can specify a
+        // backend choice once at the typestate boundary. The bound is satisfiable
+        // trivially since the trait is empty in that configuration.
+        let _ = core::marker::PhantomData::<R>;
+        match view {
+            CertView::Ed25519 { tbs, signature, .. } => {
+                let v = ed25519_v.ok_or(FlightError::CertSelfSignatureInvalid)?;
+                v.verify(tbs, signature)
+                    .map_err(|_| FlightError::CertSelfSignatureInvalid)?;
+            }
+            #[cfg(feature = "rsa")]
+            CertView::Rsa {
+                tbs,
+                signature,
+                outer_sig_alg,
+                ..
+            } => {
+                // `outer_sig_alg = None` means the cert's outer signatureAlgorithm
+                // isn't one we know how to verify (e.g. RSA leaf signed by an
+                // ECDSA issuer). Self-sig verify can't proceed.
+                let alg = outer_sig_alg.ok_or(FlightError::CertSelfSignatureInvalid)?;
+                let v = rsa_v.ok_or(FlightError::CertSelfSignatureInvalid)?;
+                crate::traits::rsa_verify::verify_cert_sig(v, tbs, signature, alg)
+                    .map_err(|_| FlightError::CertSelfSignatureInvalid)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Verify a `CertificateVerify` body against the transcript hash and public key.
+    /// Non-cached CertificateVerify wrapper. Test-only.
+    pub(crate) fn verify_certificate_verify<E: Ed25519VerifierProvider, R: RsaVerifierProvider>(
+        cert_view: &CertView<'_>,
+        transcript_hash_ch_through_cert: &TranscriptDigest,
+        cv_body: &[u8],
+    ) -> Result<(), FlightError> {
+        let ed25519_v = match cert_view {
+            CertView::Ed25519 { pubkey, .. } => Some(E::prepare_ed25519(pubkey)),
+            #[cfg(feature = "rsa")]
+            CertView::Rsa { .. } => None,
+        };
+        #[cfg(feature = "rsa")]
+        let rsa_v = match cert_view {
+            CertView::Rsa {
+                modulus, exponent, ..
+            } => Some(
+                R::prepare_rsa(modulus, *exponent).map_err(|_| FlightError::CertVerifyInvalid)?,
+            ),
+            _ => None,
+        };
+        verify_certificate_verify_with_cache::<E, R>(
+            cert_view,
+            transcript_hash_ch_through_cert,
+            cv_body,
+            ed25519_v.as_ref(),
+            #[cfg(feature = "rsa")]
+            rsa_v.as_ref(),
+        )
+    }
+
+    /// Test-only — production uses [`verify_certificate_verify_with_prepared`]
+    /// against a strategy-supplied prepared verifier.
+    pub(crate) fn verify_certificate_verify_with_cache<
+        E: Ed25519VerifierProvider,
+        R: RsaVerifierProvider,
+    >(
+        cert_view: &CertView<'_>,
+        transcript_hash_ch_through_cert: &TranscriptDigest,
+        cv_body: &[u8],
+        ed25519_v: Option<&E::Verifier>,
+        #[cfg(feature = "rsa")] rsa_v: Option<&R::Verifier>,
+    ) -> Result<(), FlightError> {
+        let _ = core::marker::PhantomData::<R>;
+        if cv_body.len() < 4 {
+            return Err(FlightError::Truncated);
+        }
+        let scheme = u16::from_be_bytes([cv_body[0], cv_body[1]]);
+        let sig_len = u16::from_be_bytes([cv_body[2], cv_body[3]]) as usize;
+        if cv_body.len() - 4 != sig_len {
+            return Err(FlightError::TrailingBytes);
+        }
+        let sig_bytes = &cv_body[4..];
+
+        // Domain separation for TLS 1.3 CertificateVerify.
+        const CTX: &[u8] = b"TLS 1.3, server CertificateVerify";
+        const SIGNED_LEN: usize = 64 + CTX.len() + 1 + 32;
+        let mut signed: heapless::Vec<u8, SIGNED_LEN> = heapless::Vec::new();
+        signed.extend_from_slice(&[0x20u8; 64])?;
+        signed.extend_from_slice(CTX)?;
+        signed.extend_from_slice(&[0u8])?;
+        signed.extend_from_slice(transcript_hash_ch_through_cert.as_bytes())?;
+
+        match (scheme, cert_view) {
+            (SIG_SCHEME_ED25519, CertView::Ed25519 { .. }) => {
+                let Ok(signature) = <&[u8; 64]>::try_from(sig_bytes) else {
+                    return Err(FlightError::WrongSignatureLength);
+                };
+                let v = ed25519_v.ok_or(FlightError::CertVerifyInvalid)?;
+                v.verify(&signed, signature)
+                    .map_err(|_| FlightError::CertVerifyInvalid)?;
+                Ok(())
+            }
+            #[cfg(feature = "rsa")]
+            (SIG_SCHEME_RSA_PSS_RSAE_SHA256, CertView::Rsa { modulus, .. }) => {
+                // PSS signature length equals the RSA modulus length.
+                if sig_len != modulus.len() {
+                    return Err(FlightError::WrongSignatureLength);
+                }
+                let v = rsa_v.ok_or(FlightError::CertVerifyInvalid)?;
+                v.verify(&signed, &RsaPssSig(sig_bytes))
+                    .map_err(|_| FlightError::CertVerifyInvalid)?;
+                Ok(())
+            }
+            _ => Err(FlightError::UnexpectedSignatureScheme(scheme)),
+        }
+    }
 }

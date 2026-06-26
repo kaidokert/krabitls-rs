@@ -1,17 +1,32 @@
 use super::*;
 #[cfg(feature = "chacha20")]
 use crate::aead::ChaCha20Poly1305Sha256;
-use crate::aead::{DecryptError, NoCipher, decrypt_record, encrypt_record};
+use crate::aead::DecryptError;
+use crate::aead::tests::NoCipher;
+use crate::aead::tests::{decrypt_record, encrypt_record};
 #[cfg(feature = "jedisct")]
 use crate::backends::JedisctCrypto;
 use crate::backends::RustCrypto;
 use crate::hkdf::{HkdfLabelError, TranscriptError, TranscriptHash, traffic_keys};
+use crate::newtype::tests::AeadKey;
 #[cfg(feature = "chacha20")]
-use crate::newtype::AeadKey32;
-use crate::newtype::{AeadIv, AeadKey, Secret, TranscriptDigest, ZeroBuf};
-use crate::server_flight::{FlightError, extract_cert_der, extract_chain};
+use crate::newtype::tests::AeadKey32;
+use crate::newtype::{AeadIv, Secret, TranscriptDigest, ZeroBuf};
+use crate::server_flight::tests::extract_cert_der;
+use crate::server_flight::{FlightError, extract_chain};
 use crate::traits::{CertView, HkdfSha256};
 use embedded_io::SliceWriteError;
+
+impl ClientHelloOptions<'_> {
+    /// Legacy default: no `record_size_limit`, no SNI, default suite list.
+    pub(crate) const fn legacy() -> Self {
+        Self {
+            hostname: None,
+            record_size_limit: None,
+            suites: SuiteList::Default,
+        }
+    }
+}
 
 // Captured from tls_fixture/packets/001_c2s_ClientHello.bin (seed 0).
 const FIXTURE_RANDOM: [u8; 32] = [
@@ -918,8 +933,10 @@ fn certificate_verify_rejects_trailing_bytes() {
         validity_der: &[],
     };
     let th = TranscriptDigest::new([0u8; 32]);
-    let err = server_flight::verify_certificate_verify::<RustCrypto, RustCrypto>(&view, &th, &body)
-        .unwrap_err();
+    let err = server_flight::tests::verify_certificate_verify::<RustCrypto, RustCrypto>(
+        &view, &th, &body,
+    )
+    .unwrap_err();
     assert_eq!(err, FlightError::TrailingBytes);
 }
 

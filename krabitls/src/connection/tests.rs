@@ -8,6 +8,9 @@ use super::*;
     all(feature = "cipher-aes", feature = "chacha20")
 ))]
 use crate::backends::RustCrypto;
+// `close_notify` (moved here) is the sole consumer; gate matches it.
+#[cfg(all(not(feature = "chacha20"), not(feature = "rsa")))]
+use crate::consts::{CLOSE_NOTIFY_ALERT, CT_ALERT};
 
 // Seed-0 fixtures duplicated from `lib.rs` — keep in sync.
 #[cfg(any(
@@ -573,5 +576,155 @@ mod aes_only {
         let _conn = negotiated
             .assume_aes_128_gcm()
             .expect("assume_aes_128_gcm should accept an AES handshake");
+    }
+}
+
+#[cfg(all(not(feature = "chacha20"), not(feature = "rsa")))]
+impl<S, H, M> TlsConnection<WaitServerFlight<S, M>, H>
+where
+    S: CipherSuite,
+    H: HkdfSha256,
+    M: HandshakeMode,
+{
+    /// CCS records skipped without bumping seq_in.
+    // Test-only; the facade engine has its own record-feed path.
+    pub fn feed_server_record<const N: usize>(
+        &mut self,
+        record: &[u8],
+        reassembler: &mut ServerFlightReassembler<N>,
+        scratch: &mut [u8],
+    ) -> Result<FlightStep, ConnectionError> {
+        feed_server_record_inner(
+            record,
+            &mut self.state.seq_in,
+            reassembler,
+            scratch,
+            |r, s, b| self.state.s_hs_keys.decrypt_record(r, s, b),
+        )
+    }
+}
+
+// Only caller is `feed_server_record` below — same gate.
+#[cfg(all(not(feature = "chacha20"), not(feature = "rsa")))]
+fn feed_server_record_inner<const N: usize, F>(
+    record: &[u8],
+    seq_in: &mut u64,
+    reassembler: &mut ServerFlightReassembler<N>,
+    scratch: &mut [u8],
+    decrypt: F,
+) -> Result<FlightStep, ConnectionError>
+where
+    F: for<'a> FnOnce(&[u8], u64, &'a mut [u8]) -> Result<&'a [u8], DecryptError>,
+{
+    if record.is_empty() {
+        return Err(ConnectionError::Decrypt(DecryptError::Truncated));
+    }
+    match record[0] {
+        CT_CHANGE_CIPHER_SPEC => Ok(if reassembler.is_complete() {
+            FlightStep::Ready
+        } else {
+            FlightStep::Pending
+        }),
+        CT_APPLICATION_DATA => {
+            let inner = decrypt(record, *seq_in, scratch)?;
+            let (content, inner_ct) = split_inner_plaintext(inner)?;
+            if inner_ct != CT_HANDSHAKE {
+                return Err(ConnectionError::Decrypt(
+                    DecryptError::UnexpectedContentType(inner_ct),
+                ));
+            }
+            reassembler.push_content(content)?;
+            *seq_in += 1;
+            Ok(if reassembler.is_complete() {
+                FlightStep::Ready
+            } else {
+                FlightStep::Pending
+            })
+        }
+        other => Err(ConnectionError::Decrypt(
+            DecryptError::UnexpectedContentType(other),
+        )),
+    }
+}
+
+#[cfg(all(not(feature = "chacha20"), not(feature = "rsa")))]
+impl ServerPubkeyOwned {
+    pub(crate) fn as_view(&self) -> ServerPubkey<'_> {
+        match self {
+            Self::Ed25519(pk) => ServerPubkey::ed25519(*pk),
+            #[cfg(feature = "rsa")]
+            Self::Rsa { modulus, exponent } => ServerPubkey::Rsa {
+                modulus: &modulus[..],
+                exponent: *exponent,
+            },
+        }
+    }
+}
+
+#[cfg(all(not(feature = "chacha20"), not(feature = "rsa")))]
+impl<S, H, M> TlsConnection<ServerFlightDone<S, M>, H>
+where
+    S: CipherSuite,
+    H: HkdfSha256,
+    M: HandshakeMode,
+{
+    pub(crate) fn server_pubkey(&self) -> ServerPubkey<'_> {
+        self.state.server_pubkey.as_view()
+    }
+}
+
+#[cfg(all(not(feature = "chacha20"), not(feature = "rsa")))]
+impl<S, H> TlsConnection<AppData<S>, H>
+where
+    S: CipherSuite,
+    H: HkdfSha256,
+{
+    pub(crate) fn decrypt_record<'a>(
+        &mut self,
+        record: &[u8],
+        scratch: &'a mut [u8],
+    ) -> Result<(&'a [u8], u8), ConnectionError> {
+        let inner = self
+            .state
+            .s_ap_keys
+            .decrypt_record(record, self.state.seq_in, scratch)?;
+        let (content_len, ct) = {
+            let (content, ct) = split_inner_plaintext(inner)?;
+            (content.len(), ct)
+        };
+        self.state.seq_in += 1;
+        Ok((&scratch[..content_len], ct))
+    }
+
+    pub(crate) fn close_notify(mut self, out_buf: &mut [u8]) -> Result<&[u8], ConnectionError> {
+        self.encrypt_record(&CLOSE_NOTIFY_ALERT, CT_ALERT, out_buf)
+    }
+}
+
+// Replay/fixture entry, bypasses the handshake. Fully-qualified paths so it is
+// independent of this file's feature-gated `use super::*`.
+#[cfg(feature = "cipher-aes")]
+impl<S, H> super::TlsConnection<super::AppData<S>, H>
+where
+    S: crate::aead::CipherSuite,
+    H: crate::traits::HkdfSha256,
+{
+    pub(crate) fn from_app_secrets(
+        c_ap_ts: crate::newtype::Secret,
+        s_ap_ts: crate::newtype::Secret,
+        seq_out: u64,
+        seq_in: u64,
+    ) -> Result<Self, super::ConnectionError> {
+        let c_ap_keys = crate::aead::RecordKeys::<S>::derive::<H>(&c_ap_ts)?;
+        let s_ap_keys = crate::aead::RecordKeys::<S>::derive::<H>(&s_ap_ts)?;
+        Ok(Self {
+            transcript: crate::hkdf::TranscriptHash::<H>::new(),
+            state: super::AppData {
+                c_ap_keys,
+                s_ap_keys,
+                seq_out,
+                seq_in,
+            },
+        })
     }
 }

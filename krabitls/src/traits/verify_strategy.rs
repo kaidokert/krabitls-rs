@@ -19,16 +19,6 @@ impl<'a> ServerPubkey<'a> {
     pub fn ed25519(pubkey: [u8; 32]) -> Self {
         ServerPubkey::Ed25519(pubkey, core::marker::PhantomData)
     }
-
-    /// Test-only accessor; production paths match on the enum directly.
-    #[cfg(all(test, feature = "cipher-aes"))]
-    pub fn as_ed25519(&self) -> Option<[u8; 32]> {
-        match self {
-            ServerPubkey::Ed25519(pk, _) => Some(*pk),
-            #[cfg(feature = "rsa")]
-            ServerPubkey::Rsa { .. } => None,
-        }
-    }
 }
 
 /// Borrowed view of the server's TLS 1.3 `Certificate` handshake message.
@@ -401,6 +391,18 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "cipher-aes")]
+    impl ServerPubkey<'_> {
+        /// Test-only accessor; production paths match on the enum directly.
+        pub(crate) fn as_ed25519(&self) -> Option<[u8; 32]> {
+            match self {
+                ServerPubkey::Ed25519(pk, _) => Some(*pk),
+                #[cfg(feature = "rsa")]
+                ServerPubkey::Rsa { .. } => None,
+            }
+        }
+    }
     use crate::backends::RustCrypto;
     use crate::traits::CertView;
 
@@ -450,7 +452,7 @@ mod tests {
     #[cfg(feature = "cert-der")]
     mod clock {
         use super::*;
-        use crate::traits::time::FixedTime;
+        use crate::traits::time::tests::FixedTime;
 
         // `Validity ::= SEQUENCE { UTCTime "260101000000Z",
         // UTCTime "300101000000Z" }` — window 2026-01-01 .. 2030-01-01.

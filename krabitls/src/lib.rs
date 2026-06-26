@@ -60,17 +60,16 @@ pub(crate) mod traits;
 use errors::{ClientHelloError, ParseError, Write24Error};
 
 #[cfg(all(test, feature = "cipher-aes"))]
-pub(crate) use aead::RecordKeys;
-#[cfg(test)]
-pub(crate) use aead::{aead_nonce, split_inner_plaintext};
-#[cfg(all(test, feature = "cipher-aes"))]
-pub(crate) use hkdf::{application_traffic_secrets, master_secret};
-#[cfg(test)]
-pub(crate) use hkdf::{
-    derive_secret, handshake_secret, handshake_traffic_secrets, hkdf_expand_label,
+pub(crate) use {
+    aead::RecordKeys,
+    hkdf::{application_traffic_secrets, master_secret},
+    server_flight::{tests::verify_self_signed_cert, verify_server_flight},
 };
-#[cfg(all(test, feature = "cipher-aes"))]
-pub(crate) use server_flight::{verify_self_signed_cert, verify_server_flight};
+#[cfg(test)]
+pub(crate) use {
+    aead::{aead_nonce, split_inner_plaintext},
+    hkdf::{derive_secret, handshake_secret, handshake_traffic_secrets, hkdf_expand_label},
+};
 
 use embedded_io::Write;
 
@@ -235,18 +234,6 @@ pub(crate) struct ClientHelloOptions<'a> {
     pub record_size_limit: Option<u16>,
     /// Suite list to advertise. See [`SuiteList`].
     pub suites: SuiteList,
-}
-
-impl<'a> ClientHelloOptions<'a> {
-    /// Legacy default: no `record_size_limit`, no SNI, default suite list.
-    #[cfg(test)]
-    pub const fn legacy() -> Self {
-        Self {
-            hostname: None,
-            record_size_limit: None,
-            suites: SuiteList::Default,
-        }
-    }
 }
 
 /// Fixed-extension total when the caller supplies no SNI.

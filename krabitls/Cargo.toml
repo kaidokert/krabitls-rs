@@ -67,12 +67,6 @@ rsa_pss_only = ["rsa"]
 # (`cios_mont_mul`, `wide_redc`, `mod_exp2`) that LTO can't otherwise
 # prove unreachable through the cached `RsaVerifierKey` enum.
 rsa_2048_only = ["rsa"]
-# Opt-in white-box engine tests that construct a `TlsConnection` directly
-# from captured handshake/app secrets (bypassing the handshake) to exercise
-# the app-data-phase state machine in isolation. Test-only: the entry points
-# are gated `all(test, feature = "replay")`, so a production build can't
-# reach them and they never add `.text`.
-replay = []
 # Cert parser backend selector + `der` gate. On (default) → der-crate-backed
 # parser, and the cert validity-window check (`.clocked()`) is available since
 # it decodes UTCTime/GeneralizedTime through `der`. Off → in-tree TLV walker,

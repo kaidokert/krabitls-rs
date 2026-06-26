@@ -1,4 +1,5 @@
 use super::*;
+use subtle::ConstantTimeEq;
 
 #[test]
 fn exact_match() {
@@ -293,6 +294,7 @@ mod ip_host_tests {
 #[cfg(feature = "rsa")]
 mod rsa_tests {
     use super::super::*;
+    use super::verify_pinned_pubkey;
     use crate::traits::cert::CertView;
 
     #[test]
@@ -399,7 +401,8 @@ mod rsa_tests {
 mod validity_tests {
     use super::super::*;
     use crate::traits::cert::CertView;
-    use crate::traits::time::{FixedTime, TimeSource};
+    use crate::traits::time::TimeSource;
+    use crate::traits::time::tests::FixedTime;
 
     /// 2030-01-15T00:00:00Z = 1894665600.
     const T_2030_01_15: u64 = 1894665600;
@@ -505,5 +508,46 @@ mod validity_tests {
     fn fixed_time_is_a_timesource() {
         let t: &dyn TimeSource = &FixedTime(42);
         assert_eq!(t.now_unix_secs(), 42);
+    }
+}
+
+/// Compare the cert's public key to a pinned reference. Used by
+/// [`crate::backends::PinOrSelfSigned`] via [`PinnedPubkeyOwned`] in
+/// production; the borrowed-pin form here is test-only.
+fn verify_pinned_pubkey(
+    cert_view: &CertView<'_>,
+    pin: &PinnedPubkey<'_>,
+) -> Result<(), IdentityError> {
+    match (cert_view, pin) {
+        (CertView::Ed25519 { pubkey, .. }, PinnedPubkey::Ed25519(expected)) => {
+            if bool::from((**pubkey).ct_eq(expected)) {
+                Ok(())
+            } else {
+                Err(IdentityError::PinMismatch)
+            }
+        }
+        #[cfg(feature = "rsa")]
+        (
+            CertView::Rsa {
+                modulus, exponent, ..
+            },
+            PinnedPubkey::Rsa {
+                modulus: pm,
+                exponent: pe,
+            },
+        ) => {
+            // RSA key size is public; length mismatch can short-circuit
+            // without breaking the CT contract.
+            if modulus.len() != pm.len() {
+                return Err(IdentityError::PinMismatch);
+            }
+            // `&` (not `&&`) — bitwise on `Choice`, both halves always run.
+            if bool::from(modulus.ct_eq(pm) & exponent.ct_eq(pe)) {
+                Ok(())
+            } else {
+                Err(IdentityError::PinMismatch)
+            }
+        }
+        _ => Err(IdentityError::PinAlgorithmMismatch),
     }
 }

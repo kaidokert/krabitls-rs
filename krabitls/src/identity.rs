@@ -7,8 +7,6 @@
 
 use crate::backends::tlv::read_tlv;
 use crate::traits::cert::CertView;
-#[cfg(test)]
-use subtle::ConstantTimeEq;
 
 /// Reasons a server-identity check may fail.
 #[derive(Debug, PartialEq, Eq, Clone, Copy, thiserror::Error)]
@@ -62,48 +60,6 @@ impl<'a> PinnedPubkey<'a> {
             }
             PinnedPubkey::_Phantom(_) => unreachable!("_Phantom is not externally constructible"),
         }
-    }
-}
-
-/// Compare the cert's public key to a pinned reference. Used by
-/// [`crate::backends::PinOrSelfSigned`] via [`PinnedPubkeyOwned`] in
-/// production; the borrowed-pin form here is test-only.
-#[cfg(test)]
-pub fn verify_pinned_pubkey(
-    cert_view: &CertView<'_>,
-    pin: &PinnedPubkey<'_>,
-) -> Result<(), IdentityError> {
-    match (cert_view, pin) {
-        (CertView::Ed25519 { pubkey, .. }, PinnedPubkey::Ed25519(expected)) => {
-            if bool::from((**pubkey).ct_eq(expected)) {
-                Ok(())
-            } else {
-                Err(IdentityError::PinMismatch)
-            }
-        }
-        #[cfg(feature = "rsa")]
-        (
-            CertView::Rsa {
-                modulus, exponent, ..
-            },
-            PinnedPubkey::Rsa {
-                modulus: pm,
-                exponent: pe,
-            },
-        ) => {
-            // RSA key size is public; length mismatch can short-circuit
-            // without breaking the CT contract.
-            if modulus.len() != pm.len() {
-                return Err(IdentityError::PinMismatch);
-            }
-            // `&` (not `&&`) — bitwise on `Choice`, both halves always run.
-            if bool::from(modulus.ct_eq(pm) & exponent.ct_eq(pe)) {
-                Ok(())
-            } else {
-                Err(IdentityError::PinMismatch)
-            }
-        }
-        _ => Err(IdentityError::PinAlgorithmMismatch),
     }
 }
 

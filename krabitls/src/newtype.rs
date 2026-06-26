@@ -23,16 +23,10 @@ macro_rules! secret_newtype {
             }
 
             /// Borrow the underlying bytes.
-            // Not every secret-newtype instance exercises every accessor.
+            // Not every secret-newtype instance exercises this accessor.
             #[allow(dead_code)]
             pub fn as_bytes(&self) -> &[u8; $n] {
                 &*self.0
-            }
-
-            /// Borrow the underlying zeroizing buffer.
-            #[allow(dead_code)]
-            pub fn as_zeroizing(&self) -> &ZeroBuf<$n> {
-                &self.0
             }
         }
 
@@ -100,34 +94,6 @@ impl core::fmt::Debug for TranscriptDigest {
     }
 }
 
-// Test-only newtypes; production stores keys in `Zeroizing<S::KeyBytes>` directly.
-#[cfg(test)]
-secret_newtype! {
-    /// 16-byte AES-128-GCM key. Output of [`crate::traffic_keys`].
-    /// Not `Copy`; zeroes on drop.
-    AeadKey(16)
-}
-
-#[cfg(test)]
-impl core::fmt::Debug for AeadKey {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str("AeadKey([redacted; 16])")
-    }
-}
-
-#[cfg(all(test, feature = "chacha20"))]
-secret_newtype! {
-    /// 32-byte ChaCha20-Poly1305 key. Parallel to [`AeadKey`].
-    AeadKey32(32)
-}
-
-#[cfg(all(test, feature = "chacha20"))]
-impl core::fmt::Debug for AeadKey32 {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str("AeadKey32([redacted; 32])")
-    }
-}
-
 secret_newtype! {
     /// 12-byte AEAD IV. Output of [`crate::traffic_keys`]; XOR'd with the
     /// big-endian record sequence number to produce the per-record nonce
@@ -145,11 +111,56 @@ impl core::fmt::Debug for AeadIv {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     extern crate alloc;
     use super::*;
     use alloc::format;
     use zeroize::Zeroize;
+
+    // Test-only key newtypes; production stores keys in `Zeroizing<S::KeyBytes>`.
+    secret_newtype! {
+        /// 16-byte AES-128-GCM key. Output of [`crate::traffic_keys`].
+        /// Not `Copy`; zeroes on drop.
+        AeadKey(16)
+    }
+
+    impl core::fmt::Debug for AeadKey {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            f.write_str("AeadKey([redacted; 16])")
+        }
+    }
+
+    // Only the cipher-aes record tests borrow the inner buffer; gated so
+    // chacha-only builds don't carry a dead accessor.
+    #[cfg(feature = "cipher-aes")]
+    impl AeadKey {
+        /// Borrow the underlying zeroizing buffer to feed the record helpers,
+        /// which take `&Zeroizing<S::KeyBytes>`.
+        pub(crate) fn as_zeroizing(&self) -> &ZeroBuf<16> {
+            &self.0
+        }
+    }
+
+    #[cfg(feature = "chacha20")]
+    secret_newtype! {
+        /// 32-byte ChaCha20-Poly1305 key. Parallel to [`AeadKey`].
+        AeadKey32(32)
+    }
+
+    #[cfg(feature = "chacha20")]
+    impl core::fmt::Debug for AeadKey32 {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            f.write_str("AeadKey32([redacted; 32])")
+        }
+    }
+
+    #[cfg(feature = "chacha20")]
+    impl AeadKey32 {
+        /// Borrow the underlying zeroizing buffer to feed the record helpers.
+        pub(crate) fn as_zeroizing(&self) -> &ZeroBuf<32> {
+            &self.0
+        }
+    }
 
     #[test]
     fn newtype_round_trip() {

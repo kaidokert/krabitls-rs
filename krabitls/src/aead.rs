@@ -17,89 +17,6 @@ pub(crate) fn aead_nonce(iv: &AeadIv, seq: u64) -> ZeroBuf<12> {
     nonce
 }
 
-/// Decrypt one TLS 1.3 application_data-wrapped record.
-///
-/// On `Ok` the returned slice is `TLSInnerPlaintext`; call
-/// [`split_inner_plaintext`] to peel off the content_type byte and padding.
-#[cfg(test)]
-pub(crate) fn decrypt_record<'a, S: CipherSuite>(
-    record: &[u8],
-    key: &zeroize::Zeroizing<S::KeyBytes>,
-    iv: &AeadIv,
-    seq: u64,
-    plaintext_buf: &'a mut [u8],
-) -> Result<&'a [u8], DecryptError> {
-    let cipher = S::make_cipher(key);
-    decrypt_record_with(record, iv, seq, plaintext_buf, |nonce, aad, pt, tag| {
-        run_decrypt::<S>(&cipher, nonce, aad, pt, tag)
-    })
-}
-
-#[cfg(test)]
-fn decrypt_record_with<'a, F>(
-    record: &[u8],
-    iv: &AeadIv,
-    seq: u64,
-    plaintext_buf: &'a mut [u8],
-    aead_decrypt: F,
-) -> Result<&'a [u8], DecryptError>
-where
-    F: FnOnce(&ZeroBuf<12>, &[u8], &mut [u8], &[u8; 16]) -> Result<(), crate::traits::AeadError>,
-{
-    if record.len() < 5 {
-        return Err(DecryptError::Truncated);
-    }
-    let content_type = record[0];
-    if content_type != crate::consts::CT_APPLICATION_DATA {
-        return Err(DecryptError::UnexpectedContentType(content_type));
-    }
-    let legacy_version = u16::from_be_bytes([record[1], record[2]]);
-    if legacy_version != crate::consts::LEGACY_VERSION {
-        return Err(DecryptError::UnexpectedLegacyVersion(legacy_version));
-    }
-    let body_len = u16::from_be_bytes([record[3], record[4]]) as usize;
-    // RFC 8446 §5.2 caps TLSCiphertext.length at 2^14 + 256. Symmetric with
-    // the encrypt path's `TLS_CIPHERTEXT_MAX` enforcement.
-    if body_len > TLS_CIPHERTEXT_MAX {
-        return Err(DecryptError::RecordTooLarge);
-    }
-    if record.len() < 5 + body_len {
-        return Err(DecryptError::Truncated);
-    }
-    if record.len() != 5 + body_len {
-        return Err(DecryptError::TrailingBytes);
-    }
-
-    if body_len < 16 {
-        return Err(DecryptError::Truncated);
-    }
-    let ct_len = body_len - 16;
-    let body = &record[5..5 + body_len];
-    let (ciphertext, tag_slice) = body.split_at(ct_len);
-    let mut tag = [0u8; 16];
-    tag.copy_from_slice(tag_slice);
-
-    if plaintext_buf.len() < ct_len {
-        return Err(DecryptError::BufferTooSmall {
-            needed: ct_len,
-            got: plaintext_buf.len(),
-        });
-    }
-    let plaintext = &mut plaintext_buf[..ct_len];
-    plaintext.copy_from_slice(ciphertext);
-
-    let nonce = aead_nonce(iv, seq);
-    let aad = &record[..5];
-    match aead_decrypt(&nonce, aad, plaintext, &tag) {
-        Ok(()) => Ok(plaintext),
-        Err(_) => {
-            // Defensive zeroize: AEADs may have written partial plaintext before tag check failed.
-            plaintext.zeroize();
-            Err(DecryptError::AeadFailed)
-        }
-    }
-}
-
 /// On `Ok(ct_len)`, the inner plaintext occupies `record[5..5 + ct_len]`.
 /// On `Err`, the plaintext region is zeroed.
 fn decrypt_record_inplace_with<F>(
@@ -198,26 +115,6 @@ pub(crate) fn split_inner_plaintext(inner: &[u8]) -> Result<(&[u8], u8), Decrypt
     Ok((&inner[..end - 1], content_type))
 }
 
-#[cfg(test)]
-pub(crate) fn encrypt_record<'a, S: CipherSuite>(
-    content: &[u8],
-    content_type: u8,
-    key: &zeroize::Zeroizing<S::KeyBytes>,
-    iv: &AeadIv,
-    seq: u64,
-    out_buf: &'a mut [u8],
-) -> Result<&'a [u8], EncryptError> {
-    let cipher = S::make_cipher(key);
-    encrypt_record_with(
-        content,
-        content_type,
-        iv,
-        seq,
-        out_buf,
-        |nonce, aad, buf| run_encrypt::<S>(&cipher, nonce, aad, buf),
-    )
-}
-
 fn encrypt_record_with<'a, F>(
     content: &[u8],
     content_type: u8,
@@ -296,15 +193,6 @@ pub trait CipherSuite: sealed::Sealed + Sized {
     ) -> Result<RecordKeys<Self>, crate::hkdf::HkdfLabelError>;
 }
 
-/// Compile-time default cipher. Tests and other call sites that need
-/// "some concrete cipher" (and are not exercising AES- or ChaCha-specific
-/// wire behavior) refer to this alias rather than naming a specific
-/// suite. Resolves to whichever cipher feature is enabled. Test-only.
-#[cfg(all(test, feature = "cipher-aes"))]
-pub(crate) type DefaultCipher = Aes128GcmSha256;
-#[cfg(all(test, not(feature = "cipher-aes"), feature = "chacha20"))]
-pub(crate) type DefaultCipher = ChaCha20Poly1305Sha256;
-
 #[cfg(feature = "cipher-aes")]
 mod aes {
     use super::*;
@@ -364,101 +252,11 @@ pub struct RecordKeys<S: CipherSuite> {
     pub iv: AeadIv,
 }
 
-#[cfg(test)]
-mod no_cipher {
-    use super::*;
-    use ::aead::consts::{U0, U12, U16};
-    use ::aead::{Error as AeadError, Key, KeySizeUser, Nonce, Tag};
-
-    /// No-op AEAD: implements the AEAD trait surface required by
-    /// [`CipherSuite::Cipher`] but does no actual cryptography.
-    pub struct NoopAead;
-
-    impl KeySizeUser for NoopAead {
-        type KeySize = U16;
-    }
-
-    impl KeyInit for NoopAead {
-        fn new(_: &Key<Self>) -> Self {
-            NoopAead
-        }
-    }
-
-    impl AeadCore for NoopAead {
-        type NonceSize = U12;
-        type TagSize = U16;
-        type CiphertextOverhead = U0;
-    }
-
-    impl AeadInPlace for NoopAead {
-        fn encrypt_in_place_detached(
-            &self,
-            _: &Nonce<Self>,
-            _: &[u8],
-            _: &mut [u8],
-        ) -> Result<Tag<Self>, AeadError> {
-            Ok(GenericArray::default())
-        }
-
-        fn decrypt_in_place_detached(
-            &self,
-            _: &Nonce<Self>,
-            _: &[u8],
-            _: &mut [u8],
-            _: &Tag<Self>,
-        ) -> Result<(), AeadError> {
-            Ok(())
-        }
-    }
-
-    /// Test-only no-op cipher satisfying [`CipherSuite`].
-    pub struct NoCipher;
-
-    impl sealed::Sealed for NoCipher {}
-
-    impl CipherSuite for NoCipher {
-        type KeyBytes = [u8; 16];
-        type Cipher = NoopAead;
-        fn make_cipher(_: &zeroize::Zeroizing<[u8; 16]>) -> Self::Cipher {
-            NoopAead
-        }
-        fn derive_keys<H: crate::traits::HkdfSha256>(
-            traffic_secret: &crate::newtype::Secret,
-        ) -> Result<RecordKeys<Self>, crate::hkdf::HkdfLabelError> {
-            let (_, iv) = crate::hkdf::traffic_keys::<H, 16>(traffic_secret)?;
-            Ok(RecordKeys {
-                cipher: NoopAead,
-                iv,
-            })
-        }
-    }
-}
-
-#[cfg(test)]
-pub use no_cipher::NoCipher;
-
 impl<S: CipherSuite> RecordKeys<S> {
     pub fn derive<H: crate::traits::HkdfSha256>(
         traffic_secret: &crate::newtype::Secret,
     ) -> Result<Self, crate::hkdf::HkdfLabelError> {
         S::derive_keys::<H>(traffic_secret)
-    }
-
-    /// Decrypt one `application_data` record under this suite's AEAD.
-    #[cfg(test)]
-    pub fn decrypt_record<'a>(
-        &self,
-        record: &[u8],
-        seq: u64,
-        plaintext_buf: &'a mut [u8],
-    ) -> Result<&'a [u8], DecryptError> {
-        decrypt_record_with(
-            record,
-            &self.iv,
-            seq,
-            plaintext_buf,
-            |nonce, aad, pt, tag| run_decrypt::<S>(&self.cipher, nonce, aad, pt, tag),
-        )
     }
 
     pub fn decrypt_record_inplace(
@@ -572,9 +370,212 @@ pub enum DecryptError {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::newtype::{AeadIv, ZeroBuf};
+
+    /// Compile-time default cipher. Tests and other call sites that need
+    /// "some concrete cipher" (and are not exercising AES- or ChaCha-specific
+    /// wire behavior) refer to this alias rather than naming a specific
+    /// suite. Resolves to whichever cipher feature is enabled. Test-only.
+    #[cfg(feature = "cipher-aes")]
+    pub(crate) type DefaultCipher = Aes128GcmSha256;
+    #[cfg(all(not(feature = "cipher-aes"), feature = "chacha20"))]
+    pub(crate) type DefaultCipher = ChaCha20Poly1305Sha256;
+
+    mod no_cipher {
+        use super::*;
+        use ::aead::consts::{U0, U12, U16};
+        use ::aead::{Error as AeadError, Key, KeySizeUser, Nonce, Tag};
+
+        /// No-op AEAD: implements the AEAD trait surface required by
+        /// [`CipherSuite::Cipher`] but does no actual cryptography.
+        pub struct NoopAead;
+
+        impl KeySizeUser for NoopAead {
+            type KeySize = U16;
+        }
+
+        impl KeyInit for NoopAead {
+            fn new(_: &Key<Self>) -> Self {
+                NoopAead
+            }
+        }
+
+        impl AeadCore for NoopAead {
+            type NonceSize = U12;
+            type TagSize = U16;
+            type CiphertextOverhead = U0;
+        }
+
+        impl AeadInPlace for NoopAead {
+            fn encrypt_in_place_detached(
+                &self,
+                _: &Nonce<Self>,
+                _: &[u8],
+                _: &mut [u8],
+            ) -> Result<Tag<Self>, AeadError> {
+                Ok(GenericArray::default())
+            }
+
+            fn decrypt_in_place_detached(
+                &self,
+                _: &Nonce<Self>,
+                _: &[u8],
+                _: &mut [u8],
+                _: &Tag<Self>,
+            ) -> Result<(), AeadError> {
+                Ok(())
+            }
+        }
+
+        /// Test-only no-op cipher satisfying [`CipherSuite`].
+        pub struct NoCipher;
+
+        impl sealed::Sealed for NoCipher {}
+
+        impl CipherSuite for NoCipher {
+            type KeyBytes = [u8; 16];
+            type Cipher = NoopAead;
+            fn make_cipher(_: &zeroize::Zeroizing<[u8; 16]>) -> Self::Cipher {
+                NoopAead
+            }
+            fn derive_keys<H: crate::traits::HkdfSha256>(
+                traffic_secret: &crate::newtype::Secret,
+            ) -> Result<RecordKeys<Self>, crate::hkdf::HkdfLabelError> {
+                let (_, iv) = crate::hkdf::traffic_keys::<H, 16>(traffic_secret)?;
+                Ok(RecordKeys {
+                    cipher: NoopAead,
+                    iv,
+                })
+            }
+        }
+    }
+
+    pub(crate) use no_cipher::NoCipher;
+
+    fn decrypt_record_with<'a, F>(
+        record: &[u8],
+        iv: &AeadIv,
+        seq: u64,
+        plaintext_buf: &'a mut [u8],
+        aead_decrypt: F,
+    ) -> Result<&'a [u8], DecryptError>
+    where
+        F: FnOnce(
+            &ZeroBuf<12>,
+            &[u8],
+            &mut [u8],
+            &[u8; 16],
+        ) -> Result<(), crate::traits::AeadError>,
+    {
+        if record.len() < 5 {
+            return Err(DecryptError::Truncated);
+        }
+        let content_type = record[0];
+        if content_type != crate::consts::CT_APPLICATION_DATA {
+            return Err(DecryptError::UnexpectedContentType(content_type));
+        }
+        let legacy_version = u16::from_be_bytes([record[1], record[2]]);
+        if legacy_version != crate::consts::LEGACY_VERSION {
+            return Err(DecryptError::UnexpectedLegacyVersion(legacy_version));
+        }
+        let body_len = u16::from_be_bytes([record[3], record[4]]) as usize;
+        // RFC 8446 §5.2 caps TLSCiphertext.length at 2^14 + 256. Symmetric with
+        // the encrypt path's `TLS_CIPHERTEXT_MAX` enforcement.
+        if body_len > TLS_CIPHERTEXT_MAX {
+            return Err(DecryptError::RecordTooLarge);
+        }
+        if record.len() < 5 + body_len {
+            return Err(DecryptError::Truncated);
+        }
+        if record.len() != 5 + body_len {
+            return Err(DecryptError::TrailingBytes);
+        }
+
+        if body_len < 16 {
+            return Err(DecryptError::Truncated);
+        }
+        let ct_len = body_len - 16;
+        let body = &record[5..5 + body_len];
+        let (ciphertext, tag_slice) = body.split_at(ct_len);
+        let mut tag = [0u8; 16];
+        tag.copy_from_slice(tag_slice);
+
+        if plaintext_buf.len() < ct_len {
+            return Err(DecryptError::BufferTooSmall {
+                needed: ct_len,
+                got: plaintext_buf.len(),
+            });
+        }
+        let plaintext = &mut plaintext_buf[..ct_len];
+        plaintext.copy_from_slice(ciphertext);
+
+        let nonce = aead_nonce(iv, seq);
+        let aad = &record[..5];
+        match aead_decrypt(&nonce, aad, plaintext, &tag) {
+            Ok(()) => Ok(plaintext),
+            Err(_) => {
+                // Defensive zeroize: AEADs may have written partial plaintext before tag check failed.
+                plaintext.zeroize();
+                Err(DecryptError::AeadFailed)
+            }
+        }
+    }
+
+    impl<S: CipherSuite> RecordKeys<S> {
+        /// Decrypt one `application_data` record under this suite's AEAD.
+        pub(crate) fn decrypt_record<'a>(
+            &self,
+            record: &[u8],
+            seq: u64,
+            plaintext_buf: &'a mut [u8],
+        ) -> Result<&'a [u8], DecryptError> {
+            decrypt_record_with(
+                record,
+                &self.iv,
+                seq,
+                plaintext_buf,
+                |nonce, aad, pt, tag| run_decrypt::<S>(&self.cipher, nonce, aad, pt, tag),
+            )
+        }
+    }
+
+    /// Decrypt one TLS 1.3 application_data-wrapped record.
+    ///
+    /// On `Ok` the returned slice is `TLSInnerPlaintext`; call
+    /// [`split_inner_plaintext`] to peel off the content_type byte and padding.
+    pub(crate) fn decrypt_record<'a, S: CipherSuite>(
+        record: &[u8],
+        key: &zeroize::Zeroizing<S::KeyBytes>,
+        iv: &AeadIv,
+        seq: u64,
+        plaintext_buf: &'a mut [u8],
+    ) -> Result<&'a [u8], DecryptError> {
+        let cipher = S::make_cipher(key);
+        decrypt_record_with(record, iv, seq, plaintext_buf, |nonce, aad, pt, tag| {
+            run_decrypt::<S>(&cipher, nonce, aad, pt, tag)
+        })
+    }
+
+    pub(crate) fn encrypt_record<'a, S: CipherSuite>(
+        content: &[u8],
+        content_type: u8,
+        key: &zeroize::Zeroizing<S::KeyBytes>,
+        iv: &AeadIv,
+        seq: u64,
+        out_buf: &'a mut [u8],
+    ) -> Result<&'a [u8], EncryptError> {
+        let cipher = S::make_cipher(key);
+        encrypt_record_with(
+            content,
+            content_type,
+            iv,
+            seq,
+            out_buf,
+            |nonce, aad, buf| run_encrypt::<S>(&cipher, nonce, aad, buf),
+        )
+    }
 
     #[test]
     fn split_no_padding() {

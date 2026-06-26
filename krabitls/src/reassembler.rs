@@ -106,22 +106,6 @@ impl<const N: usize> ServerFlightReassembler<N> {
         None
     }
 
-    // Test-only accessors.
-    #[cfg(test)]
-    pub fn as_slice(&self) -> &[u8] {
-        &self.buf
-    }
-
-    #[cfg(test)]
-    pub fn is_empty(&self) -> bool {
-        self.buf.is_empty()
-    }
-
-    #[cfg(test)]
-    pub fn clear(&mut self) {
-        self.buf.clear();
-    }
-
     /// Walk the EncryptedExtensions message in the reassembled flight and
     /// return the peer's RFC 8449 `record_size_limit` value if present.
     /// Returns `Ok(None)` if the extension is absent.
@@ -197,15 +181,16 @@ impl<const N: usize> Default for ServerFlightReassembler<N> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::consts::{HS_CERTIFICATE, HS_CERTIFICATE_VERIFY};
 
     fn ee(body_len: usize) -> alloc_helper::Msg {
-        alloc_helper::msg(8, body_len)
+        alloc_helper::msg(HS_ENCRYPTED_EXTENSIONS, body_len)
     }
     fn cert(body_len: usize) -> alloc_helper::Msg {
-        alloc_helper::msg(11, body_len)
+        alloc_helper::msg(HS_CERTIFICATE, body_len)
     }
     fn cv(body_len: usize) -> alloc_helper::Msg {
-        alloc_helper::msg(15, body_len)
+        alloc_helper::msg(HS_CERTIFICATE_VERIFY, body_len)
     }
     fn fin(body_len: usize) -> alloc_helper::Msg {
         alloc_helper::msg(HS_FINISHED, body_len)
@@ -233,7 +218,7 @@ mod tests {
     fn empty_buffer_is_not_complete() {
         let r: ServerFlightReassembler<128> = ServerFlightReassembler::new();
         assert!(!r.is_complete());
-        assert!(r.is_empty());
+        assert!(r.buf.is_empty());
     }
 
     #[test]
@@ -267,7 +252,7 @@ mod tests {
         // read past the buffer or falsely report a complete flight.
         let mut r: ServerFlightReassembler<512> = ServerFlightReassembler::new();
         r.push_content(ee(2).as_slice()).unwrap();
-        r.push_content(&[11u8, 0]).unwrap();
+        r.push_content(&[HS_CERTIFICATE, 0]).unwrap();
         assert!(!r.is_complete());
         assert!(r.flight_bytes().is_none());
     }
@@ -316,8 +301,8 @@ mod tests {
         );
         let flight = r.flight_bytes().expect("flight_bytes after Finished");
         assert_eq!(flight.len(), flight_only_len);
-        assert!(r.as_slice().len() > flight.len());
-        assert_eq!(&r.as_slice()[flight.len()..], nst.as_slice());
+        assert!(r.buf.len() > flight.len());
+        assert_eq!(&r.buf[flight.len()..], nst.as_slice());
     }
 
     #[test]
@@ -345,8 +330,8 @@ mod tests {
         r.push_content(ee(2).as_slice()).unwrap();
         r.push_content(fin(32).as_slice()).unwrap();
         assert!(r.is_complete());
-        r.clear();
-        assert!(r.is_empty());
+        r.buf.clear();
+        assert!(r.buf.is_empty());
         assert!(!r.is_complete());
     }
 
