@@ -9,8 +9,7 @@ use crate::traits::verify_strategy::VerifyStrategy;
 use super::engine::{EngineEvent, EngineState, TlsEngine};
 use super::error::{ConfigError, ConnectError, HandshakeError, InternalError, WriteAppError};
 use super::scratch::{
-    FACADE_HOSTNAME_MAX, MIN_RECV, MIN_SEND_STANDARD, PROTO_MAX_INNER_PLAINTEXT, RECORD_OVERHEAD,
-    Scratch,
+    FACADE_HOSTNAME_MAX, MIN_RECV, MIN_SEND_STANDARD, RECORD_OVERHEAD, RecordSizeLimit, Scratch,
 };
 use super::{ClientConfig, ClientParams, ConfigSuitePolicy, RuntimeSuitePolicy, Transport};
 
@@ -39,9 +38,16 @@ pub struct TlsStream<
     _v: core::marker::PhantomData<fn() -> V>,
 }
 
+/// Standard profile (pinned to [`DefaultScratch`](super::DefaultScratch)'s
+/// dimensions and `DefaultConfig`) but with a caller-chosen verify strategy
+/// `V`. Saves spelling out the buffer/chain const generics when only the
+/// strategy differs from the default; for a non-default chain depth or buffer
+/// profile, name [`TlsStream`] directly.
+pub type DefaultStreamWith<'s, T, V> =
+    TlsStream<'s, T, super::DefaultConfig, V, 16384, 16645, 4096, 8>;
+
 /// Standard profile alias paired with `DefaultScratch`.
-pub type DefaultStream<'s, T> =
-    TlsStream<'s, T, super::DefaultConfig, super::DefaultVerify, 16384, 16645, 4096, 8>;
+pub type DefaultStream<'s, T> = DefaultStreamWith<'s, T, super::DefaultVerify>;
 
 impl<'s, T, C, V, const FLIGHT: usize, const RECV: usize, const SEND: usize, const MAX_CHAIN: usize>
     TlsStream<'s, T, C, V, FLIGHT, RECV, SEND, MAX_CHAIN>
@@ -89,7 +95,7 @@ where
 
         let opts = crate::ClientHelloOptions {
             hostname: Some(params.hostname.as_bytes()),
-            record_size_limit: Some(our_recv_limit),
+            record_size_limit: Some(our_recv_limit.get()),
             suites,
         };
         let (ch_len, wait_sh) = init
@@ -106,7 +112,7 @@ where
             scratch,
             EngineState::WaitServerHello(wait_sh),
             our_recv_limit,
-            PROTO_MAX_INNER_PLAINTEXT,
+            RecordSizeLimit::DEFAULT,
         );
         drive_handshake(&mut engine, &mut transport, params)?;
 

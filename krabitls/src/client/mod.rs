@@ -23,7 +23,7 @@ pub use error::{ConfigError, ConnectError, ConnectionError, HandshakeError};
 pub use params::ClockedVerify;
 pub use params::{ClientParams, DefaultVerify, RuntimeSuitePolicy};
 pub use scratch::{DefaultScratch, MIN_RECV, MIN_SEND_STANDARD, Scratch};
-pub use stream::{DefaultStream, StreamError, TlsStream};
+pub use stream::{DefaultStream, DefaultStreamWith, StreamError, TlsStream};
 pub use transport::Transport;
 
 // Re-export PinnedPubkey at this level so callers don't have to import

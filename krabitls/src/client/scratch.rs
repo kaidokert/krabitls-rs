@@ -16,6 +16,46 @@ pub(crate) const PROTO_MAX_INNER_PLAINTEXT: u16 = 16385;
 /// fatal protocol error.
 pub(crate) const MIN_RECORD_SIZE_LIMIT: u16 = 64;
 
+/// A validated RFC 8449 `record_size_limit`: the largest protected-record
+/// *inner plaintext* (content + the 1-byte content type) the holder will
+/// accept. Always within `[MIN_RECORD_SIZE_LIMIT, PROTO_MAX_INNER_PLAINTEXT]`,
+/// so it can't be confused with an unvalidated record or buffer length.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(transparent)]
+pub(crate) struct RecordSizeLimit(u16);
+
+/// `u16` out of the RFC 8449 `[64, 2^14 + 1]` range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RecordSizeLimitOutOfRange;
+
+impl RecordSizeLimit {
+    /// RFC 8449 default when the peer advertises none: the protocol maximum.
+    pub(crate) const DEFAULT: Self = Self(PROTO_MAX_INNER_PLAINTEXT);
+
+    /// Wrap a value the caller has already constrained to range (e.g. our own
+    /// buffer-derived limit). `const` so it composes in const derivations.
+    pub(crate) const fn from_clamped(value: u16) -> Self {
+        debug_assert!(value >= MIN_RECORD_SIZE_LIMIT && value <= PROTO_MAX_INNER_PLAINTEXT);
+        Self(value)
+    }
+
+    pub(crate) const fn get(self) -> u16 {
+        self.0
+    }
+}
+
+impl TryFrom<u16> for RecordSizeLimit {
+    type Error = RecordSizeLimitOutOfRange;
+
+    fn try_from(value: u16) -> Result<Self, Self::Error> {
+        if (MIN_RECORD_SIZE_LIMIT..=PROTO_MAX_INNER_PLAINTEXT).contains(&value) {
+            Ok(Self(value))
+        } else {
+            Err(RecordSizeLimitOutOfRange)
+        }
+    }
+}
+
 /// Locked-profile ServerHello on-wire record size. Plaintext (no AEAD
 /// tag) so RFC 8449 negotiation doesn't constrain it; the recv buffer
 /// must still be able to hold it.
@@ -114,3 +154,24 @@ pub type DefaultScratch = Scratch<16384, 16645, 4096>;
 // Force the floor check for the crate-provided alias: a future edit that drops
 // `DefaultScratch` below `MIN_RECV` / `MIN_SEND_STANDARD` fails to compile.
 const _: () = DefaultScratch::DIMENSIONS_VALID;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn record_size_limit_validates_rfc8449_range() {
+        assert!(RecordSizeLimit::try_from(MIN_RECORD_SIZE_LIMIT).is_ok());
+        assert!(RecordSizeLimit::try_from(PROTO_MAX_INNER_PLAINTEXT).is_ok());
+        assert_eq!(
+            RecordSizeLimit::try_from(MIN_RECORD_SIZE_LIMIT - 1),
+            Err(RecordSizeLimitOutOfRange)
+        );
+        assert_eq!(
+            RecordSizeLimit::try_from(PROTO_MAX_INNER_PLAINTEXT + 1),
+            Err(RecordSizeLimitOutOfRange)
+        );
+        assert_eq!(RecordSizeLimit::DEFAULT.get(), PROTO_MAX_INNER_PLAINTEXT);
+        assert_eq!(RecordSizeLimit::from_clamped(8192).get(), 8192);
+    }
+}

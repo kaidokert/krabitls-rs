@@ -3,7 +3,7 @@
 
 use super::error::{HandshakeError, InternalError};
 use super::scratch::{
-    AEAD_TAG, MIN_RECORD_SIZE_LIMIT, PROTO_MAX_INNER_PLAINTEXT, RECORD_OVERHEAD, TLS_HEADER,
+    AEAD_TAG, PROTO_MAX_INNER_PLAINTEXT, RECORD_OVERHEAD, RecordSizeLimit, TLS_HEADER,
 };
 use super::{ClientConfig, ClientParams, Scratch};
 #[cfg(feature = "cipher-aes")]
@@ -119,9 +119,9 @@ pub(crate) struct TlsEngine<
     pub(crate) closed: bool,
 
     /// RFC 8449 limit we advertised; caps incoming protected record body.
-    pub(crate) our_recv_limit: u16,
+    pub(crate) our_recv_limit: RecordSizeLimit,
     /// RFC 8449 limit peer advertised; caps outgoing inner plaintext.
-    pub(crate) peer_recv_limit: u16,
+    pub(crate) peer_recv_limit: RecordSizeLimit,
 }
 
 impl<
@@ -136,8 +136,8 @@ impl<
     pub(crate) fn new(
         scratch: &'s mut Scratch<FLIGHT, RECV, SEND>,
         init_state: EngineState<C>,
-        our_recv_limit: u16,
-        peer_recv_limit: u16,
+        our_recv_limit: RecordSizeLimit,
+        peer_recv_limit: RecordSizeLimit,
     ) -> Self {
         Self {
             scratch,
@@ -153,13 +153,14 @@ impl<
         }
     }
 
-    pub(crate) const fn default_our_recv_limit() -> u16 {
+    pub(crate) const fn default_our_recv_limit() -> RecordSizeLimit {
         let from_buf = RECV.saturating_sub(RECORD_OVERHEAD);
-        if from_buf > PROTO_MAX_INNER_PLAINTEXT as usize {
+        let value = if from_buf > PROTO_MAX_INNER_PLAINTEXT as usize {
             PROTO_MAX_INNER_PLAINTEXT
         } else {
             from_buf as u16
-        }
+        };
+        RecordSizeLimit::from_clamped(value)
     }
 
     pub(crate) fn is_send_pending(&self) -> bool {
@@ -311,7 +312,7 @@ impl<
         let record_body_capacity = RECV.saturating_sub(TLS_HEADER);
         if length_field > record_body_capacity {
             return Err(HandshakeError::RecordTooLarge {
-                limit: self.our_recv_limit,
+                limit: self.our_recv_limit.get(),
                 got: length_field as u16,
             });
         }
@@ -436,9 +437,9 @@ impl<
         let outer_type = self.scratch.recv_record[start];
         if outer_type == CT_APPLICATION_DATA {
             let length_field = end - start - TLS_HEADER;
-            if length_field > self.our_recv_limit as usize + AEAD_TAG {
+            if length_field > self.our_recv_limit.get() as usize + AEAD_TAG {
                 return Err(HandshakeError::RecordTooLarge {
-                    limit: self.our_recv_limit,
+                    limit: self.our_recv_limit.get(),
                     got: length_field as u16,
                 });
             }
@@ -482,10 +483,8 @@ impl<
             .peek_ee_record_size_limit()
             .map_err(|e| HandshakeError::Connection(ConnectionError::Flight(e)))?
         {
-            if !(MIN_RECORD_SIZE_LIMIT..=PROTO_MAX_INNER_PLAINTEXT).contains(&peer_limit) {
-                return Err(HandshakeError::InvalidRecordSizeLimit(peer_limit));
-            }
-            self.peer_recv_limit = peer_limit;
+            self.peer_recv_limit = RecordSizeLimit::try_from(peer_limit)
+                .map_err(|_| HandshakeError::InvalidRecordSizeLimit(peer_limit))?;
         }
 
         // Strategy-driven trust + stack-owned identity binding. Runs
@@ -671,9 +670,9 @@ impl<
 
         // RFC 8449: protected body = ciphertext + 16-byte AEAD tag.
         let length_field = end - start - TLS_HEADER;
-        if length_field > self.our_recv_limit as usize + AEAD_TAG {
+        if length_field > self.our_recv_limit.get() as usize + AEAD_TAG {
             return Err(HandshakeError::RecordTooLarge {
-                limit: self.our_recv_limit,
+                limit: self.our_recv_limit.get(),
                 got: length_field as u16,
             });
         }
@@ -954,7 +953,7 @@ impl<
     /// Per-chunk plaintext cap: min of peer RSL, local SEND buffer,
     /// and proto max (each minus the 1-byte inner content type).
     fn send_chunk_limit(&self) -> usize {
-        let peer = (self.peer_recv_limit as usize).saturating_sub(1);
+        let peer = (self.peer_recv_limit.get() as usize).saturating_sub(1);
         let local = SEND.saturating_sub(RECORD_OVERHEAD + 1);
         let proto = (PROTO_MAX_INNER_PLAINTEXT as usize).saturating_sub(1);
         peer.min(local).min(proto)
@@ -1019,7 +1018,12 @@ mod tests {
     fn closed_engine(
         scratch: &mut DefaultScratch,
     ) -> TlsEngine<'_, DefaultConfig, 16384, 16645, 4096, 8> {
-        TlsEngine::new(scratch, EngineState::Closed, 16384, 16384)
+        TlsEngine::new(
+            scratch,
+            EngineState::Closed,
+            RecordSizeLimit::from_clamped(16384),
+            RecordSizeLimit::from_clamped(16384),
+        )
     }
 
     // advance / recv_buffer
@@ -1470,7 +1474,12 @@ mod tests {
                 c_ap_ts, s_ap_ts, 0, 0,
             )
             .unwrap();
-            TlsEngine::new(scratch, EngineState::AppAes(conn), 16384, 16384)
+            TlsEngine::new(
+                scratch,
+                EngineState::AppAes(conn),
+                RecordSizeLimit::from_clamped(16384),
+                RecordSizeLimit::from_clamped(16384),
+            )
         }
 
         #[test]
