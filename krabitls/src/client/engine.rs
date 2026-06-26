@@ -1449,11 +1449,10 @@ mod tests {
         ));
     }
 
-    // Live AppAes engine (replay-gated)
-
-    // The replay constructors build an AES-128-GCM app-data engine, so this
-    // mod needs cipher-aes in addition to the replay feature.
-    #[cfg(all(feature = "replay", feature = "cipher-aes"))]
+    // Live AppAes engine: white-box tests that build a `TlsConnection`
+    // straight from captured app secrets (bypassing the handshake) to drive
+    // the app-data state machine in isolation. AES-128-GCM, so cipher-aes.
+    #[cfg(feature = "cipher-aes")]
     mod replay {
         use super::*;
         use crate::aead::Aes128GcmSha256;

@@ -671,37 +671,6 @@ where
     Ok((record, c_ap_keys, s_ap_keys))
 }
 
-// ============================================================================
-// Replay entry point (test-only, `feature = "replay"`)
-// ============================================================================
-
-#[cfg(all(test, feature = "replay", feature = "cipher-aes"))]
-impl<S, H> TlsConnection<AppData<S>, H>
-where
-    S: CipherSuite,
-    H: HkdfSha256,
-{
-    /// Replay/fixture-CLI entry; bypasses the handshake.
-    pub fn from_app_secrets(
-        c_ap_ts: Secret,
-        s_ap_ts: Secret,
-        seq_out: u64,
-        seq_in: u64,
-    ) -> Result<Self, ConnectionError> {
-        let c_ap_keys = RecordKeys::<S>::derive::<H>(&c_ap_ts)?;
-        let s_ap_keys = RecordKeys::<S>::derive::<H>(&s_ap_ts)?;
-        Ok(Self {
-            transcript: TranscriptHash::<H>::new(),
-            state: AppData {
-                c_ap_keys,
-                s_ap_keys,
-                seq_out,
-                seq_in,
-            },
-        })
-    }
-}
-
 impl<S, H> TlsConnection<ServerFlightDone<S, Live>, H>
 where
     S: CipherSuite,

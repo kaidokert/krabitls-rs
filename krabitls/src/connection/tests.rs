@@ -701,3 +701,31 @@ where
         self.encrypt_record(&CLOSE_NOTIFY_ALERT, CT_ALERT, out_buf)
     }
 }
+
+// Replay/fixture entry, bypasses the handshake. Fully-qualified paths so it is
+// independent of this file's feature-gated `use super::*`.
+#[cfg(feature = "cipher-aes")]
+impl<S, H> super::TlsConnection<super::AppData<S>, H>
+where
+    S: crate::aead::CipherSuite,
+    H: crate::traits::HkdfSha256,
+{
+    pub(crate) fn from_app_secrets(
+        c_ap_ts: crate::newtype::Secret,
+        s_ap_ts: crate::newtype::Secret,
+        seq_out: u64,
+        seq_in: u64,
+    ) -> Result<Self, super::ConnectionError> {
+        let c_ap_keys = crate::aead::RecordKeys::<S>::derive::<H>(&c_ap_ts)?;
+        let s_ap_keys = crate::aead::RecordKeys::<S>::derive::<H>(&s_ap_ts)?;
+        Ok(Self {
+            transcript: crate::hkdf::TranscriptHash::<H>::new(),
+            state: super::AppData {
+                c_ap_keys,
+                s_ap_keys,
+                seq_out,
+                seq_in,
+            },
+        })
+    }
+}
