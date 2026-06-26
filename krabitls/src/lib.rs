@@ -60,17 +60,16 @@ pub(crate) mod traits;
 use errors::{ClientHelloError, ParseError, Write24Error};
 
 #[cfg(all(test, feature = "cipher-aes"))]
-pub(crate) use aead::RecordKeys;
-#[cfg(test)]
-pub(crate) use aead::{aead_nonce, split_inner_plaintext};
-#[cfg(all(test, feature = "cipher-aes"))]
-pub(crate) use hkdf::{application_traffic_secrets, master_secret};
-#[cfg(test)]
-pub(crate) use hkdf::{
-    derive_secret, handshake_secret, handshake_traffic_secrets, hkdf_expand_label,
+pub(crate) use {
+    aead::RecordKeys,
+    hkdf::{application_traffic_secrets, master_secret},
+    server_flight::{tests::verify_self_signed_cert, verify_server_flight},
 };
-#[cfg(all(test, feature = "cipher-aes"))]
-pub(crate) use server_flight::{tests::verify_self_signed_cert, verify_server_flight};
+#[cfg(test)]
+pub(crate) use {
+    aead::{aead_nonce, split_inner_plaintext},
+    hkdf::{derive_secret, handshake_secret, handshake_traffic_secrets, hkdf_expand_label},
+};
 
 use embedded_io::Write;
 

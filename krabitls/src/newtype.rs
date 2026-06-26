@@ -23,16 +23,10 @@ macro_rules! secret_newtype {
             }
 
             /// Borrow the underlying bytes.
-            // Not every secret-newtype instance exercises every accessor.
+            // Not every secret-newtype instance exercises this accessor.
             #[allow(dead_code)]
             pub fn as_bytes(&self) -> &[u8; $n] {
                 &*self.0
-            }
-
-            /// Borrow the underlying zeroizing buffer.
-            #[allow(dead_code)]
-            pub fn as_zeroizing(&self) -> &ZeroBuf<$n> {
-                &self.0
             }
         }
 
@@ -136,6 +130,14 @@ pub(crate) mod tests {
         }
     }
 
+    impl AeadKey {
+        /// Borrow the underlying zeroizing buffer to feed the test record
+        /// helpers, which take `&Zeroizing<S::KeyBytes>`.
+        pub(crate) fn as_zeroizing(&self) -> &ZeroBuf<16> {
+            &self.0
+        }
+    }
+
     #[cfg(feature = "chacha20")]
     secret_newtype! {
         /// 32-byte ChaCha20-Poly1305 key. Parallel to [`AeadKey`].
@@ -146,6 +148,13 @@ pub(crate) mod tests {
     impl core::fmt::Debug for AeadKey32 {
         fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
             f.write_str("AeadKey32([redacted; 32])")
+        }
+    }
+
+    #[cfg(feature = "chacha20")]
+    impl AeadKey32 {
+        pub(crate) fn as_zeroizing(&self) -> &ZeroBuf<32> {
+            &self.0
         }
     }
 
