@@ -588,7 +588,6 @@ where
 {
     /// CCS records skipped without bumping seq_in.
     // Test-only; the facade engine has its own record-feed path.
-    #[cfg(all(not(feature = "chacha20"), not(feature = "rsa")))]
     pub fn feed_server_record<const N: usize>(
         &mut self,
         record: &[u8],

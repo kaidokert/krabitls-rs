@@ -130,11 +130,12 @@ pub(crate) mod tests {
         }
     }
 
+    // Only the cipher-aes record tests borrow the inner buffer; gated so
+    // chacha-only builds don't carry a dead accessor.
+    #[cfg(feature = "cipher-aes")]
     impl AeadKey {
-        /// Borrow the underlying zeroizing buffer to feed the test record
-        /// helpers, which take `&Zeroizing<S::KeyBytes>`.
-        // Used by the cipher-aes record tests; dead in chacha-only builds.
-        #[allow(dead_code)]
+        /// Borrow the underlying zeroizing buffer to feed the record helpers,
+        /// which take `&Zeroizing<S::KeyBytes>`.
         pub(crate) fn as_zeroizing(&self) -> &ZeroBuf<16> {
             &self.0
         }
@@ -155,9 +156,7 @@ pub(crate) mod tests {
 
     #[cfg(feature = "chacha20")]
     impl AeadKey32 {
-        // Used by the chacha record tests; dead when cipher-aes is also on
-        // (those paths exercise AeadKey instead).
-        #[allow(dead_code)]
+        /// Borrow the underlying zeroizing buffer to feed the record helpers.
         pub(crate) fn as_zeroizing(&self) -> &ZeroBuf<32> {
             &self.0
         }
