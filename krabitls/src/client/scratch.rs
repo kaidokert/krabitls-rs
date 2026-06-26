@@ -89,6 +89,14 @@ impl<const FLIGHT: usize, const RECV: usize, const SEND: usize> Scratch<FLIGHT, 
             ch: [0; CH_LEN],
         }
     }
+
+    /// Compile-time floor check, mirroring `validate_construction`'s runtime
+    /// guard. User-supplied generics stay on the runtime path; the crate's own
+    /// aliases force this (see below) so a mis-sized alias fails to build.
+    const DIMENSIONS_VALID: () = {
+        assert!(RECV >= MIN_RECV);
+        assert!(SEND >= MIN_SEND_STANDARD);
+    };
 }
 
 impl<const FLIGHT: usize, const RECV: usize, const SEND: usize> Default
@@ -102,3 +110,7 @@ impl<const FLIGHT: usize, const RECV: usize, const SEND: usize> Default
 /// Public-internet profile — sized for arbitrary RSA chains and a
 /// full-size receive record. ~37 KiB total.
 pub type DefaultScratch = Scratch<16384, 16645, 4096>;
+
+// Force the floor check for the crate-provided alias: a future edit that drops
+// `DefaultScratch` below `MIN_RECV` / `MIN_SEND_STANDARD` fails to compile.
+const _: () = DefaultScratch::DIMENSIONS_VALID;
