@@ -197,15 +197,16 @@ impl<const N: usize> Default for ServerFlightReassembler<N> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::consts::{HS_CERTIFICATE, HS_CERTIFICATE_VERIFY};
 
     fn ee(body_len: usize) -> alloc_helper::Msg {
-        alloc_helper::msg(8, body_len)
+        alloc_helper::msg(HS_ENCRYPTED_EXTENSIONS, body_len)
     }
     fn cert(body_len: usize) -> alloc_helper::Msg {
-        alloc_helper::msg(11, body_len)
+        alloc_helper::msg(HS_CERTIFICATE, body_len)
     }
     fn cv(body_len: usize) -> alloc_helper::Msg {
-        alloc_helper::msg(15, body_len)
+        alloc_helper::msg(HS_CERTIFICATE_VERIFY, body_len)
     }
     fn fin(body_len: usize) -> alloc_helper::Msg {
         alloc_helper::msg(HS_FINISHED, body_len)
@@ -267,7 +268,7 @@ mod tests {
         // read past the buffer or falsely report a complete flight.
         let mut r: ServerFlightReassembler<512> = ServerFlightReassembler::new();
         r.push_content(ee(2).as_slice()).unwrap();
-        r.push_content(&[11u8, 0]).unwrap();
+        r.push_content(&[HS_CERTIFICATE, 0]).unwrap();
         assert!(!r.is_complete());
         assert!(r.flight_bytes().is_none());
     }
