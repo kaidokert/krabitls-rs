@@ -28,8 +28,7 @@ const CLIENT_FINISHED_HEX: &str =
 fn facade_completes_chacha_handshake_against_canned_fixtures() {
     let server_hello = parse_hex(SERVER_HELLO_HEX);
     let server_flight = parse_hex(SERVER_FLIGHT_HEX);
-    let mut server_stream = Vec::with_capacity(server_hello.len() + server_flight.len());
-    server_stream.extend_from_slice(&server_hello);
+    let mut server_stream = server_hello;
     server_stream.extend_from_slice(&server_flight);
 
     let mut scratch = DefaultScratch::new();
@@ -44,8 +43,7 @@ fn facade_completes_chacha_handshake_against_canned_fixtures() {
     // Captured TX must be CH || CF — byte-identical to the fixtures.
     let expected_ch = parse_hex(CLIENT_HELLO_HEX);
     let expected_cf = parse_hex(CLIENT_FINISHED_HEX);
-    let mut expected_tx = Vec::with_capacity(expected_ch.len() + expected_cf.len());
-    expected_tx.extend_from_slice(&expected_ch);
+    let mut expected_tx = expected_ch;
     expected_tx.extend_from_slice(&expected_cf);
     assert_eq!(
         tls.transport().captured_tx(),
