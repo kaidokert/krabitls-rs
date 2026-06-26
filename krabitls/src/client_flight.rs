@@ -1,12 +1,10 @@
 //! Build the client's encrypted TLS 1.3 Finished record.
 
 use crate::aead::{CipherSuite, EncryptError, RecordKeys};
-use crate::consts::CT_HANDSHAKE;
+use crate::consts::{CT_HANDSHAKE, HS_FINISHED};
 use crate::hkdf::{HkdfLabelError, finished_mac};
 use crate::newtype::{Secret, TranscriptDigest, ZeroBuf};
 use crate::traits::HkdfSha256;
-
-const HS_FINISHED: u8 = 20;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, thiserror::Error)]
 pub enum ClientFinishedError {

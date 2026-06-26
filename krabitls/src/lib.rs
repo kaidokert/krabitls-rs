@@ -125,6 +125,9 @@ pub(crate) mod consts {
     pub const CT_HANDSHAKE: u8 = 22;
     pub const CT_APPLICATION_DATA: u8 = 23;
     pub const CT_ALERT: u8 = 21;
+    /// Middlebox-compat ChangeCipherSpec — accepted and dropped without
+    /// bumping `seq_in` in TLS 1.3.
+    pub const CT_CHANGE_CIPHER_SPEC: u8 = 0x14;
     /// `warning` (level 1) + `close_notify` (description 0) — the only alert
     /// krabitls ever sends.
     pub const CLOSE_NOTIFY_ALERT: [u8; 2] = [0x01, 0x00];
@@ -136,6 +139,11 @@ pub(crate) mod consts {
 
     pub const HS_CLIENT_HELLO: u8 = 1;
     pub const HS_SERVER_HELLO: u8 = 2;
+    pub const HS_NEW_SESSION_TICKET: u8 = 4;
+    pub const HS_ENCRYPTED_EXTENSIONS: u8 = 8;
+    pub const HS_CERTIFICATE: u8 = 11;
+    pub const HS_CERTIFICATE_VERIFY: u8 = 15;
+    pub const HS_FINISHED: u8 = 20;
 
     pub const CIPHER_AES_128_GCM_SHA256: u16 = 0x1301;
     pub const CIPHER_CHACHA20_POLY1305_SHA256: u16 = 0x1303;

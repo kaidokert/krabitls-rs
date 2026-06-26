@@ -14,7 +14,9 @@ use crate::connection::{
     AppData, FlightStep, NegotiatedSuite, ServerFlightDone, WaitServerFlight, WaitServerHello,
 };
 use crate::connection::{ConnectionError, TlsConnection};
-use crate::consts::{CLOSE_NOTIFY_ALERT, CT_ALERT, CT_APPLICATION_DATA, CT_HANDSHAKE};
+use crate::consts::{
+    CLOSE_NOTIFY_ALERT, CT_ALERT, CT_APPLICATION_DATA, CT_HANDSHAKE, HS_NEW_SESSION_TICKET,
+};
 use crate::identity::verify_hostname;
 use crate::server_flight::{extract_chain, parse_server_flight};
 use crate::traits::CertParser;
@@ -748,7 +750,6 @@ impl<
                 // rejecting would break interop with major CDNs). Any
                 // other msg_type fails even when coalesced after an
                 // NST, so KeyUpdate cannot silently desync the AEAD.
-                const HS_NEW_SESSION_TICKET: u8 = 4;
                 let end = body_offset + content_len;
                 let mut offset = body_offset;
                 while offset < end {
@@ -968,7 +969,7 @@ impl<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::client::{DefaultConfig, DefaultScratch};
+    use crate::client::{ClientParams, DefaultConfig, DefaultScratch};
 
     // RecvState
 
@@ -1134,6 +1135,147 @@ mod tests {
         assert!(!e.pending_handshake_done);
         assert!(e.closed);
         assert!(matches!(e.state, EngineState::Closed));
+    }
+
+    // ---------------------------------------------------------------------
+    // Event-priority ladders. Compact buffer reuse makes the ordering easy to
+    // regress, so assert it directly: with several conditions live at once,
+    // the higher-priority event must win.
+    // ---------------------------------------------------------------------
+
+    /// Handshake phase: `Send > HandshakeDone > AppData > Closed > Recv`.
+    #[test]
+    fn step_handshake_event_priority_ladder() {
+        struct Case {
+            name: &'static str,
+            send_pending: usize,
+            handshake_done: bool,
+            finished_ack_pending: bool,
+            parked: bool,
+            closed: bool,
+            expect: EngineEvent,
+        }
+        let cases = [
+            Case {
+                name: "send outranks all",
+                send_pending: 5,
+                handshake_done: true,
+                finished_ack_pending: false,
+                parked: true,
+                closed: true,
+                expect: EngineEvent::Send(5),
+            },
+            Case {
+                name: "handshake-done outranks appdata/closed",
+                send_pending: 0,
+                handshake_done: true,
+                finished_ack_pending: false,
+                parked: true,
+                closed: true,
+                expect: EngineEvent::HandshakeDone,
+            },
+            Case {
+                name: "handshake-done gated while finished ack pending",
+                send_pending: 0,
+                handshake_done: true,
+                finished_ack_pending: true,
+                parked: true,
+                closed: false,
+                expect: EngineEvent::AppData,
+            },
+            Case {
+                name: "appdata outranks closed",
+                send_pending: 0,
+                handshake_done: false,
+                finished_ack_pending: false,
+                parked: true,
+                closed: true,
+                expect: EngineEvent::AppData,
+            },
+            Case {
+                name: "closed outranks recv",
+                send_pending: 0,
+                handshake_done: false,
+                finished_ack_pending: false,
+                parked: false,
+                closed: true,
+                expect: EngineEvent::Closed,
+            },
+            Case {
+                name: "recv when idle",
+                send_pending: 0,
+                handshake_done: false,
+                finished_ack_pending: false,
+                parked: false,
+                closed: false,
+                expect: EngineEvent::Recv,
+            },
+        ];
+        let params = ClientParams::self_signed("priority.test");
+        for c in cases {
+            let mut scratch = DefaultScratch::new();
+            let mut e = closed_engine(&mut scratch);
+            e.closed = c.closed;
+            e.send_pending_len = c.send_pending;
+            e.pending_handshake_done = c.handshake_done;
+            e.handshake_finished_pending_ack = c.finished_ack_pending;
+            if c.parked {
+                e.recv.plain_end = 10;
+            }
+            assert_eq!(e.step_handshake(&params).unwrap(), c.expect, "{}", c.name);
+        }
+    }
+
+    /// Data phase: same ladder minus `HandshakeDone`.
+    #[test]
+    fn step_data_event_priority_ladder() {
+        struct Case {
+            name: &'static str,
+            send_pending: usize,
+            parked: bool,
+            closed: bool,
+            expect: EngineEvent,
+        }
+        let cases = [
+            Case {
+                name: "send outranks all",
+                send_pending: 7,
+                parked: true,
+                closed: true,
+                expect: EngineEvent::Send(7),
+            },
+            Case {
+                name: "appdata outranks closed",
+                send_pending: 0,
+                parked: true,
+                closed: true,
+                expect: EngineEvent::AppData,
+            },
+            Case {
+                name: "closed outranks recv",
+                send_pending: 0,
+                parked: false,
+                closed: true,
+                expect: EngineEvent::Closed,
+            },
+            Case {
+                name: "recv when idle",
+                send_pending: 0,
+                parked: false,
+                closed: false,
+                expect: EngineEvent::Recv,
+            },
+        ];
+        for c in cases {
+            let mut scratch = DefaultScratch::new();
+            let mut e = closed_engine(&mut scratch);
+            e.closed = c.closed;
+            e.send_pending_len = c.send_pending;
+            if c.parked {
+                e.recv.plain_end = 10;
+            }
+            assert_eq!(e.step().unwrap(), c.expect, "{}", c.name);
+        }
     }
 
     // handle_inner_content — NewSessionTicket walker

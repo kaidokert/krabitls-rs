@@ -5,6 +5,7 @@ use crate::backends::rsa_verify::RsaPssSig;
 use crate::consts::SIG_SCHEME_ED25519;
 #[cfg(feature = "rsa")]
 use crate::consts::SIG_SCHEME_RSA_PSS_RSAE_SHA256;
+use crate::consts::{HS_CERTIFICATE, HS_CERTIFICATE_VERIFY, HS_ENCRYPTED_EXTENSIONS, HS_FINISHED};
 use crate::hkdf::{HkdfLabelError, TranscriptHash, hkdf_expand_label};
 use crate::newtype::{Secret, TranscriptDigest, ZeroBuf};
 #[cfg(all(test, feature = "cipher-aes"))]
@@ -15,11 +16,6 @@ use crate::traits::{
 };
 use signature::Verifier as _;
 use subtle::ConstantTimeEq;
-
-const HS_ENCRYPTED_EXTENSIONS: u8 = 8;
-const HS_CERTIFICATE: u8 = 11;
-const HS_CERTIFICATE_VERIFY: u8 = 15;
-const HS_FINISHED: u8 = 20;
 
 /// Parsed server-flight messages, borrowing into decrypted plaintext.
 #[derive(Debug, Clone, Copy)]

@@ -18,12 +18,9 @@
 
 use heapless::Vec;
 
+use crate::consts::{HS_ENCRYPTED_EXTENSIONS, HS_FINISHED};
 use crate::server_flight::FlightError;
 
-/// Handshake message type for `Finished` (RFC 8446 §4.4.4).
-const HS_FINISHED: u8 = 20;
-/// Handshake message type for `EncryptedExtensions` (RFC 8446 §4.3.1).
-const HS_ENCRYPTED_EXTENSIONS: u8 = 8;
 /// Extension ID for `record_size_limit` (RFC 8449 §4).
 const EXT_RECORD_SIZE_LIMIT: u16 = 0x001C;
 
@@ -261,6 +258,18 @@ mod tests {
         let cv_slice = cv_full.as_slice();
         r.push_content(&cv_slice[..cv_slice.len() - 5]).unwrap();
         assert!(!r.is_complete());
+    }
+
+    #[test]
+    fn dangling_partial_header_before_finished_is_not_complete() {
+        // EE complete, then a 2-byte fragment of the next message's 4-byte
+        // header. The walker's `i + 4 <= len` guard must stop rather than
+        // read past the buffer or falsely report a complete flight.
+        let mut r: ServerFlightReassembler<512> = ServerFlightReassembler::new();
+        r.push_content(ee(2).as_slice()).unwrap();
+        r.push_content(&[11u8, 0]).unwrap();
+        assert!(!r.is_complete());
+        assert!(r.flight_bytes().is_none());
     }
 
     #[test]
