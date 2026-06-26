@@ -193,15 +193,6 @@ pub trait CipherSuite: sealed::Sealed + Sized {
     ) -> Result<RecordKeys<Self>, crate::hkdf::HkdfLabelError>;
 }
 
-/// Compile-time default cipher. Tests and other call sites that need
-/// "some concrete cipher" (and are not exercising AES- or ChaCha-specific
-/// wire behavior) refer to this alias rather than naming a specific
-/// suite. Resolves to whichever cipher feature is enabled. Test-only.
-#[cfg(all(test, feature = "cipher-aes"))]
-pub(crate) type DefaultCipher = Aes128GcmSha256;
-#[cfg(all(test, not(feature = "cipher-aes"), feature = "chacha20"))]
-pub(crate) type DefaultCipher = ChaCha20Poly1305Sha256;
-
 #[cfg(feature = "cipher-aes")]
 mod aes {
     use super::*;
@@ -260,79 +251,6 @@ pub struct RecordKeys<S: CipherSuite> {
     pub(crate) cipher: S::Cipher,
     pub iv: AeadIv,
 }
-
-#[cfg(test)]
-mod no_cipher {
-    use super::*;
-    use ::aead::consts::{U0, U12, U16};
-    use ::aead::{Error as AeadError, Key, KeySizeUser, Nonce, Tag};
-
-    /// No-op AEAD: implements the AEAD trait surface required by
-    /// [`CipherSuite::Cipher`] but does no actual cryptography.
-    pub struct NoopAead;
-
-    impl KeySizeUser for NoopAead {
-        type KeySize = U16;
-    }
-
-    impl KeyInit for NoopAead {
-        fn new(_: &Key<Self>) -> Self {
-            NoopAead
-        }
-    }
-
-    impl AeadCore for NoopAead {
-        type NonceSize = U12;
-        type TagSize = U16;
-        type CiphertextOverhead = U0;
-    }
-
-    impl AeadInPlace for NoopAead {
-        fn encrypt_in_place_detached(
-            &self,
-            _: &Nonce<Self>,
-            _: &[u8],
-            _: &mut [u8],
-        ) -> Result<Tag<Self>, AeadError> {
-            Ok(GenericArray::default())
-        }
-
-        fn decrypt_in_place_detached(
-            &self,
-            _: &Nonce<Self>,
-            _: &[u8],
-            _: &mut [u8],
-            _: &Tag<Self>,
-        ) -> Result<(), AeadError> {
-            Ok(())
-        }
-    }
-
-    /// Test-only no-op cipher satisfying [`CipherSuite`].
-    pub struct NoCipher;
-
-    impl sealed::Sealed for NoCipher {}
-
-    impl CipherSuite for NoCipher {
-        type KeyBytes = [u8; 16];
-        type Cipher = NoopAead;
-        fn make_cipher(_: &zeroize::Zeroizing<[u8; 16]>) -> Self::Cipher {
-            NoopAead
-        }
-        fn derive_keys<H: crate::traits::HkdfSha256>(
-            traffic_secret: &crate::newtype::Secret,
-        ) -> Result<RecordKeys<Self>, crate::hkdf::HkdfLabelError> {
-            let (_, iv) = crate::hkdf::traffic_keys::<H, 16>(traffic_secret)?;
-            Ok(RecordKeys {
-                cipher: NoopAead,
-                iv,
-            })
-        }
-    }
-}
-
-#[cfg(test)]
-pub use no_cipher::NoCipher;
 
 impl<S: CipherSuite> RecordKeys<S> {
     pub fn derive<H: crate::traits::HkdfSha256>(
@@ -455,6 +373,86 @@ pub enum DecryptError {
 pub(crate) mod tests {
     use super::*;
     use crate::newtype::{AeadIv, ZeroBuf};
+
+    /// Compile-time default cipher. Tests and other call sites that need
+    /// "some concrete cipher" (and are not exercising AES- or ChaCha-specific
+    /// wire behavior) refer to this alias rather than naming a specific
+    /// suite. Resolves to whichever cipher feature is enabled. Test-only.
+    #[cfg(feature = "cipher-aes")]
+    pub(crate) type DefaultCipher = Aes128GcmSha256;
+    #[cfg(all(not(feature = "cipher-aes"), feature = "chacha20"))]
+    pub(crate) type DefaultCipher = ChaCha20Poly1305Sha256;
+
+    mod no_cipher {
+        use super::*;
+        use ::aead::consts::{U0, U12, U16};
+        use ::aead::{Error as AeadError, Key, KeySizeUser, Nonce, Tag};
+
+        /// No-op AEAD: implements the AEAD trait surface required by
+        /// [`CipherSuite::Cipher`] but does no actual cryptography.
+        pub struct NoopAead;
+
+        impl KeySizeUser for NoopAead {
+            type KeySize = U16;
+        }
+
+        impl KeyInit for NoopAead {
+            fn new(_: &Key<Self>) -> Self {
+                NoopAead
+            }
+        }
+
+        impl AeadCore for NoopAead {
+            type NonceSize = U12;
+            type TagSize = U16;
+            type CiphertextOverhead = U0;
+        }
+
+        impl AeadInPlace for NoopAead {
+            fn encrypt_in_place_detached(
+                &self,
+                _: &Nonce<Self>,
+                _: &[u8],
+                _: &mut [u8],
+            ) -> Result<Tag<Self>, AeadError> {
+                Ok(GenericArray::default())
+            }
+
+            fn decrypt_in_place_detached(
+                &self,
+                _: &Nonce<Self>,
+                _: &[u8],
+                _: &mut [u8],
+                _: &Tag<Self>,
+            ) -> Result<(), AeadError> {
+                Ok(())
+            }
+        }
+
+        /// Test-only no-op cipher satisfying [`CipherSuite`].
+        pub struct NoCipher;
+
+        impl sealed::Sealed for NoCipher {}
+
+        impl CipherSuite for NoCipher {
+            type KeyBytes = [u8; 16];
+            type Cipher = NoopAead;
+            fn make_cipher(_: &zeroize::Zeroizing<[u8; 16]>) -> Self::Cipher {
+                NoopAead
+            }
+            fn derive_keys<H: crate::traits::HkdfSha256>(
+                traffic_secret: &crate::newtype::Secret,
+            ) -> Result<RecordKeys<Self>, crate::hkdf::HkdfLabelError> {
+                let (_, iv) = crate::hkdf::traffic_keys::<H, 16>(traffic_secret)?;
+                Ok(RecordKeys {
+                    cipher: NoopAead,
+                    iv,
+                })
+            }
+        }
+    }
+
+    pub(crate) use no_cipher::NoCipher;
 
     fn decrypt_record_with<'a, F>(
         record: &[u8],

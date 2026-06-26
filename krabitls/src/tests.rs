@@ -1,8 +1,9 @@
 use super::*;
 #[cfg(feature = "chacha20")]
 use crate::aead::ChaCha20Poly1305Sha256;
+use crate::aead::DecryptError;
+use crate::aead::tests::NoCipher;
 use crate::aead::tests::{decrypt_record, encrypt_record};
-use crate::aead::{DecryptError, NoCipher};
 #[cfg(feature = "jedisct")]
 use crate::backends::JedisctCrypto;
 use crate::backends::RustCrypto;

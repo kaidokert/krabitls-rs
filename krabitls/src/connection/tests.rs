@@ -8,6 +8,9 @@ use super::*;
     all(feature = "cipher-aes", feature = "chacha20")
 ))]
 use crate::backends::RustCrypto;
+// `close_notify` (moved here) is the sole consumer; gate matches it.
+#[cfg(all(not(feature = "chacha20"), not(feature = "rsa")))]
+use crate::consts::{CLOSE_NOTIFY_ALERT, CT_ALERT};
 
 // Seed-0 fixtures duplicated from `lib.rs` — keep in sync.
 #[cfg(any(

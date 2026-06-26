@@ -194,12 +194,6 @@ impl<'a> HsReader<'a> {
     }
 }
 
-/// Default upper bound on `CertificateEntry` count, used by the test-only
-/// [`extract_cert_der`] convenience. Production callers thread `MAX_CHAIN`
-/// through from `TlsStream` and call [`extract_chain`] directly.
-#[cfg(test)]
-pub const MAX_CERT_CHAIN_LEN: usize = 8;
-
 /// Walk a TLS 1.3 `Certificate` body and return every `CertificateEntry`'s
 /// `cert_data` as borrowed slices, in wire order (index 0 = leaf).
 /// Per-entry `Extensions` blobs are skipped.
@@ -388,6 +382,11 @@ where
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    /// Default `CertificateEntry`-count bound for the leaf-only
+    /// [`extract_cert_der`] convenience. Production threads `MAX_CHAIN` from
+    /// `TlsStream` and calls [`extract_chain`] directly.
+    const MAX_CERT_CHAIN_LEN: usize = 8;
     #[cfg(feature = "cipher-aes")]
     use crate::traits::CertParser;
 

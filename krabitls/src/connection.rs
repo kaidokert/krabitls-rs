@@ -20,9 +20,6 @@ use crate::consts::CIPHER_AES_128_GCM_SHA256;
 #[cfg(feature = "chacha20")]
 use crate::consts::CIPHER_CHACHA20_POLY1305_SHA256;
 use crate::consts::{CT_APPLICATION_DATA, CT_CHANGE_CIPHER_SPEC, CT_HANDSHAKE};
-// Test-only: `close_notify` on `Live` is the sole consumer; gate matches it.
-#[cfg(all(test, not(feature = "chacha20"), not(feature = "rsa")))]
-use crate::consts::{CLOSE_NOTIFY_ALERT, CT_ALERT};
 use crate::errors::{ClientHelloError, ParseError};
 use crate::hkdf::{
     HkdfLabelError, TranscriptError, TranscriptHash, application_traffic_secrets, handshake_secret,
