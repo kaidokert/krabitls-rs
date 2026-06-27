@@ -20,7 +20,9 @@ use crate::consts::{
     CLOSE_NOTIFY_ALERT, CT_ALERT, CT_APPLICATION_DATA, CT_HANDSHAKE, HS_NEW_SESSION_TICKET,
 };
 use crate::identity::verify_hostname;
-use crate::server_flight::{certificate_request_context, extract_chain, parse_server_flight};
+use crate::server_flight::{
+    certificate_request_context, certificate_request_sig_algs, extract_chain, parse_server_flight,
+};
 use crate::traits::CertParser;
 use crate::traits::verify_strategy::{CertChainView, PreparedVerifier, VerifyStrategy};
 
@@ -516,15 +518,18 @@ impl<
 
         // `A::ACCEPT_CERT_REQUEST` is a `const`, so for the default
         // `NoClientAuth` (false) the entire certificate-response path
-        // const-folds away — `certificate_request_context`,
-        // `finish_handshake_with_policy`, and every certificate builder drop
-        // out of the monomorphization. A server request then aborts.
-        let cert_request_ctx: Option<&[u8]> = if A::ACCEPT_CERT_REQUEST {
+        // const-folds away — `certificate_request_context` /
+        // `_sig_algs`, `finish_handshake_with_policy`, and every certificate
+        // builder drop out of the monomorphization. A server request aborts.
+        let cert_request: Option<(&[u8], &[u8])> = if A::ACCEPT_CERT_REQUEST {
             match flight_view.cert_request_full {
-                Some(creq) => Some(
-                    certificate_request_context(creq)
-                        .map_err(|e| HandshakeError::Connection(ConnectionError::Flight(e)))?,
-                ),
+                Some(creq) => {
+                    let ctx = certificate_request_context(creq)
+                        .map_err(|e| HandshakeError::Connection(ConnectionError::Flight(e)))?;
+                    let sig_algs = certificate_request_sig_algs(creq)
+                        .map_err(|e| HandshakeError::Connection(ConnectionError::Flight(e)))?;
+                    Some((ctx, sig_algs))
+                }
                 None => None,
             }
         } else {
@@ -605,10 +610,11 @@ impl<
         let cf_len = match done {
             #[cfg(feature = "cipher-aes")]
             FlightDone::Aes(d) => {
-                let (cf_bytes, app) = match cert_request_ctx {
-                    Some(ctx) => d.finish_handshake_with_policy(
+                let (cf_bytes, app) = match cert_request {
+                    Some((ctx, sig_algs)) => d.finish_handshake_with_policy(
                         &params.client_auth,
                         ctx,
+                        sig_algs,
                         peer_limit,
                         &mut self.scratch.recv_record,
                         &mut self.scratch.send_record,
@@ -622,10 +628,11 @@ impl<
             }
             #[cfg(feature = "chacha20")]
             FlightDone::ChaCha(d) => {
-                let (cf_bytes, app) = match cert_request_ctx {
-                    Some(ctx) => d.finish_handshake_with_policy(
+                let (cf_bytes, app) = match cert_request {
+                    Some((ctx, sig_algs)) => d.finish_handshake_with_policy(
                         &params.client_auth,
                         ctx,
+                        sig_algs,
                         peer_limit,
                         &mut self.scratch.recv_record,
                         &mut self.scratch.send_record,

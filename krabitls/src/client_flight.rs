@@ -64,6 +64,8 @@ pub enum ClientAuthFlightError {
     Finished(#[from] ClientFinishedError),
     #[error("server requested a client certificate but none is configured")]
     CertificateRequested,
+    #[error("server's CertificateRequest does not offer the signer's signature scheme")]
+    NoMutualSignatureAlgorithm,
     #[error("client certificate DER is empty")]
     EmptyCertificate,
     #[error("client certificate DER exceeds MAX_CLIENT_CERT_DER")]
@@ -248,16 +250,31 @@ pub trait ClientAuthPolicy {
     /// CertificateVerify] || Finished`) in response to a `CertificateRequest`,
     /// folding each message into `transcript`. `transcript` is positioned at
     /// the server `Finished` on entry; the caller snapshots it for the
-    /// application-traffic-secret derivation first. `out` is scratch sized by
-    /// [`MAX_CLIENT_AUTH_FLIGHT`]. `Err` aborts the handshake — e.g. the
-    /// policy has no certificate to offer.
+    /// application-traffic-secret derivation first. `cert_request_sig_algs` is
+    /// the server's advertised `signature_algorithms` list (concatenated u16
+    /// scheme code points), against which a signing policy must check its
+    /// scheme. `out` is scratch sized by [`MAX_CLIENT_AUTH_FLIGHT`]. `Err`
+    /// aborts the handshake — e.g. no certificate, or no mutual scheme.
     fn build_flight<'a, H: HkdfSha256>(
         &self,
         cert_request_context: &[u8],
+        cert_request_sig_algs: &[u8],
         c_hs_traffic_secret: &Secret,
         transcript: &mut TranscriptHash<H>,
         out: &'a mut [u8],
     ) -> Result<&'a [u8], ClientAuthFlightError>;
+}
+
+/// Whether `scheme` (a u16 `SignatureScheme` code point) appears in a
+/// concatenated big-endian u16 `signature_algorithms` list.
+fn sig_algs_offer(list: &[u8], scheme: u16) -> bool {
+    // A trailing odd byte means the list is structurally malformed, not a
+    // partial match. `& 1` over `% 2` to dodge manual_is_multiple_of.
+    if (list.len() & 1) != 0 {
+        return false;
+    }
+    list.chunks_exact(2)
+        .any(|c| u16::from_be_bytes([c[0], c[1]]) == scheme)
 }
 
 /// Default policy: never authenticate. A server `CertificateRequest` aborts
@@ -277,6 +294,7 @@ impl ClientAuthPolicy for NoClientAuth {
     fn build_flight<'a, H: HkdfSha256>(
         &self,
         _cert_request_context: &[u8],
+        _cert_request_sig_algs: &[u8],
         _c_hs_traffic_secret: &Secret,
         _transcript: &mut TranscriptHash<H>,
         _out: &'a mut [u8],
@@ -297,10 +315,13 @@ impl ClientAuthPolicy for DeclineClientAuth {
     fn build_flight<'a, H: HkdfSha256>(
         &self,
         cert_request_context: &[u8],
+        _cert_request_sig_algs: &[u8],
         c_hs_traffic_secret: &Secret,
         transcript: &mut TranscriptHash<H>,
         out: &'a mut [u8],
     ) -> Result<&'a [u8], ClientAuthFlightError> {
+        // An empty Certificate carries no CertificateVerify, so the server's
+        // signature_algorithms don't apply.
         let cert_end = build_client_empty_certificate(cert_request_context, out)?.len();
         transcript.update(&out[..cert_end]);
         append_finished::<H>(c_hs_traffic_secret, transcript, out, cert_end)
@@ -333,10 +354,17 @@ impl<A: ClientAuth + ?Sized> ClientAuthPolicy for WithClientAuth<'_, A> {
     fn build_flight<'a, H: HkdfSha256>(
         &self,
         cert_request_context: &[u8],
+        cert_request_sig_algs: &[u8],
         c_hs_traffic_secret: &Secret,
         transcript: &mut TranscriptHash<H>,
         out: &'a mut [u8],
     ) -> Result<&'a [u8], ClientAuthFlightError> {
+        // RFC 8446 §4.4.3: the CertificateVerify scheme MUST be one the server
+        // advertised. Decline up front rather than send a flight the server
+        // will reject with an opaque handshake_failure.
+        if !sig_algs_offer(cert_request_sig_algs, self.0.scheme()) {
+            return Err(ClientAuthFlightError::NoMutualSignatureAlgorithm);
+        }
         // `Certificate(leaf)` — the CertificateVerify then signs the
         // transcript through it, and the Finished MAC covers through the CV.
         let cert_end =
@@ -436,6 +464,47 @@ mod tests {
         // demand `A: Copy` and break the `dyn ClientAuth` default.
         fn assert_copy<T: Copy>() {}
         assert_copy::<WithClientAuth<'static, dyn ClientAuth>>();
+    }
+
+    #[test]
+    fn sig_algs_offer_membership() {
+        assert!(sig_algs_offer(&[0x08, 0x07], SIG_SCHEME_ED25519));
+        assert!(sig_algs_offer(
+            &[0x04, 0x03, 0x08, 0x07],
+            SIG_SCHEME_ED25519
+        ));
+        assert!(!sig_algs_offer(&[0x04, 0x03], SIG_SCHEME_ED25519));
+        assert!(!sig_algs_offer(&[], SIG_SCHEME_ED25519));
+        // A dangling odd byte is ignored, not misread.
+        assert!(!sig_algs_offer(&[0x08], SIG_SCHEME_ED25519));
+    }
+
+    #[test]
+    fn with_client_auth_declines_when_scheme_not_offered() {
+        use crate::backends::RustCrypto;
+        use crate::hkdf::TranscriptHash;
+        use crate::newtype::{Secret, ZeroBuf};
+
+        let auth = Ed25519ClientAuth::from_seed(&[7u8; 32], &[0x55u8; 16]).unwrap();
+        let policy = WithClientAuth(&auth);
+        let secret = Secret::new(ZeroBuf::<32>::new([0x42; 32]));
+        let mut out = [0u8; MAX_CLIENT_AUTH_FLIGHT];
+
+        // Server offers only ecdsa_secp256r1_sha256 (0x0403): decline before
+        // signing rather than emit a flight it would reject.
+        let mut t = TranscriptHash::<RustCrypto>::new();
+        assert_eq!(
+            policy.build_flight::<RustCrypto>(&[], &[0x04, 0x03], &secret, &mut t, &mut out),
+            Err(ClientAuthFlightError::NoMutualSignatureAlgorithm)
+        );
+
+        // Server offers ed25519 (0x0807): the check passes and a flight builds.
+        let mut t = TranscriptHash::<RustCrypto>::new();
+        assert!(
+            policy
+                .build_flight::<RustCrypto>(&[], &[0x08, 0x07], &secret, &mut t, &mut out)
+                .is_ok()
+        );
     }
 
     #[test]
