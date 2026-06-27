@@ -17,7 +17,8 @@ use crate::connection::{
 };
 use crate::connection::{ConnectionError, TlsConnection};
 use crate::consts::{
-    CLOSE_NOTIFY_ALERT, CT_ALERT, CT_APPLICATION_DATA, CT_HANDSHAKE, HS_NEW_SESSION_TICKET,
+    CLOSE_NOTIFY_ALERT, CT_ALERT, CT_APPLICATION_DATA, CT_HANDSHAKE, HS_KEY_UPDATE,
+    HS_NEW_SESSION_TICKET,
 };
 use crate::identity::verify_hostname;
 use crate::server_flight::{
@@ -805,10 +806,12 @@ impl<
                 }
             }
             CT_HANDSHAKE => {
-                // Permit only NewSessionTicket (skipped silently —
-                // rejecting would break interop with major CDNs). Any
-                // other msg_type fails even when coalesced after an
-                // NST, so KeyUpdate cannot silently desync the AEAD.
+                // Post-handshake: NewSessionTicket is skipped silently
+                // (rejecting breaks interop with major CDNs); KeyUpdate is
+                // acted on (RFC 8446 §4.6.3). Anything else fails — even
+                // coalesced after an NST — so it can't silently desync the
+                // AEAD. A KeyUpdate changes keys, so it MUST be the last
+                // message in its record (§5.1).
                 let end = body_offset + content_len;
                 let mut offset = body_offset;
                 while offset < end {
@@ -835,10 +838,24 @@ impl<
                             crate::aead::DecryptError::Truncated,
                         )));
                     }
-                    if msg_type != HS_NEW_SESSION_TICKET {
-                        return Err(HandshakeError::PostHandshakeNotSupported);
+                    match msg_type {
+                        HS_NEW_SESSION_TICKET => offset = msg_end,
+                        HS_KEY_UPDATE => {
+                            // body = 1-byte update_requested; the key change
+                            // means nothing may follow it in this record.
+                            if len != 1 || msg_end != end {
+                                return Err(HandshakeError::MalformedKeyUpdate);
+                            }
+                            let update_requested = match self.scratch.recv_record[offset + 4] {
+                                0 => false,
+                                1 => true,
+                                _ => return Err(HandshakeError::MalformedKeyUpdate),
+                            };
+                            self.process_key_update(update_requested)?;
+                            return Ok(());
+                        }
+                        _ => return Err(HandshakeError::PostHandshakeNotSupported),
                     }
-                    offset = msg_end;
                 }
                 Ok(())
             }
@@ -846,6 +863,63 @@ impl<
                 ConnectionError::UnknownContentType(other),
             )),
         }
+    }
+
+    /// Act on a server `KeyUpdate` (RFC 8446 §4.6.3): rotate our receive
+    /// keys for the peer's next record, and when `update_requested` is set,
+    /// queue our own `KeyUpdate(update_requested=0)` — encrypted under the
+    /// current send keys — then rotate our send keys. The queued record is
+    /// picked up by `step()`'s `Send` branch. Only reached in the data phase
+    /// (the dispatch decrypted through a live `AppData` connection).
+    fn process_key_update(&mut self, update_requested: bool) -> Result<(), HandshakeError> {
+        match &mut self.state {
+            #[cfg(feature = "cipher-aes")]
+            EngineState::AppAes(conn) => conn.apply_recv_key_update(),
+            #[cfg(feature = "chacha20")]
+            EngineState::AppChaCha(conn) => conn.apply_recv_key_update(),
+            _ => {
+                return Err(HandshakeError::Internal(
+                    InternalError::HandshakeStepWrongState,
+                ));
+            }
+        }
+        .map_err(HandshakeError::Connection)?;
+
+        if !update_requested {
+            return Ok(());
+        }
+
+        let scratch = &mut *self.scratch;
+        let record_len = match &mut self.state {
+            #[cfg(feature = "cipher-aes")]
+            EngineState::AppAes(conn) => {
+                let n = conn
+                    .encrypt_key_update(false, &mut scratch.send_record)
+                    .map_err(HandshakeError::Connection)?
+                    .len();
+                conn.apply_send_key_update()
+                    .map_err(HandshakeError::Connection)?;
+                n
+            }
+            #[cfg(feature = "chacha20")]
+            EngineState::AppChaCha(conn) => {
+                let n = conn
+                    .encrypt_key_update(false, &mut scratch.send_record)
+                    .map_err(HandshakeError::Connection)?
+                    .len();
+                conn.apply_send_key_update()
+                    .map_err(HandshakeError::Connection)?;
+                n
+            }
+            _ => {
+                return Err(HandshakeError::Internal(
+                    InternalError::HandshakeStepWrongState,
+                ));
+            }
+        };
+        self.send_pending_len = record_len;
+        self.send_acked = 0;
+        Ok(())
     }
 
     // ------------------------------------------------------------------
@@ -1387,17 +1461,18 @@ mod tests {
     }
 
     #[test]
-    fn handle_handshake_nst_then_key_update_rejected() {
-        // A server coalescing [NewSessionTicket][KeyUpdate] in one
-        // record must not silently consume the KeyUpdate.
+    fn handle_handshake_key_update_not_last_rejected() {
+        // A KeyUpdate changes keys, so it MUST be the final message in its
+        // record (RFC 8446 §5.1). [KeyUpdate][NewSessionTicket] is malformed
+        // and rejected before any key rotation runs.
         let mut scratch = DefaultScratch::new();
-        let l1 = write_hs_msg(&mut scratch, 0, 4, &[0xaau8; 12]);
-        let l2 = write_hs_msg(&mut scratch, l1, 24, &[0u8; 1]);
+        let l1 = write_hs_msg(&mut scratch, 0, 24, &[0u8; 1]);
+        let l2 = write_hs_msg(&mut scratch, l1, 4, &[0xaau8; 12]);
         let mut e = closed_engine(&mut scratch);
         let err = e
             .handle_inner_content(0, l1 + l2, CT_HANDSHAKE)
             .unwrap_err();
-        assert!(matches!(err, HandshakeError::PostHandshakeNotSupported));
+        assert!(matches!(err, HandshakeError::MalformedKeyUpdate));
     }
 
     #[test]
@@ -1612,6 +1687,162 @@ mod tests {
             e.send_pending_len = 16;
             let err = e.close().unwrap_err();
             assert!(matches!(err, HandshakeError::Busy));
+        }
+    }
+
+    // Round-trip KeyUpdate against a mirror server. Uses the test-only
+    // `AppData::decrypt_record`, gated to the AES-only build like the rest of
+    // the byte-exact fixtures.
+    #[cfg(all(
+        feature = "cipher-aes",
+        not(feature = "chacha20"),
+        not(feature = "rsa")
+    ))]
+    mod key_update {
+        use super::*;
+        use crate::aead::Aes128GcmSha256;
+        use crate::backends::RustCrypto;
+        use crate::connection::AppData;
+        use crate::newtype::Secret;
+
+        fn app_engine(
+            scratch: &mut DefaultScratch,
+        ) -> TlsEngine<'_, DefaultConfig, 16384, 16645, 4096, 8> {
+            let conn = TlsConnection::<AppData<Aes128GcmSha256>, RustCrypto>::from_app_secrets(
+                Secret::from([0x42u8; 32]),
+                Secret::from([0x43u8; 32]),
+                0,
+                0,
+            )
+            .unwrap();
+            TlsEngine::new(
+                scratch,
+                EngineState::AppAes(conn),
+                RecordSizeLimit::from_clamped(16384),
+                RecordSizeLimit::from_clamped(16384),
+            )
+        }
+
+        /// The `app_engine` client uses c_ap=[0x42], s_ap=[0x43]; the mirror
+        /// server swaps them so records cross-decrypt.
+        fn mirror_server() -> TlsConnection<AppData<Aes128GcmSha256>, RustCrypto> {
+            TlsConnection::<AppData<Aes128GcmSha256>, RustCrypto>::from_app_secrets(
+                Secret::from([0x43u8; 32]),
+                Secret::from([0x42u8; 32]),
+                0,
+                0,
+            )
+            .unwrap()
+        }
+
+        fn feed(e: &mut TlsEngine<'_, DefaultConfig, 16384, 16645, 4096, 8>, bytes: &[u8]) {
+            let buf = e.recv_buffer();
+            buf[..bytes.len()].copy_from_slice(bytes);
+            e.advance(bytes.len()).unwrap();
+        }
+
+        /// A server KeyUpdate(update_requested=1) drives the engine to rotate
+        /// its receive keys, emit its own KeyUpdate(0), and rotate its send
+        /// keys — after which both directions cross-decrypt (RFC 8446 §4.6.3).
+        #[test]
+        fn engine_answers_server_key_update_and_rotates_both_directions() {
+            let mut scratch = DefaultScratch::new();
+            let mut e = app_engine(&mut scratch);
+            let mut server = mirror_server();
+
+            let mut sbuf = [0u8; 64];
+            let kn = server.encrypt_key_update(true, &mut sbuf).unwrap().len();
+            let mut ku = [0u8; 64];
+            ku[..kn].copy_from_slice(&sbuf[..kn]);
+            server.apply_send_key_update().unwrap();
+
+            feed(&mut e, &ku[..kn]);
+
+            let resp_len = match e.step().unwrap() {
+                EngineEvent::Send(n) => n,
+                other => panic!("expected Send, got {other:?}"),
+            };
+            let mut resp = [0u8; 64];
+            resp[..resp_len].copy_from_slice(&e.send_bytes()[..resp_len]);
+            e.mark_sent(resp_len).unwrap();
+
+            // Server reads our KeyUpdate(0) under its *old* receive keys, then
+            // rotates them.
+            let mut spt = [0u8; 64];
+            let (content, ct) = server.decrypt_record(&resp[..resp_len], &mut spt).unwrap();
+            assert_eq!(ct, CT_HANDSHAKE);
+            assert_eq!(content, &[HS_KEY_UPDATE, 0x00, 0x00, 0x01, 0x00]);
+            server.apply_recv_key_update().unwrap();
+
+            // Server app record under its rotated send keys decrypts through
+            // the engine's rotated receive keys.
+            let mut abuf = [0u8; 96];
+            let an = server
+                .encrypt_record(b"rotated payload", CT_APPLICATION_DATA, &mut abuf)
+                .unwrap()
+                .len();
+            feed(&mut e, &abuf[..an]);
+            assert!(matches!(e.step().unwrap(), EngineEvent::AppData));
+            let mut out = [0u8; 96];
+            let got = e.read_app(&mut out);
+            assert_eq!(&out[..got], b"rotated payload");
+        }
+
+        /// A KeyUpdate(update_requested=0) is rotated silently — no response
+        /// queued — and the next server record decrypts under rotated keys.
+        #[test]
+        fn engine_rotates_on_unrequested_key_update_without_responding() {
+            let mut scratch = DefaultScratch::new();
+            let mut e = app_engine(&mut scratch);
+            let mut server = mirror_server();
+
+            let mut sbuf = [0u8; 64];
+            let kn = server.encrypt_key_update(false, &mut sbuf).unwrap().len();
+            let mut ku = [0u8; 64];
+            ku[..kn].copy_from_slice(&sbuf[..kn]);
+            server.apply_send_key_update().unwrap();
+
+            feed(&mut e, &ku[..kn]);
+            // No KeyUpdate flag set ⇒ no response queued ⇒ step consumes the
+            // record and asks for more input.
+            assert!(matches!(e.step().unwrap(), EngineEvent::Recv));
+            assert!(!e.is_send_pending());
+
+            let mut abuf = [0u8; 96];
+            let an = server
+                .encrypt_record(b"quiet rotation", CT_APPLICATION_DATA, &mut abuf)
+                .unwrap()
+                .len();
+            feed(&mut e, &abuf[..an]);
+            assert!(matches!(e.step().unwrap(), EngineEvent::AppData));
+            let mut out = [0u8; 96];
+            let got = e.read_app(&mut out);
+            assert_eq!(&out[..got], b"quiet rotation");
+        }
+
+        #[test]
+        fn engine_rejects_key_update_with_illegal_flag() {
+            let mut scratch = DefaultScratch::new();
+            let mut e = app_engine(&mut scratch);
+            let mut server = mirror_server();
+
+            // update_requested = 2 is illegal (RFC 8446 §4.6.3 allows 0/1).
+            let mut sbuf = [0u8; 64];
+            let n = server
+                .encrypt_record(
+                    &[HS_KEY_UPDATE, 0x00, 0x00, 0x01, 0x02],
+                    CT_HANDSHAKE,
+                    &mut sbuf,
+                )
+                .unwrap()
+                .len();
+            let mut rec = [0u8; 64];
+            rec[..n].copy_from_slice(&sbuf[..n]);
+            feed(&mut e, &rec[..n]);
+            assert!(matches!(
+                e.step().unwrap_err(),
+                HandshakeError::MalformedKeyUpdate
+            ));
         }
     }
 }

@@ -256,6 +256,16 @@ pub(crate) fn application_traffic_secrets<H: HkdfSha256>(
     ))
 }
 
+/// `application_traffic_secret_{N+1} = HKDF-Expand-Label(secret, "traffic upd", "", Hash.length)`
+/// — the post-handshake key-update derivation (RFC 8446 §7.2). Empty context.
+pub(crate) fn next_application_traffic_secret<H: HkdfSha256>(
+    secret: &Secret,
+) -> Result<Secret, HkdfLabelError> {
+    let mut out = ZeroBuf::<32>::new([0; 32]);
+    hkdf_expand_label::<H>(secret.as_bytes(), b"traffic upd", &[], &mut out[..])?;
+    Ok(Secret::new(out))
+}
+
 /// Finished MAC: HMAC-SHA256 keyed by `finished_key` over the running
 /// transcript hash. Used for both server and client Finished verify_data —
 /// the only thing that changes is which traffic secret you derive

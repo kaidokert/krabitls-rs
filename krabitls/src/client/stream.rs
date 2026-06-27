@@ -507,3 +507,130 @@ impl<E: embedded_io::Error + 'static> embedded_io::Error for StreamError<E> {
         }
     }
 }
+
+// Facade-level KeyUpdate coverage: drives the public `read()` path end-to-end
+// through a transport. Gated to the AES-only build like the rest of the fixture
+// replays (uses the test-only `AppData` constructor + `decrypt_record`).
+#[cfg(all(
+    test,
+    feature = "cipher-aes",
+    not(feature = "chacha20"),
+    not(feature = "rsa")
+))]
+mod tests {
+    use super::*;
+    use crate::aead::Aes128GcmSha256;
+    use crate::backends::RustCrypto;
+    use crate::client::{DefaultConfig, DefaultScratch, DefaultVerify};
+    use crate::connection::AppData;
+    use crate::consts::{CT_APPLICATION_DATA, CT_HANDSHAKE, HS_KEY_UPDATE};
+    use crate::newtype::Secret;
+
+    type AppConn = TlsConnection<AppData<Aes128GcmSha256>, RustCrypto>;
+    type Stream<'s> =
+        TlsStream<'s, MockIo<'s>, DefaultConfig, DefaultVerify, 16384, 16645, 4096, 8>;
+
+    /// In-crate replay transport: a server tape to read and a fixed capture of
+    /// client TX. Implements `embedded_io::Read`/`Write`, so krabitls's blanket
+    /// `Transport` impl applies (no cross-crate dev-dep duplication, unlike
+    /// `krabitls_fixtures::CannedTransport`).
+    struct MockIo<'a> {
+        rx: &'a [u8],
+        rx_pos: usize,
+        tx: [u8; 256],
+        tx_pos: usize,
+    }
+
+    impl<'a> MockIo<'a> {
+        fn new(rx: &'a [u8]) -> Self {
+            Self {
+                rx,
+                rx_pos: 0,
+                tx: [0u8; 256],
+                tx_pos: 0,
+            }
+        }
+        fn captured_tx(&self) -> &[u8] {
+            &self.tx[..self.tx_pos]
+        }
+    }
+
+    impl embedded_io::ErrorType for MockIo<'_> {
+        type Error = core::convert::Infallible;
+    }
+
+    impl embedded_io::Read for MockIo<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
+            let take = (self.rx.len() - self.rx_pos).min(buf.len());
+            buf[..take].copy_from_slice(&self.rx[self.rx_pos..self.rx_pos + take]);
+            self.rx_pos += take;
+            Ok(take)
+        }
+    }
+
+    impl embedded_io::Write for MockIo<'_> {
+        fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
+            self.tx[self.tx_pos..self.tx_pos + buf.len()].copy_from_slice(buf);
+            self.tx_pos += buf.len();
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> Result<(), Self::Error> {
+            Ok(())
+        }
+    }
+
+    /// `(c_ap, s_ap)` secrets; the server is the mirror with these swapped.
+    fn app_conn(c: u8, s: u8) -> AppConn {
+        AppConn::from_app_secrets(Secret::from([c; 32]), Secret::from([s; 32]), 0, 0).unwrap()
+    }
+
+    /// A server `KeyUpdate(update_requested=1)` mid-stream is handled
+    /// transparently by the public `read()`: the wrapper rotates receive keys,
+    /// auto-emits our `KeyUpdate(0)` to the transport, and returns the server's
+    /// post-update application data decrypted under the rotated keys.
+    #[test]
+    fn read_transparently_handles_server_key_update() {
+        // Mirror server (swapped secrets) produces its post-handshake stream up
+        // front: KeyUpdate(1) under gen-0 send keys, then app data under gen-1.
+        let mut server = app_conn(0x43, 0x42);
+        let mut ku = [0u8; 32];
+        let ku_n = server.encrypt_key_update(true, &mut ku).unwrap().len();
+        server.apply_send_key_update().unwrap();
+        let mut app = [0u8; 96];
+        let app_n = server
+            .encrypt_record(b"post-update payload", CT_APPLICATION_DATA, &mut app)
+            .unwrap()
+            .len();
+        let mut server_stream = [0u8; 160];
+        server_stream[..ku_n].copy_from_slice(&ku[..ku_n]);
+        server_stream[ku_n..ku_n + app_n].copy_from_slice(&app[..app_n]);
+        let stream_len = ku_n + app_n;
+
+        let mut scratch = DefaultScratch::new();
+        let engine = TlsEngine::new(
+            &mut scratch,
+            EngineState::<DefaultConfig>::AppAes(app_conn(0x42, 0x43)),
+            RecordSizeLimit::from_clamped(16384),
+            RecordSizeLimit::from_clamped(16384),
+        );
+        let mut tls: Stream<'_> = TlsStream {
+            engine,
+            transport: MockIo::new(&server_stream[..stream_len]),
+            _v: core::marker::PhantomData,
+        };
+
+        let mut buf = [0u8; 64];
+        let n = tls.read(&mut buf).unwrap();
+        assert_eq!(&buf[..n], b"post-update payload");
+
+        // The wrapper flushed exactly our KeyUpdate(0) to the transport; a
+        // mirror server decrypts it under its old receive keys.
+        let mut server_rx = app_conn(0x43, 0x42);
+        let mut pt = [0u8; 32];
+        let (content, ct) = server_rx
+            .decrypt_record(tls.transport().captured_tx(), &mut pt)
+            .unwrap();
+        assert_eq!(ct, CT_HANDSHAKE);
+        assert_eq!(content, &[HS_KEY_UPDATE, 0x00, 0x00, 0x01, 0x00]);
+    }
+}

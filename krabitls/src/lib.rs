@@ -144,6 +144,7 @@ pub(crate) mod consts {
     pub const HS_CERTIFICATE: u8 = 11;
     pub const HS_CERTIFICATE_VERIFY: u8 = 15;
     pub const HS_FINISHED: u8 = 20;
+    pub const HS_KEY_UPDATE: u8 = 24;
 
     pub const CIPHER_AES_128_GCM_SHA256: u16 = 0x1301;
     pub const CIPHER_CHACHA20_POLY1305_SHA256: u16 = 0x1303;

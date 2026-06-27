@@ -103,10 +103,15 @@ pub enum HandshakeError {
     /// `write_app` before handshake. Unreachable through public API.
     NotReady,
 
-    /// Peer sent a post-handshake handshake message (NewSessionTicket /
-    /// KeyUpdate / CertificateRequest / etc.). The facade does not
-    /// support these; drop to the typestate API if you need them.
+    /// Peer sent an unsupported post-handshake handshake message
+    /// (CertificateRequest / etc.). NewSessionTicket and KeyUpdate are
+    /// handled; anything else drops to the typestate API.
     PostHandshakeNotSupported,
+
+    /// Peer's post-handshake `KeyUpdate` was malformed: wrong body length,
+    /// an `update_requested` value other than 0/1, or another message
+    /// coalesced after it in the same record (RFC 8446 §4.6.3 / §5.1).
+    MalformedKeyUpdate,
 
     /// Engine invariant breach; see [`InternalError`].
     Internal(InternalError),
@@ -166,6 +171,7 @@ impl core::fmt::Display for HandshakeError {
             Self::PostHandshakeNotSupported => {
                 f.write_str("post-handshake handshake message not supported")
             }
+            Self::MalformedKeyUpdate => f.write_str("malformed post-handshake KeyUpdate"),
             Self::Internal(e) => write!(f, "internal: {e}"),
             Self::Rng => f.write_str("caller-supplied RNG returned an error"),
             Self::StrategyRejected => f.write_str("verify strategy rejected the server cert chain"),
@@ -189,6 +195,7 @@ impl core::error::Error for HandshakeError {
             | Self::Busy
             | Self::NotReady
             | Self::PostHandshakeNotSupported
+            | Self::MalformedKeyUpdate
             | Self::Rng
             | Self::StrategyRejected
             | Self::StrategyPubkeyMismatch => None,
