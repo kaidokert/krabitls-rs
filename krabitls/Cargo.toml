@@ -95,7 +95,7 @@ sha2 = { version = "0.10", default-features = false, features = ["force-soft-com
 digest = { version = "0.10", default-features = false }
 hmac = { version = "0.12", default-features = false }
 hkdf = { version = "0.12", default-features = false }
-ed25519_heapless = { version = "0.2.0", default-features = false, features = ["fixed-bigint", "sha512-sha2"] }
+ed25519_heapless = { version = "0.2.1", default-features = false, features = ["fixed-bigint", "sha512-sha2"] }
 fixed-bigint = { version = "0.3", default-features = false, features = ["use-unsafe", "zeroize"] }
 der = { version = "0.8.0", default-features = false, features = ["oid"], optional = true }
 zeroize = { version = "1.8", default-features = false, features = ["derive"] }

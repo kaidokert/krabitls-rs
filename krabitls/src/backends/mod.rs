@@ -15,6 +15,7 @@
 
 // Backend submodules are private; reach the public markers via the
 // re-exports at this level (`krabitls::backends::{RustCrypto, ...}`).
+pub(crate) mod client_auth;
 #[cfg(feature = "cert-der")]
 pub(crate) mod der_cert;
 #[cfg(feature = "jedisct")]
@@ -27,6 +28,7 @@ pub(crate) mod tlv;
 #[cfg(not(feature = "cert-der"))]
 pub(crate) mod tlv_cert;
 
+pub use client_auth::Ed25519ClientAuth;
 #[cfg(feature = "cert-der")]
 pub use der_cert::DerCert;
 #[cfg(feature = "jedisct")]

@@ -140,6 +140,7 @@ pub(crate) mod consts {
     pub const HS_SERVER_HELLO: u8 = 2;
     pub const HS_NEW_SESSION_TICKET: u8 = 4;
     pub const HS_ENCRYPTED_EXTENSIONS: u8 = 8;
+    pub const HS_CERTIFICATE_REQUEST: u8 = 13;
     pub const HS_CERTIFICATE: u8 = 11;
     pub const HS_CERTIFICATE_VERIFY: u8 = 15;
     pub const HS_FINISHED: u8 = 20;

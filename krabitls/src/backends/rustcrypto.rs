@@ -40,12 +40,20 @@ type Bn = fixed_bigint::FixedUInt<u32, 16>;
 /// on M3 to build, amortized across the 2 verifies per TLS handshake).
 pub struct PreparedEd25519 {
     pubkey: [u8; 32],
-    field: ed25519_heapless::Curve25519Field<Bn>,
+    // `Curve25519Field::curve25519()` is fallible since ed25519_heapless 0.2.1
+    // (errors only when the bigint backend is < 256 bits — impossible for the
+    // 512-bit `Bn` here). Stored as `Option` so `prepare_ed25519` stays
+    // infallible and no setup panic is linked; the unreachable failure
+    // fails the verify closed instead.
+    field: Option<ed25519_heapless::Curve25519Field<Bn>>,
 }
 
 impl Verifier<[u8; 64]> for PreparedEd25519 {
     fn verify(&self, msg: &[u8], signature: &[u8; 64]) -> Result<(), signature::Error> {
-        if ed25519_heapless::verify_with_field::<Bn>(&self.field, self.pubkey, msg, *signature) {
+        let Some(field) = self.field.as_ref() else {
+            return Err(signature::Error::new());
+        };
+        if ed25519_heapless::verify_with_field::<Bn>(field, self.pubkey, msg, *signature) {
             Ok(())
         } else {
             Err(signature::Error::new())
@@ -86,7 +94,7 @@ impl Ed25519VerifierProvider for RustCrypto {
     fn prepare_ed25519(pubkey: &[u8; 32]) -> Self::Verifier {
         PreparedEd25519 {
             pubkey: *pubkey,
-            field: ed25519_heapless::Curve25519Field::<Bn>::curve25519(),
+            field: ed25519_heapless::Curve25519Field::<Bn>::curve25519().ok(),
         }
     }
 }

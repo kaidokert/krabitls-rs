@@ -15,10 +15,12 @@ use std::time::Duration;
 
 use getrandom::SysRng;
 use krabitls::client::{
-    ClientParams, ClockedVerify, ConnectError, DefaultConfig, DefaultScratch, PinnedPubkey,
-    RuntimeSuitePolicy, TimeSource, TlsStream, Transport,
+    ClientAuthPolicy, ClientParams, ClockedVerify, ConnectError, DefaultConfig, DefaultScratch,
+    Ed25519ClientAuth, MAX_CLIENT_CERT_DER, PinnedPubkey, RuntimeSuitePolicy, TimeSource,
+    TlsStream, Transport,
 };
 use log::{error, info};
+use zeroize::Zeroizing;
 
 /// Wall clock from the host OS — enables the cert validity-window check.
 struct SystemTimeSource;
@@ -82,6 +84,49 @@ fn parse_pin(hex_str: &str) -> std::result::Result<Pin, String> {
     }
 }
 
+fn load_client_auth(
+    cert_path: &str,
+    seed_hex: &str,
+) -> std::result::Result<ClientAuthMaterial, String> {
+    let cert_der =
+        std::fs::read(cert_path).map_err(|e| format!("--client-cert {cert_path:?}: {e}"))?;
+    if cert_der.is_empty() {
+        return Err(format!(
+            "--client-cert {cert_path:?}: empty certificate file"
+        ));
+    }
+    if cert_der.len() > MAX_CLIENT_CERT_DER {
+        return Err(format!(
+            "--client-cert {cert_path:?}: {} bytes exceeds the {MAX_CLIENT_CERT_DER}-byte client-auth buffer",
+            cert_der.len()
+        ));
+    }
+    // Decode straight into the fixed `Zeroizing` array — the raw seed never
+    // touches an intermediate heap buffer.
+    let mut seed = Zeroizing::new([0u8; 32]);
+    decode_hex_into(seed_hex, &mut seed[..]).map_err(|e| format!("--client-seed: {e}"))?;
+    Ok(ClientAuthMaterial { cert_der, seed })
+}
+
+/// Decode `s` (hex, no `0x`) into `out`, which fixes the expected byte count.
+fn decode_hex_into(s: &str, out: &mut [u8]) -> std::result::Result<(), String> {
+    let bytes = s.as_bytes();
+    if bytes.len() != out.len() * 2 {
+        return Err(format!(
+            "expected {} hex bytes, got {}",
+            out.len(),
+            bytes.len() / 2
+        ));
+    }
+    for (i, slot) in out.iter_mut().enumerate() {
+        let pair = std::str::from_utf8(&bytes[i * 2..i * 2 + 2])
+            .map_err(|_| format!("non-ASCII byte at offset {}", i * 2))?;
+        *slot = u8::from_str_radix(pair, 16)
+            .map_err(|_| format!("bad hex byte at offset {}", i * 2))?;
+    }
+    Ok(())
+}
+
 fn decode_hex(s: &str) -> std::result::Result<Vec<u8>, String> {
     let bytes = s.as_bytes();
     if (bytes.len() & 1) != 0 {
@@ -96,6 +141,13 @@ fn decode_hex(s: &str) -> std::result::Result<Vec<u8>, String> {
         out.push(byte);
     }
     Ok(out)
+}
+
+/// Client-auth material for mutual TLS: the leaf DER sent in the client
+/// `Certificate` and the 32-byte Ed25519 seed that signs `CertificateVerify`.
+struct ClientAuthMaterial {
+    cert_der: Vec<u8>,
+    seed: Zeroizing<[u8; 32]>,
 }
 
 /// `TcpStream` wrapper that satisfies the facade's `Transport` trait.
@@ -113,15 +165,14 @@ impl Transport for TcpTransport {
     }
 }
 
-fn run(host: &str, port: u16, pin: Option<&Pin>) -> Result<()> {
+fn run(host: &str, port: u16, pin: Option<&Pin>, auth: Option<&ClientAuthMaterial>) -> Result<()> {
     let endpoint = format!("{host}:{port}");
     info!("connecting to {endpoint}");
     let tcp = TcpStream::connect(&endpoint)?;
     tcp.set_read_timeout(Some(Duration::from_secs(15)))?;
     tcp.set_write_timeout(Some(Duration::from_secs(15)))?;
 
-    let mut scratch = DefaultScratch::new();
-    let params = if let Some(p) = pin {
+    let base = if let Some(p) = pin {
         ClientParams::pinned(host, p.as_pinned()).map_err(|e| format!("invalid --pin: {e}"))?
     } else {
         ClientParams::self_signed(host)
@@ -129,11 +180,39 @@ fn run(host: &str, port: u16, pin: Option<&Pin>) -> Result<()> {
     .suite_policy(RuntimeSuitePolicy::Default)
     .clocked(SystemTimeSource);
 
+    // The client-auth policy is a type, so the with-auth and no-auth cases
+    // dispatch to distinct monomorphizations of `drive_request` — the no-auth
+    // binary never instantiates the certificate path.
+    match auth {
+        Some(m) => {
+            let signer = Ed25519ClientAuth::from_seed(&m.seed, &m.cert_der)
+                .map_err(|_| "invalid --client-seed (Ed25519 key derivation failed)")?;
+            info!(
+                "client auth enabled (Ed25519, {} byte leaf)",
+                m.cert_der.len()
+            );
+            drive_request(&base.with_client_auth(&signer), host, tcp)
+        }
+        None => drive_request(&base, host, tcp),
+    }
+}
+
+/// Drive the handshake + an HTTP/1.0 GET over a freshly connected socket,
+/// generic over the client-auth policy `A`.
+fn drive_request<A>(
+    params: &ClientParams<'_, ClockedVerify<SystemTimeSource>, A>,
+    host: &str,
+    tcp: TcpStream,
+) -> Result<()>
+where
+    A: ClientAuthPolicy,
+{
+    let mut scratch = DefaultScratch::new();
     let mut rng = SysRng;
     let transport = TcpTransport(tcp);
 
     info!("driving TLS 1.3 handshake via TlsStream");
-    let mut tls = match ClockedStream::connect(&params, &mut scratch, transport, &mut rng) {
+    let mut tls = match ClockedStream::connect(params, &mut scratch, transport, &mut rng) {
         Ok(s) => s,
         Err(e) => {
             error!("handshake failed: {}", describe_connect_error(&e));
@@ -235,7 +314,11 @@ fn print_usage() {
                            CA-issued certs: SAN match + pubkey pin.\n\
            --self-signed   Trust the leaf's outer self-signature. Use against local\n\
                            fixtures / controlled servers whose cert is self-signed.\n\
-                           Will reject a chain-rooted (CA-issued) cert.\n"
+                           Will reject a chain-rooted (CA-issued) cert.\n\
+         \n\
+         Optional client authentication (mutual TLS), supplied together:\n\
+           --client-cert <path>   Client leaf certificate, DER-encoded.\n\
+           --client-seed <hex>    32-byte Ed25519 seed (raw private key) as hex.\n"
     );
 }
 
@@ -246,6 +329,8 @@ fn main() -> ExitCode {
     let mut host_arg: Option<String> = None;
     let mut pin: Option<Pin> = None;
     let mut self_signed = false;
+    let mut client_cert_path: Option<String> = None;
+    let mut client_seed_hex: Option<String> = None;
     while let Some(a) = args.next() {
         if a == "--pin" {
             let Some(hex_str) = args.next() else {
@@ -262,6 +347,18 @@ fn main() -> ExitCode {
             }
         } else if a == "--self-signed" {
             self_signed = true;
+        } else if a == "--client-cert" {
+            let Some(v) = args.next() else {
+                eprintln!("error: --client-cert requires a path");
+                return ExitCode::from(2);
+            };
+            client_cert_path = Some(v);
+        } else if a == "--client-seed" {
+            let Some(v) = args.next() else {
+                eprintln!("error: --client-seed requires a hex value");
+                return ExitCode::from(2);
+            };
+            client_seed_hex = Some(v);
         } else if a == "--help" || a == "-h" {
             print_usage();
             return ExitCode::SUCCESS;
@@ -299,7 +396,22 @@ fn main() -> ExitCode {
         }
     };
 
-    match run(&host, port, pin.as_ref()) {
+    let auth = match (client_cert_path, client_seed_hex) {
+        (Some(path), Some(hex)) => match load_client_auth(&path, &hex) {
+            Ok(m) => Some(m),
+            Err(e) => {
+                eprintln!("error: {e}");
+                return ExitCode::from(2);
+            }
+        },
+        (None, None) => None,
+        _ => {
+            eprintln!("error: --client-cert and --client-seed must be supplied together");
+            return ExitCode::from(2);
+        }
+    };
+
+    match run(&host, port, pin.as_ref(), auth.as_ref()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             error!("{e}");

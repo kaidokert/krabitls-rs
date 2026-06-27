@@ -31,6 +31,15 @@ pub use transport::Transport;
 pub use crate::identity::PinnedPubkey;
 pub use crate::traits::TimeSource;
 
+// Client (mutual) authentication — the compile-time policy (default
+// `NoClientAuth` links no cert-emission code), the caller-supplied signer
+// trait, the bundled Ed25519 implementation, and its error.
+pub use crate::backends::Ed25519ClientAuth;
+pub use crate::client_flight::{
+    ClientAuthPolicy, DeclineClientAuth, MAX_CLIENT_CERT_DER, NoClientAuth, WithClientAuth,
+};
+pub use crate::traits::{ClientAuth, ClientAuthError};
+
 // Strategy surface — what custom-verifier callers need to roll their own
 // trust-root decision (or instantiate the bundled `SafeStrategy`).
 pub use crate::backends::{PinOrSelfSigned, PinnedPubkeyOwned};
