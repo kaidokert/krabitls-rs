@@ -90,6 +90,11 @@ fn load_client_auth(
 ) -> std::result::Result<ClientAuthMaterial, String> {
     let cert_der =
         std::fs::read(cert_path).map_err(|e| format!("--client-cert {cert_path:?}: {e}"))?;
+    if cert_der.is_empty() {
+        return Err(format!(
+            "--client-cert {cert_path:?}: empty certificate file"
+        ));
+    }
     if cert_der.len() > MAX_CLIENT_CERT_DER {
         return Err(format!(
             "--client-cert {cert_path:?}: {} bytes exceeds the {MAX_CLIENT_CERT_DER}-byte client-auth buffer",

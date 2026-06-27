@@ -749,6 +749,15 @@ where
             &mut self.transcript,
             &mut flight,
         )?;
+        // Enforce the policy's own `MAX_FLIGHT_LEN` contract (what
+        // `validate_construction` sized `SEND` against) — catches a custom
+        // policy that understates its flight size.
+        debug_assert!(
+            plaintext.len() <= A::MAX_FLIGHT_LEN,
+            "ClientAuthPolicy::build_flight produced {} bytes, exceeding MAX_FLIGHT_LEN {}",
+            plaintext.len(),
+            A::MAX_FLIGHT_LEN
+        );
         // RFC 8449: the coalesced flight goes out as one record, whose inner
         // plaintext (incl. the content-type byte) must fit the peer's
         // record_size_limit. We don't fragment, so reject rather than emit a

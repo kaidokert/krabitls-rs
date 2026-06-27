@@ -66,6 +66,10 @@ pub enum ClientAuthFlightError {
     CertificateRequested,
     #[error("client certificate DER is empty")]
     EmptyCertificate,
+    #[error("client certificate DER exceeds MAX_CLIENT_CERT_DER")]
+    CertificateTooLong,
+    #[error("certificate_request_context exceeds 255 bytes")]
+    ContextTooLong,
     #[error("client auth flight exceeds the peer's record_size_limit")]
     FlightExceedsPeerLimit,
 }
@@ -124,11 +128,17 @@ pub fn build_client_certificate<'a>(
     cert_request_context: &[u8],
     out: &'a mut [u8],
 ) -> Result<&'a [u8], ClientAuthFlightError> {
-    // A zero-length leaf is the *empty* Certificate message (a distinct
-    // builder); reject it here so a misbehaving signer can't emit a malformed
-    // single-entry chain with no cert_data.
+    // Validate the input lengths before any size arithmetic so failures are
+    // explicit and never derived from an out-of-range length. A zero-length
+    // leaf is the *empty* Certificate message (a distinct builder).
     if cert_der.is_empty() {
         return Err(ClientAuthFlightError::EmptyCertificate);
+    }
+    if cert_der.len() > MAX_CLIENT_CERT_DER {
+        return Err(ClientAuthFlightError::CertificateTooLong);
+    }
+    if cert_request_context.len() > 255 {
+        return Err(ClientAuthFlightError::ContextTooLong);
     }
     // body = u8(ctx_len) ctx u24(list_len) [ u24(cert_len) cert u16(ext_len) ]
     let entry_len = 3 + cert_der.len() + 2;
@@ -142,8 +152,7 @@ pub fn build_client_certificate<'a>(
     out[0] = HS_CERTIFICATE;
     out[1..4].copy_from_slice(&u24(body_len));
     let mut p = 4;
-    out[p] = u8::try_from(cert_request_context.len())
-        .map_err(|_| ClientAuthFlightError::BufferTooSmall)?;
+    out[p] = cert_request_context.len() as u8; // validated <= 255 above
     p += 1;
     out[p..p + cert_request_context.len()].copy_from_slice(cert_request_context);
     p += cert_request_context.len();
@@ -165,6 +174,9 @@ pub fn build_client_empty_certificate<'a>(
     cert_request_context: &[u8],
     out: &'a mut [u8],
 ) -> Result<&'a [u8], ClientAuthFlightError> {
+    if cert_request_context.len() > 255 {
+        return Err(ClientAuthFlightError::ContextTooLong);
+    }
     let body_len = 1 + cert_request_context.len() + 3; // ctx_len + ctx + u24(0) list
     let total = 4 + body_len;
     let out = out
@@ -173,8 +185,7 @@ pub fn build_client_empty_certificate<'a>(
 
     out[0] = HS_CERTIFICATE;
     out[1..4].copy_from_slice(&u24(body_len));
-    out[4] = u8::try_from(cert_request_context.len())
-        .map_err(|_| ClientAuthFlightError::BufferTooSmall)?;
+    out[4] = cert_request_context.len() as u8; // validated <= 255 above
     out[5..5 + cert_request_context.len()].copy_from_slice(cert_request_context);
     let list_at = 5 + cert_request_context.len();
     out[list_at..list_at + 3].copy_from_slice(&[0, 0, 0]); // empty certificate_list
@@ -299,8 +310,17 @@ impl ClientAuthPolicy for DeclineClientAuth {
 /// concrete `&Signer` monomorphizes the flight path (LTO collapses it per
 /// binary, as with [`Clocked<T>`](crate::client::Clocked)); `&dyn ClientAuth`
 /// keeps the erased, ergonomic form.
-#[derive(Clone, Copy)]
 pub struct WithClientAuth<'a, A: ClientAuth + ?Sized = dyn ClientAuth>(pub &'a A);
+
+// Hand-written so the `dyn ClientAuth` default stays `Clone`/`Copy`: the field
+// is `&'a A` (always `Copy`), whereas `#[derive]` would wrongly demand `A: Copy`.
+impl<A: ClientAuth + ?Sized> Clone for WithClientAuth<'_, A> {
+    #[inline]
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<A: ClientAuth + ?Sized> Copy for WithClientAuth<'_, A> {}
 
 impl<A: ClientAuth + ?Sized> ClientAuthPolicy for WithClientAuth<'_, A> {
     const ACCEPT_CERT_REQUEST: bool = true;
@@ -407,11 +427,41 @@ mod tests {
     }
 
     #[test]
+    fn with_client_auth_dyn_default_is_copy() {
+        // Regression guard for the hand-written Clone/Copy: `#[derive]` would
+        // demand `A: Copy` and break the `dyn ClientAuth` default.
+        fn assert_copy<T: Copy>() {}
+        assert_copy::<WithClientAuth<'static, dyn ClientAuth>>();
+    }
+
+    #[test]
     fn certificate_message_rejects_empty_der() {
         let mut out = [0u8; 32];
         assert_eq!(
             build_client_certificate(&[], &[], &mut out),
             Err(ClientAuthFlightError::EmptyCertificate)
+        );
+    }
+
+    #[test]
+    fn certificate_message_rejects_oversized_inputs() {
+        let mut out = [0u8; 32];
+        // Oversized leaf DER (these checks fire before any size arithmetic, so
+        // a tiny `out` is fine).
+        let big_der = [0xABu8; MAX_CLIENT_CERT_DER + 1];
+        assert_eq!(
+            build_client_certificate(&big_der, &[], &mut out),
+            Err(ClientAuthFlightError::CertificateTooLong)
+        );
+        // Context > 255.
+        let big_ctx = [0u8; 256];
+        assert_eq!(
+            build_client_certificate(&[0xCD], &big_ctx, &mut out),
+            Err(ClientAuthFlightError::ContextTooLong)
+        );
+        assert_eq!(
+            build_client_empty_certificate(&big_ctx, &mut out),
+            Err(ClientAuthFlightError::ContextTooLong)
         );
     }
 
