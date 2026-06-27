@@ -2,8 +2,8 @@
 //! end-to-end through a seed-0 fixture whose server flight carries a
 //! `CertificateRequest`, exercising the full `WithClientAuth` path (client
 //! `Certificate` + `CertificateVerify` + `Finished`) with no network and no
-//! OS RNG. Fixtures captured against a local `openssl s_server -tls1_3
-//! -Verify` — see `testdata/packets_mtls/GENERATION.md`.
+//! OS RNG. Fixtures were captured once against a local `openssl s_server
+//! -tls1_3 -Verify` mutual-auth handshake.
 
 // AES-128-GCM + Ed25519, the suite the seed-0 fixtures were captured under.
 // `rsa` would add rsa_pss to the ClientHello's signature_algorithms and shift
@@ -42,11 +42,8 @@ const CLIENT_SEED: [u8; 32] = [
 
 #[test]
 fn facade_completes_mtls_handshake_against_canned_fixtures() {
-    let server_hello = parse_hex(SERVER_HELLO_HEX);
-    let server_flight = parse_hex(SERVER_FLIGHT_HEX);
-    let mut server_stream = Vec::with_capacity(server_hello.len() + server_flight.len());
-    server_stream.extend_from_slice(&server_hello);
-    server_stream.extend_from_slice(&server_flight);
+    let mut server_stream = parse_hex(SERVER_HELLO_HEX);
+    server_stream.extend_from_slice(&parse_hex(SERVER_FLIGHT_HEX));
 
     let signer = Ed25519ClientAuth::from_seed(&CLIENT_SEED, CLIENT_LEAF_DER)
         .expect("seed derives the fixture client key");
@@ -65,11 +62,8 @@ fn facade_completes_mtls_handshake_against_canned_fixtures() {
     // second flight (`Certificate || CertificateVerify || Finished`) — byte
     // identical to the captured reference, which proves the engine parsed the
     // CertificateRequest and emitted a conformant, correctly-signed flight.
-    let expected_ch = parse_hex(CLIENT_HELLO_HEX);
-    let expected_flight = parse_hex(CLIENT_FLIGHT_HEX);
-    let mut expected_tx = Vec::with_capacity(expected_ch.len() + expected_flight.len());
-    expected_tx.extend_from_slice(&expected_ch);
-    expected_tx.extend_from_slice(&expected_flight);
+    let mut expected_tx = parse_hex(CLIENT_HELLO_HEX);
+    expected_tx.extend_from_slice(&parse_hex(CLIENT_FLIGHT_HEX));
     assert_eq!(
         tls.transport().captured_tx(),
         expected_tx.as_slice(),
