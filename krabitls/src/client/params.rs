@@ -152,10 +152,10 @@ impl<'a, V, A> ClientParams<'a, V, A> {
     /// Changes the params' policy type to
     /// [`WithClientAuth`](crate::client::WithClientAuth) — name it via the
     /// stream's `A` parameter if you need to spell the resulting type.
-    pub fn with_client_auth(
+    pub fn with_client_auth<T: ClientAuth + ?Sized>(
         self,
-        auth: &'a dyn ClientAuth,
-    ) -> ClientParams<'a, V, WithClientAuth<'a>> {
+        auth: &'a T,
+    ) -> ClientParams<'a, V, WithClientAuth<'a, T>> {
         ClientParams {
             hostname: self.hostname,
             verify: self.verify,

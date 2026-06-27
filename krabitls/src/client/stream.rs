@@ -359,7 +359,10 @@ where
 
 fn validate_construction<V, A, const RECV: usize, const SEND: usize>(
     params: &ClientParams<'_, V, A>,
-) -> Result<(), ConfigError> {
+) -> Result<(), ConfigError>
+where
+    A: ClientAuthPolicy,
+{
     if params.hostname.len() > FACADE_HOSTNAME_MAX {
         return Err(ConfigError::HostnameTooLong);
     }
@@ -374,6 +377,16 @@ fn validate_construction<V, A, const RECV: usize, const SEND: usize>(
             needed: MIN_SEND_STANDARD,
             got: SEND,
         });
+    }
+    // A mutual-auth policy emits the coalesced second flight as one record;
+    // SEND must hold it. `MAX_FLIGHT_LEN == 0` (NoClientAuth) needs only
+    // MIN_SEND_STANDARD. The record is plaintext + the content-type byte +
+    // header + AEAD tag.
+    if A::MAX_FLIGHT_LEN > 0 {
+        let needed = A::MAX_FLIGHT_LEN + 1 + RECORD_OVERHEAD;
+        if SEND < needed {
+            return Err(ConfigError::BufferTooSmall { needed, got: SEND });
+        }
     }
     // SEND must hold one full RECORD_OVERHEAD+plaintext record.
     debug_assert!(SEND > RECORD_OVERHEAD);

@@ -75,16 +75,27 @@ pub enum ClientAuthFlightError {
 /// cert yields [`ClientAuthFlightError::BufferTooSmall`].
 pub const MAX_CLIENT_CERT_DER: usize = 1024;
 
+/// Handshake-message header: type(1) + u24 length.
+const HS_HEADER: usize = 4;
+/// Certificate framing around the leaf DER (single-entry chain):
+/// u8 ctx_len + max 255-byte context + u24 list_len + u24 cert_len + u16 ext_len.
+const CERT_FRAMING: usize = 1 + 255 + 3 + 3 + 2;
+/// CertificateVerify framing: u16 scheme + u16 sig_len.
+const CV_FRAMING: usize = 2 + 2;
+/// Finished message: header + 32-byte verify_data.
+const FINISHED_MSG: usize = HS_HEADER + 32;
+
 /// Upper bound on the coalesced `Certificate || CertificateVerify ||
 /// Finished` plaintext the client emits for mutual auth. Sizes the
 /// connection-layer scratch.
-pub const MAX_CLIENT_AUTH_FLIGHT: usize =
-    // Certificate: 4 hdr + 1 ctx_len + 255 ctx + 3 list_len + 3 cert_len + DER + 2 ext_len
-    (4 + 1 + 255 + 3 + 3 + MAX_CLIENT_CERT_DER + 2)
-    // CertificateVerify: 4 hdr + 2 scheme + 2 sig_len + sig
-    + (4 + 2 + 2 + MAX_CLIENT_SIG_LEN)
-    // Finished: 4 hdr + 32 verify_data
-    + (4 + 32);
+pub const MAX_CLIENT_AUTH_FLIGHT: usize = (HS_HEADER + CERT_FRAMING + MAX_CLIENT_CERT_DER)
+    + (HS_HEADER + CV_FRAMING + MAX_CLIENT_SIG_LEN)
+    + FINISHED_MSG;
+
+/// Plaintext bound on the empty-`Certificate` second flight (the
+/// [`DeclineClientAuth`] policy): an empty-list Certificate + Finished, no
+/// CertificateVerify.
+pub const MAX_CLIENT_EMPTY_AUTH_FLIGHT: usize = (HS_HEADER + 1 + 255 + 3) + FINISHED_MSG;
 
 const CLIENT_CV_CTX: &[u8] = b"TLS 1.3, client CertificateVerify";
 /// 64-space pad || context string || 0x00 separator || 32-byte transcript hash.
@@ -173,8 +184,8 @@ pub fn build_client_empty_certificate<'a>(
 /// Serialize the client `CertificateVerify` handshake message (RFC 8446
 /// §4.4.3): sign the transcript-bound content with the caller's signer, then
 /// frame `scheme || signature`. Returns the plaintext handshake bytes.
-pub fn build_client_certificate_verify<'a>(
-    auth: &dyn ClientAuth,
+pub fn build_client_certificate_verify<'a, A: ClientAuth + ?Sized>(
+    auth: &A,
     transcript_hash_through_client_cert: &TranscriptDigest,
     out: &'a mut [u8],
 ) -> Result<&'a [u8], ClientAuthFlightError> {
@@ -213,6 +224,11 @@ pub trait ClientAuthPolicy {
     /// request then aborts the handshake without any builder being codegened.
     const ACCEPT_CERT_REQUEST: bool;
 
+    /// Largest plaintext [`build_flight`](Self::build_flight) can produce, so
+    /// `connect()` can reject a too-small `SEND` buffer up front instead of
+    /// failing mid-handshake. `0` for policies that send no certificate.
+    const MAX_FLIGHT_LEN: usize;
+
     /// Build the coalesced client second-flight plaintext (`Certificate [||
     /// CertificateVerify] || Finished`) in response to a `CertificateRequest`,
     /// folding each message into `transcript`. `transcript` is positioned at
@@ -237,6 +253,7 @@ pub struct NoClientAuth;
 
 impl ClientAuthPolicy for NoClientAuth {
     const ACCEPT_CERT_REQUEST: bool = false;
+    const MAX_FLIGHT_LEN: usize = 0;
     // `#[inline]` so the unconditional `Err` propagates into
     // `finish_handshake_with_policy::<NoClientAuth>` and lets the optimizer
     // drop the second-flight scratch buffer + encrypt path — the no-auth
@@ -261,6 +278,7 @@ pub struct DeclineClientAuth;
 
 impl ClientAuthPolicy for DeclineClientAuth {
     const ACCEPT_CERT_REQUEST: bool = true;
+    const MAX_FLIGHT_LEN: usize = MAX_CLIENT_EMPTY_AUTH_FLIGHT;
     fn build_flight<'a, H: HkdfSha256>(
         &self,
         cert_request_context: &[u8],
@@ -276,11 +294,17 @@ impl ClientAuthPolicy for DeclineClientAuth {
 
 /// Mutual authentication with a caller-supplied signer. The private key never
 /// leaves the [`ClientAuth`] implementation.
+///
+/// Generic over the signer with a `dyn ClientAuth` default — passing a
+/// concrete `&Signer` monomorphizes the flight path (LTO collapses it per
+/// binary, as with [`Clocked<T>`](crate::client::Clocked)); `&dyn ClientAuth`
+/// keeps the erased, ergonomic form.
 #[derive(Clone, Copy)]
-pub struct WithClientAuth<'a>(pub &'a dyn ClientAuth);
+pub struct WithClientAuth<'a, A: ClientAuth + ?Sized = dyn ClientAuth>(pub &'a A);
 
-impl ClientAuthPolicy for WithClientAuth<'_> {
+impl<A: ClientAuth + ?Sized> ClientAuthPolicy for WithClientAuth<'_, A> {
     const ACCEPT_CERT_REQUEST: bool = true;
+    const MAX_FLIGHT_LEN: usize = MAX_CLIENT_AUTH_FLIGHT;
 
     fn build_flight<'a, H: HkdfSha256>(
         &self,
