@@ -232,15 +232,21 @@ pub fn certificate_request_sig_algs(creq_full: &[u8]) -> Result<&[u8], FlightErr
         }
         let data = &exts[data_start..data_start + dlen];
         if etype == EXT_SIGNATURE_ALGORITHMS {
-            // data = u16 list_len || SignatureScheme list<2..2^16-2>
+            // data = u16 list_len || SignatureScheme list<2..2^16-2>. The list
+            // MUST span the rest of the extension exactly, be non-empty, and
+            // hold whole 2-byte schemes; anything else is malformed framing,
+            // not an empty offer. `& 1` over `% 2` to dodge manual_is_multiple_of.
             let llen_bytes = data.get(0..2).ok_or(FlightError::Truncated)?;
             let llen = u16::from_be_bytes([llen_bytes[0], llen_bytes[1]]) as usize;
-            if llen > data.len() - 2 {
+            if llen != data.len() - 2 || llen < 2 || (llen & 1) != 0 {
                 return Err(FlightError::Truncated);
             }
             return Ok(&data[2..2 + llen]);
         }
         i = data_start + dlen;
+    }
+    if i != exts.len() {
+        return Err(FlightError::Truncated);
     }
     Ok(&[])
 }
@@ -612,6 +618,72 @@ pub(crate) mod tests {
         );
         assert_eq!(
             certificate_request_sig_algs(&bad),
+            Err(FlightError::Truncated)
+        );
+
+        // list_len shorter than the extension payload (trailing scheme bytes).
+        let trailing = framed(
+            HS_CERTIFICATE_REQUEST,
+            &[
+                0x00, // empty context
+                0x00, 0x0a, // ext_len = 10
+                0x00, 0x0d, // ext_type = signature_algorithms
+                0x00, 0x06, // ext_data_len = 6
+                0x00, 0x02, // list_len = 2 (claims one scheme, two trail)
+                0x08, 0x07, 0x04, 0x03,
+            ],
+        );
+        assert_eq!(
+            certificate_request_sig_algs(&trailing),
+            Err(FlightError::Truncated)
+        );
+
+        // Odd list_len can't hold whole 2-byte schemes.
+        let odd = framed(
+            HS_CERTIFICATE_REQUEST,
+            &[
+                0x00, // empty context
+                0x00, 0x09, // ext_len = 9
+                0x00, 0x0d, // ext_type = signature_algorithms
+                0x00, 0x05, // ext_data_len = 5
+                0x00, 0x03, // list_len = 3 (odd)
+                0x08, 0x07, 0x04,
+            ],
+        );
+        assert_eq!(
+            certificate_request_sig_algs(&odd),
+            Err(FlightError::Truncated)
+        );
+
+        // Empty list_len is malformed framing, not an absent offer.
+        let empty_list = framed(
+            HS_CERTIFICATE_REQUEST,
+            &[
+                0x00, // empty context
+                0x00, 0x06, // ext_len = 6
+                0x00, 0x0d, // ext_type = signature_algorithms
+                0x00, 0x02, // ext_data_len = 2
+                0x00, 0x00, // list_len = 0
+            ],
+        );
+        assert_eq!(
+            certificate_request_sig_algs(&empty_list),
+            Err(FlightError::Truncated)
+        );
+
+        // 1-3 dangling bytes after a whole extension (too short for a header).
+        let dangling = framed(
+            HS_CERTIFICATE_REQUEST,
+            &[
+                0x00, // empty context
+                0x00, 0x05, // ext_len = 5
+                0x00, 0x2f, // some other ext_type
+                0x00, 0x00, // ext_data_len = 0
+                0x00, // one dangling byte
+            ],
+        );
+        assert_eq!(
+            certificate_request_sig_algs(&dangling),
             Err(FlightError::Truncated)
         );
     }

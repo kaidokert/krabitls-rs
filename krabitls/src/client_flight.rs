@@ -268,6 +268,11 @@ pub trait ClientAuthPolicy {
 /// Whether `scheme` (a u16 `SignatureScheme` code point) appears in a
 /// concatenated big-endian u16 `signature_algorithms` list.
 fn sig_algs_offer(list: &[u8], scheme: u16) -> bool {
+    // A trailing odd byte means the list is structurally malformed, not a
+    // partial match. `& 1` over `% 2` to dodge manual_is_multiple_of.
+    if (list.len() & 1) != 0 {
+        return false;
+    }
     list.chunks_exact(2)
         .any(|c| u16::from_be_bytes([c[0], c[1]]) == scheme)
 }

@@ -153,11 +153,11 @@ impl<'a, V, A> ClientParams<'a, V, A> {
     /// [`WithClientAuth`](crate::client::WithClientAuth) — name it via the
     /// stream's `A` parameter if you need to spell the resulting type.
     ///
-    /// Only Ed25519 client certificates are supported today, and krabitls does
-    /// not yet inspect the server's `CertificateRequest.signature_algorithms`:
-    /// the caller is responsible for ensuring the signer's
-    /// [`scheme`](ClientAuth::scheme) is one the server accepts, else the
-    /// server rejects the `CertificateVerify`.
+    /// Only Ed25519 client certificates are supported today. krabitls inspects
+    /// the server's `CertificateRequest.signature_algorithms` and declines the
+    /// request (no `Certificate`/`CertificateVerify`) when the signer's
+    /// [`scheme`](ClientAuth::scheme) isn't among those advertised, rather than
+    /// sending a flight the server rejects with an opaque `handshake_failure`.
     ///
     /// The signer's lifetime is independent of the hostname's, so a
     /// shorter-lived signer is fine.
