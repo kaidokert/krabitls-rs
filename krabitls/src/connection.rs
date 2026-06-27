@@ -19,11 +19,11 @@ use crate::client_flight::{ClientAuthFlightError, ClientAuthPolicy, ClientFinish
 use crate::consts::CIPHER_AES_128_GCM_SHA256;
 #[cfg(feature = "chacha20")]
 use crate::consts::CIPHER_CHACHA20_POLY1305_SHA256;
-use crate::consts::{CT_APPLICATION_DATA, CT_CHANGE_CIPHER_SPEC, CT_HANDSHAKE};
+use crate::consts::{CT_APPLICATION_DATA, CT_CHANGE_CIPHER_SPEC, CT_HANDSHAKE, HS_KEY_UPDATE};
 use crate::errors::{ClientHelloError, ParseError};
 use crate::hkdf::{
     HkdfLabelError, TranscriptError, TranscriptHash, application_traffic_secrets, handshake_secret,
-    handshake_traffic_secrets, master_secret,
+    handshake_traffic_secrets, master_secret, next_application_traffic_secret,
 };
 use crate::newtype::{Secret, ZeroBuf};
 use crate::parse_server_hello;
@@ -308,6 +308,11 @@ pub enum FlightStep {
 pub struct AppData<S: CipherSuite> {
     pub(crate) c_ap_keys: RecordKeys<S>,
     pub(crate) s_ap_keys: RecordKeys<S>,
+    /// Live application-traffic secrets, retained so a post-handshake
+    /// `KeyUpdate` (RFC 8446 §4.6.3) can derive the next generation via
+    /// `HKDF-Expand-Label(secret, "traffic upd", "", 32)`.
+    pub(crate) c_ap_ts: Secret,
+    pub(crate) s_ap_ts: Secret,
     pub(crate) seq_out: u64,
     pub(crate) seq_in: u64,
 }
@@ -649,7 +654,7 @@ where
 // ServerFlightDone -> AppData
 // ============================================================================
 
-type FinishHandshakeOut<'a, S> = (&'a [u8], RecordKeys<S>, RecordKeys<S>);
+type FinishHandshakeOut<'a, S> = (&'a [u8], RecordKeys<S>, RecordKeys<S>, Secret, Secret);
 
 type FinishHandshakeOk<'a, S, H> = (&'a [u8], TlsConnection<AppData<S>, H>);
 
@@ -678,7 +683,7 @@ where
     let (c_ap_ts, s_ap_ts) = application_traffic_secrets::<H>(&ms, th_through_sfin)?;
     let c_ap_keys = derive_record_keys(&c_ap_ts)?;
     let s_ap_keys = derive_record_keys(&s_ap_ts)?;
-    Ok((record, c_ap_keys, s_ap_keys))
+    Ok((record, c_ap_keys, s_ap_keys, c_ap_ts, s_ap_ts))
 }
 
 impl<S, H> TlsConnection<ServerFlightDone<S, Live>, H>
@@ -692,7 +697,7 @@ where
         out_buf: &'a mut [u8],
     ) -> Result<FinishHandshakeOk<'a, S, H>, ConnectionError> {
         let th = self.transcript.snapshot();
-        let (record, c_ap_keys, s_ap_keys) = finish_handshake_inner::<S, H, _, _>(
+        let (record, c_ap_keys, s_ap_keys, c_ap_ts, s_ap_ts) = finish_handshake_inner::<S, H, _, _>(
             &self.state.hs,
             &self.state.c_hs_ts,
             &th,
@@ -709,6 +714,8 @@ where
                 state: AppData {
                     c_ap_keys,
                     s_ap_keys,
+                    c_ap_ts,
+                    s_ap_ts,
                     seq_out: 0,
                     seq_in: 0,
                 },
@@ -786,6 +793,8 @@ where
                 state: AppData {
                     c_ap_keys,
                     s_ap_keys,
+                    c_ap_ts,
+                    s_ap_ts,
                     seq_out: 0,
                     seq_in: 0,
                 },
@@ -838,6 +847,42 @@ where
         };
         self.state.seq_in += 1;
         Ok((content_len, ct))
+    }
+
+    /// Encrypt a `KeyUpdate` handshake record (RFC 8446 §4.6.3) under the
+    /// current send keys; `request_update` sets the `update_requested` flag.
+    /// Does NOT rotate the send keys — call [`Self::apply_send_key_update`]
+    /// once the record is handed to the transport.
+    pub fn encrypt_key_update<'a>(
+        &mut self,
+        request_update: bool,
+        out_buf: &'a mut [u8],
+    ) -> Result<&'a [u8], ConnectionError> {
+        let msg = [HS_KEY_UPDATE, 0x00, 0x00, 0x01, request_update as u8];
+        self.encrypt_record(&msg, CT_HANDSHAKE, out_buf)
+    }
+
+    /// Rotate the *receive* secret/keys to the next generation after a peer
+    /// `KeyUpdate` (RFC 8446 §4.6.3) and reset the receive sequence number.
+    /// The peer's next record uses these keys.
+    pub fn apply_recv_key_update(&mut self) -> Result<(), ConnectionError> {
+        let next = next_application_traffic_secret::<H>(&self.state.s_ap_ts)?;
+        self.state.s_ap_keys = RecordKeys::<S>::derive::<H>(&next)?;
+        self.state.s_ap_ts = next;
+        self.state.seq_in = 0;
+        Ok(())
+    }
+
+    /// Rotate the *send* secret/keys to the next generation after we emit a
+    /// `KeyUpdate` (RFC 8446 §4.6.3) and reset the send sequence number. Call
+    /// only after the `KeyUpdate` record — encrypted under the current keys —
+    /// has been produced.
+    pub fn apply_send_key_update(&mut self) -> Result<(), ConnectionError> {
+        let next = next_application_traffic_secret::<H>(&self.state.c_ap_ts)?;
+        self.state.c_ap_keys = RecordKeys::<S>::derive::<H>(&next)?;
+        self.state.c_ap_ts = next;
+        self.state.seq_out = 0;
+        Ok(())
     }
 }
 

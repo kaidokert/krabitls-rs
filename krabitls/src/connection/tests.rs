@@ -81,7 +81,8 @@ fn write_client_hello_with_aes_only_narrows_cipher_suites() {
 #[cfg(all(not(feature = "rsa"), not(feature = "chacha20")))]
 mod aes_only {
     use super::*;
-    use crate::consts::CT_APPLICATION_DATA;
+    use crate::aead::Aes128GcmSha256;
+    use crate::consts::{CT_APPLICATION_DATA, CT_HANDSHAKE, HS_KEY_UPDATE};
     use crate::reassembler::ServerFlightReassembler;
 
     /// Matches `testdata/packets/001_c2s_ClientHello.hex` (RFC 8449 RSL=16385).
@@ -577,6 +578,84 @@ mod aes_only {
             .assume_aes_128_gcm()
             .expect("assume_aes_128_gcm should accept an AES handshake");
     }
+
+    type AppConn = TlsConnection<AppData<Aes128GcmSha256>, RustCrypto>;
+
+    fn app_secret(byte: u8) -> Secret {
+        Secret::new(ZeroBuf::<32>::new([byte; 32]))
+    }
+
+    /// Build a client and its mirror server from two distinct app-traffic
+    /// secrets: the server's send secret is the client's receive secret and
+    /// vice versa, so records cross-decrypt.
+    fn mirrored_pair() -> (AppConn, AppConn) {
+        let client = AppConn::from_app_secrets(app_secret(0x11), app_secret(0x22), 0, 0).unwrap();
+        let server = AppConn::from_app_secrets(app_secret(0x22), app_secret(0x11), 0, 0).unwrap();
+        (client, server)
+    }
+
+    /// KeyUpdate rotates both directions: after the peer updates its send
+    /// keys, records still cross-decrypt under the rotated secrets, and the
+    /// sequence numbers reset (RFC 8446 §4.6.3).
+    #[test]
+    fn key_update_round_trips_both_directions() {
+        let (mut client, mut server) = mirrored_pair();
+
+        // Server → client KeyUpdate(update_requested=1), then server rotates
+        // its own send keys.
+        let mut sbuf = [0u8; 64];
+        let n = server.encrypt_key_update(true, &mut sbuf).unwrap().len();
+        let mut ku = [0u8; 64];
+        ku[..n].copy_from_slice(&sbuf[..n]);
+        server.apply_send_key_update().unwrap();
+
+        // Client reads it under the *old* receive keys, then rotates.
+        let mut pt = [0u8; 64];
+        let (content, ct) = client.decrypt_record(&ku[..n], &mut pt).unwrap();
+        assert_eq!(ct, CT_HANDSHAKE);
+        assert_eq!(content, &[HS_KEY_UPDATE, 0x00, 0x00, 0x01, 0x01]);
+        client.apply_recv_key_update().unwrap();
+
+        // Server app record under its rotated send keys decrypts on the
+        // client's rotated receive keys, at reset seq 0.
+        let mut abuf = [0u8; 96];
+        let an = server
+            .encrypt_record(b"after the update", CT_APPLICATION_DATA, &mut abuf)
+            .unwrap()
+            .len();
+        let mut arec = [0u8; 96];
+        arec[..an].copy_from_slice(&abuf[..an]);
+        let mut apt = [0u8; 96];
+        let (content, ct) = client.decrypt_record(&arec[..an], &mut apt).unwrap();
+        assert_eq!(ct, CT_APPLICATION_DATA);
+        assert_eq!(content, b"after the update");
+        assert_eq!(client.state.seq_in, 1);
+
+        // Reverse direction: client → server KeyUpdate(0), client rotates send.
+        let mut cbuf = [0u8; 64];
+        let cn = client.encrypt_key_update(false, &mut cbuf).unwrap().len();
+        let mut cku = [0u8; 64];
+        cku[..cn].copy_from_slice(&cbuf[..cn]);
+        client.apply_send_key_update().unwrap();
+
+        let mut spt = [0u8; 64];
+        let (content, ct) = server.decrypt_record(&cku[..cn], &mut spt).unwrap();
+        assert_eq!(ct, CT_HANDSHAKE);
+        assert_eq!(content, &[HS_KEY_UPDATE, 0x00, 0x00, 0x01, 0x00]);
+        server.apply_recv_key_update().unwrap();
+
+        let mut c2 = [0u8; 96];
+        let c2n = client
+            .encrypt_record(b"client after update", CT_APPLICATION_DATA, &mut c2)
+            .unwrap()
+            .len();
+        let mut c2rec = [0u8; 96];
+        c2rec[..c2n].copy_from_slice(&c2[..c2n]);
+        let mut s2pt = [0u8; 96];
+        let (content, ct) = server.decrypt_record(&c2rec[..c2n], &mut s2pt).unwrap();
+        assert_eq!(ct, CT_APPLICATION_DATA);
+        assert_eq!(content, b"client after update");
+    }
 }
 
 #[cfg(all(not(feature = "chacha20"), not(feature = "rsa")))]
@@ -722,6 +801,8 @@ where
             state: super::AppData {
                 c_ap_keys,
                 s_ap_keys,
+                c_ap_ts,
+                s_ap_ts,
                 seq_out,
                 seq_in,
             },
