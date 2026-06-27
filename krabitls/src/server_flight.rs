@@ -178,10 +178,35 @@ pub fn parse_server_flight(content: &[u8]) -> Result<ServerFlightView<'_>, Fligh
 /// `CertificateRequest` message (the `cert_request_full` bytes), so the
 /// client `Certificate` can echo it (RFC 8446 §4.4.2). Layout:
 /// `type(1) || u24 len || u8(ctx_len) || ctx || u16(ext_len) || exts`.
+///
+/// Validates the full body shape — the message type, the context vector, and
+/// the trailing extensions-length field — rejecting short or trailing bytes.
 pub fn certificate_request_context(creq_full: &[u8]) -> Result<&[u8], FlightError> {
+    if creq_full.first() != Some(&HS_CERTIFICATE_REQUEST) {
+        return Err(FlightError::UnexpectedHandshakeType {
+            expected: HS_CERTIFICATE_REQUEST,
+            got: creq_full.first().copied().unwrap_or(0),
+        });
+    }
     let body = creq_full.get(4..).ok_or(FlightError::Truncated)?;
     let ctx_len = *body.first().ok_or(FlightError::Truncated)? as usize;
-    body.get(1..1 + ctx_len).ok_or(FlightError::Truncated)
+    let ctx_end = 1 + ctx_len;
+    let ctx = body.get(1..ctx_end).ok_or(FlightError::Truncated)?;
+
+    // The extensions vector must be present and its u16 length must account
+    // for exactly the remaining bytes.
+    let ext_len_bytes = body
+        .get(ctx_end..ctx_end + 2)
+        .ok_or(FlightError::Truncated)?;
+    let ext_len = u16::from_be_bytes([ext_len_bytes[0], ext_len_bytes[1]]) as usize;
+    let declared = ctx_end + 2 + ext_len;
+    if body.len() < declared {
+        return Err(FlightError::Truncated);
+    }
+    if body.len() > declared {
+        return Err(FlightError::TrailingBytes);
+    }
+    Ok(ctx)
 }
 
 struct HsReader<'a> {
@@ -483,6 +508,27 @@ pub(crate) mod tests {
         assert_eq!(
             certificate_request_context(&bad),
             Err(FlightError::Truncated)
+        );
+
+        // Wrong handshake type.
+        let wrong = framed(HS_CERTIFICATE, &[0x00, 0x00, 0x00]);
+        assert!(matches!(
+            certificate_request_context(&wrong),
+            Err(FlightError::UnexpectedHandshakeType { .. })
+        ));
+
+        // Missing the u16 extensions-length field after the context.
+        let no_ext_len = framed(HS_CERTIFICATE_REQUEST, &[0x00]);
+        assert_eq!(
+            certificate_request_context(&no_ext_len),
+            Err(FlightError::Truncated)
+        );
+
+        // Trailing bytes past the declared extensions vector.
+        let trailing = framed(HS_CERTIFICATE_REQUEST, &[0x00, 0x00, 0x00, 0xFF]);
+        assert_eq!(
+            certificate_request_context(&trailing),
+            Err(FlightError::TrailingBytes)
         );
     }
 

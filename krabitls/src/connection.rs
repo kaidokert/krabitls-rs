@@ -735,6 +735,7 @@ where
         mut self,
         policy: &A,
         cert_request_context: &[u8],
+        peer_record_size_limit: u16,
         out_buf: &'a mut [u8],
     ) -> Result<FinishHandshakeOk<'a, S, H>, ConnectionError> {
         // Application keys bind to the transcript through the *server*
@@ -748,6 +749,15 @@ where
             &mut self.transcript,
             &mut flight,
         )?;
+        // RFC 8449: the coalesced flight goes out as one record, whose inner
+        // plaintext (incl. the content-type byte) must fit the peer's
+        // record_size_limit. We don't fragment, so reject rather than emit a
+        // record the peer will `record_overflow`.
+        if plaintext.len() + 1 > peer_record_size_limit as usize {
+            return Err(ConnectionError::ClientAuth(
+                ClientAuthFlightError::FlightExceedsPeerLimit,
+            ));
+        }
         let keys = RecordKeys::<S>::derive::<H>(&self.state.c_hs_ts)?;
         let record = keys.encrypt_record(plaintext, CT_HANDSHAKE, 0, out_buf)?;
 

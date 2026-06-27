@@ -602,7 +602,12 @@ impl<
             FlightDone::Aes(d) => {
                 let send = &mut self.scratch.send_record;
                 let (cf_bytes, app) = match cert_request_ctx {
-                    Some(ctx) => d.finish_handshake_with_policy(&params.client_auth, ctx, send),
+                    Some(ctx) => d.finish_handshake_with_policy(
+                        &params.client_auth,
+                        ctx,
+                        self.peer_recv_limit.get(),
+                        send,
+                    ),
                     None => d.finish_handshake(send),
                 }
                 .map_err(HandshakeError::Connection)?;
@@ -614,7 +619,12 @@ impl<
             FlightDone::ChaCha(d) => {
                 let send = &mut self.scratch.send_record;
                 let (cf_bytes, app) = match cert_request_ctx {
-                    Some(ctx) => d.finish_handshake_with_policy(&params.client_auth, ctx, send),
+                    Some(ctx) => d.finish_handshake_with_policy(
+                        &params.client_auth,
+                        ctx,
+                        self.peer_recv_limit.get(),
+                        send,
+                    ),
                     None => d.finish_handshake(send),
                 }
                 .map_err(HandshakeError::Connection)?;

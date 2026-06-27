@@ -64,6 +64,10 @@ pub enum ClientAuthFlightError {
     Finished(#[from] ClientFinishedError),
     #[error("server requested a client certificate but none is configured")]
     CertificateRequested,
+    #[error("client certificate DER is empty")]
+    EmptyCertificate,
+    #[error("client auth flight exceeds the peer's record_size_limit")]
+    FlightExceedsPeerLimit,
 }
 
 /// Largest client leaf DER the coalesced second-flight scratch holds. An
@@ -94,6 +98,7 @@ fn certificate_verify_signed_content(
     let mut buf = [0u8; CLIENT_CV_SIGNED_LEN];
     buf[..64].fill(0x20);
     buf[64..64 + CLIENT_CV_CTX.len()].copy_from_slice(CLIENT_CV_CTX);
+    buf[64 + CLIENT_CV_CTX.len()] = 0x00; // explicit context/hash separator
     let hash_at = 64 + CLIENT_CV_CTX.len() + 1;
     buf[hash_at..].copy_from_slice(transcript_hash_through_client_cert.as_bytes());
     buf
@@ -108,6 +113,12 @@ pub fn build_client_certificate<'a>(
     cert_request_context: &[u8],
     out: &'a mut [u8],
 ) -> Result<&'a [u8], ClientAuthFlightError> {
+    // A zero-length leaf is the *empty* Certificate message (a distinct
+    // builder); reject it here so a misbehaving signer can't emit a malformed
+    // single-entry chain with no cert_data.
+    if cert_der.is_empty() {
+        return Err(ClientAuthFlightError::EmptyCertificate);
+    }
     // body = u8(ctx_len) ctx u24(list_len) [ u24(cert_len) cert u16(ext_len) ]
     let entry_len = 3 + cert_der.len() + 2;
     let list_len = 3 + entry_len;
@@ -369,6 +380,15 @@ mod tests {
         assert_eq!(msg[4], 0, "empty context");
         assert_eq!(read_u24(&msg[5..8]), 0, "empty certificate_list");
         assert_eq!(msg.len(), 8);
+    }
+
+    #[test]
+    fn certificate_message_rejects_empty_der() {
+        let mut out = [0u8; 32];
+        assert_eq!(
+            build_client_certificate(&[], &[], &mut out),
+            Err(ClientAuthFlightError::EmptyCertificate)
+        );
     }
 
     #[test]

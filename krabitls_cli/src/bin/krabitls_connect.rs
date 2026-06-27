@@ -16,7 +16,8 @@ use std::time::Duration;
 use getrandom::SysRng;
 use krabitls::client::{
     ClientAuthPolicy, ClientParams, ClockedVerify, ConnectError, DefaultConfig, DefaultScratch,
-    Ed25519ClientAuth, PinnedPubkey, RuntimeSuitePolicy, TimeSource, TlsStream, Transport,
+    Ed25519ClientAuth, MAX_CLIENT_CERT_DER, PinnedPubkey, RuntimeSuitePolicy, TimeSource,
+    TlsStream, Transport,
 };
 use log::{error, info};
 use zeroize::Zeroizing;
@@ -89,16 +90,36 @@ fn load_client_auth(
 ) -> std::result::Result<ClientAuthMaterial, String> {
     let cert_der =
         std::fs::read(cert_path).map_err(|e| format!("--client-cert {cert_path:?}: {e}"))?;
-    let bytes = decode_hex(seed_hex).map_err(|e| format!("--client-seed: {e}"))?;
-    if bytes.len() != 32 {
+    if cert_der.len() > MAX_CLIENT_CERT_DER {
         return Err(format!(
-            "--client-seed: expected 32 bytes, got {}",
-            bytes.len()
+            "--client-cert {cert_path:?}: {} bytes exceeds the {MAX_CLIENT_CERT_DER}-byte client-auth buffer",
+            cert_der.len()
         ));
     }
+    // Decode straight into the fixed `Zeroizing` array — the raw seed never
+    // touches an intermediate heap buffer.
     let mut seed = Zeroizing::new([0u8; 32]);
-    seed.copy_from_slice(&bytes);
+    decode_hex_into(seed_hex, &mut seed[..]).map_err(|e| format!("--client-seed: {e}"))?;
     Ok(ClientAuthMaterial { cert_der, seed })
+}
+
+/// Decode `s` (hex, no `0x`) into `out`, which fixes the expected byte count.
+fn decode_hex_into(s: &str, out: &mut [u8]) -> std::result::Result<(), String> {
+    let bytes = s.as_bytes();
+    if bytes.len() != out.len() * 2 {
+        return Err(format!(
+            "expected {} hex bytes, got {}",
+            out.len(),
+            bytes.len() / 2
+        ));
+    }
+    for (i, slot) in out.iter_mut().enumerate() {
+        let pair = std::str::from_utf8(&bytes[i * 2..i * 2 + 2])
+            .map_err(|_| format!("non-ASCII byte at offset {}", i * 2))?;
+        *slot = u8::from_str_radix(pair, 16)
+            .map_err(|_| format!("bad hex byte at offset {}", i * 2))?;
+    }
+    Ok(())
 }
 
 fn decode_hex(s: &str) -> std::result::Result<Vec<u8>, String> {
