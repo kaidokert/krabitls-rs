@@ -174,6 +174,16 @@ pub fn parse_server_flight(content: &[u8]) -> Result<ServerFlightView<'_>, Fligh
     })
 }
 
+/// Extract the `certificate_request_context` from a framed
+/// `CertificateRequest` message (the `cert_request_full` bytes), so the
+/// client `Certificate` can echo it (RFC 8446 §4.4.2). Layout:
+/// `type(1) || u24 len || u8(ctx_len) || ctx || u16(ext_len) || exts`.
+pub fn certificate_request_context(creq_full: &[u8]) -> Result<&[u8], FlightError> {
+    let body = creq_full.get(4..).ok_or(FlightError::Truncated)?;
+    let ctx_len = *body.first().ok_or(FlightError::Truncated)? as usize;
+    body.get(1..1 + ctx_len).ok_or(FlightError::Truncated)
+}
+
 struct HsReader<'a> {
     buf: &'a [u8],
     pos: usize,
@@ -456,6 +466,23 @@ pub(crate) mod tests {
                 .unwrap()
                 .cert_request_full
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn certificate_request_context_extracts_echo() {
+        // body = u8(ctx_len) ctx u16(ext_len) exts
+        let creq = framed(HS_CERTIFICATE_REQUEST, &[0x02, 0xCA, 0xFE, 0x00, 0x00]);
+        assert_eq!(certificate_request_context(&creq).unwrap(), &[0xCA, 0xFE]);
+
+        let empty = framed(HS_CERTIFICATE_REQUEST, &[0x00, 0x00, 0x00]);
+        assert_eq!(certificate_request_context(&empty).unwrap(), &[] as &[u8]);
+
+        // ctx_len overruns the message.
+        let bad = framed(HS_CERTIFICATE_REQUEST, &[0x05, 0xAA]);
+        assert_eq!(
+            certificate_request_context(&bad),
+            Err(FlightError::Truncated)
         );
     }
 

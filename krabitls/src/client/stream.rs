@@ -1,6 +1,7 @@
 //! Blocking TLS 1.3 client handle. Sans-randomness — caller supplies the RNG.
 
 use crate::ClientHelloError;
+use crate::client_flight::ClientAuthPolicy;
 use crate::connection::ConnectionError;
 use crate::connection::Init;
 use crate::connection::TlsConnection;
@@ -67,8 +68,8 @@ where
     ///   violations.
     /// - [`ConnectError::UnexpectedEof`] when the transport returns
     ///   `Ok(0)` mid-handshake.
-    pub fn connect<R>(
-        params: &ClientParams<'_, V>,
+    pub fn connect<R, A>(
+        params: &ClientParams<'_, V, A>,
         scratch: &'s mut Scratch<FLIGHT, RECV, SEND>,
         transport: T,
         rng: &mut R,
@@ -76,8 +77,9 @@ where
     where
         R: rand_core::TryCryptoRng,
         V: VerifyStrategy<C::Ed25519, C::Rsa>,
+        A: ClientAuthPolicy,
     {
-        validate_construction::<_, RECV, SEND>(params)?;
+        validate_construction::<_, _, RECV, SEND>(params)?;
 
         let mut client_random = [0u8; 32];
         let mut x25519_priv = crate::newtype::ZeroBuf::<32>::new([0u8; 32]);
@@ -289,6 +291,7 @@ fn drive_handshake<
     C,
     T,
     V,
+    A,
     const FLIGHT: usize,
     const RECV: usize,
     const SEND: usize,
@@ -296,12 +299,13 @@ fn drive_handshake<
 >(
     engine: &mut TlsEngine<'_, C, FLIGHT, RECV, SEND, MAX_CHAIN>,
     transport: &mut T,
-    params: &ClientParams<'_, V>,
+    params: &ClientParams<'_, V, A>,
 ) -> Result<(), ConnectError<T::Error>>
 where
     T: Transport,
     C: ClientConfig,
     V: VerifyStrategy<C::Ed25519, C::Rsa>,
+    A: ClientAuthPolicy,
 {
     loop {
         match engine.step_handshake(params)? {
@@ -353,8 +357,8 @@ where
 // Pre-flight + opts derivation
 // ============================================================================
 
-fn validate_construction<V, const RECV: usize, const SEND: usize>(
-    params: &ClientParams<'_, V>,
+fn validate_construction<V, A, const RECV: usize, const SEND: usize>(
+    params: &ClientParams<'_, V, A>,
 ) -> Result<(), ConfigError> {
     if params.hostname.len() > FACADE_HOSTNAME_MAX {
         return Err(ConfigError::HostnameTooLong);

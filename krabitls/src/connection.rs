@@ -14,7 +14,9 @@ use crate::aead::split_inner_plaintext;
 use crate::aead::{CipherSuite, RecordKeys};
 use crate::aead::{DecryptError, EncryptError};
 use crate::backends::RustCrypto;
-use crate::client_flight::ClientFinishedError;
+use crate::client_flight::{
+    ClientAuthFlightError, ClientAuthPolicy, ClientFinishedError, MAX_CLIENT_AUTH_FLIGHT,
+};
 #[cfg(feature = "cipher-aes")]
 use crate::consts::CIPHER_AES_128_GCM_SHA256;
 #[cfg(feature = "chacha20")]
@@ -54,6 +56,7 @@ pub enum ConnectionError<E = core::convert::Infallible> {
     Transcript(TranscriptError),
     Reassembly(ReassemblyError),
     ClientFinished(ClientFinishedError),
+    ClientAuth(ClientAuthFlightError),
     WrongSuite {
         expected: u16,
         got: u16,
@@ -85,6 +88,7 @@ impl<E> ConnectionError<E> {
             ConnectionError::Transcript(t) => ConnectionError::Transcript(t),
             ConnectionError::Reassembly(r) => ConnectionError::Reassembly(r),
             ConnectionError::ClientFinished(cf) => ConnectionError::ClientFinished(cf),
+            ConnectionError::ClientAuth(ca) => ConnectionError::ClientAuth(ca),
             ConnectionError::WrongSuite { expected, got } => {
                 ConnectionError::WrongSuite { expected, got }
             }
@@ -154,6 +158,12 @@ impl<E> From<ClientFinishedError> for ConnectionError<E> {
     }
 }
 
+impl<E> From<ClientAuthFlightError> for ConnectionError<E> {
+    fn from(e: ClientAuthFlightError) -> Self {
+        Self::ClientAuth(e)
+    }
+}
+
 impl<E: core::fmt::Display> core::fmt::Display for ConnectionError<E> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
@@ -166,6 +176,7 @@ impl<E: core::fmt::Display> core::fmt::Display for ConnectionError<E> {
             Self::Transcript(e) => write!(f, "transcript: {e}"),
             Self::Reassembly(e) => write!(f, "reassembly: {e}"),
             Self::ClientFinished(e) => write!(f, "ClientFinished: {e}"),
+            Self::ClientAuth(e) => write!(f, "client auth: {e}"),
             Self::WrongSuite { expected, got } => write!(
                 f,
                 "cipher suite mismatch: expected 0x{expected:04x}, got 0x{got:04x}"
@@ -197,6 +208,7 @@ impl<E: core::error::Error + 'static> core::error::Error for ConnectionError<E> 
             Self::Transcript(e) => Some(e),
             Self::Reassembly(e) => Some(e),
             Self::ClientFinished(e) => Some(e),
+            Self::ClientAuth(e) => Some(e),
             Self::WrongSuite { .. }
             | Self::IncompleteFlight
             | Self::UnexpectedSuite { .. }
@@ -692,6 +704,58 @@ where
             },
             RecordKeys::<S>::derive::<H>,
         )?;
+        Ok((
+            record,
+            TlsConnection {
+                transcript: self.transcript,
+                state: AppData {
+                    c_ap_keys,
+                    s_ap_keys,
+                    seq_out: 0,
+                    seq_in: 0,
+                },
+            },
+        ))
+    }
+
+    /// Respond to a server `CertificateRequest` (RFC 8446 §4.4.2) under the
+    /// caller's compile-time [`ClientAuthPolicy`]: emit the client second
+    /// flight the policy builds (real `Certificate` + `CertificateVerify`,
+    /// an empty certificate, or an abort) coalesced into one handshake
+    /// record. `cert_request_context` echoes the context from the server's
+    /// request.
+    ///
+    /// Generic over `A`, so a binary that only ever instantiates
+    /// [`NoClientAuth`](crate::client_flight::NoClientAuth) never codegens the
+    /// certificate/signing builders. `out_buf` must hold the full second
+    /// flight (the public-profile
+    /// [`DefaultScratch`](crate::client::DefaultScratch) is sized for it).
+    /// `Live`-only.
+    pub fn finish_handshake_with_policy<'a, A: ClientAuthPolicy>(
+        mut self,
+        policy: &A,
+        cert_request_context: &[u8],
+        out_buf: &'a mut [u8],
+    ) -> Result<FinishHandshakeOk<'a, S, H>, ConnectionError> {
+        // Application keys bind to the transcript through the *server*
+        // Finished — snapshot before the client flight advances it.
+        let th_through_sfin = self.transcript.snapshot();
+
+        let mut flight = [0u8; MAX_CLIENT_AUTH_FLIGHT];
+        let plaintext = policy.build_flight::<H>(
+            cert_request_context,
+            &self.state.c_hs_ts,
+            &mut self.transcript,
+            &mut flight,
+        )?;
+        let keys = RecordKeys::<S>::derive::<H>(&self.state.c_hs_ts)?;
+        let record = keys.encrypt_record(plaintext, CT_HANDSHAKE, 0, out_buf)?;
+
+        let ms = master_secret::<H>(&self.state.hs)?;
+        let (c_ap_ts, s_ap_ts) = application_traffic_secrets::<H>(&ms, &th_through_sfin)?;
+        let c_ap_keys = RecordKeys::<S>::derive::<H>(&c_ap_ts)?;
+        let s_ap_keys = RecordKeys::<S>::derive::<H>(&s_ap_ts)?;
+
         Ok((
             record,
             TlsConnection {

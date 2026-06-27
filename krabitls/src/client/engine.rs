@@ -11,6 +11,7 @@ use super::{ClientConfig, ClientParams, Scratch};
 use crate::aead::Aes128GcmSha256;
 #[cfg(feature = "chacha20")]
 use crate::aead::ChaCha20Poly1305Sha256;
+use crate::client_flight::ClientAuthPolicy;
 use crate::connection::{
     AppData, FlightStep, NegotiatedSuite, ServerFlightDone, WaitServerFlight, WaitServerHello,
 };
@@ -19,7 +20,7 @@ use crate::consts::{
     CLOSE_NOTIFY_ALERT, CT_ALERT, CT_APPLICATION_DATA, CT_HANDSHAKE, HS_NEW_SESSION_TICKET,
 };
 use crate::identity::verify_hostname;
-use crate::server_flight::{extract_chain, parse_server_flight};
+use crate::server_flight::{certificate_request_context, extract_chain, parse_server_flight};
 use crate::traits::CertParser;
 use crate::traits::verify_strategy::{CertChainView, PreparedVerifier, VerifyStrategy};
 
@@ -188,12 +189,13 @@ impl<
 
     /// Drive the handshake phase one event. Priority:
     /// `Send > HandshakeDone > AppData > Closed > Recv`. Loop, never recursion.
-    pub(crate) fn step_handshake<V>(
+    pub(crate) fn step_handshake<V, A>(
         &mut self,
-        params: &ClientParams<'_, V>,
+        params: &ClientParams<'_, V, A>,
     ) -> Result<EngineEvent, HandshakeError>
     where
         V: VerifyStrategy<C::Ed25519, C::Rsa>,
+        A: ClientAuthPolicy,
     {
         loop {
             if self.is_send_pending() {
@@ -339,15 +341,16 @@ impl<
         })
     }
 
-    fn dispatch_handshake_record<V>(
+    fn dispatch_handshake_record<V, A>(
         &mut self,
         start: usize,
         end: usize,
         outer_type: u8,
-        params: &ClientParams<'_, V>,
+        params: &ClientParams<'_, V, A>,
     ) -> Result<(), HandshakeError>
     where
         V: VerifyStrategy<C::Ed25519, C::Rsa>,
+        A: ClientAuthPolicy,
     {
         match &self.state {
             EngineState::WaitServerHello(_) => {
@@ -429,14 +432,15 @@ impl<
 
     /// In-place feed of a flight record. On `FlightStep::Ready`, drives
     /// the strategy → identity → finalize → finish transition.
-    fn handle_flight_record<V>(
+    fn handle_flight_record<V, A>(
         &mut self,
         start: usize,
         end: usize,
-        params: &ClientParams<'_, V>,
+        params: &ClientParams<'_, V, A>,
     ) -> Result<(), HandshakeError>
     where
         V: VerifyStrategy<C::Ed25519, C::Rsa>,
+        A: ClientAuthPolicy,
     {
         // RFC 8449 limit applies to protected records only; CCS is
         // handled by `feed_server_record_inplace` without decryption.
@@ -479,9 +483,13 @@ impl<
 
     /// Consume `WaitFlight*` → strategy + identity → finalize → finish,
     /// installing `App*` with the Client Finished queued for send.
-    fn finalize_and_finish<V>(&mut self, params: &ClientParams<'_, V>) -> Result<(), HandshakeError>
+    fn finalize_and_finish<V, A>(
+        &mut self,
+        params: &ClientParams<'_, V, A>,
+    ) -> Result<(), HandshakeError>
     where
         V: VerifyStrategy<C::Ed25519, C::Rsa>,
+        A: ClientAuthPolicy,
     {
         if let Some(peer_limit) = self
             .scratch
@@ -505,6 +513,29 @@ impl<
                 ))?;
         let flight_view = parse_server_flight(flight_bytes)
             .map_err(|e| HandshakeError::Connection(ConnectionError::Flight(e)))?;
+
+        // `A::ACCEPT_CERT_REQUEST` is a `const`, so for the default
+        // `NoClientAuth` (false) the entire certificate-response path
+        // const-folds away — `certificate_request_context`,
+        // `finish_handshake_with_policy`, and every certificate builder drop
+        // out of the monomorphization. A server request then aborts.
+        let cert_request_ctx: Option<&[u8]> = if A::ACCEPT_CERT_REQUEST {
+            match flight_view.cert_request_full {
+                Some(creq) => Some(
+                    certificate_request_context(creq)
+                        .map_err(|e| HandshakeError::Connection(ConnectionError::Flight(e)))?,
+                ),
+                None => None,
+            }
+        } else {
+            if flight_view.cert_request_full.is_some() {
+                return Err(HandshakeError::Connection(ConnectionError::ClientAuth(
+                    crate::client_flight::ClientAuthFlightError::CertificateRequested,
+                )));
+            }
+            None
+        };
+
         let chain = extract_chain::<MAX_CHAIN>(flight_view.cert_body)
             .map_err(|e| HandshakeError::Connection(ConnectionError::Flight(e)))?;
         let chain_view = CertChainView { certs: &chain };
@@ -569,18 +600,24 @@ impl<
         let cf_len = match done {
             #[cfg(feature = "cipher-aes")]
             FlightDone::Aes(d) => {
-                let (cf_bytes, app) = d
-                    .finish_handshake(&mut self.scratch.send_record)
-                    .map_err(HandshakeError::Connection)?;
+                let send = &mut self.scratch.send_record;
+                let (cf_bytes, app) = match cert_request_ctx {
+                    Some(ctx) => d.finish_handshake_with_policy(&params.client_auth, ctx, send),
+                    None => d.finish_handshake(send),
+                }
+                .map_err(HandshakeError::Connection)?;
                 let cf_len = cf_bytes.len();
                 self.state = EngineState::AppAes(app);
                 cf_len
             }
             #[cfg(feature = "chacha20")]
             FlightDone::ChaCha(d) => {
-                let (cf_bytes, app) = d
-                    .finish_handshake(&mut self.scratch.send_record)
-                    .map_err(HandshakeError::Connection)?;
+                let send = &mut self.scratch.send_record;
+                let (cf_bytes, app) = match cert_request_ctx {
+                    Some(ctx) => d.finish_handshake_with_policy(&params.client_auth, ctx, send),
+                    None => d.finish_handshake(send),
+                }
+                .map_err(HandshakeError::Connection)?;
                 let cf_len = cf_bytes.len();
                 self.state = EngineState::AppChaCha(app);
                 cf_len
