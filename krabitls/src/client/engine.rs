@@ -3,7 +3,8 @@
 
 use super::error::{HandshakeError, InternalError};
 use super::scratch::{
-    AEAD_TAG, PROTO_MAX_INNER_PLAINTEXT, RECORD_OVERHEAD, RecordSizeLimit, TLS_HEADER,
+    AEAD_TAG, MIN_RECORD_SIZE_LIMIT, PROTO_MAX_INNER_PLAINTEXT, RECORD_OVERHEAD, RecordSizeLimit,
+    TLS_HEADER,
 };
 use super::{ClientConfig, ClientParams, Scratch};
 #[cfg(feature = "cipher-aes")]
@@ -154,9 +155,14 @@ impl<
     }
 
     pub(crate) const fn default_our_recv_limit() -> RecordSizeLimit {
+        // Clamp both ends so the result is always a valid `RecordSizeLimit`
+        // regardless of `RECV`. An undersized `RECV` is still rejected
+        // gracefully by `validate_construction` before this value is used.
         let from_buf = RECV.saturating_sub(RECORD_OVERHEAD);
         let value = if from_buf > PROTO_MAX_INNER_PLAINTEXT as usize {
             PROTO_MAX_INNER_PLAINTEXT
+        } else if from_buf < MIN_RECORD_SIZE_LIMIT as usize {
+            MIN_RECORD_SIZE_LIMIT
         } else {
             from_buf as u16
         };
