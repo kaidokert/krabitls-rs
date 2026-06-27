@@ -152,10 +152,19 @@ impl<'a, V, A> ClientParams<'a, V, A> {
     /// Changes the params' policy type to
     /// [`WithClientAuth`](crate::client::WithClientAuth) — name it via the
     /// stream's `A` parameter if you need to spell the resulting type.
-    pub fn with_client_auth<T: ClientAuth + ?Sized>(
+    ///
+    /// Only Ed25519 client certificates are supported today, and krabitls does
+    /// not yet inspect the server's `CertificateRequest.signature_algorithms`:
+    /// the caller is responsible for ensuring the signer's
+    /// [`scheme`](ClientAuth::scheme) is one the server accepts, else the
+    /// server rejects the `CertificateVerify`.
+    ///
+    /// The signer's lifetime is independent of the hostname's, so a
+    /// shorter-lived signer is fine.
+    pub fn with_client_auth<'b, T: ClientAuth + ?Sized>(
         self,
-        auth: &'a T,
-    ) -> ClientParams<'a, V, WithClientAuth<'a, T>> {
+        auth: &'b T,
+    ) -> ClientParams<'a, V, WithClientAuth<'b, T>> {
         ClientParams {
             hostname: self.hostname,
             verify: self.verify,

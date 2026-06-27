@@ -378,14 +378,21 @@ where
             got: SEND,
         });
     }
-    // A mutual-auth policy emits the coalesced second flight as one record;
-    // SEND must hold it. `MAX_FLIGHT_LEN == 0` (NoClientAuth) needs only
-    // MIN_SEND_STANDARD. The record is plaintext + the content-type byte +
-    // header + AEAD tag.
+    // A mutual-auth policy emits the coalesced second flight as one record.
+    // `MAX_FLIGHT_LEN == 0` (NoClientAuth) needs only MIN_SEND_STANDARD.
     if A::MAX_FLIGHT_LEN > 0 {
+        // SEND holds the encrypted record: plaintext + content-type + header + tag.
         let needed = A::MAX_FLIGHT_LEN + 1 + RECORD_OVERHEAD;
         if SEND < needed {
             return Err(ConfigError::BufferTooSmall { needed, got: SEND });
+        }
+        // The flight *plaintext* is built into the idle recv buffer, so RECV
+        // must hold it too.
+        if RECV < A::MAX_FLIGHT_LEN {
+            return Err(ConfigError::BufferTooSmall {
+                needed: A::MAX_FLIGHT_LEN,
+                got: RECV,
+            });
         }
     }
     // SEND must hold one full RECORD_OVERHEAD+plaintext record.

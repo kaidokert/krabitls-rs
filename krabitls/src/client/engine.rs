@@ -597,18 +597,23 @@ impl<
             }
         };
 
+        // The client-auth flight plaintext is built into the idle `recv_record`
+        // buffer (the server flight already lives in the reassembler), avoiding
+        // a ~1.6 KB stack frame. `recv_record` and `send_record` are disjoint
+        // `scratch` fields, so the borrows don't conflict.
+        let peer_limit = self.peer_recv_limit.get();
         let cf_len = match done {
             #[cfg(feature = "cipher-aes")]
             FlightDone::Aes(d) => {
-                let send = &mut self.scratch.send_record;
                 let (cf_bytes, app) = match cert_request_ctx {
                     Some(ctx) => d.finish_handshake_with_policy(
                         &params.client_auth,
                         ctx,
-                        self.peer_recv_limit.get(),
-                        send,
+                        peer_limit,
+                        &mut self.scratch.recv_record,
+                        &mut self.scratch.send_record,
                     ),
-                    None => d.finish_handshake(send),
+                    None => d.finish_handshake(&mut self.scratch.send_record),
                 }
                 .map_err(HandshakeError::Connection)?;
                 let cf_len = cf_bytes.len();
@@ -617,15 +622,15 @@ impl<
             }
             #[cfg(feature = "chacha20")]
             FlightDone::ChaCha(d) => {
-                let send = &mut self.scratch.send_record;
                 let (cf_bytes, app) = match cert_request_ctx {
                     Some(ctx) => d.finish_handshake_with_policy(
                         &params.client_auth,
                         ctx,
-                        self.peer_recv_limit.get(),
-                        send,
+                        peer_limit,
+                        &mut self.scratch.recv_record,
+                        &mut self.scratch.send_record,
                     ),
-                    None => d.finish_handshake(send),
+                    None => d.finish_handshake(&mut self.scratch.send_record),
                 }
                 .map_err(HandshakeError::Connection)?;
                 let cf_len = cf_bytes.len();

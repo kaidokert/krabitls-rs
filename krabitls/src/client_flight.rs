@@ -96,10 +96,14 @@ pub const MAX_CLIENT_AUTH_FLIGHT: usize = (HS_HEADER + CERT_FRAMING + MAX_CLIENT
     + (HS_HEADER + CV_FRAMING + MAX_CLIENT_SIG_LEN)
     + FINISHED_MSG;
 
+/// Empty-`Certificate` framing: u8 ctx_len + max 255-byte context + u24(0)
+/// empty `certificate_list` (no entry, so no `CERT_FRAMING` cert_len/ext_len).
+const EMPTY_CERT_FRAMING: usize = 1 + 255 + 3;
+
 /// Plaintext bound on the empty-`Certificate` second flight (the
 /// [`DeclineClientAuth`] policy): an empty-list Certificate + Finished, no
 /// CertificateVerify.
-pub const MAX_CLIENT_EMPTY_AUTH_FLIGHT: usize = (HS_HEADER + 1 + 255 + 3) + FINISHED_MSG;
+pub const MAX_CLIENT_EMPTY_AUTH_FLIGHT: usize = (HS_HEADER + EMPTY_CERT_FRAMING) + FINISHED_MSG;
 
 const CLIENT_CV_CTX: &[u8] = b"TLS 1.3, client CertificateVerify";
 /// 64-space pad || context string || 0x00 separator || 32-byte transcript hash.

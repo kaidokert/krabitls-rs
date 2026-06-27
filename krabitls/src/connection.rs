@@ -14,9 +14,7 @@ use crate::aead::split_inner_plaintext;
 use crate::aead::{CipherSuite, RecordKeys};
 use crate::aead::{DecryptError, EncryptError};
 use crate::backends::RustCrypto;
-use crate::client_flight::{
-    ClientAuthFlightError, ClientAuthPolicy, ClientFinishedError, MAX_CLIENT_AUTH_FLIGHT,
-};
+use crate::client_flight::{ClientAuthFlightError, ClientAuthPolicy, ClientFinishedError};
 #[cfg(feature = "cipher-aes")]
 use crate::consts::CIPHER_AES_128_GCM_SHA256;
 #[cfg(feature = "chacha20")]
@@ -736,18 +734,22 @@ where
         policy: &A,
         cert_request_context: &[u8],
         peer_record_size_limit: u16,
+        flight_scratch: &mut [u8],
         out_buf: &'a mut [u8],
     ) -> Result<FinishHandshakeOk<'a, S, H>, ConnectionError> {
         // Application keys bind to the transcript through the *server*
         // Finished — snapshot before the client flight advances it.
         let th_through_sfin = self.transcript.snapshot();
 
-        let mut flight = [0u8; MAX_CLIENT_AUTH_FLIGHT];
+        // `flight_scratch` is a caller-owned plaintext buffer (the engine
+        // passes the idle recv buffer) — avoids a ~1.6 KB stack frame on
+        // constrained targets. `validate_construction` guarantees it holds
+        // `A::MAX_FLIGHT_LEN`.
         let plaintext = policy.build_flight::<H>(
             cert_request_context,
             &self.state.c_hs_ts,
             &mut self.transcript,
-            &mut flight,
+            flight_scratch,
         )?;
         // Enforce the policy's own `MAX_FLIGHT_LEN` contract (what
         // `validate_construction` sized `SEND` against) — catches a custom

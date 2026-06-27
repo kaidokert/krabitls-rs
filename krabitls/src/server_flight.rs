@@ -194,16 +194,19 @@ pub fn certificate_request_context(creq_full: &[u8]) -> Result<&[u8], FlightErro
     let ctx = body.get(1..ctx_end).ok_or(FlightError::Truncated)?;
 
     // The extensions vector must be present and its u16 length must account
-    // for exactly the remaining bytes.
+    // for exactly the remaining bytes. Compare via subtraction rather than
+    // `ctx_end + 2 + ext_len` so a large `ext_len` can't overflow `usize` on
+    // 16-bit targets and slip past the bound; the `get(ctx_end..ctx_end + 2)`
+    // guarantees `body.len() >= ctx_end + 2`.
     let ext_len_bytes = body
         .get(ctx_end..ctx_end + 2)
         .ok_or(FlightError::Truncated)?;
     let ext_len = u16::from_be_bytes([ext_len_bytes[0], ext_len_bytes[1]]) as usize;
-    let declared = ctx_end + 2 + ext_len;
-    if body.len() < declared {
+    let remaining = body.len() - ctx_end - 2;
+    if remaining < ext_len {
         return Err(FlightError::Truncated);
     }
-    if body.len() > declared {
+    if remaining > ext_len {
         return Err(FlightError::TrailingBytes);
     }
     Ok(ctx)
