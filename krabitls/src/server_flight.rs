@@ -5,7 +5,10 @@ use crate::backends::rsa_verify::RsaPssSig;
 use crate::consts::SIG_SCHEME_ED25519;
 #[cfg(feature = "rsa")]
 use crate::consts::SIG_SCHEME_RSA_PSS_RSAE_SHA256;
-use crate::consts::{HS_CERTIFICATE, HS_CERTIFICATE_VERIFY, HS_ENCRYPTED_EXTENSIONS, HS_FINISHED};
+use crate::consts::{
+    HS_CERTIFICATE, HS_CERTIFICATE_REQUEST, HS_CERTIFICATE_VERIFY, HS_ENCRYPTED_EXTENSIONS,
+    HS_FINISHED,
+};
 use crate::hkdf::{HkdfLabelError, TranscriptHash, hkdf_expand_label};
 use crate::newtype::{Secret, TranscriptDigest, ZeroBuf};
 use crate::traits::verify_strategy::PreparedVerifier;
@@ -23,6 +26,10 @@ pub struct ServerFlightView<'a> {
     // AES fixture tests inspect the body bytes directly.
     #[cfg_attr(not(all(test, feature = "cipher-aes")), allow(dead_code))]
     pub ee_body: &'a [u8],
+    /// `CertificateRequest` framed bytes when the server asked for client
+    /// auth (RFC 8446 §4.3.2); `None` otherwise. Carried so the transcript
+    /// hashes it in its EE→Certificate position.
+    pub cert_request_full: Option<&'a [u8]>,
     pub cert_full: &'a [u8],
     pub cert_body: &'a [u8],
     pub cv_full: &'a [u8],
@@ -113,7 +120,20 @@ pub fn parse_server_flight(content: &[u8]) -> Result<ServerFlightView<'_>, Fligh
     // Accept any well-formed EncryptedExtensions body for public-server interop.
     let _ = ee_body;
 
-    let (cert_type, cert_body, cert_full) = r.next_msg()?;
+    // RFC 8446 §4.3.2: an optional CertificateRequest may precede Certificate
+    // when the server asks the client to authenticate. We don't act on its
+    // contents (the client decides whether/how to respond), but it must be
+    // hashed into the transcript in this position.
+    let (mut next_type, mut next_body, mut next_full) = r.next_msg()?;
+    let cert_request_full = if next_type == HS_CERTIFICATE_REQUEST {
+        let creq_full = next_full;
+        (next_type, next_body, next_full) = r.next_msg()?;
+        Some(creq_full)
+    } else {
+        None
+    };
+    let _ = next_body;
+    let (cert_type, cert_body, cert_full) = (next_type, next_body, next_full);
     if cert_type != HS_CERTIFICATE {
         return Err(FlightError::UnexpectedHandshakeType {
             expected: HS_CERTIFICATE,
@@ -144,6 +164,7 @@ pub fn parse_server_flight(content: &[u8]) -> Result<ServerFlightView<'_>, Fligh
     Ok(ServerFlightView {
         ee_full,
         ee_body,
+        cert_request_full,
         cert_full,
         cert_body,
         cv_full,
@@ -356,6 +377,9 @@ where
     let flight = parse_server_flight(plaintext)?;
 
     transcript.update(flight.ee_full);
+    if let Some(creq) = flight.cert_request_full {
+        transcript.update(creq);
+    }
     transcript.update(flight.cert_full);
     let th_after_cert = transcript.snapshot();
     verify_certificate_verify_with_prepared::<E, R>(prepared, &th_after_cert, flight.cv_body)?;
@@ -382,6 +406,58 @@ where
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    fn framed(ty: u8, body: &[u8]) -> heapless::Vec<u8, 64> {
+        let mut v = heapless::Vec::<u8, 64>::new();
+        v.push(ty).unwrap();
+        let l = body.len();
+        v.extend_from_slice(&[(l >> 16) as u8, (l >> 8) as u8, l as u8])
+            .unwrap();
+        v.extend_from_slice(body).unwrap();
+        v
+    }
+
+    #[test]
+    fn parse_consumes_optional_certificate_request() {
+        let mut with = heapless::Vec::<u8, 256>::new();
+        with.extend_from_slice(&framed(HS_ENCRYPTED_EXTENSIONS, &[0x00, 0x00]))
+            .unwrap();
+        with.extend_from_slice(&framed(HS_CERTIFICATE_REQUEST, &[0xAA; 5]))
+            .unwrap();
+        with.extend_from_slice(&framed(HS_CERTIFICATE, &[0xBB; 8]))
+            .unwrap();
+        with.extend_from_slice(&framed(HS_CERTIFICATE_VERIFY, &[0xCC; 4]))
+            .unwrap();
+        with.extend_from_slice(&framed(HS_FINISHED, &[0xDD; 32]))
+            .unwrap();
+        let v = parse_server_flight(&with).unwrap();
+        let creq = v.cert_request_full.expect("CertificateRequest captured");
+        assert_eq!(creq[0], HS_CERTIFICATE_REQUEST);
+        assert_eq!(v.cert_full[0], HS_CERTIFICATE);
+        assert_eq!(v.cv_full[0], HS_CERTIFICATE_VERIFY);
+        assert_eq!(v.fin_full[0], HS_FINISHED);
+
+        // Without one, the field is None and EE -> Certificate still parses.
+        let mut without = heapless::Vec::<u8, 256>::new();
+        without
+            .extend_from_slice(&framed(HS_ENCRYPTED_EXTENSIONS, &[0x00, 0x00]))
+            .unwrap();
+        without
+            .extend_from_slice(&framed(HS_CERTIFICATE, &[0xBB; 8]))
+            .unwrap();
+        without
+            .extend_from_slice(&framed(HS_CERTIFICATE_VERIFY, &[0xCC; 4]))
+            .unwrap();
+        without
+            .extend_from_slice(&framed(HS_FINISHED, &[0xDD; 32]))
+            .unwrap();
+        assert!(
+            parse_server_flight(&without)
+                .unwrap()
+                .cert_request_full
+                .is_none()
+        );
+    }
 
     /// Default `CertificateEntry`-count bound for the leaf-only
     /// [`extract_cert_der`] convenience. Production threads `MAX_CHAIN` from
