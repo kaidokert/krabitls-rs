@@ -733,6 +733,7 @@ where
         mut self,
         policy: &A,
         cert_request_context: &[u8],
+        cert_request_sig_algs: &[u8],
         peer_record_size_limit: u16,
         flight_scratch: &mut [u8],
         out_buf: &'a mut [u8],
@@ -747,6 +748,7 @@ where
         // `A::MAX_FLIGHT_LEN`.
         let plaintext = policy.build_flight::<H>(
             cert_request_context,
+            cert_request_sig_algs,
             &self.state.c_hs_ts,
             &mut self.transcript,
             flight_scratch,
