@@ -194,6 +194,10 @@ pub(crate) fn early_secret<H: HkdfSha256>() -> Secret {
 /// the error is propagated rather than `expect`-ed so the public API
 /// stays uniformly fallible.
 pub(crate) fn handshake_secret<H: HkdfSha256>(dhe: &[u8]) -> Result<Secret, HkdfLabelError> {
+    debug_assert!(
+        dhe.len() == 32 || dhe.len() == 64,
+        "dhe must be the 32-byte X25519 secret or the 64-byte ML-KEM||X25519 concatenation"
+    );
     let salt = derive_secret::<H>(&early_secret::<H>(), b"derived", &EMPTY_TRANSCRIPT_HASH)?;
     Ok(Secret::new(H::extract(salt.as_bytes(), dhe)))
 }

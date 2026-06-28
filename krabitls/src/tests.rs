@@ -1919,6 +1919,32 @@ mod mlkem_keyshare {
         );
     }
 
+    /// The 1216-byte hybrid key_share resizes the ClientHello; this is the only
+    /// direct guard that `CLIENT_HELLO_LEN` still tracks the writer exactly (and
+    /// that one byte short is rejected) under `mlkem`.
+    #[test]
+    fn client_hello_fits_exact_buffer_and_rejects_short() {
+        let random = [0x11u8; 32];
+        let x25519_pub = [0x22u8; 32];
+        let ek = [0x33u8; MLKEM768_EK_BYTES];
+        let opts = ClientHelloOptions {
+            hostname: None,
+            record_size_limit: None,
+            suites: SuiteList::Default,
+            mlkem_ek: Some(&ek),
+        };
+
+        let mut exact = [0u8; CLIENT_HELLO_LEN];
+        let mut cursor: &mut [u8] = &mut exact;
+        write_client_hello_with(&mut cursor, &random, &x25519_pub, &opts).unwrap();
+        assert!(cursor.is_empty(), "must fully consume CLIENT_HELLO_LEN");
+
+        let mut short = [0u8; CLIENT_HELLO_LEN - 1];
+        let mut cursor: &mut [u8] = &mut short;
+        let err = write_client_hello_with(&mut cursor, &random, &x25519_pub, &opts).unwrap_err();
+        assert_eq!(err, ClientHelloError::Write(SliceWriteError::Full));
+    }
+
     /// Build a complete ServerHello record with a hybrid key_share = ct || x25519.
     fn hybrid_server_hello(ct: &[u8; MLKEM768_CT_BYTES], x25519: &[u8; 32]) -> Vec<u8> {
         let mut ext = Vec::new();
@@ -1947,7 +1973,7 @@ mod mlkem_keyshare {
 
         let mut record_body = Vec::new();
         record_body.push(HS_SERVER_HELLO);
-        let l = hs_body.len();
+        let l = hs_body.len() as u32;
         record_body.extend_from_slice(&[(l >> 16) as u8, (l >> 8) as u8, l as u8]);
         record_body.extend_from_slice(&hs_body);
 
@@ -1998,7 +2024,7 @@ mod mlkem_keyshare {
             hb.extend_from_slice(&(ext.len() as u16).to_be_bytes());
             hb.extend_from_slice(&ext);
             let mut rb = vec![HS_SERVER_HELLO];
-            let l = hb.len();
+            let l = hb.len() as u32;
             rb.extend_from_slice(&[(l >> 16) as u8, (l >> 8) as u8, l as u8]);
             rb.extend_from_slice(&hb);
             let mut r = vec![CT_HANDSHAKE];

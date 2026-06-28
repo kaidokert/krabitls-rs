@@ -222,8 +222,16 @@ const KEY_SHARE_GROUP: u16 = if cfg!(feature = "mlkem") {
 const KEY_SHARE_KEY_LEN: usize = backends::mlkem::MLKEM768_EK_BYTES + 32;
 #[cfg(not(feature = "mlkem"))]
 const KEY_SHARE_KEY_LEN: usize = 32;
-// ext header (4) + client_shares list_len (2) + group (2) + key_len (2) + key.
-const EXT_KEY_SHARE_TOTAL: u16 = 4 + 6 + KEY_SHARE_KEY_LEN as u16;
+// key_exchange is a u16-prefixed wire field; a future KEM whose key overflowed
+// u16 would silently truncate the length prefixes derived from it.
+const _: () = assert!(KEY_SHARE_KEY_LEN <= u16::MAX as usize);
+const KEY_SHARE_KEY_LEN_U16: u16 = KEY_SHARE_KEY_LEN as u16;
+// client_shares entry: group (2) + key_len (2) + key.
+const KEY_SHARE_LIST_LEN: u16 = 4 + KEY_SHARE_KEY_LEN_U16;
+// key_share extension_data: client_shares list_len (2) + the single entry.
+const KEY_SHARE_EXT_DATA_LEN: u16 = 2 + KEY_SHARE_LIST_LEN;
+// ext header (4) + extension_data.
+const EXT_KEY_SHARE_TOTAL: u16 = 4 + KEY_SHARE_EXT_DATA_LEN;
 
 // At least one cipher feature must be on. We can't form a valid
 // ClientHello otherwise — there's no cipher_suite to advertise.
@@ -537,10 +545,10 @@ pub(crate) fn write_client_hello_with<W: Write>(
     // `ML-KEM-768 ek (1184) || X25519 pub (32)` (draft-ietf-tls-ecdhe-mlkem
     // orders ML-KEM first for X25519MLKEM768); otherwise just the X25519 pub.
     out.write_u16(EXT_KEY_SHARE)?;
-    out.write_u16(6 + KEY_SHARE_KEY_LEN as u16)?;
-    out.write_u16(4 + KEY_SHARE_KEY_LEN as u16)?;
+    out.write_u16(KEY_SHARE_EXT_DATA_LEN)?;
+    out.write_u16(KEY_SHARE_LIST_LEN)?;
     out.write_u16(KEY_SHARE_GROUP)?;
-    out.write_u16(KEY_SHARE_KEY_LEN as u16)?;
+    out.write_u16(KEY_SHARE_KEY_LEN_U16)?;
     #[cfg(feature = "mlkem")]
     out.write_all(
         opts.mlkem_ek
