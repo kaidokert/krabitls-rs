@@ -28,25 +28,15 @@ jobs:
     - uses: dtolnay/rust-toolchain@stable
       with:
         components: rustfmt, clippy
-        # Needed by the local `footprint-*-build` hooks in
-        # .pre-commit-config.yaml — one per target crate.
-        targets: thumbv7m-none-eabi, riscv32imac-unknown-none-elf
     - uses: actions/cache@v4
       with:
         path: |
           ~/.cargo/registry
           ~/.cargo/git
           krabitls/target
-          krabitls_cli/target
-          footprint/cortex-m/target
-          footprint/risc-v/target
-        key: pre-commit-${{ hashFiles('krabitls/Cargo.toml', 'krabitls_cli/Cargo.toml', 'footprint/**/Cargo.toml') }}
+          krabitls_fixtures/target
+        key: pre-commit-${{ hashFiles('krabitls/Cargo.toml', 'krabitls_fixtures/Cargo.toml') }}
         restore-keys: pre-commit-
-    # `cargo hack` is invoked by one of the local pre-commit hooks. Install
-    # the binary via taiki-e's prebuilt action so the hook can find it.
-    - uses: taiki-e/install-action@v2
-      with:
-        tool: cargo-hack
     - uses: pre-commit/action@v3.0.1
 
   host:
@@ -67,6 +57,9 @@ jobs:
           krabitls_cli/target
         key: host-${{ hashFiles('krabitls/Cargo.toml', 'krabitls_cli/Cargo.toml') }}
         restore-keys: host-
+    - uses: taiki-e/install-action@v2
+      with:
+        tool: cargo-hack
 
     - name: Format check (krabitls)
       run: cargo fmt --manifest-path=krabitls/Cargo.toml -- --check
@@ -89,6 +82,16 @@ jobs:
         cargo clippy --manifest-path=krabitls_cli/Cargo.toml --all-targets --features rsa -- -D warnings
         cargo clippy --manifest-path=krabitls_cli/Cargo.toml --all-targets --features chacha20 -- -D warnings
         cargo clippy --manifest-path=krabitls_cli/Cargo.toml --all-targets --features rsa --features chacha20 -- -D warnings
+
+    # Feature-powerset sweep — every realistic combo compiles, is warning-free,
+    # and its tests run (catches a combo where a test silently cfg's out or a
+    # test helper is dead only when a feature is off). At least one cipher;
+    # depth 2 bounds the combinatorics. Moved here from the pre-commit hooks so
+    # local commits stay fast.
+    - name: cargo hack clippy (feature-powerset)
+      run: cargo hack clippy --manifest-path=krabitls/Cargo.toml --feature-powerset --depth 2 --at-least-one-of cipher-aes,chacha20 --all-targets -- -D warnings
+    - name: cargo hack test (feature-powerset)
+      run: cargo hack test --manifest-path=krabitls/Cargo.toml --feature-powerset --depth 2 --at-least-one-of cipher-aes,chacha20
 
     - name: Build (default features)
       run: cargo build --manifest-path=krabitls/Cargo.toml --verbose
