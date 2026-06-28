@@ -7,7 +7,8 @@ use super::*;
     all(
         not(feature = "rsa"),
         not(feature = "chacha20"),
-        not(feature = "mldsa")
+        not(feature = "mldsa"),
+        not(feature = "mlkem")
     ),
     all(feature = "cipher-aes", feature = "chacha20")
 ))]
@@ -16,7 +17,8 @@ use crate::backends::RustCrypto;
 #[cfg(all(
     not(feature = "chacha20"),
     not(feature = "rsa"),
-    not(feature = "mldsa")
+    not(feature = "mldsa"),
+    not(feature = "mlkem")
 ))]
 use crate::consts::{CLOSE_NOTIFY_ALERT, CT_ALERT};
 
@@ -25,7 +27,8 @@ use crate::consts::{CLOSE_NOTIFY_ALERT, CT_ALERT};
     all(
         not(feature = "rsa"),
         not(feature = "chacha20"),
-        not(feature = "mldsa")
+        not(feature = "mldsa"),
+        not(feature = "mlkem")
     ),
     all(feature = "cipher-aes", feature = "chacha20")
 ))]
@@ -37,7 +40,8 @@ const FIXTURE_RANDOM: [u8; 32] = [
     all(
         not(feature = "rsa"),
         not(feature = "chacha20"),
-        not(feature = "mldsa")
+        not(feature = "mldsa"),
+        not(feature = "mlkem")
     ),
     all(feature = "cipher-aes", feature = "chacha20")
 ))]
@@ -49,7 +53,8 @@ const FIXTURE_X25519_PUB: [u8; 32] = [
     all(
         not(feature = "rsa"),
         not(feature = "chacha20"),
-        not(feature = "mldsa")
+        not(feature = "mldsa"),
+        not(feature = "mlkem")
     ),
     all(feature = "cipher-aes", feature = "chacha20")
 ))]
@@ -101,7 +106,8 @@ fn write_client_hello_with_aes_only_narrows_cipher_suites() {
 #[cfg(all(
     not(feature = "rsa"),
     not(feature = "chacha20"),
-    not(feature = "mldsa")
+    not(feature = "mldsa"),
+    not(feature = "mlkem")
 ))]
 mod aes_only {
     use super::*;
@@ -731,7 +737,8 @@ mod aes_only {
 #[cfg(all(
     not(feature = "chacha20"),
     not(feature = "rsa"),
-    not(feature = "mldsa")
+    not(feature = "mldsa"),
+    not(feature = "mlkem")
 ))]
 impl<S, H, M> TlsConnection<WaitServerFlight<S, M>, H>
 where
@@ -761,7 +768,8 @@ where
 #[cfg(all(
     not(feature = "chacha20"),
     not(feature = "rsa"),
-    not(feature = "mldsa")
+    not(feature = "mldsa"),
+    not(feature = "mlkem")
 ))]
 fn feed_server_record_inner<const N: usize, F>(
     record: &[u8],
@@ -807,7 +815,8 @@ where
 #[cfg(all(
     not(feature = "chacha20"),
     not(feature = "rsa"),
-    not(feature = "mldsa")
+    not(feature = "mldsa"),
+    not(feature = "mlkem")
 ))]
 impl ServerPubkeyOwned {
     pub(crate) fn as_view(&self) -> ServerPubkey<'_> {
@@ -827,7 +836,8 @@ impl ServerPubkeyOwned {
 #[cfg(all(
     not(feature = "chacha20"),
     not(feature = "rsa"),
-    not(feature = "mldsa")
+    not(feature = "mldsa"),
+    not(feature = "mlkem")
 ))]
 impl<S, H, M> TlsConnection<ServerFlightDone<S, M>, H>
 where
@@ -869,7 +879,8 @@ where
     #[cfg(all(
         not(feature = "chacha20"),
         not(feature = "rsa"),
-        not(feature = "mldsa")
+        not(feature = "mldsa"),
+        not(feature = "mlkem")
     ))]
     pub(crate) fn close_notify(mut self, out_buf: &mut [u8]) -> Result<&[u8], ConnectionError> {
         self.encrypt_record(&CLOSE_NOTIFY_ALERT, CT_ALERT, out_buf)

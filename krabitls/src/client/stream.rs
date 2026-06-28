@@ -91,15 +91,29 @@ where
 
         let x25519_pub = ed25519_heapless::x25519_base::<X25519Bn>(&x25519_priv);
 
+        // Ephemeral ML-KEM-768 keypair for the X25519MLKEM768 key_share: the
+        // decapsulator moves into the connection state; the public ek is
+        // borrowed into the ClientHello options.
+        #[cfg(feature = "mlkem")]
+        let (mlkem, mlkem_ek) =
+            crate::backends::mlkem::MlKem768::generate(rng).map_err(|_| HandshakeError::Rng)?;
+
         let our_recv_limit =
             TlsEngine::<'_, C, FLIGHT, RECV, SEND, MAX_CHAIN>::default_our_recv_limit();
         let suites = effective_suite_list::<C>(params.suite_policy);
-        let init = TlsConnection::<Init, C::Hkdf>::new(client_random, x25519_priv);
+        let init = TlsConnection::<Init, C::Hkdf>::new(
+            client_random,
+            x25519_priv,
+            #[cfg(feature = "mlkem")]
+            mlkem,
+        );
 
         let opts = crate::ClientHelloOptions {
             hostname: Some(params.hostname.as_bytes()),
             record_size_limit: Some(our_recv_limit.get()),
             suites,
+            #[cfg(feature = "mlkem")]
+            mlkem_ek: Some(&mlkem_ek),
         };
         let (ch_len, wait_sh) = init
             .write_client_hello_to_slice_with(&mut scratch.ch, &x25519_pub, &opts)
