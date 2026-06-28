@@ -815,7 +815,6 @@ impl<
     ) -> Result<(), HandshakeError> {
         // RFC 8446 §5.1: once a post-handshake handshake message is split
         // across records, no other record type may appear until it completes.
-        // Reject interleaved application_data / alert mid-reassembly.
         if inner_ct != CT_HANDSHAKE && self.ph.in_progress() {
             return Err(HandshakeError::InterleavedPostHandshake);
         }
@@ -871,7 +870,6 @@ impl<
                     return Ok(()); // record exhausted mid-skip
                 }
             }
-            // Fill the 4-byte handshake header into the staging buffer.
             while (self.ph.stage_len as usize) < 4 && i < len {
                 self.ph.stage[self.ph.stage_len as usize] = self.scratch.recv_record[start + i];
                 self.ph.stage_len += 1;
@@ -899,7 +897,7 @@ impl<
                     if body_len != 1 {
                         return Err(HandshakeError::MalformedKeyUpdate);
                     }
-                    // Stage the 1-byte `update_requested` (index 4).
+                    // `update_requested` is staged at index 4.
                     while (self.ph.stage_len as usize) < PH_STAGE_MAX && i < len {
                         self.ph.stage[self.ph.stage_len as usize] =
                             self.scratch.recv_record[start + i];
