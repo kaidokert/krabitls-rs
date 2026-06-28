@@ -110,8 +110,14 @@ pub enum HandshakeError {
 
     /// Peer's post-handshake `KeyUpdate` was malformed: wrong body length,
     /// an `update_requested` value other than 0/1, or another message
-    /// coalesced after it in the same record (RFC 8446 §4.6.3 / §5.1).
+    /// coalesced after it in the same record (RFC 8446 §4.4.3 / §5.1).
     MalformedKeyUpdate,
+
+    /// A non-handshake record (application_data / alert) arrived while a
+    /// post-handshake handshake message was still being reassembled across
+    /// records — RFC 8446 §5.1 forbids interleaving other record types
+    /// between fragments of a split handshake message.
+    InterleavedPostHandshake,
 
     /// Engine invariant breach; see [`InternalError`].
     Internal(InternalError),
@@ -172,6 +178,9 @@ impl core::fmt::Display for HandshakeError {
                 f.write_str("post-handshake handshake message not supported")
             }
             Self::MalformedKeyUpdate => f.write_str("malformed post-handshake KeyUpdate"),
+            Self::InterleavedPostHandshake => {
+                f.write_str("non-handshake record interleaved during post-handshake reassembly")
+            }
             Self::Internal(e) => write!(f, "internal: {e}"),
             Self::Rng => f.write_str("caller-supplied RNG returned an error"),
             Self::StrategyRejected => f.write_str("verify strategy rejected the server cert chain"),
@@ -196,6 +205,7 @@ impl core::error::Error for HandshakeError {
             | Self::NotReady
             | Self::PostHandshakeNotSupported
             | Self::MalformedKeyUpdate
+            | Self::InterleavedPostHandshake
             | Self::Rng
             | Self::StrategyRejected
             | Self::StrategyPubkeyMismatch => None,
