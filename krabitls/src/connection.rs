@@ -19,7 +19,9 @@ use crate::client_flight::{ClientAuthFlightError, ClientAuthPolicy, ClientFinish
 use crate::consts::CIPHER_AES_128_GCM_SHA256;
 #[cfg(feature = "chacha20")]
 use crate::consts::CIPHER_CHACHA20_POLY1305_SHA256;
-use crate::consts::{CT_APPLICATION_DATA, CT_CHANGE_CIPHER_SPEC, CT_HANDSHAKE, HS_KEY_UPDATE};
+use crate::consts::{
+    CONTENT_TYPE_LEN, CT_APPLICATION_DATA, CT_CHANGE_CIPHER_SPEC, CT_HANDSHAKE, HS_KEY_UPDATE,
+};
 use crate::errors::{ClientHelloError, ParseError};
 use crate::hkdf::{
     HkdfLabelError, TranscriptError, TranscriptHash, application_traffic_secrets, handshake_secret,
@@ -698,7 +700,7 @@ pub(crate) fn encrypt_handshake_flight<'a, S: CipherSuite>(
     peer_rsl: u16,
     out: &'a mut [u8],
 ) -> Result<&'a [u8], ConnectionError> {
-    let max_chunk = (peer_rsl as usize).saturating_sub(1).max(1);
+    let max_chunk = (peer_rsl as usize).saturating_sub(CONTENT_TYPE_LEN).max(1);
     let mut written = 0usize;
     for (i, chunk) in plaintext.chunks(max_chunk).enumerate() {
         written += keys

@@ -10,6 +10,7 @@ pub(crate) const AEAD_TAG: usize = 16;
 /// Per-record overhead on the wire (header + AEAD tag). Used everywhere
 /// the engine derives advertised limit ↔ buffer-size mappings.
 pub(crate) const RECORD_OVERHEAD: usize = TLS_HEADER + AEAD_TAG;
+pub(crate) use crate::consts::CONTENT_TYPE_LEN;
 /// RFC 8449 §4 ceiling for TLS 1.3's `record_size_limit` extension.
 pub(crate) const PROTO_MAX_INNER_PLAINTEXT: u16 = 16385;
 /// RFC 8449 §4 floor for `record_size_limit`. Values below this are a
@@ -90,8 +91,8 @@ pub(crate) const fn client_auth_send_floor(max_flight: usize) -> usize {
     if max_flight == 0 {
         return 0;
     }
-    let records = max_flight.div_ceil(MIN_RECORD_SIZE_LIMIT as usize - 1);
-    max_flight + records * (RECORD_OVERHEAD + 1)
+    let records = max_flight.div_ceil(MIN_RECORD_SIZE_LIMIT as usize - CONTENT_TYPE_LEN);
+    max_flight + records * (RECORD_OVERHEAD + CONTENT_TYPE_LEN)
 }
 
 /// Facade hostname-policy cap (255 bytes).

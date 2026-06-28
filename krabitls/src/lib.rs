@@ -146,6 +146,10 @@ pub(crate) mod consts {
     pub const HS_FINISHED: u8 = 20;
     pub const HS_KEY_UPDATE: u8 = 24;
 
+    /// TLS 1.3 `TLSInnerPlaintext` content-type byte appended before
+    /// encryption; counts against the peer's `record_size_limit` (RFC 8449 §4).
+    pub const CONTENT_TYPE_LEN: usize = 1;
+
     pub const CIPHER_AES_128_GCM_SHA256: u16 = 0x1301;
     pub const CIPHER_CHACHA20_POLY1305_SHA256: u16 = 0x1303;
     pub const NAMED_GROUP_X25519: u16 = 0x001D;
