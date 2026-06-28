@@ -57,6 +57,24 @@ impl RecvState {
     }
 }
 
+/// 4-byte handshake header + the 1-byte `KeyUpdate` body — the most we ever
+/// need to stage to parse a post-handshake message (NewSessionTicket bodies
+/// are skipped, not buffered).
+const PH_STAGE_MAX: usize = 5;
+
+/// Reassembly state for post-handshake handshake messages, which a peer may
+/// fragment across records (RFC 8446 §5.1). `stage` accumulates an incomplete
+/// header plus the `KeyUpdate` body across `feed_post_handshake` calls;
+/// `skip_remaining` counts the still-unconsumed body bytes of a message we
+/// ignore (NewSessionTicket) that spans records. Per-record AEAD decryption
+/// and `seq_in` are unaffected — reassembly is purely at the plaintext level.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PostHandshakeReasm {
+    stage: [u8; PH_STAGE_MAX],
+    stage_len: u8,
+    skip_remaining: usize,
+}
+
 /// Wrapped typestate states — one variant per `(handshake-phase × suite)`
 /// plus pre-suite and terminal states.
 #[allow(clippy::large_enum_variant)] // post-handshake variants carry app keys; size is dominated by the typestate, not the enum tag
@@ -127,6 +145,10 @@ pub(crate) struct TlsEngine<
     pub(crate) our_recv_limit: RecordSizeLimit,
     /// RFC 8449 limit peer advertised; caps outgoing inner plaintext.
     pub(crate) peer_recv_limit: RecordSizeLimit,
+
+    /// Reassembly state for post-handshake handshake messages fragmented
+    /// across records (RFC 8446 §5.1).
+    pub(crate) ph: PostHandshakeReasm,
 }
 
 impl<
@@ -155,6 +177,7 @@ impl<
             closed: false,
             our_recv_limit,
             peer_recv_limit,
+            ph: PostHandshakeReasm::default(),
         }
     }
 
@@ -805,63 +828,83 @@ impl<
                     }))
                 }
             }
-            CT_HANDSHAKE => {
-                // Post-handshake: NewSessionTicket is skipped silently
-                // (rejecting breaks interop with major CDNs); KeyUpdate is
-                // acted on (RFC 8446 §4.6.3). Anything else fails — even
-                // coalesced after an NST — so it can't silently desync the
-                // AEAD. A KeyUpdate changes keys, so it MUST be the last
-                // message in its record (§5.1).
-                let end = body_offset + content_len;
-                let mut offset = body_offset;
-                while offset < end {
-                    if end - offset < 4 {
-                        return Err(HandshakeError::Connection(ConnectionError::Decrypt(
-                            crate::aead::DecryptError::Truncated,
-                        )));
-                    }
-                    let msg_type = self.scratch.recv_record[offset];
-                    let len = u32::from_be_bytes([
-                        0,
-                        self.scratch.recv_record[offset + 1],
-                        self.scratch.recv_record[offset + 2],
-                        self.scratch.recv_record[offset + 3],
-                    ]) as usize;
-                    let msg_end = offset
-                        .checked_add(4)
-                        .and_then(|x| x.checked_add(len))
-                        .ok_or(HandshakeError::Connection(ConnectionError::Decrypt(
-                            crate::aead::DecryptError::Truncated,
-                        )))?;
-                    if msg_end > end {
-                        return Err(HandshakeError::Connection(ConnectionError::Decrypt(
-                            crate::aead::DecryptError::Truncated,
-                        )));
-                    }
-                    match msg_type {
-                        HS_NEW_SESSION_TICKET => offset = msg_end,
-                        HS_KEY_UPDATE => {
-                            // body = 1-byte update_requested; the key change
-                            // means nothing may follow it in this record.
-                            if len != 1 || msg_end != end {
-                                return Err(HandshakeError::MalformedKeyUpdate);
-                            }
-                            let update_requested = match self.scratch.recv_record[offset + 4] {
-                                0 => false,
-                                1 => true,
-                                _ => return Err(HandshakeError::MalformedKeyUpdate),
-                            };
-                            self.process_key_update(update_requested)?;
-                            return Ok(());
-                        }
-                        _ => return Err(HandshakeError::PostHandshakeNotSupported),
-                    }
-                }
-                Ok(())
-            }
+            CT_HANDSHAKE => self.feed_post_handshake(body_offset, content_len),
             other => Err(HandshakeError::Connection(
                 ConnectionError::UnknownContentType(other),
             )),
+        }
+    }
+
+    /// Walk post-handshake handshake messages out of one decrypted record's
+    /// plaintext `recv_record[start..start + len]`, reassembling across records
+    /// via [`PostHandshakeReasm`] (RFC 8446 §5.1). NewSessionTicket bodies are
+    /// skipped (kept for CDN interop); KeyUpdate is acted on (§4.6.3); any other
+    /// type fails so it can't silently desync the AEAD. A KeyUpdate changes
+    /// keys, so nothing may follow its final byte in that record.
+    fn feed_post_handshake(&mut self, start: usize, len: usize) -> Result<(), HandshakeError> {
+        let mut i = 0usize;
+        loop {
+            // Drain a NewSessionTicket body skip carried over from a prior record.
+            if self.ph.skip_remaining > 0 {
+                let n = self.ph.skip_remaining.min(len - i);
+                self.ph.skip_remaining -= n;
+                i += n;
+                if self.ph.skip_remaining > 0 {
+                    return Ok(()); // record exhausted mid-skip
+                }
+            }
+            // Fill the 4-byte handshake header into the staging buffer.
+            while (self.ph.stage_len as usize) < 4 && i < len {
+                self.ph.stage[self.ph.stage_len as usize] = self.scratch.recv_record[start + i];
+                self.ph.stage_len += 1;
+                i += 1;
+            }
+            if (self.ph.stage_len as usize) < 4 {
+                return Ok(()); // header incomplete; carry over to the next record
+            }
+            let msg_type = self.ph.stage[0];
+            let body_len =
+                u32::from_be_bytes([0, self.ph.stage[1], self.ph.stage[2], self.ph.stage[3]])
+                    as usize;
+            match msg_type {
+                HS_NEW_SESSION_TICKET => {
+                    self.ph.stage_len = 0;
+                    let n = body_len.min(len - i);
+                    i += n;
+                    if n < body_len {
+                        self.ph.skip_remaining = body_len - n;
+                        return Ok(());
+                    }
+                    // Body fully consumed; loop for the next coalesced message.
+                }
+                HS_KEY_UPDATE => {
+                    if body_len != 1 {
+                        return Err(HandshakeError::MalformedKeyUpdate);
+                    }
+                    // Stage the 1-byte `update_requested` (index 4).
+                    while (self.ph.stage_len as usize) < PH_STAGE_MAX && i < len {
+                        self.ph.stage[self.ph.stage_len as usize] =
+                            self.scratch.recv_record[start + i];
+                        self.ph.stage_len += 1;
+                        i += 1;
+                    }
+                    if (self.ph.stage_len as usize) < PH_STAGE_MAX {
+                        return Ok(()); // body byte not here yet; carry over
+                    }
+                    // The key change means nothing may follow in this record.
+                    if i != len {
+                        return Err(HandshakeError::MalformedKeyUpdate);
+                    }
+                    let update_requested = match self.ph.stage[4] {
+                        0 => false,
+                        1 => true,
+                        _ => return Err(HandshakeError::MalformedKeyUpdate),
+                    };
+                    self.ph.stage_len = 0;
+                    return self.process_key_update(update_requested);
+                }
+                _ => return Err(HandshakeError::PostHandshakeNotSupported),
+            }
         }
     }
 
@@ -1485,33 +1528,54 @@ mod tests {
     }
 
     #[test]
-    fn handle_handshake_truncated_header_rejected() {
+    fn handle_handshake_partial_header_is_buffered_then_completed() {
+        // A handshake header split across two records is staged, not rejected
+        // (RFC 8446 §5.1). Record 1 carries 2 bytes of an NST header.
         let mut scratch = DefaultScratch::new();
-        // content_len = 3 < the 4-byte handshake header.
+        scratch.recv_record[0] = HS_NEW_SESSION_TICKET;
+        scratch.recv_record[1] = 0x00;
         let mut e = closed_engine(&mut scratch);
-        let err = e.handle_inner_content(0, 3, CT_HANDSHAKE).unwrap_err();
-        assert!(matches!(
-            err,
-            HandshakeError::Connection(ConnectionError::Decrypt(
-                crate::aead::DecryptError::Truncated
-            ))
-        ));
+        assert!(e.handle_inner_content(0, 2, CT_HANDSHAKE).is_ok());
+        assert_eq!(e.ph.stage_len, 2, "partial header buffered across records");
+
+        // Record 2: the remaining header bytes (`len = 0`) complete the NST.
+        e.scratch.recv_record[0] = 0x00;
+        e.scratch.recv_record[1] = 0x00;
+        assert!(e.handle_inner_content(0, 2, CT_HANDSHAKE).is_ok());
+        assert_eq!(e.ph.stage_len, 0, "NST consumed; staging cleared");
     }
 
     #[test]
-    fn handle_handshake_declared_length_overflows_record_rejected() {
+    fn handle_handshake_nst_body_spanning_records_is_skipped() {
+        // An NST whose body overruns its record is skipped across records via
+        // the carry-over counter, not rejected. Record 1: header (10-byte body)
+        // + 4 body bytes.
         let mut scratch = DefaultScratch::new();
-        scratch.recv_record[0] = 4;
-        scratch.recv_record[1] = 0;
-        scratch.recv_record[2] = 0x04;
-        scratch.recv_record[3] = 0x00;
+        scratch.recv_record[..4].copy_from_slice(&[HS_NEW_SESSION_TICKET, 0x00, 0x00, 0x0a]);
         let mut e = closed_engine(&mut scratch);
-        let err = e.handle_inner_content(0, 20, CT_HANDSHAKE).unwrap_err();
+        assert!(e.handle_inner_content(0, 8, CT_HANDSHAKE).is_ok());
+        assert_eq!(e.ph.skip_remaining, 6, "remaining NST body to skip");
+
+        // Record 2: the final 6 body bytes drain the skip.
+        assert!(e.handle_inner_content(0, 6, CT_HANDSHAKE).is_ok());
+        assert_eq!(e.ph.skip_remaining, 0);
+        assert_eq!(e.ph.stage_len, 0);
+    }
+
+    #[test]
+    fn handle_handshake_fragmented_key_update_illegal_flag_rejected() {
+        // KeyUpdate validation still fires once the message is reassembled:
+        // record 1 carries the 4-byte header, record 2 an illegal flag (2).
+        let mut scratch = DefaultScratch::new();
+        scratch.recv_record[..4].copy_from_slice(&[HS_KEY_UPDATE, 0x00, 0x00, 0x01]);
+        let mut e = closed_engine(&mut scratch);
+        assert!(e.handle_inner_content(0, 4, CT_HANDSHAKE).is_ok());
+        assert_eq!(e.ph.stage_len, 4);
+
+        e.scratch.recv_record[0] = 0x02; // update_requested = 2 (illegal)
         assert!(matches!(
-            err,
-            HandshakeError::Connection(ConnectionError::Decrypt(
-                crate::aead::DecryptError::Truncated
-            ))
+            e.handle_inner_content(0, 1, CT_HANDSHAKE).unwrap_err(),
+            HandshakeError::MalformedKeyUpdate
         ));
     }
 
@@ -1843,6 +1907,101 @@ mod tests {
                 e.step().unwrap_err(),
                 HandshakeError::MalformedKeyUpdate
             ));
+        }
+
+        /// Encrypt the 5-byte KeyUpdate message as two records split at byte 3,
+        /// both under the server's current (gen-0) send keys, then rotate the
+        /// server's send keys. Returns the two record byte vecs.
+        fn fragmented_key_update(
+            server: &mut TlsConnection<AppData<Aes128GcmSha256>, RustCrypto>,
+            flag: u8,
+        ) -> (Vec<u8>, Vec<u8>) {
+            let msg = [HS_KEY_UPDATE, 0x00, 0x00, 0x01, flag];
+            let mut b1 = [0u8; 32];
+            let r1 = server
+                .encrypt_record(&msg[..3], CT_HANDSHAKE, &mut b1)
+                .unwrap();
+            let rec1 = r1.to_vec();
+            let mut b2 = [0u8; 32];
+            let r2 = server
+                .encrypt_record(&msg[3..], CT_HANDSHAKE, &mut b2)
+                .unwrap();
+            let rec2 = r2.to_vec();
+            server.apply_send_key_update().unwrap();
+            (rec1, rec2)
+        }
+
+        /// A KeyUpdate(update_requested=1) split across two records reassembles,
+        /// rotates receive keys, queues our KeyUpdate(0), and rotates send keys.
+        #[test]
+        fn engine_reassembles_fragmented_key_update_requesting_update() {
+            let mut scratch = DefaultScratch::new();
+            let mut e = app_engine(&mut scratch);
+            let mut server = mirror_server();
+            let (rec1, rec2) = fragmented_key_update(&mut server, 1);
+
+            // First fragment: message incomplete ⇒ no Send, engine wants more.
+            feed(&mut e, &rec1);
+            assert!(matches!(e.step().unwrap(), EngineEvent::Recv));
+            assert!(!e.is_send_pending());
+
+            // Second fragment completes it ⇒ rotate recv + queue our KeyUpdate(0).
+            feed(&mut e, &rec2);
+            let resp_len = match e.step().unwrap() {
+                EngineEvent::Send(n) => n,
+                other => panic!("expected Send, got {other:?}"),
+            };
+            let mut resp = [0u8; 32];
+            resp[..resp_len].copy_from_slice(&e.send_bytes()[..resp_len]);
+            e.mark_sent(resp_len).unwrap();
+
+            // Our response decrypts under the server's old receive keys.
+            let mut server_rx = mirror_server();
+            let mut spt = [0u8; 32];
+            let (content, ct) = server_rx
+                .decrypt_record(&resp[..resp_len], &mut spt)
+                .unwrap();
+            assert_eq!(ct, CT_HANDSHAKE);
+            assert_eq!(content, &[HS_KEY_UPDATE, 0x00, 0x00, 0x01, 0x00]);
+
+            // Post-update server app data decrypts under the engine's rotated keys.
+            let mut abuf = [0u8; 64];
+            let an = server
+                .encrypt_record(b"after frag update", CT_APPLICATION_DATA, &mut abuf)
+                .unwrap()
+                .len();
+            feed(&mut e, &abuf[..an]);
+            assert!(matches!(e.step().unwrap(), EngineEvent::AppData));
+            let mut out = [0u8; 64];
+            let got = e.read_app(&mut out);
+            assert_eq!(&out[..got], b"after frag update");
+        }
+
+        /// A KeyUpdate(update_requested=0) split across two records reassembles
+        /// and rotates receive keys silently — no response.
+        #[test]
+        fn engine_reassembles_fragmented_key_update_not_requesting() {
+            let mut scratch = DefaultScratch::new();
+            let mut e = app_engine(&mut scratch);
+            let mut server = mirror_server();
+            let (rec1, rec2) = fragmented_key_update(&mut server, 0);
+
+            feed(&mut e, &rec1);
+            assert!(matches!(e.step().unwrap(), EngineEvent::Recv));
+            feed(&mut e, &rec2);
+            assert!(matches!(e.step().unwrap(), EngineEvent::Recv));
+            assert!(!e.is_send_pending());
+
+            let mut abuf = [0u8; 64];
+            let an = server
+                .encrypt_record(b"quiet frag rotation", CT_APPLICATION_DATA, &mut abuf)
+                .unwrap()
+                .len();
+            feed(&mut e, &abuf[..an]);
+            assert!(matches!(e.step().unwrap(), EngineEvent::AppData));
+            let mut out = [0u8; 64];
+            let got = e.read_app(&mut out);
+            assert_eq!(&out[..got], b"quiet frag rotation");
         }
     }
 }
