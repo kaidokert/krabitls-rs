@@ -11,8 +11,11 @@
 //! openssl req -x509 -newkey ed25519 -keyout server.key -out server.crt -days 36500 -nodes \
 //!   -subj "/CN=tls-fixture.local" -addext "subjectAltName=DNS:tls-fixture.local"
 //! openssl s_server -accept 14434 -tls1_3 -cert server.crt -key server.key \
-//!   -ciphersuites TLS_CHACHA20_POLY1305_SHA256 -groups X25519 -quiet
+//!   -ciphersuites TLS_CHACHA20_POLY1305_SHA256 -groups X25519 -num_tickets 0 -quiet
 //! ```
+//!
+//! `-num_tickets 0` suppresses post-handshake `NewSessionTicket`s so the
+//! captured flight stays handshake-only.
 //!
 //! Client:
 //!
@@ -63,21 +66,26 @@ impl Transport for Tee {
 }
 
 /// Split a TLS byte stream into records (`type(1) || version(2) || u16 len || body`).
+/// Stops at the first truncated/overrunning record rather than panicking.
 fn records(mut b: &[u8]) -> Vec<&[u8]> {
     let mut out = Vec::new();
     while b.len() >= 5 {
         let len = u16::from_be_bytes([b[3], b[4]]) as usize;
-        let end = 5 + len;
-        out.push(&b[..end]);
-        b = &b[end..];
+        let Some((record, rest)) = 5usize.checked_add(len).and_then(|e| b.split_at_checked(e))
+        else {
+            break;
+        };
+        out.push(record);
+        b = rest;
     }
     out
 }
 
 fn to_hex(b: &[u8]) -> String {
+    use std::fmt::Write as _;
     let mut s = String::with_capacity(b.len() * 2);
     for x in b {
-        s.push_str(&format!("{x:02x}"));
+        let _ = write!(s, "{x:02x}");
     }
     s
 }
@@ -120,6 +128,41 @@ fn capture_chacha_fixtures() {
     eprintln!(
         "rx record types (CCS dropped): {:?}",
         rx.iter().map(|r| r[0]).collect::<Vec<_>>()
+    );
+
+    // Fail loudly if openssl's record layout drifts from what the replay test
+    // expects. TX is the plaintext ClientHello (0x16) then the encrypted
+    // Finished (0x17); RX is the plaintext ServerHello (0x16) then the
+    // encrypted flight records (0x17). `content_type` here is the *outer*
+    // record type, so the protected handshake records read as 0x17.
+    const CT_HANDSHAKE: u8 = 0x16;
+    const CT_APPLICATION_DATA: u8 = 0x17;
+    assert_eq!(
+        tx.len(),
+        2,
+        "expected [ClientHello, Finished]; got {} TX records",
+        tx.len()
+    );
+    assert_eq!(
+        tx[0][0], CT_HANDSHAKE,
+        "TX[0] should be a plaintext ClientHello"
+    );
+    assert_eq!(
+        tx[1][0], CT_APPLICATION_DATA,
+        "TX[1] should be the encrypted Finished"
+    );
+    assert!(
+        rx.len() >= 2,
+        "expected [ServerHello, flight..]; got {} RX records",
+        rx.len()
+    );
+    assert_eq!(
+        rx[0][0], CT_HANDSHAKE,
+        "RX[0] should be a plaintext ServerHello"
+    );
+    assert!(
+        rx[1..].iter().all(|r| r[0] == CT_APPLICATION_DATA),
+        "flight records should all be encrypted (0x17)"
     );
 
     // TX: [ClientHello] [ClientFinished].   RX: [ServerHello] [ServerFlight...]

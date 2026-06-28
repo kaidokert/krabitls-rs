@@ -1,4 +1,4 @@
 # krabitls seed-0 ChaCha20-Poly1305 client Finished (58 bytes), captured from a
 # local `openssl s_server` handshake. Regenerate with the `#[ignore]`d
 # `gen_chacha_fixtures` test; do not hand-edit.
-1703030035157dcb7dce73d848f77bbd70840c56fe3d73b28c6a77ee6a52b708c0fc685997ee0a148ac5017d4be199314ae516eb62839b79dad1
+1703030035bcb0c429618ebe6fd3ebfa1b0b0d2755e55926c4872eeeb479aa3a35d6bf9ea945449589fdc4d244c3cab6798285e2ce8d3ee1e732
