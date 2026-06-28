@@ -20,6 +20,8 @@ pub(crate) mod client_auth;
 pub(crate) mod der_cert;
 #[cfg(feature = "jedisct")]
 pub(crate) mod jedisct;
+#[cfg(feature = "mldsa")]
+pub(crate) mod mldsa_verify;
 pub(crate) mod pin_or_self_signed;
 #[cfg(feature = "rsa")]
 pub(crate) mod rsa_verify;
@@ -35,6 +37,9 @@ pub use der_cert::DerCert;
 pub use jedisct::JedisctCrypto;
 // Re-exports purely for the external API surface — nothing in-crate
 // uses these paths, so silence the unused-import lint.
+#[allow(unused_imports)]
+#[cfg(feature = "mldsa")]
+pub use mldsa_verify::{MlDsaSig, MlDsaVerifierKey, MlDsaVerifyError};
 pub use pin_or_self_signed::{
     PinOrSelfSigned, PinOrSelfSignedError, PinnedPubkeyOwned, PinnedPubkeyOwnedError,
 };

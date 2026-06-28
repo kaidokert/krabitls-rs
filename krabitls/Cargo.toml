@@ -77,6 +77,11 @@ cert-der = ["dep:der"]
 # IP literals fall through to `HostnameMismatch`. Saves ~2 KiB of
 # `core::net::parser` on DNS-only embedded deployments. Default OFF.
 ip-host = []
+# Optional ML-DSA (FIPS 204) signature-verification backend, gated exactly
+# like `rsa`. Pulls in krabipqc 0.1.1 (no_std, no-alloc) which carries its own
+# keccak/sha3 chain — none of it links into the default build. Verify only:
+# the keygen/sign facade is test-only. Covers ML-DSA-44/65/87.
+mldsa = ["dep:krabipqc"]
 
 [dependencies]
 embedded-io = { version = "0.7.1", default-features = false }
@@ -104,6 +109,7 @@ subtle = { version = "2.6", default-features = false }
 thiserror = { version = "2", default-features = false }
 signature = { version = "3", default-features = false }
 rand_core = { version = "0.10", default-features = false }
+krabipqc = { version = "0.1.1", default-features = false, optional = true }
 
 # Deterministic SeededRng + CannedTransport for the host facade replay
 # tests. Dev-only so the seed-mode RNG (a `TryCryptoRng` that is NOT a
