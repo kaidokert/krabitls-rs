@@ -22,6 +22,8 @@ pub(crate) mod der_cert;
 pub(crate) mod jedisct;
 #[cfg(feature = "mldsa")]
 pub(crate) mod mldsa_verify;
+#[cfg(feature = "mlkem")]
+pub(crate) mod mlkem;
 pub(crate) mod pin_or_self_signed;
 #[cfg(feature = "rsa")]
 pub(crate) mod rsa_verify;
@@ -40,6 +42,9 @@ pub use jedisct::JedisctCrypto;
 #[allow(unused_imports)]
 #[cfg(feature = "mldsa")]
 pub use mldsa_verify::{MlDsaSig, MlDsaVerifierKey, MlDsaVerifyError};
+#[allow(unused_imports)]
+#[cfg(feature = "mlkem")]
+pub use mlkem::{MLKEM768_CT_BYTES, MLKEM768_EK_BYTES, MLKEM768_SS_BYTES, MlKem768, MlKem768Error};
 pub use pin_or_self_signed::{
     PinOrSelfSigned, PinOrSelfSignedError, PinnedPubkeyOwned, PinnedPubkeyOwnedError,
 };
