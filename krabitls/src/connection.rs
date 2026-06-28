@@ -42,10 +42,12 @@ type Bn = fixed_bigint::FixedUInt<u32, 16, fixed_bigint::Ct>;
 /// Internal scratch for the outgoing ClientHello before it's forwarded
 /// to the caller's `Write`. Sized for the locked profile + a 255-char SNI;
 /// under `mlkem` the `X25519MLKEM768` key_share adds the 1184-byte ML-KEM ek.
+/// Authoritative ClientHello scratch capacity; the engine-path
+/// [`crate::client::scratch::CH_LEN`] derives from this.
 #[cfg(not(feature = "mlkem"))]
-const CH_SCRATCH: usize = 512;
+pub(crate) const CH_SCRATCH: usize = 512;
 #[cfg(feature = "mlkem")]
-const CH_SCRATCH: usize = 2048;
+pub(crate) const CH_SCRATCH: usize = 2048;
 
 /// `E` is the caller `Write::Error` for transitions that write records;
 /// non-write transitions yield `ConnectionError<Infallible>`.

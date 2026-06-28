@@ -103,11 +103,9 @@ pub(crate) const fn client_auth_send_floor(max_flight: usize) -> usize {
 pub const FACADE_HOSTNAME_MAX: usize = 255;
 
 /// ClientHello scratch capacity; held fixed so `Scratch::new` is `const`.
-/// Under `mlkem` the `X25519MLKEM768` key_share adds the 1184-byte ML-KEM ek.
-#[cfg(not(feature = "mlkem"))]
-pub(crate) const CH_LEN: usize = 512;
-#[cfg(feature = "mlkem")]
-pub(crate) const CH_LEN: usize = 2048;
+/// Single source of truth is [`crate::connection::CH_SCRATCH`] so the two
+/// can't drift.
+pub(crate) const CH_LEN: usize = crate::connection::CH_SCRATCH;
 
 const fn max_const(a: usize, b: usize) -> usize {
     if a > b { a } else { b }
