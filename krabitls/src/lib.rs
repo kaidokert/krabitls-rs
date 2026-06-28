@@ -347,14 +347,12 @@ pub(crate) const fn client_hello_len_with(opts: &ClientHelloOptions<'_>) -> usiz
 pub(crate) const CLIENT_HELLO_LEN: usize = client_hello_len(None);
 
 // Combo-independent pin: 117-byte baseline (1 suite, ed25519-only) + 2 per
-// extra advertised suite + 2 when rsa adds its sig scheme + 6 when mldsa adds
-// its three.
+// extra advertised suite + 2 per signature scheme beyond the baseline ed25519.
+// The per-scheme term is derived from `SIG_SCHEME_COUNT` so the scheme count
+// and its byte contribution can't drift apart when the advertised set changes.
 const _: () = assert!(
     CLIENT_HELLO_LEN
-        == 117
-            + 2 * CH_CIPHER_SUITES_COUNT.saturating_sub(1)
-            + if cfg!(feature = "rsa") { 2 } else { 0 }
-            + if cfg!(feature = "mldsa") { 6 } else { 0 }
+        == 117 + 2 * CH_CIPHER_SUITES_COUNT.saturating_sub(1) + 2 * (SIG_SCHEME_COUNT as usize - 1)
 );
 
 /// Big-endian byte-emission helpers layered on top of [`embedded_io::Write`].

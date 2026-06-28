@@ -300,16 +300,25 @@ fn client_hello_advertises_mldsa_schemes() {
     let n = write_client_hello_with(&mut cursor, &random, &x25519, &opts).unwrap();
     let ch = &buf[..n];
 
-    // The writer emits mldsa44/65/87 consecutively after ed25519 (+ rsa).
-    let block = [
-        SIG_SCHEME_MLDSA44.to_be_bytes(),
-        SIG_SCHEME_MLDSA65.to_be_bytes(),
-        SIG_SCHEME_MLDSA87.to_be_bytes(),
-    ]
-    .concat();
-    assert!(
-        ch.windows(block.len()).any(|w| w == block),
-        "ClientHello must advertise the three ML-DSA signature schemes"
+    // The exact `supported_signature_algorithms` list in RFC 8446 order:
+    // ed25519, rsa_pss when enabled, then mldsa44/65/87.
+    #[cfg(feature = "rsa")]
+    const SCHEMES: &[u8] = &[0x08, 0x07, 0x08, 0x04, 0x09, 0x04, 0x09, 0x05, 0x09, 0x06];
+    #[cfg(not(feature = "rsa"))]
+    const SCHEMES: &[u8] = &[0x08, 0x07, 0x09, 0x04, 0x09, 0x05, 0x09, 0x06];
+    assert_eq!(SCHEMES.len(), 2 * SIG_SCHEME_COUNT as usize);
+
+    // Match the list together with its 2-byte length prefix, so the assertion
+    // pins ordering and rejects any extra/duplicate/missing scheme.
+    let mut needle = [0u8; 2 + 10];
+    needle[..2].copy_from_slice(&(SCHEMES.len() as u16).to_be_bytes());
+    needle[2..2 + SCHEMES.len()].copy_from_slice(SCHEMES);
+    let needle = &needle[..2 + SCHEMES.len()];
+
+    assert_eq!(
+        ch.windows(needle.len()).filter(|w| *w == needle).count(),
+        1,
+        "ClientHello must advertise exactly the expected signature_algorithms list"
     );
 }
 
