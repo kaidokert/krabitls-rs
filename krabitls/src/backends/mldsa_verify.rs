@@ -5,53 +5,67 @@
 //! bytes), mirroring [`super::rsa_verify::RsaVerifierKey`]. The parameter set
 //! is chosen from the public-key length at construction.
 
-use kem::KeyInit;
-use krabipqc::{MlDsa44, MlDsa65, MlDsa87, MlDsaSignature, MlDsaVerifier};
+use krabipqc::{ml_dsa_44, ml_dsa_65, ml_dsa_87};
 use signature::{Error as SigError, Verifier};
 
-/// Borrowed ML-DSA signature bytes, newtyped so a prepared [`MlDsaVerifierKey`]
-/// implements [`signature::Verifier`] without copying the 2–4.6 KiB signature
-/// into an owned buffer.
+/// Borrowed ML-DSA signature bytes. Newtyped so a prepared [`MlDsaVerifierKey`]
+/// implements [`signature::Verifier`]; the bytes stay borrowed through the
+/// facade verify, so the 2–4.6 KiB signature is never copied onto the stack.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MlDsaSig<'a>(pub &'a [u8]);
 
 /// Public-key bytes matched no FIPS 204 parameter set's encoded length.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MlDsaVerifyError;
 
-/// Prepared ML-DSA verifying key, dispatched over the parameter set selected
-/// from the public-key length at [`MlDsaVerifierKey::new`].
+/// Prepared ML-DSA verifying key: the raw public key, with its parameter set
+/// (selected from the key length at [`MlDsaVerifierKey::new`]) carried by the
+/// variant. Verifying reuses the inline key without re-parsing.
 // Variant size is the parameter set's public key (1312–2592 B); no-alloc, so
 // the larger keys can't be boxed away.
 #[allow(clippy::large_enum_variant)]
 pub enum MlDsaVerifierKey {
-    MlDsa44(MlDsaVerifier<MlDsa44>),
-    MlDsa65(MlDsaVerifier<MlDsa65>),
-    MlDsa87(MlDsaVerifier<MlDsa87>),
+    MlDsa44([u8; ml_dsa_44::PK_BYTES]),
+    MlDsa65([u8; ml_dsa_65::PK_BYTES]),
+    MlDsa87([u8; ml_dsa_87::PK_BYTES]),
 }
 
 impl MlDsaVerifierKey {
-    /// FIPS 204 Table 2 public-key byte lengths.
-    const PK_LEN_44: usize = 1312;
-    const PK_LEN_65: usize = 1952;
-    const PK_LEN_87: usize = 2592;
-
     pub fn new(pubkey: &[u8]) -> Result<Self, MlDsaVerifyError> {
         match pubkey.len() {
-            Self::PK_LEN_44 => MlDsaVerifier::<MlDsa44>::new_from_slice(pubkey).map(Self::MlDsa44),
-            Self::PK_LEN_65 => MlDsaVerifier::<MlDsa65>::new_from_slice(pubkey).map(Self::MlDsa65),
-            Self::PK_LEN_87 => MlDsaVerifier::<MlDsa87>::new_from_slice(pubkey).map(Self::MlDsa87),
-            _ => return Err(MlDsaVerifyError),
+            ml_dsa_44::PK_BYTES => pubkey
+                .try_into()
+                .map(Self::MlDsa44)
+                .map_err(|_| MlDsaVerifyError),
+            ml_dsa_65::PK_BYTES => pubkey
+                .try_into()
+                .map(Self::MlDsa65)
+                .map_err(|_| MlDsaVerifyError),
+            ml_dsa_87::PK_BYTES => pubkey
+                .try_into()
+                .map(Self::MlDsa87)
+                .map_err(|_| MlDsaVerifyError),
+            _ => Err(MlDsaVerifyError),
         }
-        .map_err(|_| MlDsaVerifyError)
     }
 }
 
 impl Verifier<MlDsaSig<'_>> for MlDsaVerifierKey {
     fn verify(&self, msg: &[u8], signature: &MlDsaSig<'_>) -> Result<(), SigError> {
-        match self {
-            Self::MlDsa44(v) => v.verify(msg, &MlDsaSignature::try_from(signature.0)?),
-            Self::MlDsa65(v) => v.verify(msg, &MlDsaSignature::try_from(signature.0)?),
-            Self::MlDsa87(v) => v.verify(msg, &MlDsaSignature::try_from(signature.0)?),
+        // A wrong-length signature fails the `&[u8; SIG_BYTES]` borrow, which
+        // collapses to a verify failure rather than a panic.
+        let verified = match self {
+            Self::MlDsa44(pk) => <&[u8; ml_dsa_44::SIG_BYTES]>::try_from(signature.0)
+                .is_ok_and(|sig| ml_dsa_44::verify(pk, msg, &[], sig)),
+            Self::MlDsa65(pk) => <&[u8; ml_dsa_65::SIG_BYTES]>::try_from(signature.0)
+                .is_ok_and(|sig| ml_dsa_65::verify(pk, msg, &[], sig)),
+            Self::MlDsa87(pk) => <&[u8; ml_dsa_87::SIG_BYTES]>::try_from(signature.0)
+                .is_ok_and(|sig| ml_dsa_87::verify(pk, msg, &[], sig)),
+        };
+        if verified {
+            Ok(())
+        } else {
+            Err(SigError::new())
         }
     }
 }
@@ -59,57 +73,35 @@ impl Verifier<MlDsaSig<'_>> for MlDsaVerifierKey {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core::convert::Infallible;
-    use kem::{Generate, KeyExport};
-    use krabipqc::{MlDsaParams, MlDsaSigner};
-    use signature::{Keypair, RandomizedSigner};
+    use krabipqc::{KeyGenSeed, SigningRandomness};
 
-    /// Fixed-byte RNG so keygen/sign stay reproducible.
-    struct FixedRng(u8);
-    impl rand_core::TryRng for FixedRng {
-        type Error = Infallible;
-        fn try_next_u32(&mut self) -> Result<u32, Infallible> {
-            Ok(u32::from_le_bytes([self.0; 4]))
-        }
-        fn try_next_u64(&mut self) -> Result<u64, Infallible> {
-            Ok(u64::from_le_bytes([self.0; 8]))
-        }
-        fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), Infallible> {
-            dst.fill(self.0);
-            Ok(())
-        }
-    }
-    impl rand_core::TryCryptoRng for FixedRng {}
+    macro_rules! roundtrip_test {
+        ($name:ident, $facade:ident) => {
+            #[test]
+            fn $name() {
+                let (pk, sk) =
+                    krabipqc::$facade::keygen_from_seed(&KeyGenSeed([0x42; 32])).unwrap();
+                let msg = b"krabitls ml-dsa kat";
+                let sig =
+                    krabipqc::$facade::sign(&sk, msg, &[], &SigningRandomness([0x55; 32])).unwrap();
 
-    fn roundtrip<P: MlDsaParams>() {
-        let signer = MlDsaSigner::<P>::try_generate_from_rng(&mut FixedRng(0x42)).unwrap();
-        let pk = KeyExport::to_bytes(&signer.verifying_key());
-        let msg = b"krabitls ml-dsa kat";
-        let sig: MlDsaSignature<P> = signer.sign_with_rng(&mut FixedRng(0x55), msg);
-
-        let prepared = MlDsaVerifierKey::new(pk.as_ref()).unwrap();
-        prepared
-            .verify(msg, &MlDsaSig(sig.as_ref()))
-            .expect("valid signature verifies");
-        prepared
-            .verify(b"tampered", &MlDsaSig(sig.as_ref()))
-            .expect_err("wrong message rejected");
+                let prepared = MlDsaVerifierKey::new(&pk).unwrap();
+                prepared
+                    .verify(msg, &MlDsaSig(&sig))
+                    .expect("valid signature verifies");
+                prepared
+                    .verify(b"tampered", &MlDsaSig(&sig))
+                    .expect_err("wrong message rejected");
+                prepared
+                    .verify(msg, &MlDsaSig(&sig[..sig.len() - 1]))
+                    .expect_err("short signature rejected");
+            }
+        };
     }
 
-    #[test]
-    fn roundtrip_mldsa44() {
-        roundtrip::<MlDsa44>();
-    }
-
-    #[test]
-    fn roundtrip_mldsa65() {
-        roundtrip::<MlDsa65>();
-    }
-
-    #[test]
-    fn roundtrip_mldsa87() {
-        roundtrip::<MlDsa87>();
-    }
+    roundtrip_test!(roundtrip_mldsa44, ml_dsa_44);
+    roundtrip_test!(roundtrip_mldsa65, ml_dsa_65);
+    roundtrip_test!(roundtrip_mldsa87, ml_dsa_87);
 
     #[test]
     fn rejects_unknown_pubkey_length() {
