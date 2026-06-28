@@ -299,7 +299,10 @@ fn writer_emits_exactly_client_hello_len_with_bytes() {
     }
 }
 
-#[cfg(feature = "mldsa")]
+// The signature_algorithms list is key_share-independent; gated off `mlkem` so
+// `legacy()` opts (no ML-KEM ek) drive the writer. Covered by non-`mlkem` mldsa
+// combos.
+#[cfg(all(feature = "mldsa", not(feature = "mlkem")))]
 #[test]
 fn client_hello_advertises_mldsa_schemes() {
     let random = [0x11u8; 32];
@@ -503,7 +506,9 @@ fn wrong_handshake_type_rejected() {
     );
 }
 
-#[cfg(feature = "chacha20")]
+// Full-parse success path needs the x25519-shaped fixture key_share; under
+// `mlkem` the parser expects the hybrid X25519MLKEM768 share instead.
+#[cfg(all(feature = "chacha20", not(feature = "mlkem")))]
 #[test]
 fn server_hello_chacha20_accepted() {
     let mut sh = FIXTURE_SERVER_HELLO;
