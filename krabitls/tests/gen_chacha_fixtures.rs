@@ -5,17 +5,26 @@
 //! (`canned_handshake_chacha.rs` replays them with no network).
 //!
 //! Server — a self-signed Ed25519 leaf whose SAN matches the client hostname,
-//! constrained to krabitls's ChaCha profile:
+//! plus a tiny fixed-reply TLS echo server (so the captured app round-trip is
+//! deterministic; `num_tickets=0` keeps the flight ticket-free):
 //!
 //! ```text
 //! openssl req -x509 -newkey ed25519 -keyout server.key -out server.crt -days 36500 -nodes \
 //!   -subj "/CN=tls-fixture.local" -addext "subjectAltName=DNS:tls-fixture.local"
-//! openssl s_server -accept 14434 -tls1_3 -cert server.crt -key server.key \
-//!   -ciphersuites TLS_CHACHA20_POLY1305_SHA256 -groups X25519 -num_tickets 0 -quiet
 //! ```
 //!
-//! `-num_tickets 0` suppresses post-handshake `NewSessionTicket`s so the
-//! captured flight stays handshake-only.
+//! ```python
+//! import socket, ssl, sys
+//! ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+//! ctx.minimum_version = ctx.maximum_version = ssl.TLSVersion.TLSv1_3
+//! ctx.num_tickets = 0
+//! ctx.load_cert_chain("server.crt", "server.key")
+//! srv = socket.create_server(("127.0.0.1", 14435))
+//! while True:
+//!     c, _ = srv.accept()
+//!     t = ctx.wrap_socket(c, server_side=True)
+//!     t.recv(4096); t.sendall(b"hello back from the test server"); t.close()
+//! ```
 //!
 //! Client:
 //!
@@ -90,6 +99,8 @@ fn to_hex(b: &[u8]) -> String {
     s
 }
 
+const APP_SEND: &[u8] = b"krabitls roundtrip probe\n";
+
 #[test]
 #[ignore = "capture harness: needs a local openssl s_server (see module docs)"]
 fn capture_chacha_fixtures() {
@@ -107,16 +118,27 @@ fn capture_chacha_fixtures() {
     let params =
         ClientParams::self_signed("tls-fixture.local").suite_policy(RuntimeSuitePolicy::Default);
 
-    // Capture the handshake only; the app round-trip is exercised by the AES
-    // facade test and ChaCha's AEAD is unit-tested separately.
-    let tls =
+    let mut tls =
         DefaultStream::connect(&params, &mut scratch, tee, &mut rng).expect("seed-0 handshake");
 
+    // Boundary between the handshake bytes and the app round-trip: everything
+    // recorded after this is the first app record pair.
+    let tx_hs = tls.transport().tx.len();
+    let rx_hs = tls.transport().rx.len();
+
+    // The echo server returns a fixed reply, giving a deterministic 006.
+    tls.write_all(APP_SEND).expect("write app data");
+    let mut reply = [0u8; 128];
+    let n = tls.read(&mut reply).expect("read reply");
+    eprintln!("app reply ({n} B): {:?}", core::str::from_utf8(&reply[..n]));
+
     let tee = tls.transport();
-    let tx = records(&tee.tx);
+    let tx = records(&tee.tx[..tx_hs]);
+    let app_send = records(&tee.tx[tx_hs..]);
+    let app_reply = records(&tee.rx[rx_hs..]);
     // Drop the server's middlebox-compat ChangeCipherSpec (type 0x14); krabitls
     // never hashes it, and the fixtures omit it.
-    let rx: Vec<&[u8]> = records(&tee.rx)
+    let rx: Vec<&[u8]> = records(&tee.rx[..rx_hs])
         .into_iter()
         .filter(|r| r[0] != 0x14)
         .collect();
@@ -165,6 +187,19 @@ fn capture_chacha_fixtures() {
         "flight records should all be encrypted (0x17)"
     );
 
+    // One client app record out; the reply is the first record back (a
+    // trailing close_notify alert may share the segment — ignore it).
+    assert_eq!(app_send.len(), 1, "expected 1 client app record (005)");
+    assert!(
+        !app_reply.is_empty(),
+        "expected a server reply record (006)"
+    );
+    assert_eq!(app_send[0][0], CT_APPLICATION_DATA);
+    assert_eq!(
+        app_reply[0][0], CT_APPLICATION_DATA,
+        "006 should be app data"
+    );
+
     // TX: [ClientHello] [ClientFinished].   RX: [ServerHello] [ServerFlight...]
     let ch = tx[0];
     let cf = tx[1];
@@ -195,5 +230,15 @@ fn capture_chacha_fixtures() {
         "client Finished",
         cf,
     );
-    eprintln!("wrote 4 handshake fixtures to {dir}");
+    write(
+        "005_c2s_AppData_send_0.hex",
+        "first client app record",
+        app_send[0],
+    );
+    write(
+        "006_s2c_AppData_reply_0.hex",
+        "first server app reply",
+        app_reply[0],
+    );
+    eprintln!("wrote 6 fixtures to {dir}");
 }

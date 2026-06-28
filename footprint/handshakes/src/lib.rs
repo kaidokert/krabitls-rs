@@ -95,7 +95,7 @@ mod fixture_chacha_ed25519_facade {
     pub const SERVER_HELLO: [u8; 95] = krabitls::hex_decode(include_str!(
         "../../../testdata/packets_chacha/002_s2c_ServerHello.hex"
     ));
-    pub const SERVER_FLIGHT: [u8; 584] = krabitls::hex_decode(include_str!(
+    pub const SERVER_FLIGHT: [u8; 606] = krabitls::hex_decode(include_str!(
         "../../../testdata/packets_chacha/003_s2c_ServerFlight_encrypted.hex"
     ));
     pub const CLIENT_FINISHED: [u8; 58] = krabitls::hex_decode(include_str!(
@@ -118,7 +118,7 @@ mod fixture_aes_rsa2048_facade {
     pub const SERVER_HELLO: [u8; 95] = krabitls::hex_decode(include_str!(
         "../../../testdata/packets_rsa/002_s2c_ServerHello.hex"
     ));
-    pub const SERVER_FLIGHT: [u8; 1172] = krabitls::hex_decode(include_str!(
+    pub const SERVER_FLIGHT: [u8; 1258] = krabitls::hex_decode(include_str!(
         "../../../testdata/packets_rsa/003_s2c_ServerFlight_encrypted.hex"
     ));
     pub const CLIENT_FINISHED: [u8; 58] = krabitls::hex_decode(include_str!(
