@@ -1,6 +1,4 @@
-# tls_fixture seed-0 ClientFinished_encrypted (58 bytes).
-# Profile: TLS_AES_128_GCM_SHA256, group x25519, sig_algs ed25519+rsa_pss_rsae_sha256, SNI tls-fixture.local, record_size_limit=16385. Cert outer sig: RSASSA-PSS.
-17 03 03 00 35 f4 81 8f 6c 56 bb 76 64 17 9a a0
-15 c8 8d ed eb ad 06 46 7a c4 14 be a4 e4 7c f8
-31 22 b0 cb 4b 5d 57 04 ff 0f 6e 35 f1 8c 92 37
-0e ac c6 9b ed 16 cc 3d 24 e7
+# krabitls seed-0 AES-128-GCM + RSA client Finished (58 bytes), captured from a
+# local TLS echo server. Regenerate with the `#[ignore]`d
+# `gen_rsa_fixtures` test; do not hand-edit.
+17030300355b2cba62ddbbfcd84f40bac58db578cd66c92a47a6707adcd0cb38cc5a34347952634e9cbb346cc7ef851ccac08573f9a2cbdf41b7

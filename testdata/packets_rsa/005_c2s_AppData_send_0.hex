@@ -1,0 +1,4 @@
+# krabitls seed-0 AES-128-GCM + RSA first client app record (47 bytes), captured from a
+# local TLS echo server. Regenerate with the `#[ignore]`d
+# `gen_rsa_fixtures` test; do not hand-edit.
+170303002a86a34cfcbb0ef5f2c3c03e4132d776508fc482d5dd2f4bfabd58ead34dd55fd4b879aec60bf2a67b394d

@@ -39,6 +39,18 @@ const RSA_SERVER_FLIGHT_HEX: &str =
 #[cfg(all(feature = "rsa", feature = "cipher-aes", not(feature = "chacha20")))]
 const RSA_CLIENT_FINISHED_HEX: &str =
     include_str!("../../testdata/packets_rsa/004_c2s_ClientFinished_encrypted.hex");
+#[cfg(all(feature = "rsa", feature = "cipher-aes", not(feature = "chacha20")))]
+const RSA_APP_DATA_SEND_HEX: &str =
+    include_str!("../../testdata/packets_rsa/005_c2s_AppData_send_0.hex");
+#[cfg(all(feature = "rsa", feature = "cipher-aes", not(feature = "chacha20")))]
+const RSA_APP_DATA_REPLY_HEX: &str =
+    include_str!("../../testdata/packets_rsa/006_s2c_AppData_reply_0.hex");
+/// Plaintext the seed-0 client sent at capture (`gen_rsa_fixtures`).
+#[cfg(all(feature = "rsa", feature = "cipher-aes", not(feature = "chacha20")))]
+const RSA_APP_DATA_SEND_PLAINTEXT: &[u8] = b"krabitls roundtrip probe\n";
+/// The capture server's fixed reply.
+#[cfg(all(feature = "rsa", feature = "cipher-aes", not(feature = "chacha20")))]
+const RSA_APP_DATA_REPLY_PLAINTEXT: &[u8] = b"hello back from the test server";
 
 /// First app-data plaintext the Python client sent at seed 0.
 /// Matches `tls_fixture/demo.sh`: `cli.py --send "hello from the embedded client"`.
@@ -155,6 +167,52 @@ fn facade_completes_rsa_handshake_against_canned_fixtures() {
     assert_eq!(
         tls.transport().captured_tx(),
         expected_tx.as_slice(),
-        "RSA wire bytes diverged from the Python reference",
+        "RSA wire bytes diverged from the captured fixtures",
+    );
+}
+
+#[cfg(all(feature = "rsa", feature = "cipher-aes", not(feature = "chacha20")))]
+#[test]
+fn facade_round_trips_first_rsa_app_record_pair() {
+    let server_hello = parse_hex(RSA_SERVER_HELLO_HEX);
+    let server_flight = parse_hex(RSA_SERVER_FLIGHT_HEX);
+    let app_reply = parse_hex(RSA_APP_DATA_REPLY_HEX);
+
+    let mut server_stream =
+        Vec::with_capacity(server_hello.len() + server_flight.len() + app_reply.len());
+    server_stream.extend_from_slice(&server_hello);
+    server_stream.extend_from_slice(&server_flight);
+    server_stream.extend_from_slice(&app_reply);
+
+    let mut scratch = DefaultScratch::new();
+    let mut rng = SeededRng::new(0);
+    let transport = CannedTransport::<2048>::new(&server_stream);
+    let params =
+        ClientParams::self_signed("tls-fixture.local").suite_policy(RuntimeSuitePolicy::Default);
+
+    let mut tls = DefaultStream::connect(&params, &mut scratch, transport, &mut rng)
+        .expect("handshake against canned RSA fixtures");
+
+    tls.write_all(RSA_APP_DATA_SEND_PLAINTEXT)
+        .expect("write_all on freshly-connected stream");
+
+    let mut buf = [0u8; 128];
+    let n = tls.read(&mut buf).expect("read reply");
+    assert_eq!(
+        &buf[..n],
+        RSA_APP_DATA_REPLY_PLAINTEXT,
+        "decrypted RSA reply must match the captured server plaintext",
+    );
+
+    let expected_ch = parse_hex(RSA_CLIENT_HELLO_HEX);
+    let expected_cf = parse_hex(RSA_CLIENT_FINISHED_HEX);
+    let expected_app = parse_hex(RSA_APP_DATA_SEND_HEX);
+    let mut expected_tx = expected_ch;
+    expected_tx.extend_from_slice(&expected_cf);
+    expected_tx.extend_from_slice(&expected_app);
+    assert_eq!(
+        tls.transport().captured_tx(),
+        expected_tx.as_slice(),
+        "facade-encrypted RSA app record must byte-match the captured 005",
     );
 }
