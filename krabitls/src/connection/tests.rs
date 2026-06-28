@@ -280,6 +280,8 @@ mod aes_only {
             ServerPubkeyOwned::Ed25519(pk) => assert_eq!(pk, &EXPECTED_SERVER_ID_PUB),
             #[cfg(feature = "rsa")]
             ServerPubkeyOwned::Rsa { .. } => panic!("expected Ed25519 pubkey"),
+            #[cfg(feature = "mldsa")]
+            ServerPubkeyOwned::MlDsa(_) => panic!("expected Ed25519 pubkey"),
         }
     }
 
@@ -780,6 +782,8 @@ impl ServerPubkeyOwned {
                 modulus: &modulus[..],
                 exponent: *exponent,
             },
+            #[cfg(feature = "mldsa")]
+            Self::MlDsa(pk) => ServerPubkey::MlDsa(&pk[..]),
         }
     }
 }

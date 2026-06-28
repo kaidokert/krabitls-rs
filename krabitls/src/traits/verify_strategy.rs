@@ -13,6 +13,8 @@ pub enum ServerPubkey<'a> {
         modulus: &'a [u8],
         exponent: u32,
     },
+    #[cfg(feature = "mldsa")]
+    MlDsa(&'a [u8]),
 }
 
 impl<'a> ServerPubkey<'a> {
@@ -36,6 +38,13 @@ pub struct RsaKeyMaterial<'a> {
     pub exponent: u32,
 }
 
+/// ML-DSA public-key bytes handed to [`VerifierKeyMaterial::matches`] for the
+/// SPKI cross-check. Same role as [`RsaKeyMaterial`]; the param set is implicit
+/// in the byte length.
+#[cfg(feature = "mldsa")]
+#[derive(Debug, Clone, Copy)]
+pub struct MlDsaKeyMaterial<'a>(pub &'a [u8]);
+
 /// Constant-time compare of a prepared verifier's stored key material
 /// against `candidate`. Returning `Choice::from(1)` MUST imply the
 /// verifier was built from material that matches — the SPKI cross-check
@@ -54,10 +63,17 @@ use signature::Verifier;
 /// Prepared verifier the strategy hands back for the TLS stack to use in
 /// CertificateVerify. Stored by value in a caller-supplied slot so the
 /// `Trusted` return can borrow it.
+// no_alloc: the ML-DSA variant inlines a ~2.6 KiB public key; Box isn't
+// available to shrink it.
+#[allow(clippy::large_enum_variant)]
 pub enum PreparedVerifier<E: Ed25519VerifierProvider, R: RsaVerifierProvider> {
     Ed25519(E::Verifier, core::marker::PhantomData<fn() -> R>),
     #[cfg(feature = "rsa")]
     Rsa(R::Verifier),
+    /// ML-DSA has a single backend (krabipqc), so unlike Ed25519/RSA it isn't
+    /// parameterized by a provider — the concrete verifier is held directly.
+    #[cfg(feature = "mldsa")]
+    MlDsa(crate::backends::mldsa_verify::MlDsaVerifierKey),
 }
 
 impl<E, R> PreparedVerifier<E, R>
@@ -77,9 +93,10 @@ where
 {
     /// Cross-check this prepared verifier matches `view`'s pubkey. The stack
     /// runs this after the strategy returns — a lying strategy can't sneak in
-    /// a verifier built from non-chain bytes. Algorithm mismatch (rsa builds)
-    /// returns `Choice::from(0)`. Under `not(feature = "rsa")` the leaf match
-    /// is exhaustive (Ed25519 only), so no catch-all is needed.
+    /// a verifier built from non-chain bytes. Algorithm mismatch (rsa / mldsa
+    /// builds) returns `Choice::from(0)`. Under
+    /// `not(any(feature = "rsa", feature = "mldsa"))` the leaf match is
+    /// exhaustive (Ed25519 only), so no catch-all is needed.
     pub fn matches_cert(&self, view: &CertView<'_>) -> subtle::Choice {
         match (self, view) {
             (Self::Ed25519(v, _), CertView::Ed25519 { pubkey, .. }) => v.matches(**pubkey),
@@ -93,7 +110,9 @@ where
                 modulus,
                 exponent: *exponent,
             }),
-            #[cfg(feature = "rsa")]
+            #[cfg(feature = "mldsa")]
+            (Self::MlDsa(v), CertView::MlDsa { pubkey, .. }) => v.matches(MlDsaKeyMaterial(pubkey)),
+            #[cfg(any(feature = "rsa", feature = "mldsa"))]
             _ => subtle::Choice::from(0),
         }
     }
@@ -246,6 +265,9 @@ pub enum SafeStrategyError<TE> {
     #[cfg(feature = "rsa")]
     #[error("RSA verifier construction failed for intermediate cert")]
     RsaVerifierInvalid,
+    #[cfg(feature = "mldsa")]
+    #[error("ML-DSA verifier construction failed (bad public-key length)")]
+    MlDsaVerifierInvalid,
     /// Trust-root decision returned an error.
     #[error("trust root rejected: {0}")]
     Decision(TE),
@@ -321,6 +343,11 @@ where
                 R::prepare_rsa(modulus, *exponent)
                     .map_err(|_| SafeStrategyError::RsaVerifierInvalid)?,
             ),
+            #[cfg(feature = "mldsa")]
+            CertView::MlDsa { pubkey, .. } => PreparedVerifier::MlDsa(
+                crate::backends::mldsa_verify::MlDsaVerifierKey::new(pubkey)
+                    .map_err(|_| SafeStrategyError::MlDsaVerifierInvalid)?,
+            ),
         };
         *slot = Some(leaf_prepared);
         Ok(Trusted::new(slot.as_ref().unwrap()))
@@ -335,6 +362,8 @@ enum LinkErr {
     UnknownLinkSigAlg,
     #[cfg(feature = "rsa")]
     RsaVerifierInvalid,
+    #[cfg(feature = "mldsa")]
+    MlDsaVerifierInvalid,
 }
 
 impl<TE> From<LinkErr> for SafeStrategyError<TE> {
@@ -345,6 +374,8 @@ impl<TE> From<LinkErr> for SafeStrategyError<TE> {
             LinkErr::UnknownLinkSigAlg => SafeStrategyError::UnknownLinkSigAlg,
             #[cfg(feature = "rsa")]
             LinkErr::RsaVerifierInvalid => SafeStrategyError::RsaVerifierInvalid,
+            #[cfg(feature = "mldsa")]
+            LinkErr::MlDsaVerifierInvalid => SafeStrategyError::MlDsaVerifierInvalid,
         }
     }
 }
@@ -359,6 +390,8 @@ where
         CertView::Ed25519 { tbs, signature, .. } => (*tbs, &signature[..]),
         #[cfg(feature = "rsa")]
         CertView::Rsa { tbs, signature, .. } => (*tbs, *signature),
+        #[cfg(feature = "mldsa")]
+        CertView::MlDsa { tbs, signature, .. } => (*tbs, *signature),
     };
     match parent {
         CertView::Ed25519 { pubkey, .. } => {
@@ -369,6 +402,18 @@ where
             v.verify(child_tbs, sig)
                 .map_err(|_| LinkErr::LinkSignatureInvalid)
         }
+        #[cfg(feature = "mldsa")]
+        CertView::MlDsa { pubkey, .. } => {
+            // ML-DSA cert sigs are pure ML-DSA over the child TBS, empty
+            // context — no padding/hash discriminator to classify (unlike RSA).
+            let v = crate::backends::mldsa_verify::MlDsaVerifierKey::new(pubkey)
+                .map_err(|_| LinkErr::MlDsaVerifierInvalid)?;
+            v.verify(
+                child_tbs,
+                &crate::backends::mldsa_verify::MlDsaSig(child_sig),
+            )
+            .map_err(|_| LinkErr::LinkSignatureInvalid)
+        }
         #[cfg(feature = "rsa")]
         CertView::Rsa {
             modulus, exponent, ..
@@ -376,10 +421,10 @@ where
             // Padding scheme is identified by the CHILD's signatureAlgorithm
             // (the alg the parent USED to sign the child).
             let alg = match child {
-                CertView::Ed25519 { .. } => return Err(LinkErr::UnknownLinkSigAlg),
                 CertView::Rsa { outer_sig_alg, .. } => {
                     outer_sig_alg.ok_or(LinkErr::UnknownLinkSigAlg)?
                 }
+                _ => return Err(LinkErr::UnknownLinkSigAlg),
             };
             let v = R::prepare_rsa(modulus, *exponent).map_err(|_| LinkErr::RsaVerifierInvalid)?;
             crate::traits::rsa_verify::verify_cert_sig(&v, child_tbs, child_sig, alg)
@@ -400,6 +445,8 @@ mod tests {
                 ServerPubkey::Ed25519(pk, _) => Some(*pk),
                 #[cfg(feature = "rsa")]
                 ServerPubkey::Rsa { .. } => None,
+                #[cfg(feature = "mldsa")]
+                ServerPubkey::MlDsa(_) => None,
             }
         }
     }

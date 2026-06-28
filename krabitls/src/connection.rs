@@ -281,6 +281,8 @@ pub enum ServerPubkeyOwned {
         modulus: heapless::Vec<u8, 256>,
         exponent: u32,
     },
+    #[cfg(feature = "mldsa")]
+    MlDsa(heapless::Vec<u8, 2592>),
 }
 
 impl ServerPubkeyOwned {
@@ -296,6 +298,13 @@ impl ServerPubkeyOwned {
                     modulus: v,
                     exponent: *exponent,
                 })
+            }
+            #[cfg(feature = "mldsa")]
+            ServerPubkey::MlDsa(pk) => {
+                let mut v = heapless::Vec::new();
+                v.extend_from_slice(pk)
+                    .map_err(|_| FlightError::InternalEncoding)?;
+                Ok(Self::MlDsa(v))
             }
         }
     }

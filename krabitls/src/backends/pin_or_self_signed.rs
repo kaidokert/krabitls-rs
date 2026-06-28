@@ -23,12 +23,19 @@ pub enum PinnedPubkeyOwned {
         modulus: heapless::Vec<u8, { MAX_RSA_MODULUS_BYTES }>,
         exponent: u32,
     },
+    #[cfg(feature = "mldsa")]
+    MlDsa(heapless::Vec<u8, { MAX_MLDSA_PUBKEY_BYTES }>),
 }
 
 /// Maximum RSA modulus size accepted in [`PinnedPubkeyOwned::Rsa`]
 /// (256 = RSA-2048; 128 = RSA-1024 fits too).
 #[cfg(feature = "rsa")]
 pub const MAX_RSA_MODULUS_BYTES: usize = 256;
+
+/// Maximum ML-DSA public-key size accepted in [`PinnedPubkeyOwned::MlDsa`]
+/// (2592 = ML-DSA-87; the smaller parameter sets fit too).
+#[cfg(feature = "mldsa")]
+pub const MAX_MLDSA_PUBKEY_BYTES: usize = 2592;
 
 impl PinnedPubkeyOwned {
     pub fn ed25519(pubkey: [u8; 32]) -> Self {
@@ -47,6 +54,16 @@ impl PinnedPubkeyOwned {
             exponent,
         })
     }
+
+    /// ML-DSA constructor: copies the raw public key into a heapless buffer.
+    /// Errors when `pubkey.len() > MAX_MLDSA_PUBKEY_BYTES`.
+    #[cfg(feature = "mldsa")]
+    pub fn mldsa(pubkey: &[u8]) -> Result<Self, PinnedPubkeyOwnedError> {
+        let mut v: heapless::Vec<u8, { MAX_MLDSA_PUBKEY_BYTES }> = heapless::Vec::new();
+        v.extend_from_slice(pubkey)
+            .map_err(|_| PinnedPubkeyOwnedError::PubkeyTooLong)?;
+        Ok(PinnedPubkeyOwned::MlDsa(v))
+    }
 }
 
 /// Errors constructing [`PinnedPubkeyOwned`]. Always-present so the
@@ -59,6 +76,9 @@ pub enum PinnedPubkeyOwnedError {
     #[cfg(feature = "rsa")]
     #[error("RSA modulus exceeds MAX_RSA_MODULUS_BYTES")]
     ModulusTooLong,
+    #[cfg(feature = "mldsa")]
+    #[error("ML-DSA public key exceeds MAX_MLDSA_PUBKEY_BYTES")]
+    PubkeyTooLong,
 }
 
 // Same reason as PinnedPubkeyOwned — Box isn't available no_alloc.
@@ -110,6 +130,10 @@ pub enum PinOrSelfSignedError {
     #[cfg(feature = "rsa")]
     #[error("RSA verifier construction failed")]
     RsaVerifierInvalid,
+    /// ML-DSA verifier construction failed (bad public-key length).
+    #[cfg(feature = "mldsa")]
+    #[error("ML-DSA verifier construction failed")]
+    MlDsaVerifierInvalid,
     /// Cert outer signatureAlgorithm wasn't one we recognize (Ed25519 /
     /// PKCS#1-v1.5 / PSS).
     #[cfg(feature = "rsa")]
@@ -183,7 +207,18 @@ fn verify_pin(leaf: &CertView<'_>, pin: &PinnedPubkeyOwned) -> Result<(), PinOrS
                 Err(PinOrSelfSignedError::PinMismatch)
             }
         }
-        #[cfg(feature = "rsa")]
+        #[cfg(feature = "mldsa")]
+        (CertView::MlDsa { pubkey, .. }, PinnedPubkeyOwned::MlDsa(pin)) => {
+            if pubkey.len() != pin.len() {
+                return Err(PinOrSelfSignedError::PinMismatch);
+            }
+            if bool::from(pubkey.ct_eq(pin.as_slice())) {
+                Ok(())
+            } else {
+                Err(PinOrSelfSignedError::PinMismatch)
+            }
+        }
+        #[cfg(any(feature = "rsa", feature = "mldsa"))]
         _ => Err(PinOrSelfSignedError::PinAlgorithmMismatch),
     }
 }
@@ -223,6 +258,19 @@ where
             crate::traits::rsa_verify::verify_cert_sig(&v, tbs, signature, alg)
                 .map_err(|_| PinOrSelfSignedError::SelfSignatureInvalid)
         }
+        #[cfg(feature = "mldsa")]
+        CertView::MlDsa {
+            tbs,
+            signature,
+            pubkey,
+            ..
+        } => {
+            // Pure ML-DSA over the TBS, empty context — no outer-alg to classify.
+            let v = crate::backends::mldsa_verify::MlDsaVerifierKey::new(pubkey)
+                .map_err(|_| PinOrSelfSignedError::MlDsaVerifierInvalid)?;
+            v.verify(tbs, &crate::backends::mldsa_verify::MlDsaSig(signature))
+                .map_err(|_| PinOrSelfSignedError::SelfSignatureInvalid)
+        }
     }
 }
 
@@ -238,6 +286,17 @@ mod tests {
         CertView::Ed25519 {
             tbs: &[],
             signature: &[0u8; 64],
+            pubkey,
+            san: None,
+            validity_der: &[],
+        }
+    }
+
+    #[cfg(feature = "mldsa")]
+    fn mldsa_view<'a>(pubkey: &'a [u8], signature: &'a [u8], tbs: &'a [u8]) -> CertView<'a> {
+        CertView::MlDsa {
+            tbs,
+            signature,
             pubkey,
             san: None,
             validity_der: &[],
@@ -296,6 +355,64 @@ mod tests {
             &strategy, &chain,
         );
         assert!(result.is_ok());
+    }
+
+    #[cfg(feature = "mldsa")]
+    #[test]
+    fn pinned_mldsa_accepts_matching_and_rejects_other() {
+        use krabipqc::{KeyGenSeed, ml_dsa_44};
+
+        let (pk, _) = ml_dsa_44::keygen_from_seed(&KeyGenSeed([3; 32])).unwrap();
+        let strategy = PinOrSelfSigned::pinned(PinnedPubkeyOwned::mldsa(&pk).unwrap());
+        let leaf = mldsa_view(&pk, &[], &[]);
+        assert!(
+            <PinOrSelfSigned as TrustRootDecision<RustCrypto, RustCrypto>>::accept_chain(
+                &strategy,
+                &[leaf],
+            )
+            .is_ok()
+        );
+
+        let (other, _) = ml_dsa_44::keygen_from_seed(&KeyGenSeed([4; 32])).unwrap();
+        let mismatch = mldsa_view(&other, &[], &[]);
+        assert_eq!(
+            <PinOrSelfSigned as TrustRootDecision<RustCrypto, RustCrypto>>::accept_chain(
+                &strategy,
+                &[mismatch],
+            )
+            .expect_err("pin mismatch"),
+            PinOrSelfSignedError::PinMismatch
+        );
+    }
+
+    #[cfg(feature = "mldsa")]
+    #[test]
+    fn self_signed_mldsa_verifies_and_rejects_tamper() {
+        use krabipqc::{KeyGenSeed, SigningRandomness, ml_dsa_44};
+
+        let (pk, sk) = ml_dsa_44::keygen_from_seed(&KeyGenSeed([5; 32])).unwrap();
+        let tbs: &[u8] = b"synthetic TBSCertificate bytes for ml-dsa self-sig";
+        let sig = ml_dsa_44::sign(&sk, tbs, &[], &SigningRandomness([6; 32])).unwrap();
+        let strategy = PinOrSelfSigned::self_signed();
+
+        let leaf = mldsa_view(&pk, &sig, tbs);
+        assert!(
+            <PinOrSelfSigned as TrustRootDecision<RustCrypto, RustCrypto>>::accept_chain(
+                &strategy,
+                &[leaf],
+            )
+            .is_ok()
+        );
+
+        let tampered = mldsa_view(&pk, &sig, b"different tbs");
+        assert_eq!(
+            <PinOrSelfSigned as TrustRootDecision<RustCrypto, RustCrypto>>::accept_chain(
+                &strategy,
+                &[tampered],
+            )
+            .expect_err("self-sig over wrong tbs"),
+            PinOrSelfSignedError::SelfSignatureInvalid
+        );
     }
 
     #[test]

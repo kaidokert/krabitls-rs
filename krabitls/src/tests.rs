@@ -1369,7 +1369,7 @@ mod cipher_aes {
             ];
             match cert_view {
                 CertView::Ed25519 { pubkey, .. } => assert_eq!(pubkey, &EXPECTED_SERVER_ID_PUB),
-                #[cfg(feature = "rsa")]
+                #[cfg(any(feature = "rsa", feature = "mldsa"))]
                 _ => panic!("fixture cert is Ed25519"),
             }
 
@@ -1377,7 +1377,7 @@ mod cipher_aes {
                 .expect("cert self-sig");
             let pk = match view {
                 CertView::Ed25519 { pubkey, .. } => *pubkey,
-                #[cfg(feature = "rsa")]
+                #[cfg(any(feature = "rsa", feature = "mldsa"))]
                 _ => panic!("fixture cert is Ed25519"),
             };
             assert_eq!(pk, EXPECTED_SERVER_ID_PUB);
@@ -1717,7 +1717,7 @@ mod cipher_aes {
                     )
                     .expect("prepare_rsa"),
                 ),
-                CertView::Ed25519 { .. } => panic!("fixture is RSA"),
+                _ => panic!("fixture is RSA"),
             };
 
             let mut transcript = TranscriptHash::<RustCrypto>::new();

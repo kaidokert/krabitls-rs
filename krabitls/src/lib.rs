@@ -159,6 +159,17 @@ pub(crate) mod consts {
     // Unconditional so it can be named from `cfg!(feature = "rsa")`-false
     // branches in the ClientHello writer; the actual emission stays gated.
     pub const SIG_SCHEME_RSA_PSS_RSAE_SHA256: u16 = 0x0804;
+    /// `mldsa44` / `mldsa65` / `mldsa87` — pure ML-DSA (FIPS 204) over the
+    /// CertificateVerify content, empty context. Codepoints from
+    /// draft-ietf-tls-mldsa. Gated on `feature = "mldsa"` (the only consumer is
+    /// the CertificateVerify dispatch); the ClientHello advertisement that will
+    /// name them from a `cfg!`-false branch lands separately.
+    #[cfg(feature = "mldsa")]
+    pub const SIG_SCHEME_MLDSA44: u16 = 0x0904;
+    #[cfg(feature = "mldsa")]
+    pub const SIG_SCHEME_MLDSA65: u16 = 0x0905;
+    #[cfg(feature = "mldsa")]
+    pub const SIG_SCHEME_MLDSA87: u16 = 0x0906;
 
     pub const EXT_SERVER_NAME: u16 = 0;
     pub const EXT_SUPPORTED_GROUPS: u16 = 10;

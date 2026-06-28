@@ -11,6 +11,14 @@ pub struct DerCert;
 
 const ED25519_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.101.112");
 
+/// `id-ml-dsa-44/65/87` (NIST `2.16.840.1.101.3.4.3.{17,18,19}`).
+#[cfg(feature = "mldsa")]
+const ML_DSA_44_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.16.840.1.101.3.4.3.17");
+#[cfg(feature = "mldsa")]
+const ML_DSA_65_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.16.840.1.101.3.4.3.18");
+#[cfg(feature = "mldsa")]
+const ML_DSA_87_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.16.840.1.101.3.4.3.19");
+
 const SAN_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.5.29.17");
 
 const X509_V3: u8 = 2;
@@ -21,6 +29,10 @@ enum SpkiKind {
     Ed25519,
     #[cfg(feature = "rsa")]
     Rsa,
+    /// ML-DSA, carrying the parameter set's required public-key byte length so
+    /// the parse step can reject an OID/key-length mismatch.
+    #[cfg(feature = "mldsa")]
+    MlDsa(usize),
 }
 
 impl CertParser for DerCert {
@@ -147,6 +159,19 @@ impl CertParser for DerCert {
                     validity_der,
                 })
             }
+            #[cfg(feature = "mldsa")]
+            SpkiKind::MlDsa(pk_len) => {
+                if pk_bytes.len() != pk_len {
+                    return Err(CertParseError::WrongMlDsaPubkeyLength);
+                }
+                Ok(CertView::MlDsa {
+                    tbs: tbs_bytes,
+                    signature: sig_bytes,
+                    pubkey: pk_bytes,
+                    san: san_bytes,
+                    validity_der,
+                })
+            }
         }
     }
 }
@@ -251,6 +276,25 @@ fn classify_spki_algorithm(alg_id_bytes: &[u8]) -> Result<SpkiKind, CertParseErr
         // RFC 3279 §2.3.1: parameters MUST be NULL (explicit).
         require_explicit_null_params(&mut r)?;
         return Ok(SpkiKind::Rsa);
+    }
+    #[cfg(feature = "mldsa")]
+    {
+        let pk_len = if oid == ML_DSA_44_OID {
+            Some(krabipqc::ml_dsa_44::PK_BYTES)
+        } else if oid == ML_DSA_65_OID {
+            Some(krabipqc::ml_dsa_65::PK_BYTES)
+        } else if oid == ML_DSA_87_OID {
+            Some(krabipqc::ml_dsa_87::PK_BYTES)
+        } else {
+            None
+        };
+        if let Some(pk_len) = pk_len {
+            // draft-ietf-lamps-dilithium-certificates §4: parameters MUST be absent.
+            if !r.is_finished() {
+                return Err(CertParseError::AlgorithmHasParameters);
+            }
+            return Ok(SpkiKind::MlDsa(pk_len));
+        }
     }
     Err(CertParseError::WrongAlgorithmOid)
 }
