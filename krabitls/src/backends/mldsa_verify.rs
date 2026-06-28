@@ -5,8 +5,10 @@
 //! bytes), mirroring [`super::rsa_verify::RsaVerifierKey`]. The parameter set
 //! is chosen from the public-key length at construction.
 
+use crate::traits::verify_strategy::{MlDsaKeyMaterial, VerifierKeyMaterial};
 use krabipqc::{ml_dsa_44, ml_dsa_65, ml_dsa_87};
 use signature::{Error as SigError, Verifier};
+use subtle::ConstantTimeEq;
 
 /// Borrowed ML-DSA signature bytes. Newtyped so a prepared [`MlDsaVerifierKey`]
 /// implements [`signature::Verifier`]; the bytes stay borrowed through the
@@ -31,6 +33,15 @@ pub enum MlDsaVerifierKey {
 }
 
 impl MlDsaVerifierKey {
+    /// The stored public-key bytes, regardless of parameter set.
+    fn pubkey(&self) -> &[u8] {
+        match self {
+            Self::MlDsa44(pk) => pk,
+            Self::MlDsa65(pk) => pk,
+            Self::MlDsa87(pk) => pk,
+        }
+    }
+
     pub fn new(pubkey: &[u8]) -> Result<Self, MlDsaVerifyError> {
         match pubkey.len() {
             ml_dsa_44::PK_BYTES => pubkey
@@ -67,6 +78,16 @@ impl Verifier<MlDsaSig<'_>> for MlDsaVerifierKey {
         } else {
             Err(SigError::new())
         }
+    }
+}
+
+impl VerifierKeyMaterial<MlDsaKeyMaterial<'_>> for MlDsaVerifierKey {
+    fn matches(&self, candidate: MlDsaKeyMaterial<'_>) -> subtle::Choice {
+        let pk = self.pubkey();
+        if pk.len() != candidate.0.len() {
+            return subtle::Choice::from(0);
+        }
+        pk.ct_eq(candidate.0)
     }
 }
 

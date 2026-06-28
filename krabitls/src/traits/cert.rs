@@ -51,6 +51,23 @@ pub enum CertView<'a> {
         /// Validity-SEQUENCE DER bytes; same as the Ed25519 variant.
         validity_der: &'a [u8],
     },
+    /// ML-DSA server identity (FIPS 204). Available with `feature = "mldsa"`.
+    /// The parameter set (ML-DSA-44/65/87) is implicit in the pubkey/signature
+    /// byte lengths, so — unlike the RSA variant — no outer-sig discriminator
+    /// is needed: cert signatures are always pure ML-DSA over the TBS.
+    #[cfg(feature = "mldsa")]
+    MlDsa {
+        /// TBSCertificate bytes the cert's signature was computed over.
+        tbs: &'a [u8],
+        /// ML-DSA signature bytes (2420/3309/4627 B by parameter set).
+        signature: &'a [u8],
+        /// Raw ML-DSA SubjectPublicKey (1312/1952/2592 B by parameter set).
+        pubkey: &'a [u8],
+        /// SubjectAltName extension content; same shape as the other variants.
+        san: Option<&'a [u8]>,
+        /// Validity-SEQUENCE DER bytes; same as the other variants.
+        validity_der: &'a [u8],
+    },
 }
 
 /// RSA cert outer-signature padding scheme. Only sha256-based variants are
@@ -75,6 +92,8 @@ impl<'a> CertView<'a> {
             CertView::Ed25519 { tbs, .. } => tbs,
             #[cfg(feature = "rsa")]
             CertView::Rsa { tbs, .. } => tbs,
+            #[cfg(feature = "mldsa")]
+            CertView::MlDsa { tbs, .. } => tbs,
         }
     }
 
@@ -84,6 +103,8 @@ impl<'a> CertView<'a> {
             CertView::Ed25519 { san, .. } => *san,
             #[cfg(feature = "rsa")]
             CertView::Rsa { san, .. } => *san,
+            #[cfg(feature = "mldsa")]
+            CertView::MlDsa { san, .. } => *san,
         }
     }
 
@@ -93,6 +114,8 @@ impl<'a> CertView<'a> {
             CertView::Ed25519 { validity_der, .. } => validity_der,
             #[cfg(feature = "rsa")]
             CertView::Rsa { validity_der, .. } => validity_der,
+            #[cfg(feature = "mldsa")]
+            CertView::MlDsa { validity_der, .. } => validity_der,
         }
     }
 }

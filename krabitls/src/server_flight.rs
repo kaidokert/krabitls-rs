@@ -1,5 +1,7 @@
 //! Parse and verify the encrypted TLS 1.3 server flight.
 
+#[cfg(feature = "mldsa")]
+use crate::backends::mldsa_verify::MlDsaSig;
 #[cfg(feature = "rsa")]
 use crate::backends::rsa_verify::RsaPssSig;
 use crate::consts::SIG_SCHEME_ED25519;
@@ -9,6 +11,8 @@ use crate::consts::{
     EXT_SIGNATURE_ALGORITHMS, HS_CERTIFICATE, HS_CERTIFICATE_REQUEST, HS_CERTIFICATE_VERIFY,
     HS_ENCRYPTED_EXTENSIONS, HS_FINISHED,
 };
+#[cfg(feature = "mldsa")]
+use crate::consts::{SIG_SCHEME_MLDSA44, SIG_SCHEME_MLDSA65, SIG_SCHEME_MLDSA87};
 use crate::hkdf::{HkdfLabelError, TranscriptHash, hkdf_expand_label};
 use crate::newtype::{Secret, TranscriptDigest, ZeroBuf};
 use crate::traits::verify_strategy::PreparedVerifier;
@@ -393,6 +397,13 @@ pub(crate) fn verify_certificate_verify_with_prepared<
         (SIG_SCHEME_RSA_PSS_RSAE_SHA256, PreparedVerifier::Rsa(v)) => v
             .verify(&signed, &RsaPssSig(sig_bytes))
             .map_err(|_| FlightError::CertVerifyInvalid),
+        #[cfg(feature = "mldsa")]
+        (
+            SIG_SCHEME_MLDSA44 | SIG_SCHEME_MLDSA65 | SIG_SCHEME_MLDSA87,
+            PreparedVerifier::MlDsa(v),
+        ) => v
+            .verify(&signed, &MlDsaSig(sig_bytes))
+            .map_err(|_| FlightError::CertVerifyInvalid),
         _ => Err(FlightError::UnexpectedSignatureScheme(scheme)),
     }
 }
@@ -476,6 +487,8 @@ where
             modulus,
             exponent: *exponent,
         },
+        #[cfg(feature = "mldsa")]
+        CertView::MlDsa { pubkey, .. } => ServerPubkey::MlDsa(pubkey),
     };
     Ok(ServerFlightVerified { server_pubkey })
 }
@@ -718,6 +731,8 @@ pub(crate) mod tests {
             CertView::Ed25519 { pubkey, .. } => Some(E::prepare_ed25519(pubkey)),
             #[cfg(feature = "rsa")]
             CertView::Rsa { .. } => None,
+            #[cfg(feature = "mldsa")]
+            CertView::MlDsa { .. } => None,
         };
         #[cfg(feature = "rsa")]
         let rsa_v = match &view {
@@ -775,6 +790,18 @@ pub(crate) mod tests {
                 crate::traits::rsa_verify::verify_cert_sig(v, tbs, signature, alg)
                     .map_err(|_| FlightError::CertSelfSignatureInvalid)?;
             }
+            #[cfg(feature = "mldsa")]
+            CertView::MlDsa {
+                tbs,
+                signature,
+                pubkey,
+                ..
+            } => {
+                let v = crate::backends::mldsa_verify::MlDsaVerifierKey::new(pubkey)
+                    .map_err(|_| FlightError::CertSelfSignatureInvalid)?;
+                v.verify(tbs, &crate::backends::mldsa_verify::MlDsaSig(signature))
+                    .map_err(|_| FlightError::CertSelfSignatureInvalid)?;
+            }
         }
         Ok(())
     }
@@ -790,6 +817,8 @@ pub(crate) mod tests {
             CertView::Ed25519 { pubkey, .. } => Some(E::prepare_ed25519(pubkey)),
             #[cfg(feature = "rsa")]
             CertView::Rsa { .. } => None,
+            #[cfg(feature = "mldsa")]
+            CertView::MlDsa { .. } => None,
         };
         #[cfg(feature = "rsa")]
         let rsa_v = match cert_view {
@@ -865,5 +894,84 @@ pub(crate) mod tests {
             }
             _ => Err(FlightError::UnexpectedSignatureScheme(scheme)),
         }
+    }
+
+    #[cfg(feature = "mldsa")]
+    mod mldsa {
+        use super::*;
+        use crate::backends::RustCrypto;
+        use crate::backends::mldsa_verify::MlDsaVerifierKey;
+        use krabipqc::{KeyGenSeed, SigningRandomness};
+
+        /// Reconstruct the TLS 1.3 server CertificateVerify signed content for a
+        /// known transcript-hash digest, matching the production builder.
+        fn signed_content(digest: &[u8; 32]) -> heapless::Vec<u8, 130> {
+            let mut signed = heapless::Vec::<u8, 130>::new();
+            signed.extend_from_slice(&[0x20u8; 64]).unwrap();
+            signed
+                .extend_from_slice(b"TLS 1.3, server CertificateVerify")
+                .unwrap();
+            signed.push(0).unwrap();
+            signed.extend_from_slice(digest).unwrap();
+            signed
+        }
+
+        fn cv_body(scheme: u16, sig: &[u8]) -> heapless::Vec<u8, 4640> {
+            let mut b = heapless::Vec::<u8, 4640>::new();
+            b.extend_from_slice(&scheme.to_be_bytes()).unwrap();
+            b.extend_from_slice(&(sig.len() as u16).to_be_bytes())
+                .unwrap();
+            b.extend_from_slice(sig).unwrap();
+            b
+        }
+
+        macro_rules! cv_roundtrip {
+            ($name:ident, $facade:ident, $scheme:expr) => {
+                #[test]
+                fn $name() {
+                    let digest = [0x5au8; 32];
+                    let td = TranscriptDigest::new(digest);
+                    let signed = signed_content(&digest);
+
+                    let (pk, sk) =
+                        krabipqc::$facade::keygen_from_seed(&KeyGenSeed([7; 32])).unwrap();
+                    let sig =
+                        krabipqc::$facade::sign(&sk, &signed, &[], &SigningRandomness([9; 32]))
+                            .unwrap();
+
+                    let prepared: PreparedVerifier<RustCrypto, RustCrypto> =
+                        PreparedVerifier::MlDsa(MlDsaVerifierKey::new(&pk).unwrap());
+
+                    let body = cv_body($scheme, &sig);
+                    verify_certificate_verify_with_prepared::<RustCrypto, RustCrypto>(
+                        &prepared, &td, &body,
+                    )
+                    .expect("ML-DSA CertificateVerify verifies");
+
+                    let mut tampered = body.clone();
+                    *tampered.last_mut().unwrap() ^= 0xFF;
+                    assert!(matches!(
+                        verify_certificate_verify_with_prepared::<RustCrypto, RustCrypto>(
+                            &prepared, &td, &tampered
+                        ),
+                        Err(FlightError::CertVerifyInvalid)
+                    ));
+
+                    let wrong_scheme = cv_body(SIG_SCHEME_ED25519, &sig);
+                    assert!(matches!(
+                        verify_certificate_verify_with_prepared::<RustCrypto, RustCrypto>(
+                            &prepared,
+                            &td,
+                            &wrong_scheme
+                        ),
+                        Err(FlightError::UnexpectedSignatureScheme(_))
+                    ));
+                }
+            };
+        }
+
+        cv_roundtrip!(cv_mldsa44, ml_dsa_44, SIG_SCHEME_MLDSA44);
+        cv_roundtrip!(cv_mldsa65, ml_dsa_65, SIG_SCHEME_MLDSA65);
+        cv_roundtrip!(cv_mldsa87, ml_dsa_87, SIG_SCHEME_MLDSA87);
     }
 }
