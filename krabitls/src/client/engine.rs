@@ -72,7 +72,18 @@ const PH_STAGE_MAX: usize = 5;
 pub(crate) struct PostHandshakeReasm {
     stage: [u8; PH_STAGE_MAX],
     stage_len: u8,
-    skip_remaining: usize,
+    /// `u32`, not `usize`: a handshake message length is a 24-bit field, which
+    /// would truncate on a 16-bit-`usize` target.
+    skip_remaining: u32,
+}
+
+impl PostHandshakeReasm {
+    /// A post-handshake message is partway reassembled (RFC 8446 §5.1): the
+    /// next record from the peer must be another handshake record, not app
+    /// data or an alert interleaved between fragments.
+    fn in_progress(&self) -> bool {
+        self.stage_len != 0 || self.skip_remaining != 0
+    }
 }
 
 /// Wrapped typestate states — one variant per `(handshake-phase × suite)`
@@ -802,6 +813,12 @@ impl<
         content_len: usize,
         inner_ct: u8,
     ) -> Result<(), HandshakeError> {
+        // RFC 8446 §5.1: once a post-handshake handshake message is split
+        // across records, no other record type may appear until it completes.
+        // Reject interleaved application_data / alert mid-reassembly.
+        if inner_ct != CT_HANDSHAKE && self.ph.in_progress() {
+            return Err(HandshakeError::InterleavedPostHandshake);
+        }
         match inner_ct {
             CT_APPLICATION_DATA => {
                 if content_len > 0 {
@@ -844,11 +861,12 @@ impl<
     fn feed_post_handshake(&mut self, start: usize, len: usize) -> Result<(), HandshakeError> {
         let mut i = 0usize;
         loop {
-            // Drain a NewSessionTicket body skip carried over from a prior record.
+            // Drain a NewSessionTicket body skip carried over from a prior
+            // record. 24-bit lengths ⇒ skip arithmetic stays in `u32`.
             if self.ph.skip_remaining > 0 {
-                let n = self.ph.skip_remaining.min(len - i);
+                let n = self.ph.skip_remaining.min((len - i) as u32);
                 self.ph.skip_remaining -= n;
-                i += n;
+                i += n as usize;
                 if self.ph.skip_remaining > 0 {
                     return Ok(()); // record exhausted mid-skip
                 }
@@ -863,14 +881,14 @@ impl<
                 return Ok(()); // header incomplete; carry over to the next record
             }
             let msg_type = self.ph.stage[0];
+            // 24-bit length; keep as `u32` so it can't truncate on 16-bit usize.
             let body_len =
-                u32::from_be_bytes([0, self.ph.stage[1], self.ph.stage[2], self.ph.stage[3]])
-                    as usize;
+                u32::from_be_bytes([0, self.ph.stage[1], self.ph.stage[2], self.ph.stage[3]]);
             match msg_type {
                 HS_NEW_SESSION_TICKET => {
                     self.ph.stage_len = 0;
-                    let n = body_len.min(len - i);
-                    i += n;
+                    let n = body_len.min((len - i) as u32);
+                    i += n as usize;
                     if n < body_len {
                         self.ph.skip_remaining = body_len - n;
                         return Ok(());
@@ -1576,6 +1594,33 @@ mod tests {
         assert!(matches!(
             e.handle_inner_content(0, 1, CT_HANDSHAKE).unwrap_err(),
             HandshakeError::MalformedKeyUpdate
+        ));
+    }
+
+    #[test]
+    fn handle_handshake_interleaved_record_mid_reassembly_rejected() {
+        // RFC 8446 §5.1: app data / alert may not appear between fragments of a
+        // split post-handshake message. Stage a partial header, then feed an
+        // application_data record — it must be rejected, not parked.
+        let mut scratch = DefaultScratch::new();
+        scratch.recv_record[0] = HS_NEW_SESSION_TICKET;
+        let mut e = closed_engine(&mut scratch);
+        assert!(e.handle_inner_content(0, 2, CT_HANDSHAKE).is_ok());
+        assert!(e.ph.in_progress());
+        assert!(matches!(
+            e.handle_inner_content(5, 10, CT_APPLICATION_DATA)
+                .unwrap_err(),
+            HandshakeError::InterleavedPostHandshake
+        ));
+        // A mid-skip NST body behaves the same.
+        let mut scratch2 = DefaultScratch::new();
+        scratch2.recv_record[..4].copy_from_slice(&[HS_NEW_SESSION_TICKET, 0x00, 0x00, 0x0a]);
+        let mut e2 = closed_engine(&mut scratch2);
+        assert!(e2.handle_inner_content(0, 4, CT_HANDSHAKE).is_ok());
+        assert_eq!(e2.ph.skip_remaining, 10);
+        assert!(matches!(
+            e2.handle_inner_content(5, 2, CT_ALERT).unwrap_err(),
+            HandshakeError::InterleavedPostHandshake
         ));
     }
 
