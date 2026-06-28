@@ -322,6 +322,53 @@ fn client_hello_advertises_mldsa_schemes() {
     );
 }
 
+/// End-to-end against real openssl-produced ML-DSA certificates: the active
+/// `CertParser` parses the DER, and krabipqc verifies the self-signature
+/// openssl wrote — a cross-implementation check of OID classification, SPKI/TBS
+/// extraction, and the pure-ML-DSA verify path. `DerCert` is a feature alias,
+/// so this runs the `der`-crate backend with `cert-der` and the in-tree TLV
+/// walker without it (both covered by the feature-powerset CI).
+#[cfg(feature = "mldsa")]
+mod real_mldsa_certs {
+    use super::*;
+    use crate::backends::DerCert;
+    use crate::backends::mldsa_verify::{MlDsaSig, MlDsaVerifierKey};
+    use crate::traits::CertParser;
+    use signature::Verifier;
+
+    macro_rules! real_cert_test {
+        ($name:ident, $file:literal, $der_len:expr, $pk_len:expr, $sig_len:expr) => {
+            #[test]
+            fn $name() {
+                const DER: [u8; $der_len] =
+                    crate::hex_decode(include_str!(concat!("../../testdata/certs/", $file)));
+                let der: &[u8] = &DER;
+                let CertView::MlDsa {
+                    tbs,
+                    signature,
+                    pubkey,
+                    san,
+                    ..
+                } = <DerCert as CertParser>::parse(der).expect("parse real ML-DSA cert")
+                else {
+                    panic!("real ML-DSA cert did not parse as CertView::MlDsa");
+                };
+                assert_eq!(pubkey.len(), $pk_len);
+                assert_eq!(signature.len(), $sig_len);
+                assert!(san.is_some(), "the cert's SubjectAltName must be parsed");
+
+                let vk = MlDsaVerifierKey::new(pubkey).expect("build verifier from leaf pubkey");
+                vk.verify(tbs, &MlDsaSig(signature))
+                    .expect("openssl's self-signature must verify under krabipqc");
+            }
+        };
+    }
+
+    real_cert_test!(mldsa44, "mldsa44_selfsigned.hex", 4012, 1312, 2420);
+    real_cert_test!(mldsa65, "mldsa65_selfsigned.hex", 5541, 1952, 3309);
+    real_cert_test!(mldsa87, "mldsa87_selfsigned.hex", 7499, 2592, 4627);
+}
+
 #[test]
 fn error_types_display() {
     // Round-trip Display through `format!` to catch any breakage in the
