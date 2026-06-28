@@ -37,6 +37,10 @@ pub enum PinnedPubkey<'a> {
     /// RSA modulus + exponent. Available with `feature = "rsa"`.
     #[cfg(feature = "rsa")]
     Rsa { modulus: &'a [u8], exponent: u32 },
+    /// Raw ML-DSA public key (1312/1952/2592 B by parameter set). Available
+    /// with `feature = "mldsa"`.
+    #[cfg(feature = "mldsa")]
+    MlDsa(&'a [u8]),
     /// Lifetime binding for the Ed25519-only variant when `feature = "rsa"`
     /// is off (and a placeholder for future borrowed variants).
     #[doc(hidden)]
@@ -44,11 +48,14 @@ pub enum PinnedPubkey<'a> {
 }
 
 impl<'a> PinnedPubkey<'a> {
-    /// Convert to the owned form held by the verify strategy.
-    /// Fails with `ModulusTooLong` when an `Rsa` variant carries a
-    /// modulus longer than
-    /// [`crate::backends::pin_or_self_signed::MAX_RSA_MODULUS_BYTES`].
-    /// Under `not(feature = "rsa")` the error enum is uninhabited.
+    /// Convert to the owned form held by the verify strategy. Fails when an
+    /// `Rsa`/`MlDsa` variant carries key material longer than the owned form's
+    /// fixed buffer ([`MAX_RSA_MODULUS_BYTES`] /
+    /// [`MAX_MLDSA_PUBKEY_BYTES`]). Under `not(any(feature = "rsa", feature =
+    /// "mldsa"))` the error enum is uninhabited.
+    ///
+    /// [`MAX_RSA_MODULUS_BYTES`]: crate::backends::pin_or_self_signed::MAX_RSA_MODULUS_BYTES
+    /// [`MAX_MLDSA_PUBKEY_BYTES`]: crate::backends::pin_or_self_signed::MAX_MLDSA_PUBKEY_BYTES
     pub fn to_owned_pin(
         &self,
     ) -> Result<crate::backends::PinnedPubkeyOwned, crate::backends::PinnedPubkeyOwnedError> {
@@ -58,6 +65,8 @@ impl<'a> PinnedPubkey<'a> {
             PinnedPubkey::Rsa { modulus, exponent } => {
                 crate::backends::PinnedPubkeyOwned::rsa(modulus, *exponent)
             }
+            #[cfg(feature = "mldsa")]
+            PinnedPubkey::MlDsa(pk) => crate::backends::PinnedPubkeyOwned::mldsa(pk),
             PinnedPubkey::_Phantom(_) => unreachable!("_Phantom is not externally constructible"),
         }
     }

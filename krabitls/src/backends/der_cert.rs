@@ -29,8 +29,10 @@ enum SpkiKind {
     Ed25519,
     #[cfg(feature = "rsa")]
     Rsa,
+    /// ML-DSA, carrying the parameter set's required public-key byte length so
+    /// the parse step can reject an OID/key-length mismatch.
     #[cfg(feature = "mldsa")]
-    MlDsa,
+    MlDsa(usize),
 }
 
 impl CertParser for DerCert {
@@ -158,13 +160,18 @@ impl CertParser for DerCert {
                 })
             }
             #[cfg(feature = "mldsa")]
-            SpkiKind::MlDsa => Ok(CertView::MlDsa {
-                tbs: tbs_bytes,
-                signature: sig_bytes,
-                pubkey: pk_bytes,
-                san: san_bytes,
-                validity_der,
-            }),
+            SpkiKind::MlDsa(pk_len) => {
+                if pk_bytes.len() != pk_len {
+                    return Err(CertParseError::WrongMlDsaPubkeyLength);
+                }
+                Ok(CertView::MlDsa {
+                    tbs: tbs_bytes,
+                    signature: sig_bytes,
+                    pubkey: pk_bytes,
+                    san: san_bytes,
+                    validity_der,
+                })
+            }
         }
     }
 }
@@ -271,12 +278,23 @@ fn classify_spki_algorithm(alg_id_bytes: &[u8]) -> Result<SpkiKind, CertParseErr
         return Ok(SpkiKind::Rsa);
     }
     #[cfg(feature = "mldsa")]
-    if oid == ML_DSA_44_OID || oid == ML_DSA_65_OID || oid == ML_DSA_87_OID {
-        // draft-ietf-lamps-dilithium-certificates §4: parameters MUST be absent.
-        if !r.is_finished() {
-            return Err(CertParseError::AlgorithmHasParameters);
+    {
+        let pk_len = if oid == ML_DSA_44_OID {
+            Some(krabipqc::ml_dsa_44::PK_BYTES)
+        } else if oid == ML_DSA_65_OID {
+            Some(krabipqc::ml_dsa_65::PK_BYTES)
+        } else if oid == ML_DSA_87_OID {
+            Some(krabipqc::ml_dsa_87::PK_BYTES)
+        } else {
+            None
+        };
+        if let Some(pk_len) = pk_len {
+            // draft-ietf-lamps-dilithium-certificates §4: parameters MUST be absent.
+            if !r.is_finished() {
+                return Err(CertParseError::AlgorithmHasParameters);
+            }
+            return Ok(SpkiKind::MlDsa(pk_len));
         }
-        return Ok(SpkiKind::MlDsa);
     }
     Err(CertParseError::WrongAlgorithmOid)
 }

@@ -1,7 +1,7 @@
 //! Parse and verify the encrypted TLS 1.3 server flight.
 
 #[cfg(feature = "mldsa")]
-use crate::backends::mldsa_verify::MlDsaSig;
+use crate::backends::mldsa_verify::{MlDsaSig, MlDsaVerifierKey};
 #[cfg(feature = "rsa")]
 use crate::backends::rsa_verify::RsaPssSig;
 use crate::consts::SIG_SCHEME_ED25519;
@@ -397,11 +397,13 @@ pub(crate) fn verify_certificate_verify_with_prepared<
         (SIG_SCHEME_RSA_PSS_RSAE_SHA256, PreparedVerifier::Rsa(v)) => v
             .verify(&signed, &RsaPssSig(sig_bytes))
             .map_err(|_| FlightError::CertVerifyInvalid),
+        // Bind each scheme codepoint to its parameter set: a peer must not
+        // label the CertificateVerify with a different ML-DSA scheme than the
+        // leaf key's. A mismatch falls through to `UnexpectedSignatureScheme`.
         #[cfg(feature = "mldsa")]
-        (
-            SIG_SCHEME_MLDSA44 | SIG_SCHEME_MLDSA65 | SIG_SCHEME_MLDSA87,
-            PreparedVerifier::MlDsa(v),
-        ) => v
+        (SIG_SCHEME_MLDSA44, PreparedVerifier::MlDsa(v @ MlDsaVerifierKey::MlDsa44(_)))
+        | (SIG_SCHEME_MLDSA65, PreparedVerifier::MlDsa(v @ MlDsaVerifierKey::MlDsa65(_)))
+        | (SIG_SCHEME_MLDSA87, PreparedVerifier::MlDsa(v @ MlDsaVerifierKey::MlDsa87(_))) => v
             .verify(&signed, &MlDsaSig(sig_bytes))
             .map_err(|_| FlightError::CertVerifyInvalid),
         _ => Err(FlightError::UnexpectedSignatureScheme(scheme)),
@@ -973,5 +975,31 @@ pub(crate) mod tests {
         cv_roundtrip!(cv_mldsa44, ml_dsa_44, SIG_SCHEME_MLDSA44);
         cv_roundtrip!(cv_mldsa65, ml_dsa_65, SIG_SCHEME_MLDSA65);
         cv_roundtrip!(cv_mldsa87, ml_dsa_87, SIG_SCHEME_MLDSA87);
+
+        /// A valid ML-DSA-44 signature labelled `mldsa87` must be rejected by
+        /// the scheme↔key-parameter binding, not accepted by length inference.
+        #[test]
+        fn cv_rejects_scheme_param_set_mismatch() {
+            let digest = [0x5au8; 32];
+            let td = TranscriptDigest::new(digest);
+            let signed = signed_content(&digest);
+
+            let (pk, sk) = krabipqc::ml_dsa_44::keygen_from_seed(&KeyGenSeed([7; 32])).unwrap();
+            let sig =
+                krabipqc::ml_dsa_44::sign(&sk, &signed, &[], &SigningRandomness([9; 32])).unwrap();
+
+            let prepared: PreparedVerifier<RustCrypto, RustCrypto> =
+                PreparedVerifier::MlDsa(MlDsaVerifierKey::new(&pk).unwrap());
+
+            let mislabelled = cv_body(SIG_SCHEME_MLDSA87, &sig);
+            assert!(matches!(
+                verify_certificate_verify_with_prepared::<RustCrypto, RustCrypto>(
+                    &prepared,
+                    &td,
+                    &mislabelled
+                ),
+                Err(FlightError::UnexpectedSignatureScheme(_))
+            ));
+        }
     }
 }

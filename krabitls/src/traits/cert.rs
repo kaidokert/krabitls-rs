@@ -177,4 +177,10 @@ pub enum CertParseError {
     #[cfg(feature = "rsa")]
     #[error("RSA modulus length was not 128 B (RSA-1024) or 256 B (RSA-2048)")]
     UnsupportedRsaKeySize,
+    /// The ML-DSA SubjectPublicKey length didn't match the byte length the
+    /// SPKI `id-ml-dsa-44/65/87` OID's parameter set requires (1312/1952/2592).
+    /// Keeps the OID-declared parameter set and the key authoritative together.
+    #[cfg(feature = "mldsa")]
+    #[error("ML-DSA SubjectPublicKey length did not match the OID's parameter set")]
+    WrongMlDsaPubkeyLength,
 }
