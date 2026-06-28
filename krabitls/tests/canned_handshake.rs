@@ -9,7 +9,8 @@
 #![cfg(all(
     feature = "cipher-aes",
     not(feature = "chacha20"),
-    not(feature = "mldsa")
+    not(feature = "mldsa"),
+    not(feature = "mlkem")
 ))]
 
 use krabitls::client::{ClientParams, DefaultScratch, DefaultStream, RuntimeSuitePolicy};

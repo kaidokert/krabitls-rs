@@ -59,8 +59,12 @@ impl TryFrom<u16> for RecordSizeLimit {
 
 /// Locked-profile ServerHello on-wire record size. Plaintext (no AEAD
 /// tag) so RFC 8449 negotiation doesn't constrain it; the recv buffer
-/// must still be able to hold it.
+/// must still be able to hold it. Under `mlkem` the `X25519MLKEM768`
+/// server key_share carries an extra ML-KEM-768 ciphertext (1088 B).
+#[cfg(not(feature = "mlkem"))]
 pub(crate) const SERVER_HELLO_RECORD_LEN: usize = 95;
+#[cfg(feature = "mlkem")]
+pub(crate) const SERVER_HELLO_RECORD_LEN: usize = 95 + crate::backends::mlkem::MLKEM768_CT_BYTES;
 
 /// Minimum `RECV` to receive both the locked-profile plaintext
 /// ServerHello and a protected record at the smallest legal
@@ -99,7 +103,9 @@ pub(crate) const fn client_auth_send_floor(max_flight: usize) -> usize {
 pub const FACADE_HOSTNAME_MAX: usize = 255;
 
 /// ClientHello scratch capacity; held fixed so `Scratch::new` is `const`.
-pub(crate) const CH_LEN: usize = 512;
+/// Single source of truth is [`crate::connection::CH_SCRATCH`] so the two
+/// can't drift.
+pub(crate) const CH_LEN: usize = crate::connection::CH_SCRATCH;
 
 const fn max_const(a: usize, b: usize) -> usize {
     if a > b { a } else { b }

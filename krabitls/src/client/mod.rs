@@ -140,8 +140,12 @@ mod tests {
     // clippy's `assertions_on_constants` lint anyway.)
 
     /// Dominated by the 95-byte locked-profile ServerHello; the
-    /// MIN_RECORD_SIZE_LIMIT + RECORD_OVERHEAD floor (85) is smaller.
+    /// MIN_RECORD_SIZE_LIMIT + RECORD_OVERHEAD floor (85) is smaller. Under
+    /// `mlkem` the `X25519MLKEM768` server key_share adds the ML-KEM ciphertext.
+    #[cfg(not(feature = "mlkem"))]
     const _: () = assert!(MIN_RECV == 95);
+    #[cfg(feature = "mlkem")]
+    const _: () = assert!(MIN_RECV == 95 + crate::backends::mlkem::MLKEM768_CT_BYTES);
     /// `MIN_SEND_STANDARD` must accommodate the largest engine-internal
     /// send (Client Finished today).
     const _: () = assert!(MIN_SEND_STANDARD >= crate::client_flight::CLIENT_FINISHED_LEN);

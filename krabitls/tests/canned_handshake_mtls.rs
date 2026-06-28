@@ -13,7 +13,8 @@
     feature = "cipher-aes",
     not(feature = "chacha20"),
     not(feature = "rsa"),
-    not(feature = "mldsa")
+    not(feature = "mldsa"),
+    not(feature = "mlkem")
 ))]
 
 use krabitls::client::{

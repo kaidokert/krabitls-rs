@@ -153,6 +153,10 @@ pub(crate) mod consts {
     pub const CIPHER_AES_128_GCM_SHA256: u16 = 0x1301;
     pub const CIPHER_CHACHA20_POLY1305_SHA256: u16 = 0x1303;
     pub const NAMED_GROUP_X25519: u16 = 0x001D;
+    /// `X25519MLKEM768` hybrid group (draft-ietf-tls-ecdhe-mlkem). Unconditional
+    /// so the key-share writer can name it from a `cfg!(feature = "mlkem")`-false
+    /// branch; only advertised when the feature is on.
+    pub const NAMED_GROUP_X25519MLKEM768: u16 = 0x11EC;
     pub const SIG_SCHEME_ED25519: u16 = 0x0807;
     /// `rsa_pss_rsae_sha256` — RSASSA-PSS with the leaf's RSAE key encoding,
     /// MGF1-SHA-256, salt_len = hash output (32 B). RFC 8446 §4.2.3.
@@ -204,7 +208,30 @@ const EXT_SUPPORTED_GROUPS_TOTAL: u16 = 4 + 4;
 const SIG_SCHEME_COUNT: u16 = 1 + cfg!(feature = "rsa") as u16 + 3 * cfg!(feature = "mldsa") as u16;
 // 4-byte ext header + 2-byte list-len + 2 bytes per scheme.
 const EXT_SIGNATURE_ALGORITHMS_TOTAL: u16 = 4 + 2 + 2 * SIG_SCHEME_COUNT;
-const EXT_KEY_SHARE_TOTAL: u16 = 4 + 38;
+// The single named group we advertise in supported_groups + key_share:
+// X25519MLKEM768 under `mlkem`, otherwise plain X25519.
+const KEY_SHARE_GROUP: u16 = if cfg!(feature = "mlkem") {
+    NAMED_GROUP_X25519MLKEM768
+} else {
+    NAMED_GROUP_X25519
+};
+// key_exchange byte length of our key_share entry. X25519MLKEM768 prepends the
+// ML-KEM-768 encapsulation key (1184) to the X25519 public key (32); plain
+// X25519 is 32.
+#[cfg(feature = "mlkem")]
+const KEY_SHARE_KEY_LEN: usize = backends::mlkem::MLKEM768_EK_BYTES + 32;
+#[cfg(not(feature = "mlkem"))]
+const KEY_SHARE_KEY_LEN: usize = 32;
+// key_exchange is a u16-prefixed wire field; a future KEM whose key overflowed
+// u16 would silently truncate the length prefixes derived from it.
+const _: () = assert!(KEY_SHARE_KEY_LEN <= u16::MAX as usize);
+const KEY_SHARE_KEY_LEN_U16: u16 = KEY_SHARE_KEY_LEN as u16;
+// client_shares entry: group (2) + key_len (2) + key.
+const KEY_SHARE_LIST_LEN: u16 = 4 + KEY_SHARE_KEY_LEN_U16;
+// key_share extension_data: client_shares list_len (2) + the single entry.
+const KEY_SHARE_EXT_DATA_LEN: u16 = 2 + KEY_SHARE_LIST_LEN;
+// ext header (4) + extension_data.
+const EXT_KEY_SHARE_TOTAL: u16 = 4 + KEY_SHARE_EXT_DATA_LEN;
 
 // At least one cipher feature must be on. We can't form a valid
 // ClientHello otherwise — there's no cipher_suite to advertise.
@@ -249,6 +276,12 @@ pub(crate) struct ClientHelloOptions<'a> {
     pub record_size_limit: Option<u16>,
     /// Suite list to advertise. See [`SuiteList`].
     pub suites: SuiteList,
+    /// ML-KEM-768 encapsulation key for the `X25519MLKEM768` key_share. Set by
+    /// the connection layer once it has generated the ephemeral KEM keypair;
+    /// the writer prepends it to the X25519 public key. `None` is a bug under
+    /// `mlkem` (the writer errors rather than emit a short key_share).
+    #[cfg(feature = "mlkem")]
+    pub mlkem_ek: Option<&'a [u8; backends::mlkem::MLKEM768_EK_BYTES]>,
 }
 
 /// Fixed-extension total when the caller supplies no SNI.
@@ -352,7 +385,11 @@ pub(crate) const CLIENT_HELLO_LEN: usize = client_hello_len(None);
 // and its byte contribution can't drift apart when the advertised set changes.
 const _: () = assert!(
     CLIENT_HELLO_LEN
-        == 117 + 2 * CH_CIPHER_SUITES_COUNT.saturating_sub(1) + 2 * (SIG_SCHEME_COUNT as usize - 1)
+        == 117
+            + 2 * CH_CIPHER_SUITES_COUNT.saturating_sub(1)
+            + 2 * (SIG_SCHEME_COUNT as usize - 1)
+            // key_share grows from the 32-byte X25519 baseline by the ML-KEM ek.
+            + (KEY_SHARE_KEY_LEN - 32)
 );
 
 /// Big-endian byte-emission helpers layered on top of [`embedded_io::Write`].
@@ -471,7 +508,7 @@ pub(crate) fn write_client_hello_with<W: Write>(
     out.write_u16(EXT_SUPPORTED_GROUPS)?;
     out.write_u16(4)?;
     out.write_u16(2)?;
-    out.write_u16(NAMED_GROUP_X25519)?;
+    out.write_u16(KEY_SHARE_GROUP)?;
 
     out.write_u16(EXT_SIGNATURE_ALGORITHMS)?;
     out.write_u16(2 + 2 * SIG_SCHEME_COUNT)?; // ext_data: list_len field (2) + schemes
@@ -504,12 +541,19 @@ pub(crate) fn write_client_hello_with<W: Write>(
         out.write_u16(value)?;
     }
 
-    // x25519_pub at the end of the record.
+    // Single key_share entry. Under `mlkem` the key_exchange is
+    // `ML-KEM-768 ek (1184) || X25519 pub (32)` (draft-ietf-tls-ecdhe-mlkem
+    // orders ML-KEM first for X25519MLKEM768); otherwise just the X25519 pub.
     out.write_u16(EXT_KEY_SHARE)?;
-    out.write_u16(38)?;
-    out.write_u16(36)?;
-    out.write_u16(NAMED_GROUP_X25519)?;
-    out.write_u16(32)?;
+    out.write_u16(KEY_SHARE_EXT_DATA_LEN)?;
+    out.write_u16(KEY_SHARE_LIST_LEN)?;
+    out.write_u16(KEY_SHARE_GROUP)?;
+    out.write_u16(KEY_SHARE_KEY_LEN_U16)?;
+    #[cfg(feature = "mlkem")]
+    out.write_all(
+        opts.mlkem_ek
+            .ok_or(ClientHelloError::MissingMlKemKeyShare)?,
+    )?;
     out.write_all(x25519_pub)?;
 
     Ok(total_len)
@@ -532,8 +576,13 @@ pub(crate) struct ServerHelloView<'a> {
     pub cipher_suite: u16,
     /// Selected TLS version (from `supported_versions`). Validated to be `0x0304`.
     pub selected_version: u16,
-    /// Server's ephemeral X25519 public key (32 bytes).
+    /// Server's ephemeral X25519 public key (32 bytes). Under `mlkem` this is
+    /// the trailing 32 bytes of the `X25519MLKEM768` server key_share.
     pub x25519_share: &'a [u8; 32],
+    /// ML-KEM-768 ciphertext from the `X25519MLKEM768` server key_share, to
+    /// decapsulate against our ephemeral KEM keypair.
+    #[cfg(feature = "mlkem")]
+    pub mlkem_ct: &'a [u8; backends::mlkem::MLKEM768_CT_BYTES],
 }
 
 /// Parse a complete TLS record carrying a `server_hello` handshake message.
@@ -612,6 +661,8 @@ pub(crate) fn parse_server_hello(input: &[u8]) -> Result<ServerHelloView<'_>, Pa
 
     let mut selected_version: Option<u16> = None;
     let mut x25519_share: Option<&[u8; 32]> = None;
+    #[cfg(feature = "mlkem")]
+    let mut mlkem_ct: Option<&[u8; backends::mlkem::MLKEM768_CT_BYTES]> = None;
 
     let mut e = Reader::new(ext_body);
     while !e.at_end() {
@@ -639,15 +690,26 @@ pub(crate) fn parse_server_hello(input: &[u8]) -> Result<ServerHelloView<'_>, Pa
                 // ServerHello key_share: single KeyShareEntry = group(u16) + key(u16-len-prefixed).
                 let mut kr = Reader::new(ext_data);
                 let group = kr.u16()?;
-                if group != NAMED_GROUP_X25519 {
+                if group != KEY_SHARE_GROUP {
                     return Err(ParseError::BadKeyShare);
                 }
                 let key = kr.vec_u16()?;
                 if !kr.at_end() {
                     return Err(ParseError::BadKeyShare);
                 }
-                let key_array: &[u8; 32] = key.try_into().map_err(|_| ParseError::BadKeyShare)?;
-                x25519_share = Some(key_array);
+                // Under `mlkem` the key is `ML-KEM-768 ct (1088) || X25519 (32)`.
+                #[cfg(feature = "mlkem")]
+                {
+                    let (ct, x) = key
+                        .split_at_checked(backends::mlkem::MLKEM768_CT_BYTES)
+                        .ok_or(ParseError::BadKeyShare)?;
+                    mlkem_ct = Some(ct.try_into().map_err(|_| ParseError::BadKeyShare)?);
+                    x25519_share = Some(x.try_into().map_err(|_| ParseError::BadKeyShare)?);
+                }
+                #[cfg(not(feature = "mlkem"))]
+                {
+                    x25519_share = Some(key.try_into().map_err(|_| ParseError::BadKeyShare)?);
+                }
             }
             // RFC 8446 §4.1.4: a client that receives an unrecognized extension
             // in ServerHello MUST abort with `illegal_parameter`. We didn't ask
@@ -662,6 +724,8 @@ pub(crate) fn parse_server_hello(input: &[u8]) -> Result<ServerHelloView<'_>, Pa
         cipher_suite,
         selected_version: selected_version.ok_or(ParseError::BadSupportedVersions)?,
         x25519_share: x25519_share.ok_or(ParseError::BadKeyShare)?,
+        #[cfg(feature = "mlkem")]
+        mlkem_ct: mlkem_ct.ok_or(ParseError::BadKeyShare)?,
     })
 }
 

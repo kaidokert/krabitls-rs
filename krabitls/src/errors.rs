@@ -49,6 +49,11 @@ pub enum ClientHelloError<E> {
     IntegerOverflow,
     /// `record_size_limit` is outside the RFC 8449 valid range `[64, 2^14 + 1]`.
     RecordSizeLimitOutOfRange,
+    /// `mlkem` is on but the connection layer didn't supply the ML-KEM
+    /// encapsulation key for the `X25519MLKEM768` key_share. Structurally
+    /// unreachable (the connection always sets it); propagated, not panicked.
+    #[cfg(feature = "mlkem")]
+    MissingMlKemKeyShare,
     /// The underlying writer returned an error.
     Write(E),
 }
@@ -69,6 +74,8 @@ impl<E> ClientHelloError<E> {
             Self::MessageTooLong => ClientHelloError::MessageTooLong,
             Self::IntegerOverflow => ClientHelloError::IntegerOverflow,
             Self::RecordSizeLimitOutOfRange => ClientHelloError::RecordSizeLimitOutOfRange,
+            #[cfg(feature = "mlkem")]
+            Self::MissingMlKemKeyShare => ClientHelloError::MissingMlKemKeyShare,
             Self::Write(e) => ClientHelloError::Write(f(e)),
         }
     }
@@ -96,6 +103,10 @@ impl<E: core::fmt::Display> core::fmt::Display for ClientHelloError<E> {
             Self::RecordSizeLimitOutOfRange => {
                 f.write_str("record_size_limit is outside the RFC 8449 valid range")
             }
+            #[cfg(feature = "mlkem")]
+            Self::MissingMlKemKeyShare => {
+                f.write_str("ML-KEM encapsulation key was not supplied for the key_share")
+            }
             Self::Write(e) => write!(f, "writer error: {e}"),
         }
     }
@@ -109,6 +120,8 @@ impl<E: core::error::Error + 'static> core::error::Error for ClientHelloError<E>
             | Self::MessageTooLong
             | Self::IntegerOverflow
             | Self::RecordSizeLimitOutOfRange => None,
+            #[cfg(feature = "mlkem")]
+            Self::MissingMlKemKeyShare => None,
         }
     }
 }

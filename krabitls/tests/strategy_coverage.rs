@@ -22,7 +22,8 @@
     feature = "cipher-aes",
     not(feature = "rsa"),
     not(feature = "chacha20"),
-    not(feature = "mldsa")
+    not(feature = "mldsa"),
+    not(feature = "mlkem")
 ))]
 
 use std::sync::Arc;

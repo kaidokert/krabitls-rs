@@ -1,22 +1,24 @@
 #[cfg(any(
     all(not(feature = "rsa"), not(feature = "chacha20")),
-    all(feature = "cipher-aes", feature = "chacha20")
+    all(feature = "cipher-aes", feature = "chacha20", not(feature = "mlkem"))
 ))]
 use super::*;
 #[cfg(any(
     all(
         not(feature = "rsa"),
         not(feature = "chacha20"),
-        not(feature = "mldsa")
+        not(feature = "mldsa"),
+        not(feature = "mlkem")
     ),
-    all(feature = "cipher-aes", feature = "chacha20")
+    all(feature = "cipher-aes", feature = "chacha20", not(feature = "mlkem"))
 ))]
 use crate::backends::RustCrypto;
 // `close_notify` (moved here) is the sole consumer; gate matches it.
 #[cfg(all(
     not(feature = "chacha20"),
     not(feature = "rsa"),
-    not(feature = "mldsa")
+    not(feature = "mldsa"),
+    not(feature = "mlkem")
 ))]
 use crate::consts::{CLOSE_NOTIFY_ALERT, CT_ALERT};
 
@@ -25,9 +27,10 @@ use crate::consts::{CLOSE_NOTIFY_ALERT, CT_ALERT};
     all(
         not(feature = "rsa"),
         not(feature = "chacha20"),
-        not(feature = "mldsa")
+        not(feature = "mldsa"),
+        not(feature = "mlkem")
     ),
-    all(feature = "cipher-aes", feature = "chacha20")
+    all(feature = "cipher-aes", feature = "chacha20", not(feature = "mlkem"))
 ))]
 const FIXTURE_RANDOM: [u8; 32] = [
     0xed, 0xe5, 0x7b, 0xa2, 0x43, 0x3a, 0xd5, 0xa3, 0x4d, 0x05, 0x50, 0x3a, 0xfe, 0x4f, 0xc2, 0x89,
@@ -37,9 +40,10 @@ const FIXTURE_RANDOM: [u8; 32] = [
     all(
         not(feature = "rsa"),
         not(feature = "chacha20"),
-        not(feature = "mldsa")
+        not(feature = "mldsa"),
+        not(feature = "mlkem")
     ),
-    all(feature = "cipher-aes", feature = "chacha20")
+    all(feature = "cipher-aes", feature = "chacha20", not(feature = "mlkem"))
 ))]
 const FIXTURE_X25519_PUB: [u8; 32] = [
     0x82, 0x46, 0xe7, 0x35, 0x8f, 0x0a, 0xf7, 0xf3, 0x31, 0x7d, 0xca, 0xf6, 0x88, 0xd0, 0x34, 0xc9,
@@ -49,16 +53,20 @@ const FIXTURE_X25519_PUB: [u8; 32] = [
     all(
         not(feature = "rsa"),
         not(feature = "chacha20"),
-        not(feature = "mldsa")
+        not(feature = "mldsa"),
+        not(feature = "mlkem")
     ),
-    all(feature = "cipher-aes", feature = "chacha20")
+    all(feature = "cipher-aes", feature = "chacha20", not(feature = "mlkem"))
 ))]
 const FIXTURE_CLIENT_X25519_PRIV: [u8; 32] = [
     0xac, 0xe1, 0xc2, 0x3b, 0x24, 0xdf, 0xad, 0x58, 0xc5, 0x4c, 0xcf, 0x4c, 0x1f, 0xe8, 0xdf, 0xe8,
     0x5e, 0x76, 0x0e, 0x02, 0x3b, 0x6c, 0xb6, 0x02, 0x2f, 0x70, 0x0f, 0x34, 0xde, 0x4c, 0x28, 0x28,
 ];
 
-#[cfg(all(feature = "cipher-aes", feature = "chacha20"))]
+// The cipher-suite narrowing is key_share-independent; gated off `mlkem` so the
+// struct-literal `ClientHelloOptions` / two-arg `new()` stay valid (both gain an
+// ML-KEM field/param under `mlkem`). Covered by the non-`mlkem` matrix.
+#[cfg(all(feature = "cipher-aes", feature = "chacha20", not(feature = "mlkem")))]
 #[test]
 fn write_client_hello_with_aes_only_narrows_cipher_suites() {
     let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
@@ -101,7 +109,8 @@ fn write_client_hello_with_aes_only_narrows_cipher_suites() {
 #[cfg(all(
     not(feature = "rsa"),
     not(feature = "chacha20"),
-    not(feature = "mldsa")
+    not(feature = "mldsa"),
+    not(feature = "mlkem")
 ))]
 mod aes_only {
     use super::*;
@@ -731,7 +740,8 @@ mod aes_only {
 #[cfg(all(
     not(feature = "chacha20"),
     not(feature = "rsa"),
-    not(feature = "mldsa")
+    not(feature = "mldsa"),
+    not(feature = "mlkem")
 ))]
 impl<S, H, M> TlsConnection<WaitServerFlight<S, M>, H>
 where
@@ -761,7 +771,8 @@ where
 #[cfg(all(
     not(feature = "chacha20"),
     not(feature = "rsa"),
-    not(feature = "mldsa")
+    not(feature = "mldsa"),
+    not(feature = "mlkem")
 ))]
 fn feed_server_record_inner<const N: usize, F>(
     record: &[u8],
@@ -807,7 +818,8 @@ where
 #[cfg(all(
     not(feature = "chacha20"),
     not(feature = "rsa"),
-    not(feature = "mldsa")
+    not(feature = "mldsa"),
+    not(feature = "mlkem")
 ))]
 impl ServerPubkeyOwned {
     pub(crate) fn as_view(&self) -> ServerPubkey<'_> {
@@ -827,7 +839,8 @@ impl ServerPubkeyOwned {
 #[cfg(all(
     not(feature = "chacha20"),
     not(feature = "rsa"),
-    not(feature = "mldsa")
+    not(feature = "mldsa"),
+    not(feature = "mlkem")
 ))]
 impl<S, H, M> TlsConnection<ServerFlightDone<S, M>, H>
 where
@@ -869,7 +882,8 @@ where
     #[cfg(all(
         not(feature = "chacha20"),
         not(feature = "rsa"),
-        not(feature = "mldsa")
+        not(feature = "mldsa"),
+        not(feature = "mlkem")
     ))]
     pub(crate) fn close_notify(mut self, out_buf: &mut [u8]) -> Result<&[u8], ConnectionError> {
         self.encrypt_record(&CLOSE_NOTIFY_ALERT, CT_ALERT, out_buf)

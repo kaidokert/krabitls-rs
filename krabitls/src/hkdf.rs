@@ -183,15 +183,21 @@ pub(crate) fn early_secret<H: HkdfSha256>() -> Secret {
 
 /// `handshake_secret = HKDF-Extract(Derive-Secret(early_secret, "derived", H("")), DHE)`.
 ///
-/// `dhe` is the X25519 shared secret (output of `ed25519_heapless::x25519` or
-/// any other (EC)DHE algorithm — krabitls doesn't care, it's 32 bytes).
+/// `dhe` is the (EC)DHE / KEM shared secret used as the HKDF-Extract IKM: the
+/// 32-byte X25519 secret, or the 64-byte `ML-KEM ss || X25519 ss` concatenation
+/// under `feature = "mlkem"`. HKDF-Extract accepts any-length IKM, so the slice
+/// type stays uniform across both.
 ///
 /// Returns `Err(HkdfLabelError)` only if the underlying
 /// [`hkdf_expand_label`] rejects the inputs, which is statically
 /// unreachable for the fixed TLS 1.3 labels this function uses — but
 /// the error is propagated rather than `expect`-ed so the public API
 /// stays uniformly fallible.
-pub(crate) fn handshake_secret<H: HkdfSha256>(dhe: &[u8; 32]) -> Result<Secret, HkdfLabelError> {
+pub(crate) fn handshake_secret<H: HkdfSha256>(dhe: &[u8]) -> Result<Secret, HkdfLabelError> {
+    debug_assert!(
+        dhe.len() == 32 || dhe.len() == 64,
+        "dhe must be the 32-byte X25519 secret or the 64-byte ML-KEM||X25519 concatenation"
+    );
     let salt = derive_secret::<H>(&early_secret::<H>(), b"derived", &EMPTY_TRANSCRIPT_HASH)?;
     Ok(Secret::new(H::extract(salt.as_bytes(), dhe)))
 }

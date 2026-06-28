@@ -40,8 +40,14 @@ use subtle::ConstantTimeEq;
 type Bn = fixed_bigint::FixedUInt<u32, 16, fixed_bigint::Ct>;
 
 /// Internal scratch for the outgoing ClientHello before it's forwarded
-/// to the caller's `Write`. Sized for the locked profile + a 255-char SNI.
-const CH_SCRATCH: usize = 512;
+/// to the caller's `Write`. Sized for the locked profile + a 255-char SNI;
+/// under `mlkem` the `X25519MLKEM768` key_share adds the 1184-byte ML-KEM ek.
+/// Authoritative ClientHello scratch capacity; the engine-path
+/// [`crate::client::scratch::CH_LEN`] derives from this.
+#[cfg(not(feature = "mlkem"))]
+pub(crate) const CH_SCRATCH: usize = 512;
+#[cfg(feature = "mlkem")]
+pub(crate) const CH_SCRATCH: usize = 2048;
 
 /// `E` is the caller `Write::Error` for transitions that write records;
 /// non-write transitions yield `ConnectionError<Infallible>`.
@@ -71,6 +77,11 @@ pub enum ConnectionError<E = core::convert::Infallible> {
         description: u8,
     },
     UnknownContentType(u8),
+    /// ML-KEM-768 decapsulation of the server's `X25519MLKEM768` ciphertext
+    /// failed. Structurally unreachable for well-formed inputs (FIPS 203 decaps
+    /// uses implicit rejection); surfaced rather than panicked.
+    #[cfg(feature = "mlkem")]
+    MlKemDecapsulation,
 }
 
 impl<E> ConnectionError<E> {
@@ -100,6 +111,8 @@ impl<E> ConnectionError<E> {
                 ConnectionError::Alert { level, description }
             }
             ConnectionError::UnknownContentType(c) => ConnectionError::UnknownContentType(c),
+            #[cfg(feature = "mlkem")]
+            ConnectionError::MlKemDecapsulation => ConnectionError::MlKemDecapsulation,
         }
     }
 }
@@ -192,6 +205,8 @@ impl<E: core::fmt::Display> core::fmt::Display for ConnectionError<E> {
             Self::UnknownContentType(ct) => {
                 write!(f, "unknown TLS record content_type 0x{ct:02x}")
             }
+            #[cfg(feature = "mlkem")]
+            Self::MlKemDecapsulation => f.write_str("ML-KEM-768 decapsulation failed"),
         }
     }
 }
@@ -214,6 +229,8 @@ impl<E: core::error::Error + 'static> core::error::Error for ConnectionError<E> 
             | Self::UnexpectedSuite { .. }
             | Self::Alert { .. }
             | Self::UnknownContentType(_) => None,
+            #[cfg(feature = "mlkem")]
+            Self::MlKemDecapsulation => None,
         }
     }
 }
@@ -225,10 +242,16 @@ impl<E: core::error::Error + 'static> core::error::Error for ConnectionError<E> 
 pub struct Init {
     pub(crate) client_random: [u8; 32],
     pub(crate) x25519_priv: ZeroBuf<32>,
+    /// Ephemeral ML-KEM-768 decapsulator for the `X25519MLKEM768` hybrid; held
+    /// from ClientHello until the server's ciphertext arrives in ServerHello.
+    #[cfg(feature = "mlkem")]
+    pub(crate) mlkem: crate::backends::mlkem::MlKem768,
 }
 
 pub struct WaitServerHello {
     pub(crate) x25519_priv: ZeroBuf<32>,
+    #[cfg(feature = "mlkem")]
+    pub(crate) mlkem: crate::backends::mlkem::MlKem768,
     /// Cipher suites we advertised in the ClientHello. `read_server_hello`
     /// rejects a selected suite that wasn't on this list. Only consulted
     /// under `feature = "chacha20"` — without it, AES is the only suite.
@@ -355,12 +378,18 @@ impl<H> TlsConnection<Init, H>
 where
     H: HkdfSha256,
 {
-    pub fn new(client_random: [u8; 32], x25519_priv: ZeroBuf<32>) -> Self {
+    pub fn new(
+        client_random: [u8; 32],
+        x25519_priv: ZeroBuf<32>,
+        #[cfg(feature = "mlkem")] mlkem: crate::backends::mlkem::MlKem768,
+    ) -> Self {
         Self {
             transcript: TranscriptHash::<H>::new(),
             state: Init {
                 client_random,
                 x25519_priv,
+                #[cfg(feature = "mlkem")]
+                mlkem,
             },
         }
     }
@@ -393,6 +422,10 @@ where
             ClientHelloError::RecordSizeLimitOutOfRange => {
                 ConnectionError::ClientHello(ClientHelloError::RecordSizeLimitOutOfRange)
             }
+            #[cfg(feature = "mlkem")]
+            ClientHelloError::MissingMlKemKeyShare => {
+                ConnectionError::ClientHello(ClientHelloError::MissingMlKemKeyShare)
+            }
         })?;
         let ch_bytes = &scratch[..n];
 
@@ -406,6 +439,8 @@ where
             transcript: self.transcript,
             state: WaitServerHello {
                 x25519_priv: self.state.x25519_priv,
+                #[cfg(feature = "mlkem")]
+                mlkem: self.state.mlkem,
                 advertised: opts.suites,
             },
         })
@@ -453,7 +488,8 @@ where
         feature = "cipher-aes",
         not(feature = "chacha20"),
         not(feature = "rsa"),
-        not(feature = "mldsa")
+        not(feature = "mldsa"),
+        not(feature = "mlkem")
     ))]
     pub fn assume_aes_128_gcm(
         self,
@@ -504,21 +540,37 @@ where
             });
         }
 
-        let dhe = zeroize::Zeroizing::new(ed25519_heapless::x25519::<Bn>(
+        let x25519_ss = zeroize::Zeroizing::new(ed25519_heapless::x25519::<Bn>(
             &self.state.x25519_priv,
             sh.x25519_share,
         ));
-        // RFC 8446 §7.4.2.1: all-zero DH output (low-order server share)
-        // MUST abort with `illegal_parameter`.
-        if bool::from(dhe.ct_eq(&[0u8; 32])) {
+        // RFC 8446 §7.4.2.1: all-zero X25519 output (low-order server share)
+        // MUST abort with `illegal_parameter`. ML-KEM has no equivalent — its
+        // implicit rejection always yields a deterministic-looking secret.
+        if bool::from(x25519_ss.ct_eq(&[0u8; 32])) {
             return Err(ConnectionError::Parse(ParseError::DhAllZero));
         }
+        // X25519MLKEM768 IKM (draft-ietf-tls-ecdhe-mlkem): ML-KEM ss || X25519 ss.
+        #[cfg(feature = "mlkem")]
+        let dhe = {
+            let mlkem_ss = self
+                .state
+                .mlkem
+                .decapsulate(sh.mlkem_ct)
+                .map_err(|_| ConnectionError::MlKemDecapsulation)?;
+            let mut combined = zeroize::Zeroizing::new([0u8; 64]);
+            combined[..32].copy_from_slice(&mlkem_ss[..]);
+            combined[32..].copy_from_slice(&x25519_ss[..]);
+            combined
+        };
+        #[cfg(not(feature = "mlkem"))]
+        let dhe = x25519_ss;
 
         // handshake_traffic_secrets needs H(CH‖SH).
         self.transcript.update_record(sh_record)?;
         let th_ch_sh = self.transcript.snapshot();
 
-        let hs = handshake_secret::<H>(&dhe)?;
+        let hs = handshake_secret::<H>(&dhe[..])?;
         let (c_hs_ts, s_hs_ts) = handshake_traffic_secrets::<H>(&hs, &th_ch_sh)?;
 
         match sh.cipher_suite {

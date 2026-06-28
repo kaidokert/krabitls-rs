@@ -24,6 +24,8 @@ impl ClientHelloOptions<'_> {
             hostname: None,
             record_size_limit: None,
             suites: SuiteList::Default,
+            #[cfg(feature = "mlkem")]
+            mlkem_ek: None,
         }
     }
 }
@@ -66,6 +68,7 @@ const FIXTURE_CLIENT_HELLO: [u8; 149] = [
 /// Helper: write into a fresh buffer through `&mut &mut [u8]`. Returns the
 /// borrowed slice as it stands after writing so we can confirm how many
 /// bytes were consumed.
+#[cfg(not(feature = "mlkem"))]
 fn write_into(buf: &mut [u8]) -> Result<&mut [u8], ClientHelloError<SliceWriteError>> {
     let mut cursor: &mut [u8] = buf;
     write_client_hello_with(
@@ -84,7 +87,8 @@ fn write_into(buf: &mut [u8]) -> Result<&mut [u8], ClientHelloError<SliceWriteEr
 #[cfg(all(
     not(feature = "rsa"),
     not(feature = "chacha20"),
-    not(feature = "mldsa")
+    not(feature = "mldsa"),
+    not(feature = "mlkem")
 ))]
 #[test]
 fn matches_python_fixture() {
@@ -109,7 +113,8 @@ fn matches_python_fixture() {
 #[cfg(all(
     not(feature = "rsa"),
     not(feature = "chacha20"),
-    not(feature = "mldsa")
+    not(feature = "mldsa"),
+    not(feature = "mlkem")
 ))]
 #[test]
 fn exact_sized_buffer_works_legacy() {
@@ -124,6 +129,7 @@ fn exact_sized_buffer_works_legacy() {
     assert_eq!(buf.len(), CLIENT_HELLO_LEN);
 }
 
+#[cfg(not(feature = "mlkem"))]
 #[test]
 fn rejects_small_buffer() {
     let mut buf = [0u8; CLIENT_HELLO_LEN - 1];
@@ -190,6 +196,7 @@ fn rejects_hostname_near_u16_max_without_wrap() {
     assert_eq!(err, ClientHelloError::MessageTooLong);
 }
 
+#[cfg(not(feature = "mlkem"))]
 #[test]
 fn rejects_record_size_limit_out_of_rfc8449_range() {
     // RFC 8449 §4: valid range is [64, 2^14 + 1] = [64, 16385].
@@ -243,6 +250,8 @@ fn client_hello_len_with_agrees_with_legacy_for_default_opts() {
             hostname,
             record_size_limit: None,
             suites: SuiteList::Default,
+            #[cfg(feature = "mlkem")]
+            mlkem_ek: None,
         };
         assert_eq!(
             client_hello_len_with(&opts),
@@ -262,6 +271,7 @@ fn client_hello_len_with_accounts_for_record_size_limit() {
     assert_eq!(with_rsl, base + 6);
 }
 
+#[cfg(not(feature = "mlkem"))]
 #[test]
 fn writer_emits_exactly_client_hello_len_with_bytes() {
     for opts in [
@@ -289,7 +299,10 @@ fn writer_emits_exactly_client_hello_len_with_bytes() {
     }
 }
 
-#[cfg(feature = "mldsa")]
+// The signature_algorithms list is key_share-independent; gated off `mlkem` so
+// `legacy()` opts (no ML-KEM ek) drive the writer. Covered by non-`mlkem` mldsa
+// combos.
+#[cfg(all(feature = "mldsa", not(feature = "mlkem")))]
 #[test]
 fn client_hello_advertises_mldsa_schemes() {
     let random = [0x11u8; 32];
@@ -395,6 +408,7 @@ fn write_u24_rejects_overflow() {
     assert_eq!(buf, [0xff, 0xff, 0xff]);
 }
 
+#[cfg(not(feature = "mlkem"))]
 #[test]
 fn random_appears_at_correct_offset() {
     let mut random = [0u8; 32];
@@ -413,6 +427,7 @@ fn random_appears_at_correct_offset() {
     assert_eq!(&buf[11..11 + 32], &random);
 }
 
+#[cfg(not(feature = "mlkem"))]
 #[test]
 fn x25519_pub_appears_at_correct_offset() {
     let mut pub_key = [0u8; 32];
@@ -442,15 +457,18 @@ const FIXTURE_SERVER_HELLO: [u8; 95] = [
 ];
 const SH_CIPHER_SUITE_OFFSET: usize = 44;
 
+#[cfg(not(feature = "mlkem"))]
 const FIXTURE_SERVER_RANDOM: [u8; 32] = [
     0x64, 0x1c, 0x5b, 0xd9, 0x34, 0xab, 0xe1, 0xc5, 0x98, 0xa9, 0xc9, 0x61, 0xf7, 0xcb, 0x1e, 0x06,
     0x28, 0x0b, 0x4a, 0x5e, 0x88, 0x0c, 0x1c, 0x19, 0xd2, 0xfe, 0x9e, 0xef, 0x33, 0x48, 0x0c, 0xae,
 ];
+#[cfg(not(feature = "mlkem"))]
 const FIXTURE_SERVER_X25519: [u8; 32] = [
     0x60, 0x4d, 0x7a, 0x17, 0x18, 0x38, 0xbd, 0xa2, 0x15, 0xd2, 0xb5, 0x4a, 0x24, 0xfb, 0x7d, 0x3a,
     0x88, 0x8d, 0xa5, 0xac, 0x36, 0x72, 0x72, 0x6d, 0x20, 0x06, 0x44, 0x04, 0xf7, 0x06, 0xdb, 0x7e,
 ];
 
+#[cfg(not(feature = "mlkem"))]
 #[test]
 fn parses_python_fixture_server_hello() {
     let v = parse_server_hello(&FIXTURE_SERVER_HELLO).unwrap();
@@ -488,7 +506,9 @@ fn wrong_handshake_type_rejected() {
     );
 }
 
-#[cfg(feature = "chacha20")]
+// Full-parse success path needs the x25519-shaped fixture key_share; under
+// `mlkem` the parser expects the hybrid X25519MLKEM768 share instead.
+#[cfg(all(feature = "chacha20", not(feature = "mlkem")))]
 #[test]
 fn server_hello_chacha20_accepted() {
     let mut sh = FIXTURE_SERVER_HELLO;
@@ -565,6 +585,7 @@ fn non_empty_session_id_echo_rejected() {
     );
 }
 
+#[cfg(not(feature = "mlkem"))]
 #[test]
 fn unknown_extension_rejected() {
     let mut buf = [0u8; FIXTURE_SERVER_HELLO.len() + 7];
@@ -580,6 +601,7 @@ fn unknown_extension_rejected() {
     );
 }
 
+#[cfg(not(feature = "mlkem"))]
 #[test]
 fn duplicate_extension_rejected() {
     let mut buf = [0u8; FIXTURE_SERVER_HELLO.len() + 6];
@@ -1850,5 +1872,167 @@ mod cipher_aes {
                 _ => panic!("expected CertView::Rsa, got {:?}", view),
             }
         }
+    }
+}
+
+/// X25519MLKEM768 hybrid key-exchange wiring: the ClientHello key_share framing
+/// and the ServerHello key_share split. The combined-secret derivation is
+/// validated end-to-end against a real server in the canned-handshake follow-up.
+#[cfg(feature = "mlkem")]
+mod mlkem_keyshare {
+    use super::*;
+    use crate::backends::mlkem::{MLKEM768_CT_BYTES, MLKEM768_EK_BYTES};
+
+    #[test]
+    fn client_hello_advertises_x25519mlkem768_key_share() {
+        let random = [0x11u8; 32];
+        let x25519_pub = [0x22u8; 32];
+        let ek = [0x33u8; MLKEM768_EK_BYTES];
+        let opts = ClientHelloOptions {
+            hostname: None,
+            record_size_limit: None,
+            suites: SuiteList::Default,
+            mlkem_ek: Some(&ek),
+        };
+        let mut buf = [0u8; 2048];
+        let mut cursor: &mut [u8] = &mut buf;
+        let n = write_client_hello_with(&mut cursor, &random, &x25519_pub, &opts).unwrap();
+        let ch = &buf[..n];
+
+        // key_share entry: group(0x11EC) || key_len(1216) || ek || x25519_pub.
+        let mut needle = Vec::new();
+        needle.extend_from_slice(&NAMED_GROUP_X25519MLKEM768.to_be_bytes());
+        needle.extend_from_slice(&(1216u16).to_be_bytes());
+        needle.extend_from_slice(&ek);
+        needle.extend_from_slice(&x25519_pub);
+        assert_eq!(
+            ch.windows(needle.len())
+                .filter(|w| *w == needle.as_slice())
+                .count(),
+            1,
+            "ClientHello must carry exactly one X25519MLKEM768 key_share (ML-KEM ek first)"
+        );
+        // supported_groups advertises only the hybrid group.
+        assert!(
+            !ch.windows(2).any(|w| w == NAMED_GROUP_X25519.to_be_bytes()),
+            "must not advertise plain X25519 under mlkem"
+        );
+    }
+
+    /// The 1216-byte hybrid key_share resizes the ClientHello; this is the only
+    /// direct guard that `CLIENT_HELLO_LEN` still tracks the writer exactly (and
+    /// that one byte short is rejected) under `mlkem`.
+    #[test]
+    fn client_hello_fits_exact_buffer_and_rejects_short() {
+        let random = [0x11u8; 32];
+        let x25519_pub = [0x22u8; 32];
+        let ek = [0x33u8; MLKEM768_EK_BYTES];
+        let opts = ClientHelloOptions {
+            hostname: None,
+            record_size_limit: None,
+            suites: SuiteList::Default,
+            mlkem_ek: Some(&ek),
+        };
+
+        let mut exact = [0u8; CLIENT_HELLO_LEN];
+        let mut cursor: &mut [u8] = &mut exact;
+        write_client_hello_with(&mut cursor, &random, &x25519_pub, &opts).unwrap();
+        assert!(cursor.is_empty(), "must fully consume CLIENT_HELLO_LEN");
+
+        let mut short = [0u8; CLIENT_HELLO_LEN - 1];
+        let mut cursor: &mut [u8] = &mut short;
+        let err = write_client_hello_with(&mut cursor, &random, &x25519_pub, &opts).unwrap_err();
+        assert_eq!(err, ClientHelloError::Write(SliceWriteError::Full));
+    }
+
+    /// Build a complete ServerHello record with a hybrid key_share = ct || x25519.
+    fn hybrid_server_hello(ct: &[u8; MLKEM768_CT_BYTES], x25519: &[u8; 32]) -> Vec<u8> {
+        let mut ext = Vec::new();
+        // supported_versions (TLS 1.3)
+        ext.extend_from_slice(&EXT_SUPPORTED_VERSIONS.to_be_bytes());
+        ext.extend_from_slice(&2u16.to_be_bytes());
+        ext.extend_from_slice(&TLS_1_3.to_be_bytes());
+        // key_share: group || key (ct || x25519)
+        let mut key = Vec::new();
+        key.extend_from_slice(ct);
+        key.extend_from_slice(x25519);
+        ext.extend_from_slice(&EXT_KEY_SHARE.to_be_bytes());
+        ext.extend_from_slice(&((2 + 2 + key.len()) as u16).to_be_bytes()); // ext_data
+        ext.extend_from_slice(&NAMED_GROUP_X25519MLKEM768.to_be_bytes());
+        ext.extend_from_slice(&(key.len() as u16).to_be_bytes());
+        ext.extend_from_slice(&key);
+
+        let mut hs_body = Vec::new();
+        hs_body.extend_from_slice(&LEGACY_VERSION.to_be_bytes());
+        hs_body.extend_from_slice(&[0x42u8; 32]); // random (not HRR/downgrade)
+        hs_body.push(0); // empty session_id echo
+        hs_body.extend_from_slice(&CIPHER_AES_128_GCM_SHA256.to_be_bytes());
+        hs_body.push(0); // compression
+        hs_body.extend_from_slice(&(ext.len() as u16).to_be_bytes());
+        hs_body.extend_from_slice(&ext);
+
+        let mut record_body = Vec::new();
+        record_body.push(HS_SERVER_HELLO);
+        let l = hs_body.len() as u32;
+        record_body.extend_from_slice(&[(l >> 16) as u8, (l >> 8) as u8, l as u8]);
+        record_body.extend_from_slice(&hs_body);
+
+        let mut record = Vec::new();
+        record.push(CT_HANDSHAKE);
+        record.extend_from_slice(&LEGACY_VERSION.to_be_bytes());
+        record.extend_from_slice(&(record_body.len() as u16).to_be_bytes());
+        record.extend_from_slice(&record_body);
+        record
+    }
+
+    #[test]
+    fn parse_splits_hybrid_server_key_share() {
+        let ct = [0xAAu8; MLKEM768_CT_BYTES];
+        let x25519 = [0xBBu8; 32];
+        let sh = hybrid_server_hello(&ct, &x25519);
+        let v = parse_server_hello(&sh).expect("parse hybrid ServerHello");
+        assert_eq!(
+            v.mlkem_ct, &ct,
+            "ML-KEM ciphertext is the leading 1088 bytes"
+        );
+        assert_eq!(
+            v.x25519_share, &x25519,
+            "X25519 share is the trailing 32 bytes"
+        );
+    }
+
+    #[test]
+    fn parse_rejects_short_hybrid_key_share() {
+        // The hybrid group carrying only a 32-byte key (no room for the ML-KEM
+        // ciphertext) must fail the ct||x25519 split.
+        let short = {
+            let mut ext = Vec::new();
+            ext.extend_from_slice(&EXT_SUPPORTED_VERSIONS.to_be_bytes());
+            ext.extend_from_slice(&2u16.to_be_bytes());
+            ext.extend_from_slice(&TLS_1_3.to_be_bytes());
+            ext.extend_from_slice(&EXT_KEY_SHARE.to_be_bytes());
+            ext.extend_from_slice(&(2u16 + 2 + 32).to_be_bytes());
+            ext.extend_from_slice(&NAMED_GROUP_X25519MLKEM768.to_be_bytes());
+            ext.extend_from_slice(&32u16.to_be_bytes());
+            ext.extend_from_slice(&[0u8; 32]);
+            let mut hb = Vec::new();
+            hb.extend_from_slice(&LEGACY_VERSION.to_be_bytes());
+            hb.extend_from_slice(&[0x42u8; 32]);
+            hb.push(0);
+            hb.extend_from_slice(&CIPHER_AES_128_GCM_SHA256.to_be_bytes());
+            hb.push(0);
+            hb.extend_from_slice(&(ext.len() as u16).to_be_bytes());
+            hb.extend_from_slice(&ext);
+            let mut rb = vec![HS_SERVER_HELLO];
+            let l = hb.len() as u32;
+            rb.extend_from_slice(&[(l >> 16) as u8, (l >> 8) as u8, l as u8]);
+            rb.extend_from_slice(&hb);
+            let mut r = vec![CT_HANDSHAKE];
+            r.extend_from_slice(&LEGACY_VERSION.to_be_bytes());
+            r.extend_from_slice(&(rb.len() as u16).to_be_bytes());
+            r.extend_from_slice(&rb);
+            r
+        };
+        assert_eq!(parse_server_hello(&short), Err(ParseError::BadKeyShare));
     }
 }
