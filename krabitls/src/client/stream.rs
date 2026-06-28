@@ -11,6 +11,7 @@ use super::engine::{EngineEvent, EngineState, TlsEngine};
 use super::error::{ConfigError, ConnectError, HandshakeError, InternalError, WriteAppError};
 use super::scratch::{
     FACADE_HOSTNAME_MAX, MIN_RECV, MIN_SEND_STANDARD, RECORD_OVERHEAD, RecordSizeLimit, Scratch,
+    client_auth_send_floor,
 };
 use super::{ClientConfig, ClientParams, ConfigSuitePolicy, RuntimeSuitePolicy, Transport};
 
@@ -378,11 +379,13 @@ where
             got: SEND,
         });
     }
-    // A mutual-auth policy emits the coalesced second flight as one record.
-    // `MAX_FLIGHT_LEN == 0` (NoClientAuth) needs only MIN_SEND_STANDARD.
+    // A mutual-auth policy emits the coalesced second flight, fragmented to the
+    // peer's record_size_limit. `MAX_FLIGHT_LEN == 0` (NoClientAuth) needs only
+    // MIN_SEND_STANDARD.
     if A::MAX_FLIGHT_LEN > 0 {
-        // SEND holds the encrypted record: plaintext + content-type + header + tag.
-        let needed = A::MAX_FLIGHT_LEN + 1 + RECORD_OVERHEAD;
+        // SEND must hold the worst-case fragmentation at the minimum legal
+        // record_size_limit, so any compliant peer can be served.
+        let needed = client_auth_send_floor(A::MAX_FLIGHT_LEN);
         if SEND < needed {
             return Err(ConfigError::BufferTooSmall { needed, got: SEND });
         }

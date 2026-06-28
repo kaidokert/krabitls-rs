@@ -686,6 +686,28 @@ where
     Ok((record, c_ap_keys, s_ap_keys, c_ap_ts, s_ap_ts))
 }
 
+/// Encrypt `plaintext` as one or more `CT_HANDSHAKE` records into `out`, each
+/// record's inner plaintext (data + content-type byte) capped at `peer_rsl` so
+/// the peer won't `record_overflow` (RFC 8449). Handshake messages may span
+/// records (RFC 8446 §5.1), so the split is on raw byte boundaries. The caller
+/// sizes `out` for the worst-case fragmentation. Returns the concatenated
+/// records.
+pub(crate) fn encrypt_handshake_flight<'a, S: CipherSuite>(
+    keys: &RecordKeys<S>,
+    plaintext: &[u8],
+    peer_rsl: u16,
+    out: &'a mut [u8],
+) -> Result<&'a [u8], ConnectionError> {
+    let max_chunk = (peer_rsl as usize).saturating_sub(1).max(1);
+    let mut written = 0usize;
+    for (i, chunk) in plaintext.chunks(max_chunk).enumerate() {
+        written += keys
+            .encrypt_record(chunk, CT_HANDSHAKE, i as u64, &mut out[written..])?
+            .len();
+    }
+    Ok(&out[..written])
+}
+
 impl<S, H> TlsConnection<ServerFlightDone<S, Live>, H>
 where
     S: CipherSuite,
@@ -769,17 +791,13 @@ where
             plaintext.len(),
             A::MAX_FLIGHT_LEN
         );
-        // RFC 8449: the coalesced flight goes out as one record, whose inner
-        // plaintext (incl. the content-type byte) must fit the peer's
-        // record_size_limit. We don't fragment, so reject rather than emit a
-        // record the peer will `record_overflow`.
-        if plaintext.len() + 1 > peer_record_size_limit as usize {
-            return Err(ConnectionError::ClientAuth(
-                ClientAuthFlightError::FlightExceedsPeerLimit,
-            ));
-        }
         let keys = RecordKeys::<S>::derive::<H>(&self.state.c_hs_ts)?;
-        let record = keys.encrypt_record(plaintext, CT_HANDSHAKE, 0, out_buf)?;
+        // RFC 8449 + RFC 8446 §5.1: fragment the coalesced flight so each
+        // record's inner plaintext (data + content-type byte) fits the peer's
+        // record_size_limit; handshake messages may span records.
+        // `validate_construction` sizes `SEND`/`out_buf` for the worst-case
+        // fragmentation at the minimum legal record_size_limit.
+        let record = encrypt_handshake_flight(&keys, plaintext, peer_record_size_limit, out_buf)?;
 
         let ms = master_secret::<H>(&self.state.hs)?;
         let (c_ap_ts, s_ap_ts) = application_traffic_secrets::<H>(&ms, &th_through_sfin)?;

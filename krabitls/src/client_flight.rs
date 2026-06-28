@@ -72,8 +72,6 @@ pub enum ClientAuthFlightError {
     CertificateTooLong,
     #[error("certificate_request_context exceeds 255 bytes")]
     ContextTooLong,
-    #[error("client auth flight exceeds the peer's record_size_limit")]
-    FlightExceedsPeerLimit,
 }
 
 /// Largest client leaf DER the coalesced second-flight scratch holds. An

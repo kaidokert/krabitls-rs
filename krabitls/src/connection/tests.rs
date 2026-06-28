@@ -585,6 +585,50 @@ mod aes_only {
         Secret::new(ZeroBuf::<32>::new([byte; 32]))
     }
 
+    /// A client-auth flight larger than the peer's `record_size_limit`
+    /// fragments across records (RFC 8446 §5.1), each capped at the RSL, and
+    /// the fragments reassemble to the original plaintext; a large RSL emits a
+    /// single record.
+    #[test]
+    fn encrypt_handshake_flight_fragments_to_peer_record_size_limit() {
+        let keys =
+            crate::aead::RecordKeys::<Aes128GcmSha256>::derive::<RustCrypto>(&app_secret(0x55))
+                .unwrap();
+        let plaintext: Vec<u8> = (0..200u32).map(|i| i as u8).collect();
+
+        // Peer RSL 64 → each record's inner plaintext (data + content-type) ≤ 64.
+        let mut out = [0u8; 1024];
+        let blob = super::encrypt_handshake_flight(&keys, &plaintext, 64, &mut out)
+            .unwrap()
+            .to_vec();
+
+        let mut recovered = Vec::new();
+        let mut rest = &blob[..];
+        let mut seq = 0u64;
+        let mut records = 0;
+        while !rest.is_empty() {
+            let len = 5 + u16::from_be_bytes([rest[3], rest[4]]) as usize;
+            let (rec, tail) = rest.split_at(len);
+            let mut scratch = [0u8; 128];
+            let inner = keys.decrypt_record(rec, seq, &mut scratch).unwrap();
+            assert!(inner.len() <= 64, "inner plaintext must fit the peer RSL");
+            let (data, ct) = split_inner_plaintext(inner).unwrap();
+            assert_eq!(ct, CT_HANDSHAKE);
+            recovered.extend_from_slice(data);
+            rest = tail;
+            seq += 1;
+            records += 1;
+        }
+        assert!(records > 1, "a small RSL must fragment the flight");
+        assert_eq!(recovered, plaintext, "fragments reassemble to the flight");
+
+        // A large RSL emits a single record.
+        let mut out2 = [0u8; 1024];
+        let blob2 = super::encrypt_handshake_flight(&keys, &plaintext, 16385, &mut out2).unwrap();
+        let len = 5 + u16::from_be_bytes([blob2[3], blob2[4]]) as usize;
+        assert_eq!(len, blob2.len(), "a large RSL emits one record");
+    }
+
     /// Build a client and its mirror server from two distinct app-traffic
     /// secrets: the server's send secret is the client's receive secret and
     /// vice versa, so records cross-decrypt.

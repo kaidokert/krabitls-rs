@@ -82,6 +82,18 @@ pub const MIN_SEND_STANDARD: usize = max_const_3(
     TLS_HEADER + AEAD_TAG + 1 + 1, // 1-byte app + content_type byte
 );
 
+/// Worst-case `SEND` for a client-auth second flight of `max_flight` plaintext
+/// bytes. At the minimum legal `record_size_limit` it fragments into
+/// `ceil(max_flight / (MIN_RECORD_SIZE_LIMIT - 1))` records (RFC 8446 §5.1),
+/// each adding a content-type byte + record overhead. `0` ⇒ no flight.
+pub(crate) const fn client_auth_send_floor(max_flight: usize) -> usize {
+    if max_flight == 0 {
+        return 0;
+    }
+    let records = max_flight.div_ceil(MIN_RECORD_SIZE_LIMIT as usize - 1);
+    max_flight + records * (RECORD_OVERHEAD + 1)
+}
+
 /// Facade hostname-policy cap (255 bytes).
 pub const FACADE_HOSTNAME_MAX: usize = 255;
 
