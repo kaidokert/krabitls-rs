@@ -4,17 +4,29 @@
 ))]
 use super::*;
 #[cfg(any(
-    all(not(feature = "rsa"), not(feature = "chacha20")),
+    all(
+        not(feature = "rsa"),
+        not(feature = "chacha20"),
+        not(feature = "mldsa")
+    ),
     all(feature = "cipher-aes", feature = "chacha20")
 ))]
 use crate::backends::RustCrypto;
 // `close_notify` (moved here) is the sole consumer; gate matches it.
-#[cfg(all(not(feature = "chacha20"), not(feature = "rsa")))]
+#[cfg(all(
+    not(feature = "chacha20"),
+    not(feature = "rsa"),
+    not(feature = "mldsa")
+))]
 use crate::consts::{CLOSE_NOTIFY_ALERT, CT_ALERT};
 
 // Seed-0 fixtures duplicated from `lib.rs` — keep in sync.
 #[cfg(any(
-    all(not(feature = "rsa"), not(feature = "chacha20")),
+    all(
+        not(feature = "rsa"),
+        not(feature = "chacha20"),
+        not(feature = "mldsa")
+    ),
     all(feature = "cipher-aes", feature = "chacha20")
 ))]
 const FIXTURE_RANDOM: [u8; 32] = [
@@ -22,7 +34,11 @@ const FIXTURE_RANDOM: [u8; 32] = [
     0xdf, 0xd9, 0xe9, 0x53, 0x57, 0xd8, 0x16, 0x36, 0x80, 0x24, 0xe7, 0x3f, 0xbf, 0xa6, 0xfa, 0xf5,
 ];
 #[cfg(any(
-    all(not(feature = "rsa"), not(feature = "chacha20")),
+    all(
+        not(feature = "rsa"),
+        not(feature = "chacha20"),
+        not(feature = "mldsa")
+    ),
     all(feature = "cipher-aes", feature = "chacha20")
 ))]
 const FIXTURE_X25519_PUB: [u8; 32] = [
@@ -30,7 +46,11 @@ const FIXTURE_X25519_PUB: [u8; 32] = [
     0x5d, 0x5a, 0x2b, 0x54, 0xbf, 0x66, 0xc8, 0x95, 0x0e, 0xb8, 0x7a, 0x5f, 0x47, 0x93, 0x96, 0x0d,
 ];
 #[cfg(any(
-    all(not(feature = "rsa"), not(feature = "chacha20")),
+    all(
+        not(feature = "rsa"),
+        not(feature = "chacha20"),
+        not(feature = "mldsa")
+    ),
     all(feature = "cipher-aes", feature = "chacha20")
 ))]
 const FIXTURE_CLIENT_X25519_PRIV: [u8; 32] = [
@@ -78,7 +98,11 @@ fn write_client_hello_with_aes_only_narrows_cipher_suites() {
 
 // Tests asserting byte-exact AES-128-GCM / Ed25519 fixtures. Grouped under
 // one gate (the seed-0 wire bytes only match an AES+Ed25519, no-RSA build).
-#[cfg(all(not(feature = "rsa"), not(feature = "chacha20")))]
+#[cfg(all(
+    not(feature = "rsa"),
+    not(feature = "chacha20"),
+    not(feature = "mldsa")
+))]
 mod aes_only {
     use super::*;
     use crate::aead::Aes128GcmSha256;
@@ -704,7 +728,11 @@ mod aes_only {
     }
 }
 
-#[cfg(all(not(feature = "chacha20"), not(feature = "rsa")))]
+#[cfg(all(
+    not(feature = "chacha20"),
+    not(feature = "rsa"),
+    not(feature = "mldsa")
+))]
 impl<S, H, M> TlsConnection<WaitServerFlight<S, M>, H>
 where
     S: CipherSuite,
@@ -730,7 +758,11 @@ where
 }
 
 // Only caller is `feed_server_record` below — same gate.
-#[cfg(all(not(feature = "chacha20"), not(feature = "rsa")))]
+#[cfg(all(
+    not(feature = "chacha20"),
+    not(feature = "rsa"),
+    not(feature = "mldsa")
+))]
 fn feed_server_record_inner<const N: usize, F>(
     record: &[u8],
     seq_in: &mut u64,
@@ -772,7 +804,11 @@ where
     }
 }
 
-#[cfg(all(not(feature = "chacha20"), not(feature = "rsa")))]
+#[cfg(all(
+    not(feature = "chacha20"),
+    not(feature = "rsa"),
+    not(feature = "mldsa")
+))]
 impl ServerPubkeyOwned {
     pub(crate) fn as_view(&self) -> ServerPubkey<'_> {
         match self {
@@ -788,7 +824,11 @@ impl ServerPubkeyOwned {
     }
 }
 
-#[cfg(all(not(feature = "chacha20"), not(feature = "rsa")))]
+#[cfg(all(
+    not(feature = "chacha20"),
+    not(feature = "rsa"),
+    not(feature = "mldsa")
+))]
 impl<S, H, M> TlsConnection<ServerFlightDone<S, M>, H>
 where
     S: CipherSuite,
@@ -823,6 +863,14 @@ where
         Ok((&scratch[..content_len], ct))
     }
 
+    // Only the seed-0 AES fixture test uses this; share the impl block with
+    // `decrypt_record` (which engine/stream tests need under `mldsa`) but gate
+    // the method itself out where the fixtures don't apply.
+    #[cfg(all(
+        not(feature = "chacha20"),
+        not(feature = "rsa"),
+        not(feature = "mldsa")
+    ))]
     pub(crate) fn close_notify(mut self, out_buf: &mut [u8]) -> Result<&[u8], ConnectionError> {
         self.encrypt_record(&CLOSE_NOTIFY_ALERT, CT_ALERT, out_buf)
     }

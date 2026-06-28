@@ -6,12 +6,14 @@
 //! -tls1_3 -Verify` mutual-auth handshake.
 
 // AES-128-GCM + Ed25519, the suite the seed-0 fixtures were captured under.
-// `rsa` would add rsa_pss to the ClientHello's signature_algorithms and shift
-// the captured bytes, so it's excluded like the sibling AES fixture.
+// `rsa` (rsa_pss) and `mldsa` (the three ML-DSA schemes) each add entries to
+// the ClientHello's signature_algorithms and shift the captured bytes, so
+// they're excluded like the sibling AES fixture.
 #![cfg(all(
     feature = "cipher-aes",
     not(feature = "chacha20"),
-    not(feature = "rsa")
+    not(feature = "rsa"),
+    not(feature = "mldsa")
 ))]
 
 use krabitls::client::{

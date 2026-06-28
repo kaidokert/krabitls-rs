@@ -161,14 +161,11 @@ pub(crate) mod consts {
     pub const SIG_SCHEME_RSA_PSS_RSAE_SHA256: u16 = 0x0804;
     /// `mldsa44` / `mldsa65` / `mldsa87` — pure ML-DSA (FIPS 204) over the
     /// CertificateVerify content, empty context. Codepoints from
-    /// draft-ietf-tls-mldsa. Gated on `feature = "mldsa"` (the only consumer is
-    /// the CertificateVerify dispatch); the ClientHello advertisement that will
-    /// name them from a `cfg!`-false branch lands separately.
-    #[cfg(feature = "mldsa")]
+    /// draft-ietf-tls-mldsa. Unconditional so the ClientHello writer can name
+    /// them from a `cfg!(feature = "mldsa")`-false branch; emission and
+    /// verification are gated.
     pub const SIG_SCHEME_MLDSA44: u16 = 0x0904;
-    #[cfg(feature = "mldsa")]
     pub const SIG_SCHEME_MLDSA65: u16 = 0x0905;
-    #[cfg(feature = "mldsa")]
     pub const SIG_SCHEME_MLDSA87: u16 = 0x0906;
 
     pub const EXT_SERVER_NAME: u16 = 0;
@@ -202,8 +199,9 @@ use consts::*;
 const EXT_SUPPORTED_VERSIONS_TOTAL: u16 = 4 + 3;
 const EXT_SUPPORTED_GROUPS_TOTAL: u16 = 4 + 4;
 // Schemes advertised in signature_algorithms: ed25519 always, rsa_pss when
-// `rsa` is on. Single source for both the ext sizing and the writer below.
-const SIG_SCHEME_COUNT: u16 = 1 + cfg!(feature = "rsa") as u16;
+// `rsa` is on, the three ML-DSA schemes when `mldsa` is on. Single source for
+// both the ext sizing and the writer below.
+const SIG_SCHEME_COUNT: u16 = 1 + cfg!(feature = "rsa") as u16 + 3 * cfg!(feature = "mldsa") as u16;
 // 4-byte ext header + 2-byte list-len + 2 bytes per scheme.
 const EXT_SIGNATURE_ALGORITHMS_TOTAL: u16 = 4 + 2 + 2 * SIG_SCHEME_COUNT;
 const EXT_KEY_SHARE_TOTAL: u16 = 4 + 38;
@@ -344,17 +342,19 @@ pub(crate) const fn client_hello_len_with(opts: &ClientHelloOptions<'_>) -> usiz
 
 /// Serialized size of the ClientHello the default-opts writer produces
 /// when no SNI is supplied. 117 bytes by default, 119 with
-/// `feature = "rsa"` (the signature_algorithms extension carries one
-/// extra scheme entry).
+/// `feature = "rsa"` (one extra scheme entry), 123 with `feature = "mldsa"`
+/// (three extra scheme entries) in the signature_algorithms extension.
 pub(crate) const CLIENT_HELLO_LEN: usize = client_hello_len(None);
 
 // Combo-independent pin: 117-byte baseline (1 suite, ed25519-only) + 2 per
-// extra advertised suite + 2 when rsa adds the second sig scheme.
+// extra advertised suite + 2 when rsa adds its sig scheme + 6 when mldsa adds
+// its three.
 const _: () = assert!(
     CLIENT_HELLO_LEN
         == 117
             + 2 * CH_CIPHER_SUITES_COUNT.saturating_sub(1)
             + if cfg!(feature = "rsa") { 2 } else { 0 }
+            + if cfg!(feature = "mldsa") { 6 } else { 0 }
 );
 
 /// Big-endian byte-emission helpers layered on top of [`embedded_io::Write`].
@@ -481,6 +481,11 @@ pub(crate) fn write_client_hello_with<W: Write>(
     out.write_u16(SIG_SCHEME_ED25519)?;
     if cfg!(feature = "rsa") {
         out.write_u16(SIG_SCHEME_RSA_PSS_RSAE_SHA256)?;
+    }
+    if cfg!(feature = "mldsa") {
+        out.write_u16(SIG_SCHEME_MLDSA44)?;
+        out.write_u16(SIG_SCHEME_MLDSA65)?;
+        out.write_u16(SIG_SCHEME_MLDSA87)?;
     }
 
     if let Some(h) = hostname {

@@ -2,9 +2,15 @@
 //! through the seed-0 fixtures — no real transport, no OS RNG.
 
 // Gated to the AES-128-GCM + Ed25519 suite the seed-0 fixtures were captured
-// under. The default strategy is `NoClock`, so cert validity is skipped here;
-// the `Clocked` validity path is unit-tested in `identity.rs`.
-#![cfg(all(feature = "cipher-aes", not(feature = "chacha20")))]
+// under. `mldsa` is excluded because its ML-DSA signature_algorithms entries
+// shift the ClientHello bytes (the inner `rsa` fixtures shift too — they have
+// their own captured variant). The default strategy is `NoClock`, so cert
+// validity is skipped here; the `Clocked` path is unit-tested in `identity.rs`.
+#![cfg(all(
+    feature = "cipher-aes",
+    not(feature = "chacha20"),
+    not(feature = "mldsa")
+))]
 
 use krabitls::client::{ClientParams, DefaultScratch, DefaultStream, RuntimeSuitePolicy};
 use krabitls_fixtures::{CannedTransport, SeededRng};

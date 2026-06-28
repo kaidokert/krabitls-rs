@@ -13,12 +13,16 @@
 //! the strategy. `identity.rs::tests` covers `verify_hostname` at the
 //! unit level; that's the correct granularity for SAN logic.
 
-// Gated to AES + Ed25519 (no rsa/chacha fixtures here). The default `NoClock`
-// strategy skips cert validity; the `Clocked` path is unit-tested elsewhere.
+// Gated to AES + Ed25519: the seed-0 canned handshake only matches a build
+// whose ClientHello advertises ed25519 + AES alone. `rsa`, `chacha20`, and
+// `mldsa` each change the signature_algorithms or cipher list. The default
+// `NoClock` strategy skips cert validity; the `Clocked` path is unit-tested
+// elsewhere.
 #![cfg(all(
     feature = "cipher-aes",
     not(feature = "rsa"),
-    not(feature = "chacha20")
+    not(feature = "chacha20"),
+    not(feature = "mldsa")
 ))]
 
 use std::sync::Arc;
