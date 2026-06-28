@@ -445,12 +445,15 @@ impl<H> NegotiatedSuite<H>
 where
     H: HkdfSha256,
 {
-    // Test-only; production matches on `NegotiatedSuite`.
+    // Test-only; production matches on `NegotiatedSuite`. Sole consumer is the
+    // seed-0 AES fixture replay, which is gated off when extra
+    // signature_algorithms entries (`rsa`/`mldsa`) shift the ClientHello bytes.
     #[cfg(all(
         test,
         feature = "cipher-aes",
         not(feature = "chacha20"),
-        not(feature = "rsa")
+        not(feature = "rsa"),
+        not(feature = "mldsa")
     ))]
     pub fn assume_aes_128_gcm(
         self,

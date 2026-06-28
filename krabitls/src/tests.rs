@@ -81,7 +81,11 @@ fn write_into(buf: &mut [u8]) -> Result<&mut [u8], ClientHelloError<SliceWriteEr
 // advertises ed25519 alone with AES-128-GCM only. With `feature = "rsa"`
 // we also advertise rsa_pss_rsae_sha256; with `feature = "chacha20"` we
 // also advertise CHACHA20_POLY1305_SHA256 — either changes the CH bytes.
-#[cfg(all(not(feature = "rsa"), not(feature = "chacha20")))]
+#[cfg(all(
+    not(feature = "rsa"),
+    not(feature = "chacha20"),
+    not(feature = "mldsa")
+))]
 #[test]
 fn matches_python_fixture() {
     // Python tls_fixture defaults to record_size_limit=16385
@@ -102,7 +106,11 @@ fn matches_python_fixture() {
     assert_eq!(&buf[..n], &FIXTURE_CLIENT_HELLO);
 }
 
-#[cfg(all(not(feature = "rsa"), not(feature = "chacha20")))]
+#[cfg(all(
+    not(feature = "rsa"),
+    not(feature = "chacha20"),
+    not(feature = "mldsa")
+))]
 #[test]
 fn exact_sized_buffer_works_legacy() {
     let mut buf = [0u8; CLIENT_HELLO_LEN];
@@ -279,6 +287,39 @@ fn writer_emits_exactly_client_hello_len_with_bytes() {
             .unwrap();
         assert_eq!(n, expected, "opts={opts:?}");
     }
+}
+
+#[cfg(feature = "mldsa")]
+#[test]
+fn client_hello_advertises_mldsa_schemes() {
+    let random = [0x11u8; 32];
+    let x25519 = [0x22u8; 32];
+    let opts = ClientHelloOptions::legacy();
+    let mut buf = [0u8; 512];
+    let mut cursor: &mut [u8] = &mut buf;
+    let n = write_client_hello_with(&mut cursor, &random, &x25519, &opts).unwrap();
+    let ch = &buf[..n];
+
+    // The exact `supported_signature_algorithms` list in RFC 8446 order:
+    // ed25519, rsa_pss when enabled, then mldsa44/65/87.
+    #[cfg(feature = "rsa")]
+    const SCHEMES: &[u8] = &[0x08, 0x07, 0x08, 0x04, 0x09, 0x04, 0x09, 0x05, 0x09, 0x06];
+    #[cfg(not(feature = "rsa"))]
+    const SCHEMES: &[u8] = &[0x08, 0x07, 0x09, 0x04, 0x09, 0x05, 0x09, 0x06];
+    assert_eq!(SCHEMES.len(), 2 * SIG_SCHEME_COUNT as usize);
+
+    // Match the list together with its 2-byte length prefix, so the assertion
+    // pins ordering and rejects any extra/duplicate/missing scheme.
+    let mut needle = [0u8; 2 + 10];
+    needle[..2].copy_from_slice(&(SCHEMES.len() as u16).to_be_bytes());
+    needle[2..2 + SCHEMES.len()].copy_from_slice(SCHEMES);
+    let needle = &needle[..2 + SCHEMES.len()];
+
+    assert_eq!(
+        ch.windows(needle.len()).filter(|w| *w == needle).count(),
+        1,
+        "ClientHello must advertise exactly the expected signature_algorithms list"
+    );
 }
 
 #[test]

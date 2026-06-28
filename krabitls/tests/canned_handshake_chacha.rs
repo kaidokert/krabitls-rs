@@ -6,7 +6,8 @@
 #![cfg(all(
     feature = "chacha20",
     not(feature = "cipher-aes"),
-    not(feature = "rsa")
+    not(feature = "rsa"),
+    not(feature = "mldsa")
 ))]
 
 mod common;
