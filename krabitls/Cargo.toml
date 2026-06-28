@@ -82,6 +82,10 @@ ip-host = []
 # keccak/sha3 chain — none of it links into the default build. Verify only:
 # the keygen/sign facade is test-only. Covers ML-DSA-44/65/87.
 mldsa = ["dep:krabipqc"]
+# Optional ML-KEM-768 (FIPS 203) key encapsulation, the client side of an
+# `X25519MLKEM768` hybrid TLS key exchange. Same krabipqc dependency as `mldsa`;
+# verification/handshake wiring is built on top in later steps.
+mlkem = ["dep:krabipqc"]
 
 [dependencies]
 embedded-io = { version = "0.7.1", default-features = false }
