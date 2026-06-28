@@ -183,11 +183,18 @@ fn pin_mismatch_ed25519_last_byte() {
     );
 }
 
+// Needs a second pin algorithm to form a cross-algorithm mismatch; in an
+// Ed25519-only build no such pair exists (the `_Phantom` sentinel is now
+// uninhabited).
+#[cfg(feature = "rsa")]
 #[test]
 fn pin_algorithm_mismatch() {
     let pk = [0x42u8; 32];
     let view = ed25519_view(&pk);
-    let pin = PinnedPubkey::_Phantom(core::marker::PhantomData);
+    let pin = PinnedPubkey::Rsa {
+        modulus: &[0u8; 256],
+        exponent: 65537,
+    };
     assert_eq!(
         verify_pinned_pubkey(&view, &pin),
         Err(IdentityError::PinAlgorithmMismatch)

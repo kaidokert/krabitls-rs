@@ -41,10 +41,12 @@ pub enum PinnedPubkey<'a> {
     /// with `feature = "mldsa"`.
     #[cfg(feature = "mldsa")]
     MlDsa(&'a [u8]),
-    /// Lifetime binding for the Ed25519-only variant when `feature = "rsa"`
-    /// is off (and a placeholder for future borrowed variants).
+    /// Uninhabited lifetime sentinel: binds `'a` in builds where no other
+    /// variant borrows it (Ed25519-only). The `Infallible` field makes the
+    /// variant impossible to construct, so the `to_owned_pin` arm for it isn't
+    /// a public panic path.
     #[doc(hidden)]
-    _Phantom(core::marker::PhantomData<&'a ()>),
+    _Phantom(core::marker::PhantomData<&'a ()>, core::convert::Infallible),
 }
 
 impl<'a> PinnedPubkey<'a> {
@@ -67,7 +69,7 @@ impl<'a> PinnedPubkey<'a> {
             }
             #[cfg(feature = "mldsa")]
             PinnedPubkey::MlDsa(pk) => crate::backends::PinnedPubkeyOwned::mldsa(pk),
-            PinnedPubkey::_Phantom(_) => unreachable!("_Phantom is not externally constructible"),
+            PinnedPubkey::_Phantom(_, never) => match *never {},
         }
     }
 }
