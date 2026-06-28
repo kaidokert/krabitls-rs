@@ -323,9 +323,11 @@ fn client_hello_advertises_mldsa_schemes() {
 }
 
 /// End-to-end against real openssl-produced ML-DSA certificates: the active
-/// `CertParser` (`der` or TLV backend) parses the DER, and krabipqc verifies
-/// the self-signature openssl wrote — a cross-implementation check of OID
-/// classification, SPKI/TBS extraction, and the pure-ML-DSA verify path.
+/// `CertParser` parses the DER, and krabipqc verifies the self-signature
+/// openssl wrote — a cross-implementation check of OID classification, SPKI/TBS
+/// extraction, and the pure-ML-DSA verify path. `DerCert` is a feature alias,
+/// so this runs the `der`-crate backend with `cert-der` and the in-tree TLV
+/// walker without it (both covered by the feature-powerset CI).
 #[cfg(feature = "mldsa")]
 mod real_mldsa_certs {
     use super::*;
@@ -335,10 +337,12 @@ mod real_mldsa_certs {
     use signature::Verifier;
 
     macro_rules! real_cert_test {
-        ($name:ident, $file:literal, $pk_len:expr, $sig_len:expr) => {
+        ($name:ident, $file:literal, $der_len:expr, $pk_len:expr, $sig_len:expr) => {
             #[test]
             fn $name() {
-                let der: &[u8] = include_bytes!(concat!("../../testdata/certs/", $file));
+                const DER: [u8; $der_len] =
+                    crate::hex_decode(include_str!(concat!("../../testdata/certs/", $file)));
+                let der: &[u8] = &DER;
                 let CertView::MlDsa {
                     tbs,
                     signature,
@@ -360,9 +364,9 @@ mod real_mldsa_certs {
         };
     }
 
-    real_cert_test!(mldsa44, "mldsa44_selfsigned.der", 1312, 2420);
-    real_cert_test!(mldsa65, "mldsa65_selfsigned.der", 1952, 3309);
-    real_cert_test!(mldsa87, "mldsa87_selfsigned.der", 2592, 4627);
+    real_cert_test!(mldsa44, "mldsa44_selfsigned.hex", 4012, 1312, 2420);
+    real_cert_test!(mldsa65, "mldsa65_selfsigned.hex", 5541, 1952, 3309);
+    real_cert_test!(mldsa87, "mldsa87_selfsigned.hex", 7499, 2592, 4627);
 }
 
 #[test]
