@@ -81,6 +81,9 @@ fn to_hex(b: &[u8]) -> String {
 }
 
 const APP_SEND: &[u8] = b"krabitls roundtrip probe\n";
+/// The echo server's fixed reply; asserted so a misconfigured server can't
+/// silently rewrite `006` with different bytes.
+const APP_REPLY: &[u8] = b"hello back from the test server";
 
 #[test]
 #[ignore = "capture harness: needs a local RSA echo server (see module docs)"]
@@ -107,7 +110,11 @@ fn capture_rsa_fixtures() {
     tls.write_all(APP_SEND).expect("write app data");
     let mut reply = [0u8; 128];
     let n = tls.read(&mut reply).expect("read reply");
-    eprintln!("app reply ({n} B): {:?}", core::str::from_utf8(&reply[..n]));
+    assert_eq!(
+        &reply[..n],
+        APP_REPLY,
+        "unexpected echo payload; fixture 006 must stay deterministic",
+    );
 
     let tee = tls.transport();
     let tx = records(&tee.tx[..tx_hs]);
@@ -142,6 +149,7 @@ fn capture_rsa_fixtures() {
     assert_eq!(rx[0][0], CT_HANDSHAKE);
     assert!(rx[1..].iter().all(|r| r[0] == CT_APPLICATION_DATA));
     assert_eq!(app_send.len(), 1, "expected 1 client app record (005)");
+    assert_eq!(app_send[0][0], CT_APPLICATION_DATA);
     assert!(
         !app_reply.is_empty(),
         "expected a server reply record (006)"

@@ -1,4 +1,4 @@
 # krabitls seed-0 AES-128-GCM + RSA first server app reply (53 bytes), captured from a
 # local TLS echo server. Regenerate with the `#[ignore]`d
 # `gen_rsa_fixtures` test; do not hand-edit.
-170303003047aa1f4cef94606fa8391db86d3afaa52a09e5b96b0c211e1d77bf625ccfd41bd399194caf09550ee02475f7d51e0f6f
+1703030030e9c9b2ccea4c3b283db409259feee9dee3065e8ee604131bdf5fc9945efd6211aed878273322bad138449fddf86fca72

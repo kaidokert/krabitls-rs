@@ -67,7 +67,9 @@ fn facade_round_trips_first_app_record_pair() {
     let server_flight = parse_hex(SERVER_FLIGHT_HEX);
     let app_reply = parse_hex(APP_DATA_REPLY_HEX);
 
-    let mut server_stream = server_hello;
+    let mut server_stream =
+        Vec::with_capacity(server_hello.len() + server_flight.len() + app_reply.len());
+    server_stream.extend_from_slice(&server_hello);
     server_stream.extend_from_slice(&server_flight);
     server_stream.extend_from_slice(&app_reply);
 

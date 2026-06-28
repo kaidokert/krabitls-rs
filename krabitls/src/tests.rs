@@ -1647,7 +1647,7 @@ mod cipher_aes {
         ));
         /// RSA fixture, encrypted server flight (dominated by the
         /// 2048-bit RSA cert + 256-byte RSA-PSS signature).
-        const FIXTURE_RSA_PACKET_3: [u8; 1258] = crate::hex_decode(include_str!(
+        const FIXTURE_RSA_PACKET_3: [u8; 1362] = crate::hex_decode(include_str!(
             "../../testdata/packets_rsa/003_s2c_ServerFlight_encrypted.hex"
         ));
 
@@ -1655,9 +1655,9 @@ mod cipher_aes {
         /// the capture server's `SSLKEYLOG` (`SERVER_HANDSHAKE_TRAFFIC_SECRET`
         /// for the seed-0 client_random).
         const FIXTURE_RSA_S_HS_TRAFFIC_SECRET_BYTES: [u8; 32] = [
-            0xee, 0xd2, 0x89, 0x70, 0xd4, 0xfb, 0x27, 0x8d, 0x87, 0x43, 0x21, 0xa8, 0x49, 0x88,
-            0x90, 0x9f, 0xa3, 0xb2, 0x3c, 0x2d, 0x04, 0x74, 0x31, 0x46, 0x21, 0x29, 0xd1, 0xda,
-            0x01, 0x62, 0xdc, 0x51,
+            0xb4, 0x09, 0xa4, 0x3e, 0xa8, 0xd5, 0x9a, 0x22, 0x87, 0x31, 0x36, 0x5b, 0x09, 0x15,
+            0xaf, 0x59, 0xe8, 0xc2, 0xc9, 0xfb, 0x00, 0xa5, 0xc3, 0x36, 0x25, 0xe9, 0x30, 0xae,
+            0x2b, 0x97, 0x9b, 0x15,
         ];
 
         fn s_hs_traffic_secret() -> Secret {
@@ -1666,22 +1666,20 @@ mod cipher_aes {
 
         /// The capture server fragments the flight across several records;
         /// decrypt each (seq 0, 1, …) and concatenate the inner handshake
-        /// plaintext. Returns `(buf, len)`.
-        fn decrypt_rsa_flight() -> ([u8; 1200], usize) {
+        /// plaintext. Fails fast on a truncated or under-consumed fixture.
+        fn decrypt_rsa_flight() -> Vec<u8> {
             let s_hs_ts = s_hs_traffic_secret();
             let (k, iv) = traffic_keys::<RustCrypto, 16>(&s_hs_ts).expect("traffic_keys");
             let key = AeadKey::new(k);
-            let mut flight = [0u8; 1200];
-            let mut flight_len = 0usize;
-            let mut rec_start = 0usize;
+            let mut flight = Vec::new();
+            let mut remaining = &FIXTURE_RSA_PACKET_3[..];
             let mut seq = 0u64;
-            while rec_start + 5 <= FIXTURE_RSA_PACKET_3.len() {
-                let rec_len = 5 + u16::from_be_bytes([
-                    FIXTURE_RSA_PACKET_3[rec_start + 3],
-                    FIXTURE_RSA_PACKET_3[rec_start + 4],
-                ]) as usize;
-                let rec = &FIXTURE_RSA_PACKET_3[rec_start..rec_start + rec_len];
-                let mut pt_buf = [0u8; 1000];
+            while remaining.len() >= 5 {
+                let rec_len = 5 + u16::from_be_bytes([remaining[3], remaining[4]]) as usize;
+                let (rec, rest) = remaining
+                    .split_at_checked(rec_len)
+                    .expect("truncated TLS record in RSA fixture");
+                let mut pt_buf = [0u8; 1024];
                 let pt = decrypt_record::<Aes128GcmSha256>(
                     rec,
                     key.as_zeroizing(),
@@ -1692,19 +1690,19 @@ mod cipher_aes {
                 .expect("decrypt packets_rsa/003 record");
                 let (content, ct) = split_inner_plaintext(pt).unwrap();
                 assert_eq!(ct, consts::CT_HANDSHAKE);
-                flight[flight_len..flight_len + content.len()].copy_from_slice(content);
-                flight_len += content.len();
-                rec_start += rec_len;
+                flight.extend_from_slice(content);
+                remaining = rest;
                 seq += 1;
             }
-            (flight, flight_len)
+            assert!(remaining.is_empty(), "trailing bytes left in RSA fixture");
+            flight
         }
 
         #[test]
         fn fixture_rsa_server_flight_verifies() {
             let s_hs_ts = s_hs_traffic_secret();
-            let (flight, flight_len) = decrypt_rsa_flight();
-            let content = &flight[..flight_len];
+            let content = decrypt_rsa_flight();
+            let content = content.as_slice();
 
             // Build the RSA prepared verifier directly from the leaf.
             let flight_pre = parse_server_flight(content).expect("parse_server_flight");
@@ -1750,8 +1748,8 @@ mod cipher_aes {
 
         #[test]
         fn fixture_rsa_cert_parses_as_rsa_view() {
-            let (flight_buf, flight_len) = decrypt_rsa_flight();
-            let flight = parse_server_flight(&flight_buf[..flight_len]).unwrap();
+            let flight_buf = decrypt_rsa_flight();
+            let flight = parse_server_flight(&flight_buf).unwrap();
             let cert_der = extract_cert_der(flight.cert_body).unwrap();
             let view = <DerCert as CertParser>::parse(cert_der).expect("RSA cert parses");
             match view {

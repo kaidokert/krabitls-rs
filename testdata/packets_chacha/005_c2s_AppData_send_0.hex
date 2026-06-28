@@ -1,4 +1,4 @@
 # krabitls seed-0 ChaCha20-Poly1305 first client app record (47 bytes), captured from a
-# local `openssl s_server` handshake. Regenerate with the `#[ignore]`d
+# local fixed-reply TLS echo server. Regenerate with the `#[ignore]`d
 # `gen_chacha_fixtures` test; do not hand-edit.
-170303002a3ae93b876296efcb205a1900aa425f4e9856948eb614fe73dddada0bee10a38dcb9d66a4962f526dff91
+170303002afce73331d4ffcd211c2a40d7e18bb8274670db1385e7e702e89d886a335242f2002bb4b9b1531dbf7ae0

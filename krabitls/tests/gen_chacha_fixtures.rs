@@ -1,8 +1,7 @@
-//! One-time capture harness (NOT a CI test — `#[ignore]`d, needs a local
-//! `openssl s_server`). Drives a seed-0 ChaCha20-Poly1305 krabitls client
-//! against openssl over a byte-recording transport and writes the
-//! `testdata/packets_chacha/` handshake replay fixtures
-//! (`canned_handshake_chacha.rs` replays them with no network).
+//! One-time capture harness (NOT a CI test — `#[ignore]`d, needs a local TLS
+//! echo server). Drives a seed-0 ChaCha20-Poly1305 krabitls client over a
+//! byte-recording transport and writes the `testdata/packets_chacha/` replay
+//! fixtures (`canned_handshake_chacha.rs` replays them with no network).
 //!
 //! Server — a self-signed Ed25519 leaf whose SAN matches the client hostname,
 //! plus a tiny fixed-reply TLS echo server (so the captured app round-trip is
@@ -100,13 +99,15 @@ fn to_hex(b: &[u8]) -> String {
 }
 
 const APP_SEND: &[u8] = b"krabitls roundtrip probe\n";
+/// The echo server's fixed reply; asserted so a misconfigured server can't
+/// silently rewrite `006` with different bytes.
+const APP_REPLY: &[u8] = b"hello back from the test server";
 
 #[test]
-#[ignore = "capture harness: needs a local openssl s_server (see module docs)"]
+#[ignore = "capture harness: needs a local TLS echo server (see module docs)"]
 fn capture_chacha_fixtures() {
     let port = std::env::var("KB_PORT").unwrap_or_else(|_| "14434".into());
-    let sock =
-        TcpStream::connect(format!("127.0.0.1:{port}")).expect("connect to openssl s_server");
+    let sock = TcpStream::connect(format!("127.0.0.1:{port}")).expect("connect to echo server");
     let tee = Tee {
         sock,
         rx: Vec::new(),
@@ -130,7 +131,11 @@ fn capture_chacha_fixtures() {
     tls.write_all(APP_SEND).expect("write app data");
     let mut reply = [0u8; 128];
     let n = tls.read(&mut reply).expect("read reply");
-    eprintln!("app reply ({n} B): {:?}", core::str::from_utf8(&reply[..n]));
+    assert_eq!(
+        &reply[..n],
+        APP_REPLY,
+        "unexpected echo payload; fixture 006 must stay deterministic",
+    );
 
     let tee = tls.transport();
     let tx = records(&tee.tx[..tx_hs]);
@@ -152,7 +157,7 @@ fn capture_chacha_fixtures() {
         rx.iter().map(|r| r[0]).collect::<Vec<_>>()
     );
 
-    // Fail loudly if openssl's record layout drifts from what the replay test
+    // Fail loudly if the server's record layout drifts from what the replay test
     // expects. TX is the plaintext ClientHello (0x16) then the encrypted
     // Finished (0x17); RX is the plaintext ServerHello (0x16) then the
     // encrypted flight records (0x17). `content_type` here is the *outer*
@@ -210,7 +215,7 @@ fn capture_chacha_fixtures() {
     let write = |name: &str, desc: &str, bytes: &[u8]| {
         let body = format!(
             "# krabitls seed-0 ChaCha20-Poly1305 {desc} ({} bytes), captured from a\n\
-             # local `openssl s_server` handshake. Regenerate with the `#[ignore]`d\n\
+             # local fixed-reply TLS echo server. Regenerate with the `#[ignore]`d\n\
              # `gen_chacha_fixtures` test; do not hand-edit.\n\
              {}\n",
             bytes.len(),
