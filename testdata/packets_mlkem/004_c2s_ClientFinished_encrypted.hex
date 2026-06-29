@@ -1,0 +1,4 @@
+# krabitls seed-0 X25519MLKEM768 + AES-128-GCM client Finished (58 bytes), captured
+# from a local fixed-reply TLS echo server. Regenerate with the `#[ignore]`d
+# `gen_mlkem_fixtures` test; do not hand-edit.
+17030300353e0dae3bb7f0232dac39c4321789e7867943dc0b1ea797e2553276cc114d0aa41d578646e34e4a86edaf4cba20149f234148f14278

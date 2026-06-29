@@ -14,9 +14,12 @@ use sha2::{Digest, Sha256};
 /// `tls_fixture/tls13.py::derive_bytes`.
 const DERIVE_DOMAIN: &[u8] = b"tls_fixture\0";
 
-/// Maximum entropy bytes the facade draws per `connect()`:
-/// 32 for `client_random` + 32 for the X25519 private key = 64.
-const ENTROPY_TOTAL: usize = 64;
+/// Maximum entropy bytes the facade draws per `connect()`: 32 for
+/// `client_random`, 32 for the X25519 private key, then the ML-KEM-768 keygen
+/// `d` (32) and `z` (32) that an `mlkem` build draws for the X25519MLKEM768
+/// key_share. Derived unconditionally — a non-`mlkem` client just never reads
+/// past byte 64 — so the helper needs no cipher/KEM feature of its own.
+const ENTROPY_TOTAL: usize = 128;
 
 /// Deterministic entropy source mirroring the Python fixture's seed-mode
 /// RNG so the facade's `client_random` + X25519 private key match Python's
@@ -28,15 +31,19 @@ pub struct SeededRng {
 }
 
 impl SeededRng {
-    /// Pre-compute 64 B of stream: `client_random` (32 B) then X25519
-    /// private key (32 B), in the order the facade's `connect()` draws
-    /// them. Per-chunk derivation is
+    /// Pre-compute the stream in the order the facade's `connect()` draws it:
+    /// `client_random` (32 B), X25519 private key (32 B), and under `mlkem` the
+    /// ML-KEM-768 keygen `d` (32 B) then `z` (32 B). Per-chunk derivation is
     /// `SHA-256("tls_fixture\0" || seed_be8 || \0 || label || \0 || counter_be4)`,
     /// concatenated until 32 B per label.
     pub fn new(seed: u64) -> Self {
         let mut bytes = [0u8; ENTROPY_TOTAL];
         derive_bytes_into(seed, b"client_random", &mut bytes[0..32]);
         derive_bytes_into(seed, b"client_x25519", &mut bytes[32..64]);
+        // No Python `tls_fixture` counterpart — these labels exist only so the
+        // ML-KEM-768 keygen draw is deterministic across capture and replay.
+        derive_bytes_into(seed, b"client_mlkem_d", &mut bytes[64..96]);
+        derive_bytes_into(seed, b"client_mlkem_z", &mut bytes[96..128]);
         Self { bytes, pos: 0 }
     }
 
@@ -46,9 +53,9 @@ impl SeededRng {
     }
 }
 
-/// `try_fill_bytes` requested more bytes than the precomputed 64-byte
-/// stream holds. Indicates a test draws more entropy than the facade's
-/// `connect()` shape (32 `client_random` + 32 X25519 priv).
+/// `try_fill_bytes` requested more bytes than the precomputed stream holds.
+/// Indicates a test draws more entropy than the facade's `connect()` shape
+/// (`client_random` + X25519 priv, plus the ML-KEM keygen `d`/`z` under `mlkem`).
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct EntropyExhausted;
 
