@@ -14,7 +14,7 @@ rsa = ["krabitls/rsa"]
 chacha20 = ["krabitls/chacha20"]
 
 [dependencies]
-krabitls = { version = "0.1.0", path = "../krabitls", features = ["ip-host"] }
+krabitls = { version = "0.2.0", path = "../krabitls", features = ["ip-host"] }
 log = "0.4"
 env_logger = { version = "0.11", default-features = false, features = ["auto-color", "humantime"] }
 getrandom = { version = "0.4", features = ["sys_rng"] }
