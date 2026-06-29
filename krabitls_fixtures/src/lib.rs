@@ -9,6 +9,7 @@
 
 use krabitls::client::Transport;
 use sha2::{Digest, Sha256};
+use zeroize::Zeroizing;
 
 /// Pre-image domain separator. Matches
 /// `tls_fixture/tls13.py::derive_bytes`.
@@ -26,7 +27,10 @@ const ENTROPY_TOTAL: usize = 128;
 /// bytes byte-for-byte at the same seed.
 #[derive(Debug, Clone)]
 pub struct SeededRng {
-    bytes: [u8; ENTROPY_TOTAL],
+    // Key-shaped (X25519 priv + ML-KEM d/z), though deterministic and
+    // seed-public; zeroized on drop to match the codebase's handling of such
+    // buffers and to keep secret-scanners quiet.
+    bytes: Zeroizing<[u8; ENTROPY_TOTAL]>,
     pos: usize,
 }
 
@@ -37,7 +41,7 @@ impl SeededRng {
     /// `SHA-256("tls_fixture\0" || seed_be8 || \0 || label || \0 || counter_be4)`,
     /// concatenated until 32 B per label.
     pub fn new(seed: u64) -> Self {
-        let mut bytes = [0u8; ENTROPY_TOTAL];
+        let mut bytes = Zeroizing::new([0u8; ENTROPY_TOTAL]);
         derive_bytes_into(seed, b"client_random", &mut bytes[0..32]);
         derive_bytes_into(seed, b"client_x25519", &mut bytes[32..64]);
         // No Python `tls_fixture` counterpart — these labels exist only so the
