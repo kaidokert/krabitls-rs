@@ -1,0 +1,4 @@
+# krabitls seed-0 AES-128-GCM + ML-DSA-44 server-cert client Finished (58 bytes),
+# captured from a local fixed-reply TLS echo server. Regenerate with the
+# `#[ignore]`d `capture_mldsa_fixtures` test; do not hand-edit.
+17030300354c3b72ae4e5189e6e0084e9f84e188f944383d8601450e3f5e9f778cf373ae55f2c1f5a69f2726bc1ad7495d28ee63a6656bc4b6a5

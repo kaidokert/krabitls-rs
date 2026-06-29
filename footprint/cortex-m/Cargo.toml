@@ -25,6 +25,11 @@ jedisct = ["footprint_handshakes/jedisct"]
 # `krabitls_rsa` example: replays a captured local-server handshake with an
 # RSA-2048 cert; exercises RSA-PKCS#1-v1.5 self-sig + RSA-PSS CertificateVerify.
 rsa = ["footprint_handshakes/rsa"]
+# Post-quantum cost layered onto the AES+Ed25519 `krabitls` example: the
+# X25519MLKEM768 hybrid KEX (`mlkem`) and/or ML-DSA-44 server-cert verification
+# (`mldsa`). For `.text` the reachable PQC code links via `connect()`.
+mlkem = ["footprint_handshakes/mlkem"]
+mldsa = ["footprint_handshakes/mldsa"]
 # `krabitls_chacha` example: same Ed25519 fixture as `krabitls` but with the
 # AEAD swapped to ChaCha20-Poly1305.
 chacha20 = ["footprint_handshakes/chacha20"]
@@ -54,6 +59,22 @@ required-features = ["chacha20", "canned-replay"]
 [[example]]
 name = "krabitls_validity"
 required-features = ["cert-der", "cipher-aes", "canned-replay"]
+
+[[example]]
+name = "krabitls_mlkem"
+required-features = ["mlkem", "canned-replay"]
+
+[[example]]
+name = "krabitls_mldsa"
+required-features = ["mldsa", "canned-replay"]
+
+[[example]]
+name = "krabitls_mlkem_mldsa"
+required-features = ["mlkem", "mldsa", "canned-replay"]
+
+[[example]]
+name = "krabitls_chacha_mlkem_mldsa"
+required-features = ["chacha20", "mlkem", "mldsa", "canned-replay"]
 
 [dependencies]
 # `critical-section-single-core` registers a single-core critical-section

@@ -8,8 +8,8 @@
 //! cost.
 
 // Static placement for `DefaultScratch` (≈37 KiB). Sized for arbitrary
-// RSA chains; placing it on the stack would overflow the LM3S6965 M3's
-// 64 KiB SRAM during RSA verify and corrupt `.bss`, which manifests as
+// RSA chains; placing it on the stack would blow a small MCU's SRAM
+// alongside the crypto stack frame and corrupt `.bss`, which manifests as
 // an infinite loop under QEMU. Borrow via `with_scratch` under a
 // critical section so concurrent facade calls can't share an aliased
 // reference even if a future caller adds threads.
@@ -64,6 +64,8 @@ macro_rules! concat_sh_sf {
     feature = "cipher-aes",
     not(feature = "chacha20"),
     not(feature = "rsa"),
+    not(feature = "mlkem"),
+    not(feature = "mldsa"),
 ))]
 mod fixture_aes_ed25519_facade {
     pub const CLIENT_HELLO: [u8; 149] = krabitls::hex_decode(include_str!(
@@ -87,6 +89,8 @@ mod fixture_aes_ed25519_facade {
     feature = "chacha20",
     not(feature = "cipher-aes"),
     not(feature = "rsa"),
+    not(feature = "mlkem"),
+    not(feature = "mldsa"),
 ))]
 mod fixture_chacha_ed25519_facade {
     pub const CLIENT_HELLO: [u8; 149] = krabitls::hex_decode(include_str!(
@@ -100,6 +104,33 @@ mod fixture_chacha_ed25519_facade {
     ));
     pub const CLIENT_FINISHED: [u8; 58] = krabitls::hex_decode(include_str!(
         "../../../testdata/packets_chacha/004_c2s_ClientFinished_encrypted.hex"
+    ));
+    pub const SERVER_STREAM: [u8; SERVER_HELLO.len() + SERVER_FLIGHT.len()] =
+        concat_sh_sf!(SERVER_HELLO.len(), SERVER_FLIGHT.len());
+}
+
+// ChaCha20-Poly1305 + X25519MLKEM768 hybrid KEX + ML-DSA-44 server cert: the
+// leanest full post-quantum config (ChaCha is the lightest cipher backend).
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "chacha20",
+    feature = "mlkem",
+    feature = "mldsa",
+    not(feature = "cipher-aes"),
+    not(feature = "rsa"),
+))]
+mod fixture_chacha_mlkem_mldsa_facade {
+    pub const CLIENT_HELLO: [u8; 1339] = krabitls::hex_decode(include_str!(
+        "../../../testdata/packets_chacha_mlkem_mldsa/001_c2s_ClientHello.hex"
+    ));
+    pub const SERVER_HELLO: [u8; 1183] = krabitls::hex_decode(include_str!(
+        "../../../testdata/packets_chacha_mlkem_mldsa/002_s2c_ServerHello.hex"
+    ));
+    pub const SERVER_FLIGHT: [u8; 6598] = krabitls::hex_decode(include_str!(
+        "../../../testdata/packets_chacha_mlkem_mldsa/003_s2c_ServerFlight_encrypted.hex"
+    ));
+    pub const CLIENT_FINISHED: [u8; 58] = krabitls::hex_decode(include_str!(
+        "../../../testdata/packets_chacha_mlkem_mldsa/004_c2s_ClientFinished_encrypted.hex"
     ));
     pub const SERVER_STREAM: [u8; SERVER_HELLO.len() + SERVER_FLIGHT.len()] =
         concat_sh_sf!(SERVER_HELLO.len(), SERVER_FLIGHT.len());
@@ -123,6 +154,81 @@ mod fixture_aes_rsa2048_facade {
     ));
     pub const CLIENT_FINISHED: [u8; 58] = krabitls::hex_decode(include_str!(
         "../../../testdata/packets_rsa/004_c2s_ClientFinished_encrypted.hex"
+    ));
+    pub const SERVER_STREAM: [u8; SERVER_HELLO.len() + SERVER_FLIGHT.len()] =
+        concat_sh_sf!(SERVER_HELLO.len(), SERVER_FLIGHT.len());
+}
+
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "cipher-aes",
+    feature = "mlkem",
+    not(feature = "chacha20"),
+    not(feature = "rsa"),
+    not(feature = "mldsa"),
+))]
+mod fixture_mlkem_ed25519_facade {
+    pub const CLIENT_HELLO: [u8; 1333] = krabitls::hex_decode(include_str!(
+        "../../../testdata/packets_mlkem/001_c2s_ClientHello.hex"
+    ));
+    pub const SERVER_HELLO: [u8; 1183] = krabitls::hex_decode(include_str!(
+        "../../../testdata/packets_mlkem/002_s2c_ServerHello.hex"
+    ));
+    pub const SERVER_FLIGHT: [u8; 584] = krabitls::hex_decode(include_str!(
+        "../../../testdata/packets_mlkem/003_s2c_ServerFlight_encrypted.hex"
+    ));
+    pub const CLIENT_FINISHED: [u8; 58] = krabitls::hex_decode(include_str!(
+        "../../../testdata/packets_mlkem/004_c2s_ClientFinished_encrypted.hex"
+    ));
+    pub const SERVER_STREAM: [u8; SERVER_HELLO.len() + SERVER_FLIGHT.len()] =
+        concat_sh_sf!(SERVER_HELLO.len(), SERVER_FLIGHT.len());
+}
+
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "cipher-aes",
+    feature = "mldsa",
+    not(feature = "chacha20"),
+    not(feature = "rsa"),
+    not(feature = "mlkem"),
+))]
+mod fixture_mldsa_facade {
+    pub const CLIENT_HELLO: [u8; 155] = krabitls::hex_decode(include_str!(
+        "../../../testdata/packets_mldsa/001_c2s_ClientHello.hex"
+    ));
+    pub const SERVER_HELLO: [u8; 95] = krabitls::hex_decode(include_str!(
+        "../../../testdata/packets_mldsa/002_s2c_ServerHello.hex"
+    ));
+    pub const SERVER_FLIGHT: [u8; 6620] = krabitls::hex_decode(include_str!(
+        "../../../testdata/packets_mldsa/003_s2c_ServerFlight_encrypted.hex"
+    ));
+    pub const CLIENT_FINISHED: [u8; 58] = krabitls::hex_decode(include_str!(
+        "../../../testdata/packets_mldsa/004_c2s_ClientFinished_encrypted.hex"
+    ));
+    pub const SERVER_STREAM: [u8; SERVER_HELLO.len() + SERVER_FLIGHT.len()] =
+        concat_sh_sf!(SERVER_HELLO.len(), SERVER_FLIGHT.len());
+}
+
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "cipher-aes",
+    feature = "mlkem",
+    feature = "mldsa",
+    not(feature = "chacha20"),
+    not(feature = "rsa"),
+))]
+mod fixture_mlkem_mldsa_facade {
+    pub const CLIENT_HELLO: [u8; 1339] = krabitls::hex_decode(include_str!(
+        "../../../testdata/packets_mlkem_mldsa/001_c2s_ClientHello.hex"
+    ));
+    pub const SERVER_HELLO: [u8; 1183] = krabitls::hex_decode(include_str!(
+        "../../../testdata/packets_mlkem_mldsa/002_s2c_ServerHello.hex"
+    ));
+    pub const SERVER_FLIGHT: [u8; 6598] = krabitls::hex_decode(include_str!(
+        "../../../testdata/packets_mlkem_mldsa/003_s2c_ServerFlight_encrypted.hex"
+    ));
+    pub const CLIENT_FINISHED: [u8; 58] = krabitls::hex_decode(include_str!(
+        "../../../testdata/packets_mlkem_mldsa/004_c2s_ClientFinished_encrypted.hex"
     ));
     pub const SERVER_STREAM: [u8; SERVER_HELLO.len() + SERVER_FLIGHT.len()] =
         concat_sh_sf!(SERVER_HELLO.len(), SERVER_FLIGHT.len());
@@ -168,6 +274,8 @@ use krabitls::client::RuntimeSuitePolicy;
     feature = "cipher-aes",
     not(feature = "chacha20"),
     not(feature = "rsa"),
+    not(feature = "mlkem"),
+    not(feature = "mldsa"),
 ))]
 use fixture_aes_ed25519_facade::*;
 #[cfg(all(
@@ -182,8 +290,46 @@ use fixture_aes_rsa2048_facade::*;
     feature = "chacha20",
     not(feature = "cipher-aes"),
     not(feature = "rsa"),
+    not(feature = "mlkem"),
+    not(feature = "mldsa"),
 ))]
 use fixture_chacha_ed25519_facade::*;
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "chacha20",
+    feature = "mlkem",
+    feature = "mldsa",
+    not(feature = "cipher-aes"),
+    not(feature = "rsa"),
+))]
+use fixture_chacha_mlkem_mldsa_facade::*;
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "cipher-aes",
+    feature = "mldsa",
+    not(feature = "chacha20"),
+    not(feature = "rsa"),
+    not(feature = "mlkem"),
+))]
+use fixture_mldsa_facade::*;
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "cipher-aes",
+    feature = "mlkem",
+    not(feature = "chacha20"),
+    not(feature = "rsa"),
+    not(feature = "mldsa"),
+))]
+use fixture_mlkem_ed25519_facade::*;
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "cipher-aes",
+    feature = "mlkem",
+    feature = "mldsa",
+    not(feature = "chacha20"),
+    not(feature = "rsa"),
+))]
+use fixture_mlkem_mldsa_facade::*;
 
 // Types unique to the jedisct config (a strict subset of the AES+Ed25519
 // combo, so `ClientParams`/`CannedTransport`/`SeededRng` come from above).
@@ -237,6 +383,8 @@ use krabitls::{backends::DerCert, client::TlsStream};
     feature = "cipher-aes",
     not(feature = "chacha20"),
     not(feature = "rsa"),
+    not(feature = "mlkem"),
+    not(feature = "mldsa"),
 ))]
 pub fn run_aes_ed25519_facade() -> Result<(), ()> {
     facade_scratch::with(|scratch| {
@@ -268,6 +416,8 @@ pub fn run_aes_ed25519_facade() -> Result<(), ()> {
     feature = "cert-der",
     not(feature = "chacha20"),
     not(feature = "rsa"),
+    not(feature = "mlkem"),
+    not(feature = "mldsa"),
 ))]
 pub fn run_aes_ed25519_facade_clocked() -> Result<(), ()> {
     struct FixedT(u64);
@@ -312,6 +462,8 @@ pub fn run_aes_ed25519_facade_clocked() -> Result<(), ()> {
     feature = "cipher-aes",
     not(feature = "chacha20"),
     not(feature = "rsa"),
+    not(feature = "mlkem"),
+    not(feature = "mldsa"),
 ))]
 #[inline(never)]
 pub fn baseline_aes_ed25519_facade() -> bool {
@@ -333,6 +485,8 @@ pub fn baseline_aes_ed25519_facade() -> bool {
     feature = "chacha20",
     not(feature = "cipher-aes"),
     not(feature = "rsa"),
+    not(feature = "mlkem"),
+    not(feature = "mldsa"),
 ))]
 pub fn run_chacha_ed25519_facade() -> Result<(), ()> {
     facade_scratch::with(|scratch| {
@@ -359,9 +513,58 @@ pub fn run_chacha_ed25519_facade() -> Result<(), ()> {
     feature = "chacha20",
     not(feature = "cipher-aes"),
     not(feature = "rsa"),
+    not(feature = "mlkem"),
+    not(feature = "mldsa"),
 ))]
 #[inline(never)]
 pub fn baseline_chacha_ed25519_facade() -> bool {
+    black_box(&CLIENT_HELLO);
+    black_box(&SERVER_HELLO);
+    black_box(&SERVER_FLIGHT);
+    black_box(&CLIENT_FINISHED);
+    true
+}
+
+/// ChaCha20-Poly1305 + X25519MLKEM768 + ML-DSA-44: the leanest full
+/// post-quantum handshake (ChaCha cipher + PQC KEX + PQC cert).
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "chacha20",
+    feature = "mlkem",
+    feature = "mldsa",
+    not(feature = "cipher-aes"),
+    not(feature = "rsa"),
+))]
+pub fn run_chacha_mlkem_mldsa_facade() -> Result<(), ()> {
+    facade_scratch::with(|scratch| {
+        let mut rng = SeededRng::new(0);
+        let transport = CannedTransport::<2048>::new(&SERVER_STREAM);
+        let params = ClientParams::self_signed("tls-fixture.local");
+
+        let tls = DefaultStream::connect(&params, scratch, transport, &mut rng).map_err(|_| ())?;
+
+        let captured = tls.transport().captured_tx();
+        let expected_len = CLIENT_HELLO.len() + CLIENT_FINISHED.len();
+        if captured.len() != expected_len
+            || captured[..CLIENT_HELLO.len()] != CLIENT_HELLO[..]
+            || captured[CLIENT_HELLO.len()..] != CLIENT_FINISHED[..]
+        {
+            return Err(());
+        }
+        Ok(())
+    })
+}
+
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "chacha20",
+    feature = "mlkem",
+    feature = "mldsa",
+    not(feature = "cipher-aes"),
+    not(feature = "rsa"),
+))]
+#[inline(never)]
+pub fn baseline_chacha_mlkem_mldsa_facade() -> bool {
     black_box(&CLIENT_HELLO);
     black_box(&SERVER_HELLO);
     black_box(&SERVER_FLIGHT);
@@ -470,4 +673,157 @@ pub fn run_aes_ed25519_jedisct_facade() -> Result<(), ()> {
 #[inline(never)]
 pub fn baseline_aes_ed25519_jedisct_facade() -> bool {
     baseline_aes_ed25519_facade()
+}
+
+/// AES-128-GCM + Ed25519 facade variant with the X25519MLKEM768 hybrid KEX.
+///
+/// Same facade path as `run_aes_ed25519_facade`, but the seed-0 fixtures were
+/// captured advertising the post-quantum hybrid key_share, so `connect()`
+/// links the ML-KEM-768 encapsulation path.
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "cipher-aes",
+    feature = "mlkem",
+    not(feature = "chacha20"),
+    not(feature = "rsa"),
+    not(feature = "mldsa"),
+))]
+pub fn run_mlkem_ed25519_facade() -> Result<(), ()> {
+    facade_scratch::with(|scratch| {
+        let mut rng = SeededRng::new(0);
+        let transport = CannedTransport::<2048>::new(&SERVER_STREAM);
+        let params = ClientParams::self_signed("tls-fixture.local")
+            .suite_policy(RuntimeSuitePolicy::Default);
+
+        let tls = DefaultStream::connect(&params, scratch, transport, &mut rng).map_err(|_| ())?;
+
+        let captured = tls.transport().captured_tx();
+        let expected_len = CLIENT_HELLO.len() + CLIENT_FINISHED.len();
+        if captured.len() != expected_len
+            || captured[..CLIENT_HELLO.len()] != CLIENT_HELLO[..]
+            || captured[CLIENT_HELLO.len()..] != CLIENT_FINISHED[..]
+        {
+            return Err(());
+        }
+        Ok(())
+    })
+}
+
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "cipher-aes",
+    feature = "mlkem",
+    not(feature = "chacha20"),
+    not(feature = "rsa"),
+    not(feature = "mldsa"),
+))]
+#[inline(never)]
+pub fn baseline_mlkem_ed25519_facade() -> bool {
+    black_box(&CLIENT_HELLO);
+    black_box(&SERVER_HELLO);
+    black_box(&SERVER_FLIGHT);
+    black_box(&CLIENT_FINISHED);
+    true
+}
+
+/// AES-128-GCM + ML-DSA-44 server-cert facade variant.
+///
+/// Same facade path as `run_aes_ed25519_facade`, but the server flight carries
+/// an ML-DSA-44 certificate + CertificateVerify, so `connect()` links the
+/// ML-DSA verify path.
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "cipher-aes",
+    feature = "mldsa",
+    not(feature = "chacha20"),
+    not(feature = "rsa"),
+    not(feature = "mlkem"),
+))]
+pub fn run_mldsa_facade() -> Result<(), ()> {
+    facade_scratch::with(|scratch| {
+        let mut rng = SeededRng::new(0);
+        let transport = CannedTransport::<2048>::new(&SERVER_STREAM);
+        let params = ClientParams::self_signed("tls-fixture.local")
+            .suite_policy(RuntimeSuitePolicy::Default);
+
+        let tls = DefaultStream::connect(&params, scratch, transport, &mut rng).map_err(|_| ())?;
+
+        let captured = tls.transport().captured_tx();
+        let expected_len = CLIENT_HELLO.len() + CLIENT_FINISHED.len();
+        if captured.len() != expected_len
+            || captured[..CLIENT_HELLO.len()] != CLIENT_HELLO[..]
+            || captured[CLIENT_HELLO.len()..] != CLIENT_FINISHED[..]
+        {
+            return Err(());
+        }
+        Ok(())
+    })
+}
+
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "cipher-aes",
+    feature = "mldsa",
+    not(feature = "chacha20"),
+    not(feature = "rsa"),
+    not(feature = "mlkem"),
+))]
+#[inline(never)]
+pub fn baseline_mldsa_facade() -> bool {
+    black_box(&CLIENT_HELLO);
+    black_box(&SERVER_HELLO);
+    black_box(&SERVER_FLIGHT);
+    black_box(&CLIENT_FINISHED);
+    true
+}
+
+/// AES-128-GCM facade variant with X25519MLKEM768 KEX and an ML-DSA-44 cert.
+///
+/// Combines the hybrid PQ key_share of `run_mlkem_ed25519_facade` with the
+/// ML-DSA-44 server cert of `run_mldsa_facade`; `connect()` links both PQC
+/// paths.
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "cipher-aes",
+    feature = "mlkem",
+    feature = "mldsa",
+    not(feature = "chacha20"),
+    not(feature = "rsa"),
+))]
+pub fn run_mlkem_mldsa_facade() -> Result<(), ()> {
+    facade_scratch::with(|scratch| {
+        let mut rng = SeededRng::new(0);
+        let transport = CannedTransport::<2048>::new(&SERVER_STREAM);
+        let params = ClientParams::self_signed("tls-fixture.local")
+            .suite_policy(RuntimeSuitePolicy::Default);
+
+        let tls = DefaultStream::connect(&params, scratch, transport, &mut rng).map_err(|_| ())?;
+
+        let captured = tls.transport().captured_tx();
+        let expected_len = CLIENT_HELLO.len() + CLIENT_FINISHED.len();
+        if captured.len() != expected_len
+            || captured[..CLIENT_HELLO.len()] != CLIENT_HELLO[..]
+            || captured[CLIENT_HELLO.len()..] != CLIENT_FINISHED[..]
+        {
+            return Err(());
+        }
+        Ok(())
+    })
+}
+
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "cipher-aes",
+    feature = "mlkem",
+    feature = "mldsa",
+    not(feature = "chacha20"),
+    not(feature = "rsa"),
+))]
+#[inline(never)]
+pub fn baseline_mlkem_mldsa_facade() -> bool {
+    black_box(&CLIENT_HELLO);
+    black_box(&SERVER_HELLO);
+    black_box(&SERVER_FLIGHT);
+    black_box(&CLIENT_FINISHED);
+    true
 }

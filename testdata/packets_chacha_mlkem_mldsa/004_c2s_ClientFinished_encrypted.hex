@@ -1,0 +1,4 @@
+# krabitls seed-0 X25519MLKEM768 + ChaCha20-Poly1305 + ML-DSA-44 client Finished (58 bytes),
+# captured from a local fixed-reply TLS echo server. Regenerate with the
+# `#[ignore]`d `capture_chacha_mlkem_mldsa_fixtures` test; do not hand-edit.
+1703030035e993c60496b414ffbc5365249177c40a8dbcd79aad59e23b76ba6d4f800164f087d31a85c00044cad35e5a09b0248887ad31ab217c
