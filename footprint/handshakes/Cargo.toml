@@ -26,6 +26,11 @@ chacha20 = ["krabitls/chacha20", "krabitls_fixtures?/chacha20"]
 # rsa_pss_only (drops PKCS#1-v1.5) and rsa_2048_only (drops U1024) so LTO
 # strips the unreachable paths from the M3/RV measurement.
 rsa = ["krabitls/rsa", "krabitls/rsa_pss_only", "krabitls/rsa_2048_only"]
+# X25519MLKEM768 hybrid key exchange and/or ML-DSA-44 server-cert verification
+# (post-quantum). `SeededRng` carries the ML-KEM keygen entropy unconditionally,
+# so no fixtures-crate feature is forwarded.
+mlkem = ["krabitls/mlkem"]
+mldsa = ["krabitls/mldsa"]
 jedisct = ["krabitls/jedisct"]
 # Full handshake via `DefaultStream::connect` against the captured seed-0
 # fixtures (SeededRng + CannedTransport), now in the krabitls_fixtures crate.

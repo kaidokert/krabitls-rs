@@ -1,0 +1,4 @@
+# krabitls seed-0 X25519MLKEM768 + AES-128-GCM + ML-DSA-44 first client app record (47 bytes),
+# captured from a local fixed-reply TLS echo server. Regenerate with the
+# `#[ignore]`d `gen_mlkem_mldsa_fixtures` test; do not hand-edit.
+170303002a8bba315b9676d663b99714d8f9c6cb0c8136dbde4232ba6331da7ae55d7d014d1b19dfd0218943fcb081
