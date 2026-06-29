@@ -203,7 +203,7 @@ fn capture_mldsa_fixtures() {
         let body = format!(
             "# krabitls seed-0 AES-128-GCM + ML-DSA-44 server-cert {desc} ({} bytes),\n\
              # captured from a local fixed-reply TLS echo server. Regenerate with the\n\
-             # `#[ignore]`d `gen_mldsa_fixtures` test; do not hand-edit.\n\
+             # `#[ignore]`d `capture_mldsa_fixtures` test; do not hand-edit.\n\
              {}\n",
             bytes.len(),
             to_hex(bytes),

@@ -32,7 +32,7 @@
 //! Client:
 //!
 //! ```text
-//! KB_PORT=14463 cargo test --no-default-features --features cipher-aes,mldsa \
+//! KB_PORT=14463 cargo test --no-default-features --features cipher-aes,mlkem,mldsa \
 //!   --test gen_mlkem_mldsa_fixtures -- --ignored --nocapture capture_mlkem_mldsa_fixtures
 //! ```
 
@@ -206,7 +206,7 @@ fn capture_mlkem_mldsa_fixtures() {
         let body = format!(
             "# krabitls seed-0 X25519MLKEM768 + AES-128-GCM + ML-DSA-44 {desc} ({} bytes),\n\
              # captured from a local fixed-reply TLS echo server. Regenerate with the\n\
-             # `#[ignore]`d `gen_mlkem_mldsa_fixtures` test; do not hand-edit.\n\
+             # `#[ignore]`d `capture_mlkem_mldsa_fixtures` test; do not hand-edit.\n\
              {}\n",
             bytes.len(),
             to_hex(bytes),

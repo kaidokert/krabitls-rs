@@ -1,5 +1,5 @@
 //! One-time capture harness (NOT a CI test — `#[ignore]`d, needs a local TLS
-//! echo server). Drives a seed-0 AES-128-GCM krabitls client that advertises
+//! echo server). Drives a seed-0 ChaCha20-Poly1305 krabitls client that advertises
 //! ML-DSA signature algorithms against a server presenting an ML-DSA-44 leaf,
 //! and writes the `testdata/packets_chacha_mlkem_mldsa/` replay fixtures
 //! (`canned_handshake_mldsa.rs` replays them with no network).
@@ -32,7 +32,7 @@
 //! Client:
 //!
 //! ```text
-//! KB_PORT=14464 cargo test --no-default-features --features cipher-aes,mldsa \
+//! KB_PORT=14464 cargo test --no-default-features --features chacha20,mlkem,mldsa \
 //!   --test gen_chacha_mlkem_mldsa_fixtures -- --ignored --nocapture capture_chacha_mlkem_mldsa_fixtures
 //! ```
 
@@ -206,7 +206,7 @@ fn capture_chacha_mlkem_mldsa_fixtures() {
         let body = format!(
             "# krabitls seed-0 X25519MLKEM768 + ChaCha20-Poly1305 + ML-DSA-44 {desc} ({} bytes),\n\
              # captured from a local fixed-reply TLS echo server. Regenerate with the\n\
-             # `#[ignore]`d `gen_chacha_mlkem_mldsa_fixtures` test; do not hand-edit.\n\
+             # `#[ignore]`d `capture_chacha_mlkem_mldsa_fixtures` test; do not hand-edit.\n\
              {}\n",
             bytes.len(),
             to_hex(bytes),

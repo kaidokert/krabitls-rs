@@ -1,4 +1,4 @@
 # krabitls seed-0 X25519MLKEM768 + ChaCha20-Poly1305 + ML-DSA-44 first client app record (47 bytes),
 # captured from a local fixed-reply TLS echo server. Regenerate with the
-# `#[ignore]`d `gen_chacha_mlkem_mldsa_fixtures` test; do not hand-edit.
+# `#[ignore]`d `capture_chacha_mlkem_mldsa_fixtures` test; do not hand-edit.
 170303002ab69a68fd6702afa1733b0654e4efdf31de1f53ac395764cb55340c86b4f110a39fe69f9b86144b01d65d

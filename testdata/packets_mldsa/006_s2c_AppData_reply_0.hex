@@ -1,4 +1,4 @@
 # krabitls seed-0 AES-128-GCM + ML-DSA-44 server-cert first server app reply (53 bytes),
 # captured from a local fixed-reply TLS echo server. Regenerate with the
-# `#[ignore]`d `gen_mldsa_fixtures` test; do not hand-edit.
+# `#[ignore]`d `capture_mldsa_fixtures` test; do not hand-edit.
 17030300302433e15cb85476552585154014c6f830699b6a4b6d3136bd8e591719a9bca011f80b865d95bd4b5d897382f4963bc332
