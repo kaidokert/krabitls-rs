@@ -1,6 +1,6 @@
 //! RSA verify glue (PKCS#1 v1.5 + RSA-PSS, SHA-256). Feature-gated, no_alloc.
 //!
-//! Wires `rsa_heapless` 0.3 (verify-only on the heapless path) into krabitls.
+//! Wires `rsa_heapless` into krabitls.
 //! Entry point: [`RsaVerifierKey`] — built once via `new(modulus, exponent)`,
 //! verifies both schemes via inherent methods or the
 //! [`signature::Verifier<RsaPssSig>`] / [`signature::Verifier<RsaPkcs1Sig>`]
@@ -19,13 +19,12 @@
 //! raw `FixedUInt`. We use `PrehashVerifier::verify_prehash` (the hazmat
 //! entry point) and feed in a pre-computed SHA-256 hash so the digest type
 //! sits behind the trait bound without needing a `Digest::digest(...)` call
-//! that would link more of the digest 0.11 machinery.
+//! that would link more of the digest machinery.
 //!
-//! sha2 0.11 is pulled in here because rsa_heapless 0.3 builds on the
-//! digest 0.11 trait line, one major ahead of the sha2 0.10 we use for
-//! HKDF + transcript hashing. Two sha2 versions sit side-by-side in an
-//! rsa-enabled build; that's the cost of opting into RSA and is gated
-//! behind `feature = "rsa"`.
+//! A second sha2 is pulled in here (renamed) because rsa_heapless builds on a
+//! newer digest/sha2 major than the one we use for HKDF + transcript hashing.
+//! Two sha2 versions sit side-by-side in an rsa-enabled build; that's the cost
+//! of opting into RSA and is gated behind `feature = "rsa"`.
 
 use const_num_traits::{HasPersonality, Nct};
 use fixed_bigint::FixedUInt;
