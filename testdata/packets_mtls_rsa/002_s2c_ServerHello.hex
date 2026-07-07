@@ -1,0 +1,4 @@
+# krabitls seed-0 AES-128-GCM RSA-mTLS ServerHello (95 bytes), captured
+# from a local openssl s_server -Verify handshake. Regenerate with the
+# `#[ignore]`d `gen_mtls_rsa_fixtures` test; do not hand-edit.
+160303005a0200005603034feb317a1e6c3afdee1385cc88496a6c6f1384d1e8da17783bff2620ace4434900130100002e002b0002030400330024001d0020b5729eb1078b8c91bb31f99d0628016305ca5a024e6a4c79fa296265befce61e
