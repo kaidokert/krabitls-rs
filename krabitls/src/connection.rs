@@ -825,6 +825,10 @@ where
     /// flight (the public-profile
     /// [`DefaultScratch`](crate::client::DefaultScratch) is sized for it).
     /// `Live`-only.
+    // Typestate primitive: callers are the engine + tests, and each argument
+    // is a distinct borrowed resource — a params struct would only rename the
+    // eight-ness.
+    #[allow(clippy::too_many_arguments)]
     pub fn finish_handshake_with_policy<'a, A: ClientAuthPolicy>(
         mut self,
         policy: &A,
