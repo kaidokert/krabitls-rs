@@ -12,7 +12,7 @@ A TLS13 client lib for microcontrollers.
 repository = "https://github.com/kaidokert/krabitls-rs"
 homepage = "https://github.com/kaidokert/krabitls-rs"
 keywords = ["embedded", "no-std", "no-heap", "tls"]
-categories = ["cryptography", "no-std", "tls", "no-std::no-alloc"]
+categories = ["cryptography", "no-std", "no-std::no-alloc"]
 
 # docs.rs builds the crate once and serves that build to everyone. Default
 # features omit RSA, ChaCha20, and jedisct, so

@@ -26,7 +26,7 @@
 //! Two sha2 versions sit side-by-side in an rsa-enabled build; that's the cost
 //! of opting into RSA and is gated behind `feature = "rsa"`.
 
-use const_num_traits::{HasPersonality, Nct};
+use const_num_traits::Nct;
 use fixed_bigint::FixedUInt;
 use rsa::modmath_support::{ModMathParams, ModMathValue, public_key_from_be_bytes};
 #[cfg(not(feature = "rsa_pss_only"))]
@@ -100,7 +100,7 @@ pub enum RsaVerifierKey {
 /// per verify call depending on the signature scheme.
 pub struct VkPair<T>
 where
-    T: rsa::modmath_support::ModMathInt + HasPersonality<P = Nct>,
+    T: rsa::modmath_support::ModMathInt<P = Nct>,
 {
     #[cfg(not(feature = "rsa_pss_only"))]
     pkcs1: Pkcs1Vk<Sha256, ModMathValue<T>, ModMathParams<T>>,
@@ -251,7 +251,7 @@ impl<'a> signature::Verifier<RsaPkcs1Sig<'a>> for RsaVerifierKey {
 #[inline(never)]
 fn build_vk_pair<T>(modulus: &[u8], exponent: u32) -> Result<VkPair<T>, RsaVerifyError>
 where
-    T: rsa::modmath_support::ModMathInt + HasPersonality<P = Nct>,
+    T: rsa::modmath_support::ModMathInt<P = Nct>,
 {
     let key = public_key_from_be_bytes::<T>(modulus, exponent).map_err(|_| RsaVerifyError)?;
     // Clone reuses RSA precomputation instead of rebuilding it.
