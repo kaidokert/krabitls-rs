@@ -89,6 +89,15 @@ where
         rng.try_fill_bytes(&mut *x25519_priv)
             .map_err(|_| HandshakeError::Rng)?;
 
+        // Signing entropy for a randomized client CertificateVerify (RSA-PSS
+        // salt), drawn up front because the RNG borrow ends when `connect`
+        // returns. Const-gated so the default no-auth policy draws nothing.
+        let mut cv_entropy = [0u8; 32];
+        if A::ACCEPT_CERT_REQUEST {
+            rng.try_fill_bytes(&mut cv_entropy)
+                .map_err(|_| HandshakeError::Rng)?;
+        }
+
         let x25519_pub = ed25519_heapless::x25519_base::<X25519Bn>(&x25519_priv);
 
         // Ephemeral ML-KEM-768 keypair for the X25519MLKEM768 key_share: the
@@ -130,6 +139,7 @@ where
             EngineState::WaitServerHello(wait_sh),
             our_recv_limit,
             RecordSizeLimit::DEFAULT,
+            cv_entropy,
         );
         drive_handshake(&mut engine, &mut transport, params)?;
 
@@ -629,6 +639,7 @@ mod tests {
             EngineState::<DefaultConfig>::AppAes(app_conn(0x42, 0x43)),
             RecordSizeLimit::from_clamped(16384),
             RecordSizeLimit::from_clamped(16384),
+            [0u8; 32],
         );
         let mut tls: Stream<'_> = TlsStream {
             engine,

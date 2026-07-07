@@ -46,7 +46,12 @@ impl ClientAuth for Ed25519ClientAuth<'_> {
         SIG_SCHEME_ED25519
     }
 
-    fn sign(&self, content: &[u8]) -> Result<ClientSignature, ClientAuthError> {
+    // Ed25519 is deterministic (RFC 8032); the entropy is unused.
+    fn sign(
+        &self,
+        content: &[u8],
+        _entropy: &[u8; 32],
+    ) -> Result<ClientSignature, ClientAuthError> {
         let sig =
             ed25519_heapless::sign(&self.signing_key, content).map_err(|_| ClientAuthError)?;
         let mut out = ClientSignature::new();
