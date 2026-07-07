@@ -37,7 +37,7 @@ use crate::traits::verify_strategy::PreparedVerifier;
 use crate::traits::{CertView, Ed25519VerifierProvider, HkdfSha256, RsaVerifierProvider};
 use subtle::ConstantTimeEq;
 
-type Bn = fixed_bigint::FixedUInt<u32, 16, fixed_bigint::Ct>;
+type Bn = fixed_bigint::FixedUInt<u32, 16, const_num_traits::Ct>;
 
 /// Internal scratch for the outgoing ClientHello before it's forwarded
 /// to the caller's `Write`. Sized for the locked profile + a 255-char SNI;

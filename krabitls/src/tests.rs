@@ -814,7 +814,7 @@ fn fixture_transcript_hash_ch_sh() {
 
 #[test]
 fn fixture_dhe_via_x25519() {
-    type T = fixed_bigint::FixedUInt<u32, 16, fixed_bigint::Ct>;
+    type T = fixed_bigint::FixedUInt<u32, 16, const_num_traits::Ct>;
     let dhe =
         ed25519_heapless::x25519::<T>(&FIXTURE_CLIENT_X25519_PRIV, &FIXTURE_SERVER_X25519_PUB_2);
     assert_eq!(dhe, FIXTURE_DHE);
@@ -822,7 +822,7 @@ fn fixture_dhe_via_x25519() {
 
 #[test]
 fn fixture_s_hs_traffic_secret_full_chain() {
-    type T = fixed_bigint::FixedUInt<u32, 16, fixed_bigint::Ct>;
+    type T = fixed_bigint::FixedUInt<u32, 16, const_num_traits::Ct>;
     let dhe =
         ed25519_heapless::x25519::<T>(&FIXTURE_CLIENT_X25519_PRIV, &FIXTURE_SERVER_X25519_PUB_2);
     let hs = handshake_secret::<RustCrypto>(&dhe).unwrap();
@@ -910,7 +910,7 @@ fn jedisct_matches_rustcrypto() {
         assert_eq!(rc, jd, "expand diverged at len={out_len}");
     }
     // Full TLS 1.3 chain through to s_hs_traffic_secret must match.
-    type Bn = fixed_bigint::FixedUInt<u32, 16, fixed_bigint::Ct>;
+    type Bn = fixed_bigint::FixedUInt<u32, 16, const_num_traits::Ct>;
     let dhe =
         ed25519_heapless::x25519::<Bn>(&FIXTURE_CLIENT_X25519_PRIV, &FIXTURE_SERVER_X25519_PUB_2);
     let rc_hs = handshake_secret::<RustCrypto>(&dhe).unwrap();
@@ -1421,7 +1421,7 @@ mod cipher_aes {
 
         #[test]
         fn fixture_packet_3_decrypts_full_chain() {
-            type Bn = fixed_bigint::FixedUInt<u32, 16, fixed_bigint::Ct>;
+            type Bn = fixed_bigint::FixedUInt<u32, 16, const_num_traits::Ct>;
             let dhe = ed25519_heapless::x25519::<Bn>(
                 &FIXTURE_CLIENT_X25519_PRIV,
                 &FIXTURE_SERVER_X25519_PUB_2,
