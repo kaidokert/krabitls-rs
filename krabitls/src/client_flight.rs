@@ -504,7 +504,14 @@ mod tests {
         // signing rather than emit a flight it would reject.
         let mut t = TranscriptHash::<RustCrypto>::new();
         assert_eq!(
-            policy.build_flight::<RustCrypto>(&[], &[0x04, 0x03], &[0u8; 32], &secret, &mut t, &mut out),
+            policy.build_flight::<RustCrypto>(
+                &[],
+                &[0x04, 0x03],
+                &[0u8; 32],
+                &secret,
+                &mut t,
+                &mut out
+            ),
             Err(ClientAuthFlightError::NoMutualSignatureAlgorithm)
         );
 
@@ -512,7 +519,14 @@ mod tests {
         let mut t = TranscriptHash::<RustCrypto>::new();
         assert!(
             policy
-                .build_flight::<RustCrypto>(&[], &[0x08, 0x07], &[0u8; 32], &secret, &mut t, &mut out)
+                .build_flight::<RustCrypto>(
+                    &[],
+                    &[0x08, 0x07],
+                    &[0u8; 32],
+                    &secret,
+                    &mut t,
+                    &mut out
+                )
                 .is_ok()
         );
     }

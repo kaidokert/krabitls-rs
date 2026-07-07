@@ -37,6 +37,5 @@ pub trait ClientAuth {
     /// `entropy` is fresh output of the connection's RNG, passed as bytes so
     /// the trait stays dyn-compatible. Randomized schemes consume it (RSA-PSS
     /// uses it as the salt); deterministic schemes (ed25519) ignore it.
-    fn sign(&self, content: &[u8], entropy: &[u8; 32])
-    -> Result<ClientSignature, ClientAuthError>;
+    fn sign(&self, content: &[u8], entropy: &[u8; 32]) -> Result<ClientSignature, ClientAuthError>;
 }
