@@ -8,7 +8,7 @@ use crate::traits::client_auth::{ClientAuth, ClientAuthError, ClientSignature};
 /// Bigint backend the signing key runs on. Same 512-bit width as the verify
 /// path, but the constant-time `Ct` personality — `ed25519_heapless`'s
 /// `SignBackend` bound requires CT field arithmetic for the secret scalar.
-type Bn = fixed_bigint::FixedUInt<u32, 16, fixed_bigint::Ct>;
+type Bn = fixed_bigint::FixedUInt<u32, 16, const_num_traits::Ct>;
 
 /// Ed25519 client authenticator: a seed-derived signing key (long-term
 /// secret wiped on drop inside [`SigningKey`]) paired with the leaf

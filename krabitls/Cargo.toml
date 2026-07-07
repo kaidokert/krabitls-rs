@@ -12,7 +12,7 @@ A TLS13 client lib for microcontrollers.
 repository = "https://github.com/kaidokert/krabitls-rs"
 homepage = "https://github.com/kaidokert/krabitls-rs"
 keywords = ["embedded", "no-std", "no-heap", "tls"]
-categories = ["cryptography", "no-std", "no-std::no-alloc"]
+categories = ["cryptography", "no-std", "tls", "no-std::no-alloc"]
 
 # docs.rs builds the crate once and serves that build to everyone. Default
 # features omit RSA, ChaCha20, and jedisct, so
@@ -29,7 +29,7 @@ default = ["cert-der", "cipher-aes"]
 # Expose internal helpers that aren't part of the TLS 1.3 API
 dev-utils = []
 # Optional RSA cert + CertificateVerify support (rsa_pss_rsae_sha256 + the
-# self-signed cert's outer PKCS#1-v1.5). Pulls in rsa_heapless 0.2 (verify-only
+# self-signed cert's outer PKCS#1-v1.5). Pulls in rsa_heapless 0.3 (verify-only
 # on the heapless path) plus sha2 0.11 under a renamed package — rsa_heapless
 # builds on digest 0.11, one major ahead of the digest 0.10 we use for HKDF /
 # transcript hashing, so the two sha2 versions sit side-by-side in an
@@ -78,7 +78,7 @@ cert-der = ["dep:der"]
 # `core::net::parser` on DNS-only embedded deployments. Default OFF.
 ip-host = []
 # Optional ML-DSA (FIPS 204) signature-verification backend, gated exactly
-# like `rsa`. Pulls in krabipqc 0.1.1 (no_std, no-alloc) which carries its own
+# like `rsa`. Pulls in krabipqc 0.1.2 (no_std, no-alloc) which carries its own
 # keccak/sha3 chain — none of it links into the default build. Verify only:
 # the keygen/sign facade is test-only. Covers ML-DSA-44/65/87.
 mldsa = ["dep:krabipqc"]
@@ -90,7 +90,7 @@ mlkem = ["dep:krabipqc"]
 [dependencies]
 embedded-io = { version = "0.7.1", default-features = false }
 hmac-sha256 = { version = "1", default-features = false, features = ["traits010"], optional = true }
-rsa_heapless = { version = "0.2.1", default-features = false, features = ["modmath"], optional = true }
+rsa_heapless = { version = "0.3", default-features = false, features = ["modmath"], optional = true }
 sha2_v11 = { package = "sha2", version = "0.11", default-features = false, features = ["oid"], optional = true }
 
 # RustCrypto stable line — all share generic-array 0.14 / crypto-common 0.1.
@@ -104,8 +104,9 @@ sha2 = { version = "0.10", default-features = false, features = ["force-soft-com
 digest = { version = "0.10", default-features = false }
 hmac = { version = "0.12", default-features = false }
 hkdf = { version = "0.12", default-features = false }
-ed25519_heapless = { version = "0.2.1", default-features = false, features = ["fixed-bigint", "sha512-sha2"] }
-fixed-bigint = { version = "0.3", default-features = false, features = ["use-unsafe", "zeroize"] }
+ed25519_heapless = { version = "0.3.0", default-features = false, features = ["fixed-bigint", "sha512-sha2"] }
+fixed-bigint = { version = "0.4", default-features = false, features = ["use-unsafe", "zeroize"] }
+const-num-traits = { version = "0.1", default-features = false, features = ["ct"] }
 der = { version = "0.8.0", default-features = false, features = ["oid"], optional = true }
 zeroize = { version = "1.8", default-features = false, features = ["derive"] }
 heapless = { version = "0.9", default-features = false }
@@ -113,7 +114,7 @@ subtle = { version = "2.6", default-features = false }
 thiserror = { version = "2", default-features = false }
 signature = { version = "3", default-features = false }
 rand_core = { version = "0.10", default-features = false }
-krabipqc = { version = "0.1.1", default-features = false, optional = true }
+krabipqc = { version = "0.1.2", default-features = false, optional = true }
 
 # Deterministic SeededRng + CannedTransport for the host facade replay
 # tests. Dev-only so the seed-mode RNG (a `TryCryptoRng` that is NOT a
