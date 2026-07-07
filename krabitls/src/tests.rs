@@ -1872,6 +1872,65 @@ mod cipher_aes {
                 _ => panic!("expected CertView::Rsa, got {:?}", view),
             }
         }
+
+        /// Throwaway RSA-2048 keypair (`openssl genpkey`) — a test vector,
+        /// not a real credential.
+        const CLIENT_N: [u8; 256] = crate::hex_decode(
+            "a2906830b167480a497efc6bbbe503a038fe4778e6e04f09f2e2e3667140beb6\
+             397a86523c0e9129820665dd7d69e60ceac0d9988addfcb9a3316de6f4084af8\
+             4f70250a833f057bfa960ec8ede6889c4ca3b79c0decfc394b02e8581ba46dfe\
+             132e734223e34900368d9bb2a5087a2c595a444c4b232fc95cc2a766a9e10f7b\
+             c4842c28275a0f131ea0ea3d5ffefa208f52a723be2e85beed036195bf96ea5a\
+             fa5e28716d708ef59b281d1b80c782e1b18b4992602085f478d550588520d994\
+             37ebd17189824cf61f5c0389051167a0679c17e87c61bb1f9a8765bb3a4d0251\
+             f1cf04f81ed426c1bd3c9618ac5f8574fe89ce6b89b4945dd58c1a39ac911ba5",
+        );
+        const CLIENT_D: [u8; 256] = crate::hex_decode(
+            "14f43731db941c019372a657beaae8da3cae6e0903fd72c2ae0797d72b0ef4e6\
+             2927856bd128f1861fa7f27667c5802d370f2f9d0d7d4aa7a504e88d25f471b1\
+             6b0fe1fe666777ae00e159bb858abb1e2674cde474191173d31ae757000d244e\
+             652b8e18bee67b90e6f73ed3fa98caa2afcbc654ed347662e6ad828565ad4860\
+             ef65d75740448190eb2d75aaec68fde78e20eeca81d98505b084d3859c49fc3b\
+             2130beb6b8b2076321d28ba4b35bc3213336a109579990a2eb1fbede6632a5d9\
+             1a2ef0459fa077e28691a503f9ca369966de82923328b58a1ea295f47b85cca8\
+             f2b36cd39a0a93234d2da7313c9191a307c80bd271f0ff74be8a4665149eb791",
+        );
+        const CLIENT_E: u32 = 65537;
+
+        #[test]
+        fn rsa_client_auth_pss_sign_round_trips_against_verifier() {
+            use crate::backends::RsaClientAuth;
+            use crate::traits::client_auth::ClientAuth;
+
+            let auth = RsaClientAuth::from_components(&CLIENT_N, CLIENT_E, &CLIENT_D, &[0x30])
+                .expect("components accepted");
+            assert_eq!(auth.scheme(), crate::consts::SIG_SCHEME_RSA_PSS_RSAE_SHA256);
+
+            let content = b"stand-in CertificateVerify signed content";
+            let sig = auth.sign(content, &[0x5a; 32]).expect("sign");
+            assert_eq!(sig.len(), 256);
+            let vk = RsaVerifierKey::new(&CLIENT_N, CLIENT_E).expect("vk");
+            vk.verify_pss_sha256(content, &sig).expect("PSS verifies");
+            assert!(vk.verify_pss_sha256(b"other content", &sig).is_err());
+
+            // A different salt yields a different (still valid) signature —
+            // the entropy actually reaches the PSS encoding.
+            let sig2 = auth.sign(content, &[0xa5; 32]).expect("sign 2");
+            assert_ne!(sig, sig2);
+            vk.verify_pss_sha256(content, &sig2)
+                .expect("PSS verifies 2");
+        }
+
+        #[test]
+        fn rsa_client_auth_rejects_bad_components() {
+            use crate::backends::RsaClientAuth;
+
+            assert!(
+                RsaClientAuth::from_components(&CLIENT_N[..255], CLIENT_E, &CLIENT_D, &[0x30])
+                    .is_err()
+            );
+            assert!(RsaClientAuth::from_components(&CLIENT_N, CLIENT_E, &[], &[0x30]).is_err());
+        }
     }
 }
 
