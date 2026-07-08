@@ -14,6 +14,8 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use getrandom::SysRng;
+#[cfg(feature = "rsa")]
+use krabitls::client::RsaClientAuth;
 use krabitls::client::{
     ClientAuthPolicy, ClientParams, ClockedVerify, ConnectError, DefaultConfig, DefaultScratch,
     Ed25519ClientAuth, MAX_CLIENT_CERT_DER, PinnedPubkey, RuntimeSuitePolicy, TimeSource,
@@ -84,10 +86,7 @@ fn parse_pin(hex_str: &str) -> std::result::Result<Pin, String> {
     }
 }
 
-fn load_client_auth(
-    cert_path: &str,
-    seed_hex: &str,
-) -> std::result::Result<ClientAuthMaterial, String> {
+fn load_client_cert(cert_path: &str) -> std::result::Result<Vec<u8>, String> {
     let cert_der =
         std::fs::read(cert_path).map_err(|e| format!("--client-cert {cert_path:?}: {e}"))?;
     if cert_der.is_empty() {
@@ -101,11 +100,129 @@ fn load_client_auth(
             cert_der.len()
         ));
     }
+    Ok(cert_der)
+}
+
+fn load_client_auth(
+    cert_path: &str,
+    seed_hex: &str,
+) -> std::result::Result<ClientAuthMaterial, String> {
+    let cert_der = load_client_cert(cert_path)?;
     // Decode straight into the fixed `Zeroizing` array — the raw seed never
     // touches an intermediate heap buffer.
     let mut seed = Zeroizing::new([0u8; 32]);
     decode_hex_into(seed_hex, &mut seed[..]).map_err(|e| format!("--client-seed: {e}"))?;
-    Ok(ClientAuthMaterial { cert_der, seed })
+    Ok(ClientAuthMaterial::Ed25519 { cert_der, seed })
+}
+
+#[cfg(feature = "rsa")]
+fn load_client_auth_rsa(
+    cert_path: &str,
+    key_path: &str,
+) -> std::result::Result<ClientAuthMaterial, String> {
+    let cert_der = load_client_cert(cert_path)?;
+    let key_der = Zeroizing::new(
+        std::fs::read(key_path).map_err(|e| format!("--client-rsa-key {key_path:?}: {e}"))?,
+    );
+    let (n, e, d) = parse_rsa_private_der(&key_der)
+        .map_err(|e| format!("--client-rsa-key {key_path:?}: {e}"))?;
+    Ok(ClientAuthMaterial::Rsa { cert_der, n, e, d })
+}
+
+/// Read one DER TLV off the front of `b`, returning (tag, contents).
+#[cfg(feature = "rsa")]
+fn der_read<'a>(b: &mut &'a [u8]) -> std::result::Result<(u8, &'a [u8]), String> {
+    if b.len() < 2 {
+        return Err("truncated DER".into());
+    }
+    let tag = b[0];
+    let (len, hdr) = match b[1] {
+        n @ 0..=0x7f => (n as usize, 2),
+        0x81 if b.len() >= 3 => (b[2] as usize, 3),
+        0x82 if b.len() >= 4 => (u16::from_be_bytes([b[2], b[3]]) as usize, 4),
+        _ => return Err("unsupported DER length".into()),
+    };
+    let end = usize::checked_add(hdr, len).filter(|&e| e <= b.len());
+    let Some(end) = end else {
+        return Err("truncated DER".into());
+    };
+    let contents = &b[hdr..end];
+    *b = &b[end..];
+    Ok((tag, contents))
+}
+
+/// DER INTEGERs carry a leading 0x00 when the high bit is set.
+#[cfg(feature = "rsa")]
+fn strip_int_sign(i: &[u8]) -> &[u8] {
+    if i.len() > 1 && i[0] == 0 { &i[1..] } else { i }
+}
+
+/// Extract `(n, e, d)` from an RSA private key in PKCS#8 (`openssl genpkey`
+/// output) or PKCS#1 DER. Only the fields krabitls needs are read; CRT
+/// parameters are ignored.
+#[cfg(feature = "rsa")]
+fn parse_rsa_private_der(
+    der: &[u8],
+) -> std::result::Result<(Vec<u8>, u32, Zeroizing<Vec<u8>>), String> {
+    let mut b = der;
+    let (tag, seq) = der_read(&mut b)?;
+    if tag != 0x30 {
+        return Err(
+            "expected DER SEQUENCE (is the key PEM? convert with `openssl pkey -outform der`)"
+                .into(),
+        );
+    }
+    let mut s = seq;
+    let (t, _version) = der_read(&mut s)?;
+    if t != 0x02 {
+        return Err("expected version INTEGER".into());
+    }
+    let (t2, f2) = der_read(&mut s)?;
+    let (n_int, mut rest) = match t2 {
+        // PKCS#8: AlgorithmIdentifier, then an OCTET STRING wrapping PKCS#1.
+        0x30 => {
+            let (t3, keyoct) = der_read(&mut s)?;
+            if t3 != 0x04 {
+                return Err("expected PKCS#8 privateKey OCTET STRING".into());
+            }
+            let mut kb = keyoct;
+            let (t4, kseq) = der_read(&mut kb)?;
+            if t4 != 0x30 {
+                return Err("expected PKCS#1 SEQUENCE inside PKCS#8".into());
+            }
+            let mut inner = kseq;
+            let (tv, _v) = der_read(&mut inner)?;
+            if tv != 0x02 {
+                return Err("expected PKCS#1 version INTEGER".into());
+            }
+            let (tn, n) = der_read(&mut inner)?;
+            if tn != 0x02 {
+                return Err("expected modulus INTEGER".into());
+            }
+            (n, inner)
+        }
+        // PKCS#1: the version INTEGER was already consumed; this is n.
+        0x02 => (f2, s),
+        _ => return Err("unrecognized RSA key structure".into()),
+    };
+    let (te, e_int) = der_read(&mut rest)?;
+    let (td, d_int) = der_read(&mut rest)?;
+    if te != 0x02 || td != 0x02 {
+        return Err("expected publicExponent + privateExponent INTEGERs".into());
+    }
+    let e_bytes = strip_int_sign(e_int);
+    if e_bytes.len() > 4 {
+        return Err("public exponent exceeds u32".into());
+    }
+    let mut e = 0u32;
+    for &x in e_bytes {
+        e = (e << 8) | x as u32;
+    }
+    Ok((
+        strip_int_sign(n_int).to_vec(),
+        e,
+        Zeroizing::new(strip_int_sign(d_int).to_vec()),
+    ))
 }
 
 /// Decode `s` (hex, no `0x`) into `out`, which fixes the expected byte count.
@@ -144,10 +261,19 @@ fn decode_hex(s: &str) -> std::result::Result<Vec<u8>, String> {
 }
 
 /// Client-auth material for mutual TLS: the leaf DER sent in the client
-/// `Certificate` and the 32-byte Ed25519 seed that signs `CertificateVerify`.
-struct ClientAuthMaterial {
-    cert_der: Vec<u8>,
-    seed: Zeroizing<[u8; 32]>,
+/// `Certificate` plus the private key that signs `CertificateVerify`.
+enum ClientAuthMaterial {
+    Ed25519 {
+        cert_der: Vec<u8>,
+        seed: Zeroizing<[u8; 32]>,
+    },
+    #[cfg(feature = "rsa")]
+    Rsa {
+        cert_der: Vec<u8>,
+        n: Vec<u8>,
+        e: u32,
+        d: Zeroizing<Vec<u8>>,
+    },
 }
 
 /// `TcpStream` wrapper that satisfies the facade's `Transport` trait.
@@ -165,7 +291,13 @@ impl Transport for TcpTransport {
     }
 }
 
-fn run(host: &str, port: u16, pin: Option<&Pin>, auth: Option<&ClientAuthMaterial>) -> Result<()> {
+fn run(
+    host: &str,
+    port: u16,
+    pin: Option<&Pin>,
+    auth: Option<&ClientAuthMaterial>,
+    probe: Probe,
+) -> Result<()> {
     let endpoint = format!("{host}:{port}");
     info!("connecting to {endpoint}");
     let tcp = TcpStream::connect(&endpoint)?;
@@ -184,25 +316,46 @@ fn run(host: &str, port: u16, pin: Option<&Pin>, auth: Option<&ClientAuthMateria
     // dispatch to distinct monomorphizations of `drive_request` — the no-auth
     // binary never instantiates the certificate path.
     match auth {
-        Some(m) => {
-            let signer = Ed25519ClientAuth::from_seed(&m.seed, &m.cert_der)
+        Some(ClientAuthMaterial::Ed25519 { cert_der, seed }) => {
+            let signer = Ed25519ClientAuth::from_seed(seed, cert_der)
                 .map_err(|_| "invalid --client-seed (Ed25519 key derivation failed)")?;
             info!(
                 "client auth enabled (Ed25519, {} byte leaf)",
-                m.cert_der.len()
+                cert_der.len()
             );
-            drive_request(&base.with_client_auth(&signer), host, tcp)
+            drive_request(&base.with_client_auth(&signer), host, tcp, probe)
         }
-        None => drive_request(&base, host, tcp),
+        #[cfg(feature = "rsa")]
+        Some(ClientAuthMaterial::Rsa { cert_der, n, e, d }) => {
+            let signer = RsaClientAuth::from_components(n, *e, d, cert_der)
+                .map_err(|_| "invalid --client-rsa-key (expected an RSA-2048 key)")?;
+            info!(
+                "client auth enabled (RSA-{}, {} byte leaf)",
+                n.len() * 8,
+                cert_der.len()
+            );
+            drive_request(&base.with_client_auth(&signer), host, tcp, probe)
+        }
+        None => drive_request(&base, host, tcp, probe),
     }
 }
 
-/// Drive the handshake + an HTTP/1.0 GET over a freshly connected socket,
-/// generic over the client-auth policy `A`.
+/// Application-layer exchange after the handshake.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Probe {
+    /// HTTP/1.0 GET, drain the response.
+    Http,
+    /// MQTT 3.1.1 CONNECT, expect a CONNACK with return code 0.
+    Mqtt,
+}
+
+/// Drive the handshake + the selected application probe over a freshly
+/// connected socket, generic over the client-auth policy `A`.
 fn drive_request<A>(
     params: &ClientParams<'_, ClockedVerify<SystemTimeSource>, A>,
     host: &str,
     tcp: TcpStream,
+    probe: Probe,
 ) -> Result<()>
 where
     A: ClientAuthPolicy,
@@ -219,6 +372,42 @@ where
             return Err(format!("handshake: {}", describe_connect_error(&e)).into());
         }
     };
+    if probe == Probe::Mqtt {
+        info!("handshake OK — sending MQTT CONNECT");
+        // MQTT 3.1.1 CONNECT: clean session, keepalive 60 s, client id
+        // "krabitls".
+        const CONNECT: &[u8] = &[
+            0x10, 0x14, 0x00, 0x04, b'M', b'Q', b'T', b'T', 0x04, 0x02, 0x00, 0x3c, 0x00, 0x08,
+            b'k', b'r', b'a', b'b', b'i', b't', b'l', b's',
+        ];
+        tls.write_all(CONNECT)
+            .map_err(|e| format!("mqtt CONNECT write: {}", describe_connect_error(&e)))?;
+        let mut resp = [0u8; 4];
+        let mut got = 0;
+        while got < resp.len() {
+            match tls.read(&mut resp[got..]) {
+                Ok(0) => break,
+                Ok(n) => got += n,
+                Err(e) => {
+                    return Err(format!("mqtt CONNACK read: {}", describe_connect_error(&e)).into());
+                }
+            }
+        }
+        if got < 4 || resp[0] != 0x20 || resp[1] != 0x02 {
+            return Err(format!("mqtt: expected CONNACK, got {:02x?}", &resp[..got]).into());
+        }
+        if resp[3] != 0x00 {
+            return Err(format!("mqtt: CONNACK return code {}", resp[3]).into());
+        }
+        info!("MQTT CONNACK accepted (session_present={})", resp[2] & 1);
+        // DISCONNECT, then close_notify.
+        tls.write_all(&[0xe0, 0x00])
+            .map_err(|e| format!("mqtt DISCONNECT write: {}", describe_connect_error(&e)))?;
+        if let Err(e) = tls.close() {
+            info!("close: {}", describe_connect_error(&e));
+        }
+        return Ok(());
+    }
     info!("handshake OK — sending HTTP GET");
 
     // Minimal HTTP/1.0 GET so any server we point at responds.
@@ -316,9 +505,14 @@ fn print_usage() {
                            fixtures / controlled servers whose cert is self-signed.\n\
                            Will reject a chain-rooted (CA-issued) cert.\n\
          \n\
-         Optional client authentication (mutual TLS), supplied together:\n\
-           --client-cert <path>   Client leaf certificate, DER-encoded.\n\
-           --client-seed <hex>    32-byte Ed25519 seed (raw private key) as hex.\n"
+         Optional client authentication (mutual TLS) — --client-cert plus one key:\n\
+           --client-cert <path>     Client leaf certificate, DER-encoded.\n\
+           --client-seed <hex>      32-byte Ed25519 seed (raw private key) as hex.\n\
+           --client-rsa-key <path>  RSA-2048 private key, PKCS#8 or PKCS#1 DER\n\
+                                    (needs --features rsa).\n\
+         \n\
+         Application probe (default: HTTP/1.0 GET):\n\
+           --mqtt                 MQTT 3.1.1 CONNECT / CONNACK instead of HTTP.\n"
     );
 }
 
@@ -331,6 +525,8 @@ fn main() -> ExitCode {
     let mut self_signed = false;
     let mut client_cert_path: Option<String> = None;
     let mut client_seed_hex: Option<String> = None;
+    let mut client_rsa_key_path: Option<String> = None;
+    let mut probe = Probe::Http;
     while let Some(a) = args.next() {
         if a == "--pin" {
             let Some(hex_str) = args.next() else {
@@ -359,6 +555,14 @@ fn main() -> ExitCode {
                 return ExitCode::from(2);
             };
             client_seed_hex = Some(v);
+        } else if a == "--client-rsa-key" {
+            let Some(v) = args.next() else {
+                eprintln!("error: --client-rsa-key requires a path");
+                return ExitCode::from(2);
+            };
+            client_rsa_key_path = Some(v);
+        } else if a == "--mqtt" {
+            probe = Probe::Mqtt;
         } else if a == "--help" || a == "-h" {
             print_usage();
             return ExitCode::SUCCESS;
@@ -396,22 +600,37 @@ fn main() -> ExitCode {
         }
     };
 
-    let auth = match (client_cert_path, client_seed_hex) {
-        (Some(path), Some(hex)) => match load_client_auth(&path, &hex) {
+    let auth = match (client_cert_path, client_seed_hex, client_rsa_key_path) {
+        (Some(path), Some(hex), None) => match load_client_auth(&path, &hex) {
             Ok(m) => Some(m),
             Err(e) => {
                 eprintln!("error: {e}");
                 return ExitCode::from(2);
             }
         },
-        (None, None) => None,
+        #[cfg(feature = "rsa")]
+        (Some(path), None, Some(key)) => match load_client_auth_rsa(&path, &key) {
+            Ok(m) => Some(m),
+            Err(e) => {
+                eprintln!("error: {e}");
+                return ExitCode::from(2);
+            }
+        },
+        #[cfg(not(feature = "rsa"))]
+        (Some(_), None, Some(_)) => {
+            eprintln!("error: --client-rsa-key requires building with --features rsa");
+            return ExitCode::from(2);
+        }
+        (None, None, None) => None,
         _ => {
-            eprintln!("error: --client-cert and --client-seed must be supplied together");
+            eprintln!(
+                "error: supply --client-cert with exactly one of --client-seed / --client-rsa-key"
+            );
             return ExitCode::from(2);
         }
     };
 
-    match run(&host, port, pin.as_ref(), auth.as_ref()) {
+    match run(&host, port, pin.as_ref(), auth.as_ref(), probe) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             error!("{e}");
