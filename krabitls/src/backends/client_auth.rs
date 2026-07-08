@@ -14,13 +14,11 @@ use {
     sha2_v11::{Digest, Sha256},
 };
 
+use crate::bigint::Curve25519CtBn as Bn;
+#[cfg(feature = "rsa")]
+use crate::bigint::RsaSignBn as SignBn;
 use crate::consts::SIG_SCHEME_ED25519;
 use crate::traits::client_auth::{ClientAuth, ClientAuthError, ClientSignature};
-
-/// Bigint backend the signing key runs on. Same 512-bit width as the verify
-/// path, but the constant-time `Ct` personality — `ed25519_heapless`'s
-/// `SignBackend` bound requires CT field arithmetic for the secret scalar.
-type Bn = fixed_bigint::FixedUInt<u32, 16, const_num_traits::Ct>;
 
 /// Ed25519 client authenticator: a seed-derived signing key (long-term
 /// secret wiped on drop inside [`SigningKey`]) paired with the leaf
@@ -75,13 +73,6 @@ impl ClientAuth for Ed25519ClientAuth<'_> {
         Ok(out)
     }
 }
-
-/// RSA-2048 bigint carrier for the signing path — same 64 × 32-bit width as
-/// the verify side's `U2048`, but the constant-time `Ct` personality: the
-/// modexp exponent is the private `d`, unlike verify where it's the public
-/// `e`.
-#[cfg(feature = "rsa")]
-type SignBn = fixed_bigint::FixedUInt<u32, 64, const_num_traits::Ct>;
 
 /// RSA-2048 client authenticator producing `rsa_pss_rsae_sha256` (0x0804)
 /// `CertificateVerify` signatures, paired with the leaf certificate it

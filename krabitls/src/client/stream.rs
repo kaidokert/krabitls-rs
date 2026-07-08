@@ -14,9 +14,7 @@ use super::scratch::{
     client_auth_send_floor,
 };
 use super::{ClientConfig, ClientParams, ConfigSuitePolicy, RuntimeSuitePolicy, Transport};
-
-/// X25519 backend type; matches `connection.rs`.
-type X25519Bn = fixed_bigint::FixedUInt<u32, 16, const_num_traits::Ct>;
+use crate::bigint::Curve25519CtBn as X25519Bn;
 
 /// TLS 1.3 client handle.
 ///

@@ -439,7 +439,7 @@ mod tests {
     use crate::newtype::TranscriptDigest;
 
     /// Verify backend mirrors the `RustCrypto` provider (non-CT, 512-bit).
-    type VerifyBn = fixed_bigint::FixedUInt<u32, 16>;
+    use crate::bigint::Curve25519VerifyBn as VerifyBn;
 
     fn read_u24(b: &[u8]) -> usize {
         u32::from_be_bytes([0, b[0], b[1], b[2]]) as usize

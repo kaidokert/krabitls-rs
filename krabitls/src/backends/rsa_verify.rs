@@ -12,7 +12,7 @@
 //!   TLS 1.3 §4.4.3, RFC 8017 §8.1) and PSS-signed cert outer sigs
 //!
 //! Dispatch on modulus length: 128 B → RSA-1024, 256 B → RSA-2048. Bigint
-//! backend: `fixed_bigint::FixedUInt<u32, N>`.
+//! carriers come from [`crate::bigint`].
 //!
 //! No alloc anywhere. The no_alloc path in rsa_heapless type-aliases
 //! `ModMathValue<T>` to `T`, so the verifying key's bigint type is just the
@@ -27,7 +27,6 @@
 //! of opting into RSA and is gated behind `feature = "rsa"`.
 
 use const_num_traits::Nct;
-use fixed_bigint::FixedUInt;
 use rsa::modmath_support::{ModMathParams, ModMathValue, public_key_from_be_bytes};
 #[cfg(not(feature = "rsa_pss_only"))]
 use rsa::pkcs1v15::{GenericSignature as Pkcs1Sig, GenericVerifyingKey as Pkcs1Vk};
@@ -52,12 +51,9 @@ pub struct RsaPssSig<'a>(pub &'a [u8]);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RsaPkcs1Sig<'a>(pub &'a [u8]);
 
-/// 1024-bit RSA modulus carrier — `FixedUInt<u32, 32>` = 32 × 32 bits.
-/// Compiled out under `feature = "rsa_2048_only"`.
 #[cfg(not(feature = "rsa_2048_only"))]
-type U1024 = FixedUInt<u32, 32>;
-/// 2048-bit RSA modulus carrier — `FixedUInt<u32, 64>` = 64 × 32 bits.
-type U2048 = FixedUInt<u32, 64>;
+use crate::bigint::RsaU1024 as U1024;
+use crate::bigint::RsaU2048 as U2048;
 
 /// Pre-built PKCS#1-v1.5 + RSA-PSS verifying keys for one RSA pubkey.
 ///
