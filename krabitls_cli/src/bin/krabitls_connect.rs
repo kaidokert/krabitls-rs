@@ -121,9 +121,19 @@ fn load_client_auth_rsa(
     key_path: &str,
 ) -> std::result::Result<ClientAuthMaterial, String> {
     let cert_der = load_client_cert(cert_path)?;
-    let key_der = Zeroizing::new(
-        std::fs::read(key_path).map_err(|e| format!("--client-rsa-key {key_path:?}: {e}"))?,
-    );
+    // Exact-size read into the `Zeroizing` buffer — `fs::read`'s internal
+    // `read_to_end` may realloc (orphaning an unwiped copy of the key) if
+    // the file changes size between the probe and the read.
+    let err = |e: std::io::Error| format!("--client-rsa-key {key_path:?}: {e}");
+    let mut file = std::fs::File::open(key_path).map_err(err)?;
+    let len = file.metadata().map_err(err)?.len();
+    if len == 0 || len > 8192 {
+        return Err(format!(
+            "--client-rsa-key {key_path:?}: {len} bytes is not a plausible RSA-2048 key DER"
+        ));
+    }
+    let mut key_der = Zeroizing::new(vec![0u8; len as usize]);
+    IoRead::read_exact(&mut file, &mut key_der).map_err(err)?;
     let (n, e, d) = parse_rsa_private_der(&key_der)
         .map_err(|e| format!("--client-rsa-key {key_path:?}: {e}"))?;
     Ok(ClientAuthMaterial::Rsa { cert_der, n, e, d })
