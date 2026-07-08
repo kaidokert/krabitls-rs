@@ -160,6 +160,12 @@ pub(crate) struct TlsEngine<
     /// Reassembly state for post-handshake handshake messages fragmented
     /// across records (RFC 8446 §5.1).
     pub(crate) ph: PostHandshakeReasm,
+
+    /// Fresh RNG output drawn at `connect()` for the client
+    /// `CertificateVerify` (randomized schemes use it as signing entropy —
+    /// RSA-PSS salt). All-zero when the policy never signs
+    /// (`!A::ACCEPT_CERT_REQUEST`); consumed at most once per connection.
+    pub(crate) cv_entropy: [u8; 32],
 }
 
 impl<
@@ -176,6 +182,7 @@ impl<
         init_state: EngineState<C>,
         our_recv_limit: RecordSizeLimit,
         peer_recv_limit: RecordSizeLimit,
+        cv_entropy: [u8; 32],
     ) -> Self {
         Self {
             scratch,
@@ -189,6 +196,7 @@ impl<
             our_recv_limit,
             peer_recv_limit,
             ph: PostHandshakeReasm::default(),
+            cv_entropy,
         }
     }
 
@@ -642,6 +650,7 @@ impl<
         // a ~1.6 KB stack frame. `recv_record` and `send_record` are disjoint
         // `scratch` fields, so the borrows don't conflict.
         let peer_limit = self.peer_recv_limit.get();
+        let cv_entropy = self.cv_entropy;
         let cf_len = match done {
             #[cfg(feature = "cipher-aes")]
             FlightDone::Aes(d) => {
@@ -650,6 +659,7 @@ impl<
                         &params.client_auth,
                         ctx,
                         sig_algs,
+                        &cv_entropy,
                         peer_limit,
                         &mut self.scratch.recv_record,
                         &mut self.scratch.send_record,
@@ -668,6 +678,7 @@ impl<
                         &params.client_auth,
                         ctx,
                         sig_algs,
+                        &cv_entropy,
                         peer_limit,
                         &mut self.scratch.recv_record,
                         &mut self.scratch.send_record,
@@ -1221,6 +1232,7 @@ mod tests {
             EngineState::Closed,
             RecordSizeLimit::from_clamped(16384),
             RecordSizeLimit::from_clamped(16384),
+            [0u8; 32],
         )
     }
 
@@ -1726,6 +1738,7 @@ mod tests {
                 EngineState::AppAes(conn),
                 RecordSizeLimit::from_clamped(16384),
                 RecordSizeLimit::from_clamped(16384),
+                [0u8; 32],
             )
         }
 
@@ -1827,6 +1840,7 @@ mod tests {
                 EngineState::AppAes(conn),
                 RecordSizeLimit::from_clamped(16384),
                 RecordSizeLimit::from_clamped(16384),
+                [0u8; 32],
             )
         }
 

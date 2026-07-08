@@ -30,8 +30,20 @@ pub trait ClientAuth {
     /// `CertificateVerify` (e.g. `0x0807` = ed25519).
     fn scheme(&self) -> u16;
 
+    /// Whether [`sign`](Self::sign) consumes the entropy bytes. The
+    /// connection skips the RNG draw when `false`, so a deterministic
+    /// signer (ed25519) can't be aborted by a failed draw it would never
+    /// use. Defaults to `true` — the safe answer for randomized schemes.
+    fn needs_entropy(&self) -> bool {
+        true
+    }
+
     /// Sign the `CertificateVerify` signed-content (RFC 8446 §4.4.3) — the
     /// 64-space pad, the `"TLS 1.3, client CertificateVerify"` context, a
     /// separator, and the handshake transcript hash, assembled by krabitls.
-    fn sign(&self, content: &[u8]) -> Result<ClientSignature, ClientAuthError>;
+    ///
+    /// `entropy` is fresh output of the connection's RNG, passed as bytes so
+    /// the trait stays dyn-compatible. Randomized schemes consume it (RSA-PSS
+    /// uses it as the salt); deterministic schemes (ed25519) ignore it.
+    fn sign(&self, content: &[u8], entropy: &[u8; 32]) -> Result<ClientSignature, ClientAuthError>;
 }

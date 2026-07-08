@@ -202,10 +202,11 @@ pub fn build_client_empty_certificate<'a>(
 pub fn build_client_certificate_verify<'a, A: ClientAuth + ?Sized>(
     auth: &A,
     transcript_hash_through_client_cert: &TranscriptDigest,
+    entropy: &[u8; 32],
     out: &'a mut [u8],
 ) -> Result<&'a [u8], ClientAuthFlightError> {
     let signed = certificate_verify_signed_content(transcript_hash_through_client_cert);
-    let sig = auth.sign(&signed)?;
+    let sig = auth.sign(&signed, entropy)?;
 
     let body_len = 2 + 2 + sig.len();
     let total = 4 + body_len;
@@ -244,6 +245,14 @@ pub trait ClientAuthPolicy {
     /// failing mid-handshake. `0` for policies that send no certificate.
     const MAX_FLIGHT_LEN: usize;
 
+    /// Whether the connection must pre-draw signing entropy for this policy
+    /// (see [`ClientAuth::needs_entropy`]). Policies that never sign return
+    /// `false`, so a failed RNG draw can't abort a handshake that would
+    /// never have consumed it.
+    fn needs_signing_entropy(&self) -> bool {
+        Self::ACCEPT_CERT_REQUEST
+    }
+
     /// Build the coalesced client second-flight plaintext (`Certificate [||
     /// CertificateVerify] || Finished`) in response to a `CertificateRequest`,
     /// folding each message into `transcript`. `transcript` is positioned at
@@ -251,12 +260,15 @@ pub trait ClientAuthPolicy {
     /// application-traffic-secret derivation first. `cert_request_sig_algs` is
     /// the server's advertised `signature_algorithms` list (concatenated u16
     /// scheme code points), against which a signing policy must check its
-    /// scheme. `out` is scratch sized by [`MAX_CLIENT_AUTH_FLIGHT`]. `Err`
-    /// aborts the handshake — e.g. no certificate, or no mutual scheme.
+    /// scheme. `entropy` is fresh connection-RNG output forwarded to
+    /// [`ClientAuth::sign`] for randomized signature schemes. `out` is scratch
+    /// sized by [`MAX_CLIENT_AUTH_FLIGHT`]. `Err` aborts the handshake —
+    /// e.g. no certificate, or no mutual scheme.
     fn build_flight<'a, H: HkdfSha256>(
         &self,
         cert_request_context: &[u8],
         cert_request_sig_algs: &[u8],
+        entropy: &[u8; 32],
         c_hs_traffic_secret: &Secret,
         transcript: &mut TranscriptHash<H>,
         out: &'a mut [u8],
@@ -293,6 +305,7 @@ impl ClientAuthPolicy for NoClientAuth {
         &self,
         _cert_request_context: &[u8],
         _cert_request_sig_algs: &[u8],
+        _entropy: &[u8; 32],
         _c_hs_traffic_secret: &Secret,
         _transcript: &mut TranscriptHash<H>,
         _out: &'a mut [u8],
@@ -310,10 +323,16 @@ pub struct DeclineClientAuth;
 impl ClientAuthPolicy for DeclineClientAuth {
     const ACCEPT_CERT_REQUEST: bool = true;
     const MAX_FLIGHT_LEN: usize = MAX_CLIENT_EMPTY_AUTH_FLIGHT;
+
+    // An empty Certificate carries no CertificateVerify — nothing to sign.
+    fn needs_signing_entropy(&self) -> bool {
+        false
+    }
     fn build_flight<'a, H: HkdfSha256>(
         &self,
         cert_request_context: &[u8],
         _cert_request_sig_algs: &[u8],
+        _entropy: &[u8; 32],
         c_hs_traffic_secret: &Secret,
         transcript: &mut TranscriptHash<H>,
         out: &'a mut [u8],
@@ -349,10 +368,15 @@ impl<A: ClientAuth + ?Sized> ClientAuthPolicy for WithClientAuth<'_, A> {
     const ACCEPT_CERT_REQUEST: bool = true;
     const MAX_FLIGHT_LEN: usize = MAX_CLIENT_AUTH_FLIGHT;
 
+    fn needs_signing_entropy(&self) -> bool {
+        self.0.needs_entropy()
+    }
+
     fn build_flight<'a, H: HkdfSha256>(
         &self,
         cert_request_context: &[u8],
         cert_request_sig_algs: &[u8],
+        entropy: &[u8; 32],
         c_hs_traffic_secret: &Secret,
         transcript: &mut TranscriptHash<H>,
         out: &'a mut [u8],
@@ -370,8 +394,13 @@ impl<A: ClientAuth + ?Sized> ClientAuthPolicy for WithClientAuth<'_, A> {
         transcript.update(&out[..cert_end]);
         let th_through_cert = transcript.snapshot();
         let cv_end = cert_end
-            + build_client_certificate_verify(self.0, &th_through_cert, &mut out[cert_end..])?
-                .len();
+            + build_client_certificate_verify(
+                self.0,
+                &th_through_cert,
+                entropy,
+                &mut out[cert_end..],
+            )?
+            .len();
         transcript.update(&out[cert_end..cv_end]);
         append_finished::<H>(c_hs_traffic_secret, transcript, out, cv_end)
     }
@@ -492,7 +521,14 @@ mod tests {
         // signing rather than emit a flight it would reject.
         let mut t = TranscriptHash::<RustCrypto>::new();
         assert_eq!(
-            policy.build_flight::<RustCrypto>(&[], &[0x04, 0x03], &secret, &mut t, &mut out),
+            policy.build_flight::<RustCrypto>(
+                &[],
+                &[0x04, 0x03],
+                &[0u8; 32],
+                &secret,
+                &mut t,
+                &mut out
+            ),
             Err(ClientAuthFlightError::NoMutualSignatureAlgorithm)
         );
 
@@ -500,7 +536,14 @@ mod tests {
         let mut t = TranscriptHash::<RustCrypto>::new();
         assert!(
             policy
-                .build_flight::<RustCrypto>(&[], &[0x08, 0x07], &secret, &mut t, &mut out)
+                .build_flight::<RustCrypto>(
+                    &[],
+                    &[0x08, 0x07],
+                    &[0u8; 32],
+                    &secret,
+                    &mut t,
+                    &mut out
+                )
                 .is_ok()
         );
     }
@@ -555,7 +598,7 @@ mod tests {
 
         let th = TranscriptDigest::new([0x42u8; 32]);
         let mut out = [0u8; 128];
-        let cv = build_client_certificate_verify(&auth, &th, &mut out).unwrap();
+        let cv = build_client_certificate_verify(&auth, &th, &[0u8; 32], &mut out).unwrap();
 
         assert_eq!(cv[0], HS_CERTIFICATE_VERIFY);
         assert_eq!(read_u24(&cv[1..4]), cv.len() - 4);

@@ -35,6 +35,8 @@ pub use crate::traits::TimeSource;
 // `NoClientAuth` links no cert-emission code), the caller-supplied signer
 // trait, the bundled Ed25519 implementation, and its error.
 pub use crate::backends::Ed25519ClientAuth;
+#[cfg(feature = "rsa")]
+pub use crate::backends::RsaClientAuth;
 pub use crate::client_flight::{
     ClientAuthPolicy, DeclineClientAuth, MAX_CLIENT_CERT_DER, NoClientAuth, WithClientAuth,
 };

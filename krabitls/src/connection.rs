@@ -816,7 +816,8 @@ where
     /// flight the policy builds (real `Certificate` + `CertificateVerify`,
     /// an empty certificate, or an abort) coalesced into one handshake
     /// record. `cert_request_context` echoes the context from the server's
-    /// request.
+    /// request. `entropy` is fresh connection-RNG output for randomized
+    /// `CertificateVerify` schemes (see [`ClientAuth::sign`]).
     ///
     /// Generic over `A`, so a binary that only ever instantiates
     /// [`NoClientAuth`](crate::client_flight::NoClientAuth) never codegens the
@@ -824,11 +825,16 @@ where
     /// flight (the public-profile
     /// [`DefaultScratch`](crate::client::DefaultScratch) is sized for it).
     /// `Live`-only.
+    // Typestate primitive: callers are the engine + tests, and each argument
+    // is a distinct borrowed resource — a params struct would only rename the
+    // eight-ness.
+    #[allow(clippy::too_many_arguments)]
     pub fn finish_handshake_with_policy<'a, A: ClientAuthPolicy>(
         mut self,
         policy: &A,
         cert_request_context: &[u8],
         cert_request_sig_algs: &[u8],
+        entropy: &[u8; 32],
         peer_record_size_limit: u16,
         flight_scratch: &mut [u8],
         out_buf: &'a mut [u8],
@@ -844,6 +850,7 @@ where
         let plaintext = policy.build_flight::<H>(
             cert_request_context,
             cert_request_sig_algs,
+            entropy,
             &self.state.c_hs_ts,
             &mut self.transcript,
             flight_scratch,

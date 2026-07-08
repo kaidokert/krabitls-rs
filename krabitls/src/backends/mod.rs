@@ -33,6 +33,8 @@ pub(crate) mod tlv;
 pub(crate) mod tlv_cert;
 
 pub use client_auth::Ed25519ClientAuth;
+#[cfg(feature = "rsa")]
+pub use client_auth::RsaClientAuth;
 #[cfg(feature = "cert-der")]
 pub use der_cert::DerCert;
 #[cfg(feature = "jedisct")]
