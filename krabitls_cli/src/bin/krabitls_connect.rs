@@ -157,13 +157,15 @@ fn strip_int_sign(i: &[u8]) -> &[u8] {
     if i.len() > 1 && i[0] == 0 { &i[1..] } else { i }
 }
 
+/// `(n, e, d)` big-endian components of an RSA private key.
+#[cfg(feature = "rsa")]
+type RsaComponents = (Vec<u8>, u32, Zeroizing<Vec<u8>>);
+
 /// Extract `(n, e, d)` from an RSA private key in PKCS#8 (`openssl genpkey`
 /// output) or PKCS#1 DER. Only the fields krabitls needs are read; CRT
 /// parameters are ignored.
 #[cfg(feature = "rsa")]
-fn parse_rsa_private_der(
-    der: &[u8],
-) -> std::result::Result<(Vec<u8>, u32, Zeroizing<Vec<u8>>), String> {
+fn parse_rsa_private_der(der: &[u8]) -> std::result::Result<RsaComponents, String> {
     let mut b = der;
     let (tag, seq) = der_read(&mut b)?;
     if tag != 0x30 {
