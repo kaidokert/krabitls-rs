@@ -245,6 +245,14 @@ pub trait ClientAuthPolicy {
     /// failing mid-handshake. `0` for policies that send no certificate.
     const MAX_FLIGHT_LEN: usize;
 
+    /// Whether the connection must pre-draw signing entropy for this policy
+    /// (see [`ClientAuth::needs_entropy`]). Policies that never sign return
+    /// `false`, so a failed RNG draw can't abort a handshake that would
+    /// never have consumed it.
+    fn needs_signing_entropy(&self) -> bool {
+        Self::ACCEPT_CERT_REQUEST
+    }
+
     /// Build the coalesced client second-flight plaintext (`Certificate [||
     /// CertificateVerify] || Finished`) in response to a `CertificateRequest`,
     /// folding each message into `transcript`. `transcript` is positioned at
@@ -315,6 +323,11 @@ pub struct DeclineClientAuth;
 impl ClientAuthPolicy for DeclineClientAuth {
     const ACCEPT_CERT_REQUEST: bool = true;
     const MAX_FLIGHT_LEN: usize = MAX_CLIENT_EMPTY_AUTH_FLIGHT;
+
+    // An empty Certificate carries no CertificateVerify — nothing to sign.
+    fn needs_signing_entropy(&self) -> bool {
+        false
+    }
     fn build_flight<'a, H: HkdfSha256>(
         &self,
         cert_request_context: &[u8],
@@ -354,6 +367,10 @@ impl<A: ClientAuth + ?Sized> Copy for WithClientAuth<'_, A> {}
 impl<A: ClientAuth + ?Sized> ClientAuthPolicy for WithClientAuth<'_, A> {
     const ACCEPT_CERT_REQUEST: bool = true;
     const MAX_FLIGHT_LEN: usize = MAX_CLIENT_AUTH_FLIGHT;
+
+    fn needs_signing_entropy(&self) -> bool {
+        self.0.needs_entropy()
+    }
 
     fn build_flight<'a, H: HkdfSha256>(
         &self,

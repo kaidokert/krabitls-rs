@@ -58,7 +58,11 @@ impl ClientAuth for Ed25519ClientAuth<'_> {
         SIG_SCHEME_ED25519
     }
 
-    // Ed25519 is deterministic (RFC 8032); the entropy is unused.
+    // Ed25519 is deterministic (RFC 8032) — no draw, no entropy dependence.
+    fn needs_entropy(&self) -> bool {
+        false
+    }
+
     fn sign(
         &self,
         content: &[u8],
@@ -111,6 +115,9 @@ impl<'a> RsaClientAuth<'a> {
             return Err(ClientAuthError);
         }
         let pubkey = public_key_ct_from_be_bytes::<SignBn>(n, e).map_err(|_| ClientAuthError)?;
+        // A `d` under 256 bytes is legitimate (DER strips leading zero bytes
+        // off INTEGERs); `from_be_bytes` zero-extends short slices to the
+        // numerically identical value.
         let d = SignBn::from_be_bytes(d);
         let priv_key = GenericRsaPrivateKey::from_public_and_d(pubkey, d);
         Ok(Self {

@@ -91,9 +91,11 @@ where
 
         // Signing entropy for a randomized client CertificateVerify (RSA-PSS
         // salt), drawn up front because the RNG borrow ends when `connect`
-        // returns. Const-gated so the default no-auth policy draws nothing.
+        // returns. Gated on the signer's declared need so no-auth, decline,
+        // and deterministic-scheme (ed25519) connections draw nothing — a
+        // failed draw can't abort a handshake that would never consume it.
         let mut cv_entropy = [0u8; 32];
-        if A::ACCEPT_CERT_REQUEST {
+        if params.client_auth.needs_signing_entropy() {
             rng.try_fill_bytes(&mut cv_entropy)
                 .map_err(|_| HandshakeError::Rng)?;
         }
