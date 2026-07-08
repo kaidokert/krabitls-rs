@@ -814,7 +814,7 @@ fn fixture_transcript_hash_ch_sh() {
 
 #[test]
 fn fixture_dhe_via_x25519() {
-    type T = fixed_bigint::FixedUInt<u32, 16, const_num_traits::Ct>;
+    type T = crate::bigint::Curve25519CtBn;
     let dhe =
         ed25519_heapless::x25519::<T>(&FIXTURE_CLIENT_X25519_PRIV, &FIXTURE_SERVER_X25519_PUB_2);
     assert_eq!(dhe, FIXTURE_DHE);
@@ -822,7 +822,7 @@ fn fixture_dhe_via_x25519() {
 
 #[test]
 fn fixture_s_hs_traffic_secret_full_chain() {
-    type T = fixed_bigint::FixedUInt<u32, 16, const_num_traits::Ct>;
+    type T = crate::bigint::Curve25519CtBn;
     let dhe =
         ed25519_heapless::x25519::<T>(&FIXTURE_CLIENT_X25519_PRIV, &FIXTURE_SERVER_X25519_PUB_2);
     let hs = handshake_secret::<RustCrypto>(&dhe).unwrap();
@@ -910,7 +910,7 @@ fn jedisct_matches_rustcrypto() {
         assert_eq!(rc, jd, "expand diverged at len={out_len}");
     }
     // Full TLS 1.3 chain through to s_hs_traffic_secret must match.
-    type Bn = fixed_bigint::FixedUInt<u32, 16, const_num_traits::Ct>;
+    type Bn = crate::bigint::Curve25519CtBn;
     let dhe =
         ed25519_heapless::x25519::<Bn>(&FIXTURE_CLIENT_X25519_PRIV, &FIXTURE_SERVER_X25519_PUB_2);
     let rc_hs = handshake_secret::<RustCrypto>(&dhe).unwrap();
@@ -1421,7 +1421,7 @@ mod cipher_aes {
 
         #[test]
         fn fixture_packet_3_decrypts_full_chain() {
-            type Bn = fixed_bigint::FixedUInt<u32, 16, const_num_traits::Ct>;
+            type Bn = crate::bigint::Curve25519CtBn;
             let dhe = ed25519_heapless::x25519::<Bn>(
                 &FIXTURE_CLIENT_X25519_PRIV,
                 &FIXTURE_SERVER_X25519_PUB_2,
@@ -1937,7 +1937,7 @@ mod cipher_aes {
         /// zero-extension semantics the length guard relies on.
         #[test]
         fn rsa_client_auth_short_d_zero_extends() {
-            type SignBn = fixed_bigint::FixedUInt<u32, 64, const_num_traits::Ct>;
+            type SignBn = crate::bigint::RsaSignBn;
             assert_eq!(SignBn::from_be_bytes(&[0x03]), SignBn::from(3u8));
             let mut padded = [0u8; 256];
             padded[255] = 0x03;

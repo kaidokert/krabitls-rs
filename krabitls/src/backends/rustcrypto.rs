@@ -5,6 +5,7 @@ use sha2::Sha256;
 
 use zeroize::Zeroizing;
 
+use crate::bigint::Curve25519VerifyBn as Bn;
 use crate::traits::ed25519_verify::Ed25519VerifierProvider;
 use crate::traits::{HkdfExpandError, HkdfSha256};
 use signature::Verifier;
@@ -30,9 +31,6 @@ impl HkdfSha256 for RustCrypto {
             .map_err(|_| HkdfExpandError::OutputTooLong)
     }
 }
-
-/// Bigint backend the RustCrypto bundle uses for Ed25519 / X25519.
-type Bn = fixed_bigint::FixedUInt<u32, 16>;
 
 /// `Ed25519` verifying key with the curve precompute bundled in. Construct
 /// once per cert via [`RustCrypto::prepare_ed25519`]; subsequent
