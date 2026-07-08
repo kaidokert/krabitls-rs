@@ -121,20 +121,20 @@ fn load_client_auth_rsa(
     key_path: &str,
 ) -> std::result::Result<ClientAuthMaterial, String> {
     let cert_der = load_client_cert(cert_path)?;
-    // Exact-size read into the `Zeroizing` buffer — `fs::read`'s internal
-    // `read_to_end` may realloc (orphaning an unwiped copy of the key) if
-    // the file changes size between the probe and the read.
+    // Exact-size read into a fixed `Zeroizing` buffer (no heap for the key:
+    // `fs::read`'s internal `read_to_end` may also realloc mid-read,
+    // orphaning an unwiped copy, if the file changes size after the probe).
     let err = |e: std::io::Error| format!("--client-rsa-key {key_path:?}: {e}");
     let mut file = std::fs::File::open(key_path).map_err(err)?;
-    let len = file.metadata().map_err(err)?.len();
-    if len == 0 || len > 8192 {
+    let len = file.metadata().map_err(err)?.len() as usize;
+    let mut key_der = Zeroizing::new([0u8; MAX_RSA_KEY_DER]);
+    if len == 0 || len > key_der.len() {
         return Err(format!(
             "--client-rsa-key {key_path:?}: {len} bytes is not a plausible RSA-2048 key DER"
         ));
     }
-    let mut key_der = Zeroizing::new(vec![0u8; len as usize]);
-    IoRead::read_exact(&mut file, &mut key_der).map_err(err)?;
-    let (n, e, d) = parse_rsa_private_der(&key_der)
+    IoRead::read_exact(&mut file, &mut key_der[..len]).map_err(err)?;
+    let (n, e, d) = parse_rsa_private_der(&key_der[..len])
         .map_err(|e| format!("--client-rsa-key {key_path:?}: {e}"))?;
     Ok(ClientAuthMaterial::Rsa { cert_der, n, e, d })
 }
@@ -167,9 +167,15 @@ fn strip_int_sign(i: &[u8]) -> &[u8] {
     if i.len() > 1 && i[0] == 0 { &i[1..] } else { i }
 }
 
-/// `(n, e, d)` big-endian components of an RSA private key.
+/// Upper bound on a PKCS#8/PKCS#1 RSA-2048 key DER (~1.2 KB in practice).
 #[cfg(feature = "rsa")]
-type RsaComponents = (Vec<u8>, u32, Zeroizing<Vec<u8>>);
+const MAX_RSA_KEY_DER: usize = 4096;
+
+/// `(n, e, d)` big-endian components of an RSA private key. `n` is public;
+/// `d` sits in a fixed left-padded `Zeroizing` array so the secret never
+/// needs a heap allocation (keeps zeroize on its no-alloc feature set).
+#[cfg(feature = "rsa")]
+type RsaComponents = (Vec<u8>, u32, Zeroizing<[u8; 256]>);
 
 /// Extract `(n, e, d)` from an RSA private key in PKCS#8 (`openssl genpkey`
 /// output) or PKCS#1 DER. Only the fields krabitls needs are read; CRT
@@ -230,11 +236,13 @@ fn parse_rsa_private_der(der: &[u8]) -> std::result::Result<RsaComponents, Strin
     for &x in e_bytes {
         e = (e << 8) | x as u32;
     }
-    Ok((
-        strip_int_sign(n_int).to_vec(),
-        e,
-        Zeroizing::new(strip_int_sign(d_int).to_vec()),
-    ))
+    let d_bytes = strip_int_sign(d_int);
+    let mut d = Zeroizing::new([0u8; 256]);
+    if d_bytes.is_empty() || d_bytes.len() > d.len() {
+        return Err("private exponent is not a plausible RSA-2048 exponent".into());
+    }
+    d[256 - d_bytes.len()..].copy_from_slice(d_bytes);
+    Ok((strip_int_sign(n_int).to_vec(), e, d))
 }
 
 /// Decode `s` (hex, no `0x`) into `out`, which fixes the expected byte count.
@@ -274,6 +282,9 @@ fn decode_hex(s: &str) -> std::result::Result<Vec<u8>, String> {
 
 /// Client-auth material for mutual TLS: the leaf DER sent in the client
 /// `Certificate` plus the private key that signs `CertificateVerify`.
+// Boxing the 256-byte `d` would put the secret back on the heap — inline is
+// the point (one instance per invocation).
+#[allow(clippy::large_enum_variant)]
 enum ClientAuthMaterial {
     Ed25519 {
         cert_der: Vec<u8>,
@@ -284,7 +295,8 @@ enum ClientAuthMaterial {
         cert_der: Vec<u8>,
         n: Vec<u8>,
         e: u32,
-        d: Zeroizing<Vec<u8>>,
+        /// Left-padded to the full RSA-2048 width.
+        d: Zeroizing<[u8; 256]>,
     },
 }
 
@@ -339,7 +351,7 @@ fn run(
         }
         #[cfg(feature = "rsa")]
         Some(ClientAuthMaterial::Rsa { cert_der, n, e, d }) => {
-            let signer = RsaClientAuth::from_components(n, *e, d, cert_der)
+            let signer = RsaClientAuth::from_components(n, *e, &d[..], cert_der)
                 .map_err(|_| "invalid --client-rsa-key (expected an RSA-2048 key)")?;
             info!(
                 "client auth enabled (RSA-{}, {} byte leaf)",
