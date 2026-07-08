@@ -4,17 +4,17 @@
 use ed25519_heapless::SigningKey;
 
 #[cfg(feature = "rsa")]
-use rsa::GenericRsaPrivateKey;
-#[cfg(feature = "rsa")]
-use rsa::modmath_support::{ModMathParams, public_key_ct_from_be_bytes};
-#[cfg(feature = "rsa")]
-use rsa::pss::GenericSigningKey;
-#[cfg(feature = "rsa")]
-use sha2_v11::{Digest, Sha256};
+use {
+    crate::consts::SIG_SCHEME_RSA_PSS_RSAE_SHA256,
+    rsa::{
+        GenericRsaPrivateKey,
+        modmath_support::{ModMathParams, public_key_ct_from_be_bytes},
+        pss::GenericSigningKey,
+    },
+    sha2_v11::{Digest, Sha256},
+};
 
 use crate::consts::SIG_SCHEME_ED25519;
-#[cfg(feature = "rsa")]
-use crate::consts::SIG_SCHEME_RSA_PSS_RSAE_SHA256;
 use crate::traits::client_auth::{ClientAuth, ClientAuthError, ClientSignature};
 
 /// Bigint backend the signing key runs on. Same 512-bit width as the verify
