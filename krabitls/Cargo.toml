@@ -86,7 +86,7 @@ mlkem = ["dep:krabipqc"]
 [dependencies]
 embedded-io = { version = "0.7.1", default-features = false }
 hmac-sha256 = { version = "1", default-features = false, features = ["traits010"], optional = true }
-rsa_heapless = { version = "0.3", default-features = false, features = ["modmath"], optional = true }
+rsa_heapless = { version = "0.3.0-alpha.2", default-features = false, features = ["modmath"], optional = true }
 sha2_v11 = { package = "sha2", version = "0.11", default-features = false, features = ["oid"], optional = true }
 
 # RustCrypto stable line — all share generic-array 0.14 / crypto-common 0.1.
@@ -100,9 +100,9 @@ sha2 = { version = "0.10", default-features = false, features = ["force-soft-com
 digest = { version = "0.10", default-features = false }
 hmac = { version = "0.12", default-features = false }
 hkdf = { version = "0.12", default-features = false }
-ed25519_heapless = { version = "0.3.0", default-features = false, features = ["fixed-bigint", "sha512-sha2"] }
-fixed-bigint = { version = "0.4", default-features = false, features = ["use-unsafe", "zeroize"] }
-const-num-traits = { version = "0.1", default-features = false, features = ["ct"] }
+ed25519_heapless = { version = "0.4.0-alpha.1", default-features = false, features = ["fixed-bigint", "sha512-sha2"] }
+fixed-bigint = { version = "0.5.0-alpha.3", default-features = false, features = ["use-unsafe", "zeroize"] }
+const-num-traits = { version = "0.2.0-alpha.1", default-features = false, features = ["ct"] }
 der = { version = "0.8.0", default-features = false, features = ["oid"], optional = true }
 zeroize = { version = "1.8", default-features = false, features = ["derive"] }
 heapless = { version = "0.9", default-features = false }
@@ -110,7 +110,7 @@ subtle = { version = "2.6", default-features = false }
 thiserror = { version = "2", default-features = false }
 signature = { version = "3", default-features = false }
 rand_core = { version = "0.10", default-features = false }
-krabipqc = { version = "0.1.2", default-features = false, optional = true }
+krabipqc = { version = "0.1.3-alpha.2", default-features = false, optional = true }
 
 # Deterministic SeededRng + CannedTransport for the host facade replay
 # tests. Dev-only so the seed-mode RNG (a `TryCryptoRng` that is NOT a
@@ -120,3 +120,16 @@ krabipqc = { version = "0.1.2", default-features = false, optional = true }
 # `cipher-aes`.
 [dev-dependencies]
 krabitls_fixtures = { path = "../krabitls_fixtures", default-features = false }
+
+# TEMPORARY (PR #94): coordinated pre-release up-rev to escape the modmath
+# 0.4.2 CtIsZero break — the published ed25519_heapless 0.3.0 / fixed-bigint
+# 0.4.1 don't satisfy modmath 0.4.2's new bound. These alpha tags move the
+# whole bigint stack to the next major together. Drop each entry as its crate
+# gets a real crates.io release.
+[patch.crates-io]
+const-num-traits = { git = "https://github.com/kaidokert/num-traits", tag = "v0.2.0-alpha.1" }
+fixed-bigint = { git = "https://github.com/kaidokert/fixed-bigint-rs", tag = "v0.5.0-alpha.3" }
+modmath = { git = "https://github.com/kaidokert/modmath-rs", tag = "v0.5.0-alpha.3" }
+rsa_heapless = { git = "https://github.com/kaidokert/RSA", tag = "v0.3.0-alpha.2" }
+krabipqc = { git = "https://github.com/kaidokert/krabipqc-rs", tag = "v0.1.3-alpha.2" }
+ed25519_heapless = { git = "https://github.com/kaidokert/ed25519", tag = "v0.4.0-alpha.1" }
