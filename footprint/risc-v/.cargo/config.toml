@@ -7,4 +7,4 @@ target = "riscv32imac-unknown-none-elf"
 runner = "qemu-system-riscv32 -cpu rv32 -machine virt -bios none -nographic -semihosting -kernel"
 # Suppress unwind tables; combined with the `link.x` patch in build.rs that
 # drops `.eh_frame` placement, prevents the rust-lld PCREL32 overflow.
-rustflags = ["-C", "force-unwind-tables=no"]
+rustflags = ["-C", "force-unwind-tables=no", '--cfg', 'sha2_backend_soft="compact"']

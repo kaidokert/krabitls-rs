@@ -33,7 +33,7 @@ use rsa::pkcs1v15::{GenericSignature as Pkcs1Sig, GenericVerifyingKey as Pkcs1Vk
 use rsa::pss::{GenericSignature as PssSig, GenericVerifyingKey as PssVk};
 use rsa::signature::hazmat::PrehashVerifier;
 use rsa::traits::FixedWidthUnsignedInt;
-use sha2_v11::{Digest, Sha256};
+use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
 /// Verification failure (kept opaque on purpose — surfaces as

@@ -11,7 +11,7 @@ use {
         modmath_support::{ModMathParams, public_key_ct_from_be_bytes},
         pss::GenericSigningKey,
     },
-    sha2_v11::{Digest, Sha256},
+    sha2::{Digest, Sha256},
 };
 
 use crate::bigint::Curve25519CtBn as Bn;
