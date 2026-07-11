@@ -23,6 +23,6 @@ chacha20 = ["krabitls/chacha20"]
 
 [dependencies]
 krabitls = { path = "../krabitls", default-features = false }
-sha2 = { version = "0.10", default-features = false }
+sha2 = { version = "0.11", default-features = false }
 rand_core = { version = "0.10", default-features = false }
 zeroize = { version = "1.8", default-features = false }

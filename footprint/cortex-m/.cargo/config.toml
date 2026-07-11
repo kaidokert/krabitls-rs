@@ -3,6 +3,9 @@ runner = "qemu-system-arm -cpu cortex-m0 -machine microbit -nographic -semihosti
 
 [target.thumbv7m-none-eabi]
 runner = "qemu-system-arm -cpu cortex-m3 -machine mps2-an385 -nographic -semihosting-config enable=on,target=native -kernel"
+# sha2 0.11 gates its compact soft SHA-256/512 core behind this cfg (was the
+# `force-soft-compact` feature pre-0.11); without it the M3 build gains ~6.5 KiB.
+rustflags = ['--cfg', 'sha2_backend_soft="compact"']
 
 [target.thumbv7em-none-eabi]
 runner = "qemu-system-arm -cpu cortex-m4 -machine netduinoplus2 -nographic -semihosting-config enable=on,target=native -kernel"

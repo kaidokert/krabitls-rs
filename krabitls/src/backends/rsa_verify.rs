@@ -32,7 +32,8 @@ use rsa::modmath_support::{ModMathParams, ModMathValue, public_key_from_be_bytes
 use rsa::pkcs1v15::{GenericSignature as Pkcs1Sig, GenericVerifyingKey as Pkcs1Vk};
 use rsa::pss::{GenericSignature as PssSig, GenericVerifyingKey as PssVk};
 use rsa::signature::hazmat::PrehashVerifier;
-use sha2_v11::{Digest, Sha256};
+use rsa::traits::FixedWidthUnsignedInt;
+use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
 /// Verification failure (kept opaque on purpose — surfaces as
@@ -120,7 +121,9 @@ macro_rules! verify_scheme {
                     if signature.len() != 128 {
                         return Err(RsaVerifyError);
                     }
-                    let sig = $sig::from(U1024::from_be_bytes(signature));
+                    let val = <U1024 as FixedWidthUnsignedInt>::try_from_be_bytes_vartime(signature)
+                        .map_err(|_| RsaVerifyError)?;
+                    let sig = $sig::from(val);
                     vk.$field
                         .verify_prehash(&prehash, &sig)
                         .map_err(|_| RsaVerifyError)
@@ -129,7 +132,9 @@ macro_rules! verify_scheme {
                     if signature.len() != 256 {
                         return Err(RsaVerifyError);
                     }
-                    let sig = $sig::from(U2048::from_be_bytes(signature));
+                    let val = <U2048 as FixedWidthUnsignedInt>::try_from_be_bytes_vartime(signature)
+                        .map_err(|_| RsaVerifyError)?;
+                    let sig = $sig::from(val);
                     vk.$field
                         .verify_prehash(&prehash, &sig)
                         .map_err(|_| RsaVerifyError)

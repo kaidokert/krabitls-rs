@@ -1,8 +1,8 @@
 //! TLS 1.3 record-layer encrypt / decrypt.
 
 use crate::newtype::{AeadIv, ZeroBuf};
-use ::aead::generic_array::GenericArray;
-use ::aead::{AeadCore, AeadInPlace, KeyInit};
+use ::aead::array::Array;
+use ::aead::{AeadCore, AeadInOut, KeyInit};
 use subtle::{ConditionallySelectable, ConstantTimeEq};
 use zeroize::Zeroize;
 
@@ -184,7 +184,7 @@ mod sealed {
 /// TLS 1.3 cipher suite marker. Sealed.
 pub trait CipherSuite: sealed::Sealed + Sized {
     type KeyBytes: zeroize::Zeroize;
-    type Cipher: AeadInPlace
+    type Cipher: AeadInOut
         + KeyInit
         + AeadCore<NonceSize = ::aead::consts::U12, TagSize = ::aead::consts::U16>;
     fn make_cipher(key: &zeroize::Zeroizing<Self::KeyBytes>) -> Self::Cipher;
@@ -204,7 +204,7 @@ mod aes {
         type KeyBytes = [u8; 16];
         type Cipher = aes_gcm::Aes128Gcm;
         fn make_cipher(key: &zeroize::Zeroizing<[u8; 16]>) -> Self::Cipher {
-            aes_gcm::Aes128Gcm::new(&GenericArray::from(**key))
+            aes_gcm::Aes128Gcm::new(&Array::from(**key))
         }
         fn derive_keys<H: crate::traits::HkdfSha256>(
             traffic_secret: &crate::newtype::Secret,
@@ -231,7 +231,7 @@ mod chacha {
         type KeyBytes = [u8; 32];
         type Cipher = chacha20poly1305::ChaCha20Poly1305;
         fn make_cipher(key: &zeroize::Zeroizing<[u8; 32]>) -> Self::Cipher {
-            chacha20poly1305::ChaCha20Poly1305::new(&GenericArray::from(**key))
+            chacha20poly1305::ChaCha20Poly1305::new(&Array::from(**key))
         }
         fn derive_keys<H: crate::traits::HkdfSha256>(
             traffic_secret: &crate::newtype::Secret,
@@ -295,10 +295,10 @@ fn run_decrypt<S: CipherSuite>(
     buffer: &mut [u8],
     tag: &[u8; 16],
 ) -> Result<(), crate::traits::AeadError> {
-    let nonce_arr = GenericArray::from(**nonce);
-    let tag_arr = GenericArray::from(*tag);
+    let nonce_arr = Array::from(**nonce);
+    let tag_arr = Array::from(*tag);
     cipher
-        .decrypt_in_place_detached(&nonce_arr, aad, buffer, &tag_arr)
+        .decrypt_inout_detached(&nonce_arr, aad, buffer.into(), &tag_arr)
         .map_err(|_| crate::traits::AeadError)
 }
 
@@ -308,9 +308,9 @@ fn run_encrypt<S: CipherSuite>(
     aad: &[u8],
     buffer: &mut [u8],
 ) -> Result<[u8; 16], crate::traits::AeadError> {
-    let nonce_arr = GenericArray::from(**nonce);
+    let nonce_arr = Array::from(**nonce);
     let tag = cipher
-        .encrypt_in_place_detached(&nonce_arr, aad, buffer)
+        .encrypt_inout_detached(&nonce_arr, aad, buffer.into())
         .map_err(|_| crate::traits::AeadError)?;
     Ok(tag.into())
 }
@@ -385,8 +385,9 @@ pub(crate) mod tests {
 
     mod no_cipher {
         use super::*;
-        use ::aead::consts::{U0, U12, U16};
-        use ::aead::{Error as AeadError, Key, KeySizeUser, Nonce, Tag};
+        use ::aead::consts::{U12, U16};
+        use ::aead::inout::InOutBuf;
+        use ::aead::{Error as AeadError, Key, KeySizeUser, Nonce, Tag, TagPosition};
 
         /// No-op AEAD: implements the AEAD trait surface required by
         /// [`CipherSuite::Cipher`] but does no actual cryptography.
@@ -405,24 +406,24 @@ pub(crate) mod tests {
         impl AeadCore for NoopAead {
             type NonceSize = U12;
             type TagSize = U16;
-            type CiphertextOverhead = U0;
+            const TAG_POSITION: TagPosition = TagPosition::Postfix;
         }
 
-        impl AeadInPlace for NoopAead {
-            fn encrypt_in_place_detached(
+        impl AeadInOut for NoopAead {
+            fn encrypt_inout_detached(
                 &self,
                 _: &Nonce<Self>,
                 _: &[u8],
-                _: &mut [u8],
+                _: InOutBuf<'_, '_, u8>,
             ) -> Result<Tag<Self>, AeadError> {
-                Ok(GenericArray::default())
+                Ok(Array::default())
             }
 
-            fn decrypt_in_place_detached(
+            fn decrypt_inout_detached(
                 &self,
                 _: &Nonce<Self>,
                 _: &[u8],
-                _: &mut [u8],
+                _: InOutBuf<'_, '_, u8>,
                 _: &Tag<Self>,
             ) -> Result<(), AeadError> {
                 Ok(())
