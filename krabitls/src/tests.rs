@@ -1947,6 +1947,21 @@ mod cipher_aes {
             padded[255] = 0x03;
             assert_eq!(dec(&padded), dec(&[0x03]));
         }
+
+        /// A `d` wider than the 256-byte carrier is rejected — pins the
+        /// over-long error the signing decode relies on (the length guard in
+        /// `from_components` leans on it).
+        #[test]
+        fn rsa_client_auth_oversized_d_fails() {
+            type SignBn = crate::bigint::RsaSignBn;
+            let oversized = [0xffu8; 257];
+            assert!(
+                <SignBn as rsa::traits::FixedWidthUnsignedInt>::try_from_be_bytes_vartime(
+                    &oversized
+                )
+                .is_err()
+            );
+        }
     }
 }
 
