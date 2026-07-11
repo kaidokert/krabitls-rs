@@ -10,6 +10,7 @@ use {
         GenericRsaPrivateKey,
         modmath_support::{ModMathParams, public_key_ct_from_be_bytes},
         pss::GenericSigningKey,
+        traits::FixedWidthUnsignedInt,
     },
     sha2::{Digest, Sha256},
 };
@@ -107,9 +108,9 @@ impl<'a> RsaClientAuth<'a> {
         }
         let pubkey = public_key_ct_from_be_bytes::<SignBn>(n, e).map_err(|_| ClientAuthError)?;
         // A `d` under 256 bytes is legitimate (DER strips leading zero bytes
-        // off INTEGERs); `from_be_bytes` zero-extends short slices to the
-        // numerically identical value.
-        let d = SignBn::from_be_bytes(d);
+        // off INTEGERs); `try_from_be_bytes_vartime` zero-extends short slices.
+        let d = <SignBn as FixedWidthUnsignedInt>::try_from_be_bytes_vartime(d)
+            .map_err(|_| ClientAuthError)?;
         let priv_key = GenericRsaPrivateKey::from_public_and_d(pubkey, d);
         Ok(Self {
             // TLS 1.3 §4.2.3: rsa_pss_rsae_sha256 requires saltLen == hashLen.
