@@ -1933,17 +1933,33 @@ mod cipher_aes {
         }
 
         /// `from_components` accepts `d` shorter than 256 bytes (DER strips
-        /// leading zero bytes off INTEGERs) — pins the `from_be_bytes`
+        /// leading zero bytes off INTEGERs) — pins the `try_from_be_bytes_vartime`
         /// zero-extension semantics the length guard relies on.
         #[test]
         fn rsa_client_auth_short_d_zero_extends() {
             type SignBn = crate::bigint::RsaSignBn;
-            assert_eq!(SignBn::from_be_bytes(&[0x03]), SignBn::from(3u8));
+            let dec = |b: &[u8]| {
+                <SignBn as rsa::traits::FixedWidthUnsignedInt>::try_from_be_bytes_vartime(b)
+                    .unwrap()
+            };
+            assert_eq!(dec(&[0x03]), SignBn::from(3u8));
             let mut padded = [0u8; 256];
             padded[255] = 0x03;
-            assert_eq!(
-                SignBn::from_be_bytes(&padded),
-                SignBn::from_be_bytes(&[0x03])
+            assert_eq!(dec(&padded), dec(&[0x03]));
+        }
+
+        /// A `d` wider than the 256-byte carrier is rejected — pins the
+        /// over-long error the signing decode relies on (the length guard in
+        /// `from_components` leans on it).
+        #[test]
+        fn rsa_client_auth_oversized_d_fails() {
+            type SignBn = crate::bigint::RsaSignBn;
+            let oversized = [0xffu8; 257];
+            assert!(
+                <SignBn as rsa::traits::FixedWidthUnsignedInt>::try_from_be_bytes_vartime(
+                    &oversized
+                )
+                .is_err()
             );
         }
     }
