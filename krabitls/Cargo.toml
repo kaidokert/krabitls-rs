@@ -83,11 +83,11 @@ mldsa = ["dep:krabipqc"]
 # verification/handshake wiring is built on top in later steps.
 mlkem = ["dep:krabipqc"]
 # Optional ECDSA (P-256 + P-384) signature-verification backend, gated like
-# `rsa`/`mldsa`. Pulls in krabiecdsa (no_std, no-alloc, verify-only) and turns
-# on fixed-bigint's `cios` feature, which its `UnsignedModularInt` bound needs
-# (modmath CIOS Montgomery mul). Covers `ecdsa_secp256r1_sha256` +
-# `ecdsa_secp384r1_sha384`.
-ecdsa = ["dep:krabiecdsa", "fixed-bigint/cios"]
+# `rsa`/`mldsa`. Pulls in krabiecdsa (no_std, no-alloc, verify-only). EXPERIMENT:
+# the `UnsignedModularInt`/CIOS Montgomery mul comes from the crypto-bigint fork
+# (cios baked in), so no `fixed-bigint/cios` here. Covers
+# `ecdsa_secp256r1_sha256` + `ecdsa_secp384r1_sha384`.
+ecdsa = ["dep:krabiecdsa"]
 
 [dependencies]
 embedded-io = { version = "0.7.1", default-features = false }
@@ -108,8 +108,13 @@ sha2 = { version = "0.11", default-features = false }
 digest = { version = "0.11", default-features = false }
 hmac = { version = "0.13", default-features = false }
 hkdf = { version = "0.13", default-features = false }
-ed25519_heapless = { version = "0.4", default-features = false, features = ["fixed-bigint", "sha512-sha2"] }
-fixed-bigint = { version = "0.5", default-features = false, features = ["use-unsafe", "zeroize"] }
+ed25519_heapless = { version = "0.4", default-features = false, features = ["sha512-sha2"] }
+# EXPERIMENT (branch experiment/bigint-crypto-bigint-const5): swap the
+# fixed-bigint carriers in crate::bigint for crypto-bigint (u64-limb). The
+# `Ct<U>` wrapper projects `HasPersonality<P = Ct>` so the signing carriers
+# resolve; its limb ops still delegate to crypto-bigint's vartime code, so this
+# is a footprint experiment, not a constant-time backend — never for merge.
+crypto-bigint = { git = "https://github.com/kaidokert/crypto-bigint", tag = "v0.7.5-const-12", default-features = false, features = ["zeroize", "subtle"] }
 const-num-traits = { version = "0.2", default-features = false, features = ["ct"] }
 der = { version = "0.8.0", default-features = false, features = ["oid"], optional = true }
 zeroize = { version = "1.8", default-features = false, features = ["derive"] }
