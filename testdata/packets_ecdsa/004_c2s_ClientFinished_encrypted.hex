@@ -1,0 +1,4 @@
+# krabitls seed-0 AES-128-GCM + ECDSA-P256 server-cert client Finished (58 bytes),
+# captured from a local fixed-reply TLS echo server. Regenerate with the
+# `#[ignore]`d `capture_ecdsa_fixtures` test; do not hand-edit.
+1703030035179babde62ed40614cf01fad28ae18307438d9a7bd7fdc046a434756e0917008f99dcdc3a6802ac278db7d40e8fb9c140e155a02c9

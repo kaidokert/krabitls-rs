@@ -680,4 +680,61 @@ mod tests {
             Ok(_) => panic!("strategy should reject 2-cert chain"),
         }
     }
+
+    #[cfg(all(feature = "ecdsa", feature = "cert-der"))]
+    mod ecdsa_links {
+        use super::super::verify_link;
+        use crate::backends::{DerCert, RustCrypto};
+        use crate::traits::CertParser;
+
+        const P384_SELF_SIGNED: [u8; 494] = crate::hex_decode(include_str!(
+            "../../../testdata/certs_ecdsa/p384_self_signed.hex"
+        ));
+
+        #[test]
+        fn p384_self_signature_links() {
+            // A self-signed cert is its own issuer; exercises the EcdsaP384
+            // SPKI parse + the conventional P-384 ↔ SHA-384 outer-sig pairing.
+            let leaf = DerCert::parse(&P384_SELF_SIGNED).expect("parse P-384 self-signed leaf");
+            assert!(verify_link::<RustCrypto, RustCrypto>(&leaf, &leaf).is_ok());
+        }
+
+        // An ECDSA leaf whose outer signature is RSA (real chains put ECDSA
+        // leaves under RSA intermediates) must link via the issuer's RSA key
+        // and the leaf's carried `outer_sig_alg`, not its ECDSA SPKI kind. The
+        // fixture leaf is `sha256WithRSAEncryption`-signed (PKCS#1-v1.5), which
+        // the `rsa_pss_only` build intentionally drops.
+        #[cfg(all(feature = "rsa", not(feature = "rsa_pss_only")))]
+        mod under_rsa_issuer {
+            use super::*;
+
+            const LEAF_ECDSA_RSA_SIGNED: [u8; 617] = crate::hex_decode(include_str!(
+                "../../../testdata/certs_ecdsa/leaf256_ecdsa_rsa_signed.hex"
+            ));
+            const RSA_CA: [u8; 795] =
+                crate::hex_decode(include_str!("../../../testdata/certs_ecdsa/rsa_ca.hex"));
+
+            #[test]
+            fn ecdsa_leaf_under_rsa_issuer_links() {
+                let leaf =
+                    DerCert::parse(&LEAF_ECDSA_RSA_SIGNED).expect("parse RSA-signed ECDSA leaf");
+                let ca = DerCert::parse(&RSA_CA).expect("parse RSA CA");
+                assert!(verify_link::<RustCrypto, RustCrypto>(&leaf, &ca).is_ok());
+            }
+
+            #[test]
+            fn tampered_ecdsa_leaf_under_rsa_issuer_fails() {
+                let ca = DerCert::parse(&RSA_CA).expect("parse RSA CA");
+                let mut der = LEAF_ECDSA_RSA_SIGNED;
+                der[30] ^= 0x01;
+                // The mutated TBS must be rejected whether it fails to parse or
+                // parses but the RSA issuer signature no longer covers it — a
+                // silent parse failure must not vacuously pass the test.
+                let verified = DerCert::parse(&der).map_err(|_| ()).and_then(|leaf| {
+                    verify_link::<RustCrypto, RustCrypto>(&leaf, &ca).map_err(|_| ())
+                });
+                assert!(verified.is_err());
+            }
+        }
+    }
 }

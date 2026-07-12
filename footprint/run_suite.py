@@ -25,6 +25,7 @@ ROWS = [
     ("ChaCha20-Poly1305", "Ed25519",      "krabitls_chacha", True, ["chacha20", "canned-replay"]),
     ("AES-128-GCM",       "Ed25519",      "krabitls",        True, ["cipher-aes", "canned-replay"]),
     ("AES-128-GCM",       "RSA-2048-PSS", "krabitls_rsa",    True, ["cipher-aes", "rsa", "canned-replay"]),
+    ("AES-128-GCM",       "ECDSA-P256",   "krabitls_ecdsa",  True, ["cipher-aes", "ecdsa", "canned-replay"]),
     ("AES-128-GCM",       "X25519MLKEM768",   "krabitls_mlkem",       True, ["cipher-aes", "mlkem", "canned-replay"]),
     ("AES-128-GCM",       "ML-DSA-44",        "krabitls_mldsa",       True, ["cipher-aes", "mldsa", "canned-replay"]),
     ("AES-128-GCM",       "MLKEM768+MLDSA44", "krabitls_mlkem_mldsa", True, ["cipher-aes", "mlkem", "mldsa", "canned-replay"]),

@@ -30,6 +30,7 @@ rsa = ["footprint_handshakes/rsa"]
 # (`mldsa`). For `.text` the reachable PQC code links via `connect()`.
 mlkem = ["footprint_handshakes/mlkem"]
 mldsa = ["footprint_handshakes/mldsa"]
+ecdsa = ["footprint_handshakes/ecdsa"]
 # `krabitls_chacha` example: same Ed25519 fixture as `krabitls` but with the
 # AEAD swapped to ChaCha20-Poly1305.
 chacha20 = ["footprint_handshakes/chacha20"]
@@ -67,6 +68,10 @@ required-features = ["mlkem", "canned-replay"]
 [[example]]
 name = "krabitls_mldsa"
 required-features = ["mldsa", "canned-replay"]
+
+[[example]]
+name = "krabitls_ecdsa"
+required-features = ["ecdsa", "canned-replay"]
 
 [[example]]
 name = "krabitls_mlkem_mldsa"

@@ -66,6 +66,7 @@ macro_rules! concat_sh_sf {
     not(feature = "rsa"),
     not(feature = "mlkem"),
     not(feature = "mldsa"),
+    not(feature = "ecdsa"),
 ))]
 mod fixture_aes_ed25519_facade {
     pub const CLIENT_HELLO: [u8; 149] = krabitls::hex_decode(include_str!(
@@ -79,6 +80,32 @@ mod fixture_aes_ed25519_facade {
     ));
     pub const CLIENT_FINISHED: [u8; 58] = krabitls::hex_decode(include_str!(
         "../../../testdata/packets/004_c2s_ClientFinished_encrypted.hex"
+    ));
+    pub const SERVER_STREAM: [u8; SERVER_HELLO.len() + SERVER_FLIGHT.len()] =
+        concat_sh_sf!(SERVER_HELLO.len(), SERVER_FLIGHT.len());
+}
+
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "cipher-aes",
+    feature = "ecdsa",
+    not(feature = "chacha20"),
+    not(feature = "rsa"),
+    not(feature = "mlkem"),
+    not(feature = "mldsa"),
+))]
+mod fixture_aes_ecdsa_facade {
+    pub const CLIENT_HELLO: [u8; 153] = krabitls::hex_decode(include_str!(
+        "../../../testdata/packets_ecdsa/001_c2s_ClientHello.hex"
+    ));
+    pub const SERVER_HELLO: [u8; 95] = krabitls::hex_decode(include_str!(
+        "../../../testdata/packets_ecdsa/002_s2c_ServerHello.hex"
+    ));
+    pub const SERVER_FLIGHT: [u8; 678] = krabitls::hex_decode(include_str!(
+        "../../../testdata/packets_ecdsa/003_s2c_ServerFlight_encrypted.hex"
+    ));
+    pub const CLIENT_FINISHED: [u8; 58] = krabitls::hex_decode(include_str!(
+        "../../../testdata/packets_ecdsa/004_c2s_ClientFinished_encrypted.hex"
     ));
     pub const SERVER_STREAM: [u8; SERVER_HELLO.len() + SERVER_FLIGHT.len()] =
         concat_sh_sf!(SERVER_HELLO.len(), SERVER_FLIGHT.len());
@@ -272,10 +299,21 @@ use krabitls::client::RuntimeSuitePolicy;
 #[cfg(all(
     feature = "canned-replay",
     feature = "cipher-aes",
+    feature = "ecdsa",
     not(feature = "chacha20"),
     not(feature = "rsa"),
     not(feature = "mlkem"),
     not(feature = "mldsa"),
+))]
+use fixture_aes_ecdsa_facade::*;
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "cipher-aes",
+    not(feature = "chacha20"),
+    not(feature = "rsa"),
+    not(feature = "mlkem"),
+    not(feature = "mldsa"),
+    not(feature = "ecdsa"),
 ))]
 use fixture_aes_ed25519_facade::*;
 #[cfg(all(
@@ -729,6 +767,39 @@ pub fn baseline_mlkem_ed25519_facade() -> bool {
 /// AES-128-GCM + ML-DSA-44 server-cert facade variant.
 ///
 /// Same facade path as `run_aes_ed25519_facade`, but the server flight carries
+/// a self-signed P-256 certificate + ECDSA-P256 CertificateVerify, so
+/// `connect()` links the ECDSA verify path.
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "cipher-aes",
+    feature = "ecdsa",
+    not(feature = "chacha20"),
+    not(feature = "rsa"),
+    not(feature = "mlkem"),
+    not(feature = "mldsa"),
+))]
+pub fn run_aes_ecdsa_facade() -> Result<(), ()> {
+    facade_scratch::with(|scratch| {
+        let mut rng = SeededRng::new(0);
+        let transport = CannedTransport::<2048>::new(&SERVER_STREAM);
+        let params = ClientParams::self_signed("tls-fixture.local")
+            .suite_policy(RuntimeSuitePolicy::Default);
+
+        let tls = DefaultStream::connect(&params, scratch, transport, &mut rng).map_err(|_| ())?;
+
+        let captured = tls.transport().captured_tx();
+        let expected_len = CLIENT_HELLO.len() + CLIENT_FINISHED.len();
+        if captured.len() != expected_len
+            || captured[..CLIENT_HELLO.len()] != CLIENT_HELLO[..]
+            || captured[CLIENT_HELLO.len()..] != CLIENT_FINISHED[..]
+        {
+            return Err(());
+        }
+        Ok(())
+    })
+}
+
+/// Same facade path as `run_aes_ed25519_facade`, but the server flight carries
 /// an ML-DSA-44 certificate + CertificateVerify, so `connect()` links the
 /// ML-DSA verify path.
 #[cfg(all(
@@ -758,6 +829,24 @@ pub fn run_mldsa_facade() -> Result<(), ()> {
         }
         Ok(())
     })
+}
+
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "cipher-aes",
+    feature = "ecdsa",
+    not(feature = "chacha20"),
+    not(feature = "rsa"),
+    not(feature = "mlkem"),
+    not(feature = "mldsa"),
+))]
+#[inline(never)]
+pub fn baseline_aes_ecdsa_facade() -> bool {
+    black_box(&CLIENT_HELLO);
+    black_box(&SERVER_HELLO);
+    black_box(&SERVER_FLIGHT);
+    black_box(&CLIENT_FINISHED);
+    true
 }
 
 #[cfg(all(

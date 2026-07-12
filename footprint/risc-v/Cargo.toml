@@ -15,6 +15,7 @@ jedisct = ["footprint_handshakes/jedisct"]
 rsa = ["footprint_handshakes/rsa"]
 mlkem = ["footprint_handshakes/mlkem"]
 mldsa = ["footprint_handshakes/mldsa"]
+ecdsa = ["footprint_handshakes/ecdsa"]
 chacha20 = ["footprint_handshakes/chacha20"]
 cert-der = ["footprint_handshakes/cert-der"]
 cipher-aes = ["footprint_handshakes/cipher-aes"]
@@ -43,6 +44,10 @@ required-features = ["mlkem", "canned-replay"]
 [[example]]
 name = "krabitls_mldsa"
 required-features = ["mldsa", "canned-replay"]
+
+[[example]]
+name = "krabitls_ecdsa"
+required-features = ["ecdsa", "canned-replay"]
 
 [[example]]
 name = "krabitls_mlkem_mldsa"
