@@ -114,6 +114,8 @@ jobs:
 
     - name: Test (default features)
       run: cargo test --manifest-path=krabitls/Cargo.toml --verbose
+    - name: Test (krabitls_fixtures seed KATs)
+      run: cargo test --manifest-path=krabitls_fixtures/Cargo.toml --verbose
     - name: Test (feature = rsa)
       run: cargo test --manifest-path=krabitls/Cargo.toml --features rsa --verbose
     - name: Test (no-default, TLV cert parser)

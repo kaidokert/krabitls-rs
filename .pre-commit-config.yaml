@@ -33,21 +33,24 @@ repos:
         name: Fmt for footprint risc-v
         args: ['--manifest-path=footprint/risc-v/Cargo.toml', '--']
 
-# Local hooks: a fast core only — `git commit` should finish in seconds, not
-# minutes. Only lib/bin clippy on default features runs here; anything that
-# compiles or runs the integration tests (the canned-handshake replays) is too
-# slow for every commit and belongs to CI, which already owns it: default +
-# feature-combo tests and `--all-targets` clippy in `host` (rust.yml), the
-# `cargo hack` feature-powerset there too, the cross-compiled size builds in
-# `footprint.yml`, and nightly/coverage in their own workflows.
+# Local hooks: fmt + clippy only. clippy is a type-check (no test run), so it
+# stays fast and catches the embarrassing stuff on commit. The two `cargo test`
+# hooks were removed — compiling AND running the canned-handshake integration
+# binaries cost minutes per commit. Tests run in CI: krabitls default +
+# feature-matrix in `host` (rust.yml), krabitls_fixtures seed KATs there too,
+# the `cargo hack` feature-powerset in `host`, cross-compiled size builds in
+# `footprint.yml`, nightly/coverage in their own workflows.
 -   repo: local
     hooks:
     -   id: krabitls-clippy-default
-        name: clippy krabitls (default, lib+bin)
-        # No --tests/--all-targets: linting the integration-test binaries pulls
-        # in the canned-handshake fixtures and dominates commit latency. CI runs
-        # the full --all-targets sweep across the feature matrix.
-        entry: cargo clippy --manifest-path=krabitls/Cargo.toml -- -D warnings
+        name: clippy krabitls (default)
+        entry: cargo clippy --manifest-path=krabitls/Cargo.toml --tests --all-targets -- -D warnings
         language: system
         pass_filenames: false
         files: ^krabitls/.*\.(rs|toml)$
+    -   id: krabitls-fixtures-clippy
+        name: clippy krabitls_fixtures
+        entry: cargo clippy --manifest-path=krabitls_fixtures/Cargo.toml --all-targets -- -D warnings
+        language: system
+        pass_filenames: false
+        files: ^(krabitls_fixtures|krabitls)/.*\.(rs|toml)$
