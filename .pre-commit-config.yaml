@@ -33,12 +33,13 @@ repos:
         name: Fmt for footprint risc-v
         args: ['--manifest-path=footprint/risc-v/Cargo.toml', '--']
 
-# Local hooks: a fast core only. `git commit` should catch the embarrassing
-# stuff in seconds; CI owns the exhaustive matrix. The feature-combo clippy/
-# build/test sweeps live in `host` (rust.yml), the cross-compiled size builds
-# in `footprint.yml`, the `cargo hack` feature-powerset in `host`, and the
-# nightly/coverage combos in their own workflows — none of that needs to run
-# on every local commit.
+# Local hooks: fmt + clippy + the unit-test suite. `--lib` runs the ~220 lib
+# unit tests (fast, one binary) but skips the `tests/*.rs` integration binaries
+# — the canned-handshake replays each compile+link+run separately and, with the
+# doctests, are what made a commit take minutes. Those run in CI: the full
+# `cargo test` (integration binaries + doctests) and feature-matrix in `host`
+# (rust.yml), krabitls_fixtures seed KATs there too, the `cargo hack`
+# feature-powerset in `host`, cross-compiled size builds in `footprint.yml`.
 -   repo: local
     hooks:
     -   id: krabitls-clippy-default
@@ -47,25 +48,15 @@ repos:
         language: system
         pass_filenames: false
         files: ^krabitls/.*\.(rs|toml)$
-    # Default features (cert-der + cipher-aes, no chacha) — this run also
-    # exercises the AES seed-0 canned-replay integration test. Other feature
-    # combos run in CI.
-    -   id: krabitls-test
-        name: test krabitls (default)
-        entry: cargo test --manifest-path=krabitls/Cargo.toml
+    -   id: krabitls-test-lib
+        name: test krabitls (unit / --lib)
+        entry: cargo test --manifest-path=krabitls/Cargo.toml --lib
         language: system
         pass_filenames: false
-        files: ^(krabitls|krabitls_fixtures|testdata)/.*\.(rs|toml|hex|md)$
-
+        files: ^(krabitls|krabitls_fixtures)/.*\.(rs|toml)$
     -   id: krabitls-fixtures-clippy
         name: clippy krabitls_fixtures
         entry: cargo clippy --manifest-path=krabitls_fixtures/Cargo.toml --all-targets -- -D warnings
-        language: system
-        pass_filenames: false
-        files: ^(krabitls_fixtures|krabitls)/.*\.(rs|toml)$
-    -   id: krabitls-fixtures-test
-        name: test krabitls_fixtures (seed KATs)
-        entry: cargo test --manifest-path=krabitls_fixtures/Cargo.toml
         language: system
         pass_filenames: false
         files: ^(krabitls_fixtures|krabitls)/.*\.(rs|toml)$
