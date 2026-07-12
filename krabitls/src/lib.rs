@@ -159,6 +159,12 @@ pub(crate) mod consts {
     /// branch; only advertised when the feature is on.
     pub const NAMED_GROUP_X25519MLKEM768: u16 = 0x11EC;
     pub const SIG_SCHEME_ED25519: u16 = 0x0807;
+    /// `ecdsa_secp256r1_sha256` / `ecdsa_secp384r1_sha384` — ECDSA over the
+    /// CertificateVerify content, the signature carried as a DER `ECDSA-Sig-Value`.
+    /// RFC 8446 §4.2.3. Unconditional so the ClientHello writer can name them from
+    /// a `cfg!(feature = "ecdsa")`-false branch; emission and verification are gated.
+    pub const SIG_SCHEME_ECDSA_P256: u16 = 0x0403;
+    pub const SIG_SCHEME_ECDSA_P384: u16 = 0x0503;
     /// `rsa_pss_rsae_sha256` — RSASSA-PSS with the leaf's RSAE key encoding,
     /// MGF1-SHA-256, salt_len = hash output (32 B). RFC 8446 §4.2.3.
     // Unconditional so it can be named from `cfg!(feature = "rsa")`-false
@@ -206,7 +212,10 @@ const EXT_SUPPORTED_GROUPS_TOTAL: u16 = 4 + 4;
 // Schemes advertised in signature_algorithms: ed25519 always, rsa_pss when
 // `rsa` is on, the three ML-DSA schemes when `mldsa` is on. Single source for
 // both the ext sizing and the writer below.
-const SIG_SCHEME_COUNT: u16 = 1 + cfg!(feature = "rsa") as u16 + 3 * cfg!(feature = "mldsa") as u16;
+const SIG_SCHEME_COUNT: u16 = 1
+    + cfg!(feature = "rsa") as u16
+    + 3 * cfg!(feature = "mldsa") as u16
+    + 2 * cfg!(feature = "ecdsa") as u16;
 // 4-byte ext header + 2-byte list-len + 2 bytes per scheme.
 const EXT_SIGNATURE_ALGORITHMS_TOTAL: u16 = 4 + 2 + 2 * SIG_SCHEME_COUNT;
 // The single named group we advertise in supported_groups + key_share:
@@ -515,6 +524,10 @@ pub(crate) fn write_client_hello_with<W: Write>(
     out.write_u16(2 + 2 * SIG_SCHEME_COUNT)?; // ext_data: list_len field (2) + schemes
     out.write_u16(2 * SIG_SCHEME_COUNT)?; // supported_signature_algorithms list_len
     out.write_u16(SIG_SCHEME_ED25519)?;
+    if cfg!(feature = "ecdsa") {
+        out.write_u16(SIG_SCHEME_ECDSA_P256)?;
+        out.write_u16(SIG_SCHEME_ECDSA_P384)?;
+    }
     if cfg!(feature = "rsa") {
         out.write_u16(SIG_SCHEME_RSA_PSS_RSAE_SHA256)?;
     }

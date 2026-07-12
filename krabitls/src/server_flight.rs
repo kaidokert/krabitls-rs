@@ -11,6 +11,8 @@ use crate::consts::{
     EXT_SIGNATURE_ALGORITHMS, HS_CERTIFICATE, HS_CERTIFICATE_REQUEST, HS_CERTIFICATE_VERIFY,
     HS_ENCRYPTED_EXTENSIONS, HS_FINISHED,
 };
+#[cfg(feature = "ecdsa")]
+use crate::consts::{SIG_SCHEME_ECDSA_P256, SIG_SCHEME_ECDSA_P384};
 #[cfg(feature = "mldsa")]
 use crate::consts::{SIG_SCHEME_MLDSA44, SIG_SCHEME_MLDSA65, SIG_SCHEME_MLDSA87};
 use crate::hkdf::{HkdfLabelError, TranscriptHash, hkdf_expand_label};
@@ -19,6 +21,8 @@ use crate::traits::verify_strategy::PreparedVerifier;
 use crate::traits::{
     CertParseError, CertView, Ed25519VerifierProvider, HkdfSha256, RsaVerifierProvider,
 };
+#[cfg(feature = "ecdsa")]
+use sha2::{Digest, Sha256, Sha384};
 use signature::Verifier as _;
 use subtle::ConstantTimeEq;
 
@@ -406,6 +410,20 @@ pub(crate) fn verify_certificate_verify_with_prepared<
         | (SIG_SCHEME_MLDSA87, PreparedVerifier::MlDsa(v @ MlDsaVerifierKey::MlDsa87(_))) => v
             .verify(&signed, &MlDsaSig(sig_bytes))
             .map_err(|_| FlightError::CertVerifyInvalid),
+        // ECDSA signs H(signed_content): pass the digest, not the content.
+        // `sig_bytes` is the DER `ECDSA-Sig-Value` (decoded inside verify_p*).
+        #[cfg(feature = "ecdsa")]
+        (SIG_SCHEME_ECDSA_P256, PreparedVerifier::EcdsaP256(pk)) => {
+            let digest = Sha256::digest(&signed);
+            crate::backends::ecdsa_verify::verify_p256(pk, &digest, sig_bytes)
+                .map_err(|_| FlightError::CertVerifyInvalid)
+        }
+        #[cfg(feature = "ecdsa")]
+        (SIG_SCHEME_ECDSA_P384, PreparedVerifier::EcdsaP384(pk)) => {
+            let digest = Sha384::digest(&signed);
+            crate::backends::ecdsa_verify::verify_p384(pk, &digest, sig_bytes)
+                .map_err(|_| FlightError::CertVerifyInvalid)
+        }
         _ => Err(FlightError::UnexpectedSignatureScheme(scheme)),
     }
 }
@@ -491,6 +509,10 @@ where
         },
         #[cfg(feature = "mldsa")]
         CertView::MlDsa { pubkey, .. } => ServerPubkey::MlDsa(pubkey),
+        #[cfg(feature = "ecdsa")]
+        CertView::EcdsaP256 { pubkey, .. } => ServerPubkey::EcdsaP256(pubkey),
+        #[cfg(feature = "ecdsa")]
+        CertView::EcdsaP384 { pubkey, .. } => ServerPubkey::EcdsaP384(pubkey),
     };
     Ok(ServerFlightVerified { server_pubkey })
 }
@@ -735,6 +757,8 @@ pub(crate) mod tests {
             CertView::Rsa { .. } => None,
             #[cfg(feature = "mldsa")]
             CertView::MlDsa { .. } => None,
+            #[cfg(feature = "ecdsa")]
+            CertView::EcdsaP256 { .. } | CertView::EcdsaP384 { .. } => None,
         };
         #[cfg(feature = "rsa")]
         let rsa_v = match &view {
@@ -804,6 +828,28 @@ pub(crate) mod tests {
                 v.verify(tbs, &crate::backends::mldsa_verify::MlDsaSig(signature))
                     .map_err(|_| FlightError::CertSelfSignatureInvalid)?;
             }
+            #[cfg(feature = "ecdsa")]
+            CertView::EcdsaP256 {
+                tbs,
+                signature,
+                pubkey,
+                ..
+            } => {
+                let digest = Sha256::digest(tbs);
+                crate::backends::ecdsa_verify::verify_p256(pubkey, &digest, signature)
+                    .map_err(|_| FlightError::CertSelfSignatureInvalid)?;
+            }
+            #[cfg(feature = "ecdsa")]
+            CertView::EcdsaP384 {
+                tbs,
+                signature,
+                pubkey,
+                ..
+            } => {
+                let digest = Sha384::digest(tbs);
+                crate::backends::ecdsa_verify::verify_p384(pubkey, &digest, signature)
+                    .map_err(|_| FlightError::CertSelfSignatureInvalid)?;
+            }
         }
         Ok(())
     }
@@ -821,6 +867,8 @@ pub(crate) mod tests {
             CertView::Rsa { .. } => None,
             #[cfg(feature = "mldsa")]
             CertView::MlDsa { .. } => None,
+            #[cfg(feature = "ecdsa")]
+            CertView::EcdsaP256 { .. } | CertView::EcdsaP384 { .. } => None,
         };
         #[cfg(feature = "rsa")]
         let rsa_v = match cert_view {

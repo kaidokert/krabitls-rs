@@ -88,6 +88,7 @@ fn write_into(buf: &mut [u8]) -> Result<&mut [u8], ClientHelloError<SliceWriteEr
     not(feature = "rsa"),
     not(feature = "chacha20"),
     not(feature = "mldsa"),
+    not(feature = "ecdsa"),
     not(feature = "mlkem")
 ))]
 #[test]
@@ -114,6 +115,7 @@ fn matches_python_fixture() {
     not(feature = "rsa"),
     not(feature = "chacha20"),
     not(feature = "mldsa"),
+    not(feature = "ecdsa"),
     not(feature = "mlkem")
 ))]
 #[test]
@@ -1479,7 +1481,7 @@ mod cipher_aes {
             ];
             match cert_view {
                 CertView::Ed25519 { pubkey, .. } => assert_eq!(pubkey, &EXPECTED_SERVER_ID_PUB),
-                #[cfg(any(feature = "rsa", feature = "mldsa"))]
+                #[cfg(any(feature = "rsa", feature = "mldsa", feature = "ecdsa"))]
                 _ => panic!("fixture cert is Ed25519"),
             }
 
@@ -1487,7 +1489,7 @@ mod cipher_aes {
                 .expect("cert self-sig");
             let pk = match view {
                 CertView::Ed25519 { pubkey, .. } => *pubkey,
-                #[cfg(any(feature = "rsa", feature = "mldsa"))]
+                #[cfg(any(feature = "rsa", feature = "mldsa", feature = "ecdsa"))]
                 _ => panic!("fixture cert is Ed25519"),
             };
             assert_eq!(pk, EXPECTED_SERVER_ID_PUB);

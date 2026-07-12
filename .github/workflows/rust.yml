@@ -80,12 +80,18 @@ jobs:
       run: cargo clippy --manifest-path=krabitls/Cargo.toml --all-targets --features mldsa -- -D warnings
     - name: Clippy (feature = mlkem)
       run: cargo clippy --manifest-path=krabitls/Cargo.toml --all-targets --features mlkem -- -D warnings
+    - name: Clippy (feature = ecdsa)
+      run: cargo clippy --manifest-path=krabitls/Cargo.toml --all-targets --features ecdsa -- -D warnings
     - name: Clippy (krabitls_cli, default + rsa + chacha20)
       run: |
         cargo clippy --manifest-path=krabitls_cli/Cargo.toml --all-targets -- -D warnings
         cargo clippy --manifest-path=krabitls_cli/Cargo.toml --all-targets --features rsa -- -D warnings
         cargo clippy --manifest-path=krabitls_cli/Cargo.toml --all-targets --features chacha20 -- -D warnings
         cargo clippy --manifest-path=krabitls_cli/Cargo.toml --all-targets --features rsa --features chacha20 -- -D warnings
+    - name: Clippy (krabitls_cli, feature = ecdsa)
+      # The `krabitls_connect` bin requires `rsa`; pair it so the ECDSA path
+      # actually compiles (feature = ecdsa alone matches no targets).
+      run: cargo clippy --manifest-path=krabitls_cli/Cargo.toml --all-targets --features ecdsa,rsa -- -D warnings
 
     # Feature-powerset sweep — every realistic combo compiles, is warning-free,
     # and its tests run (catches a combo where a test silently cfg's out or a
@@ -118,6 +124,8 @@ jobs:
       run: cargo test --manifest-path=krabitls/Cargo.toml --features mldsa --verbose
     - name: Test (feature = mlkem)
       run: cargo test --manifest-path=krabitls/Cargo.toml --features mlkem --verbose
+    - name: Test (feature = ecdsa)
+      run: cargo test --manifest-path=krabitls/Cargo.toml --features ecdsa --verbose
     - name: Test (all-features)
       run: cargo test --manifest-path=krabitls/Cargo.toml --all-features --verbose
 
@@ -127,3 +135,5 @@ jobs:
         cargo build --manifest-path=krabitls_cli/Cargo.toml --features rsa --verbose
         cargo build --manifest-path=krabitls_cli/Cargo.toml --features chacha20 --verbose
         cargo build --manifest-path=krabitls_cli/Cargo.toml --features rsa --features chacha20 --verbose
+    - name: Build (krabitls_cli, feature = ecdsa)
+      run: cargo build --manifest-path=krabitls_cli/Cargo.toml --features ecdsa,rsa --verbose

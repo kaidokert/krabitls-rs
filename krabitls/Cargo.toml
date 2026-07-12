@@ -1,6 +1,6 @@
 [package]
 name = "krabitls"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
 rust-version = "1.87"
 readme = "../README.md"
@@ -82,6 +82,12 @@ mldsa = ["dep:krabipqc"]
 # `X25519MLKEM768` hybrid TLS key exchange. Same krabipqc dependency as `mldsa`;
 # verification/handshake wiring is built on top in later steps.
 mlkem = ["dep:krabipqc"]
+# Optional ECDSA (P-256 + P-384) signature-verification backend, gated like
+# `rsa`/`mldsa`. Pulls in krabiecdsa (no_std, no-alloc, verify-only) and turns
+# on fixed-bigint's `cios` feature, which its `UnsignedModularInt` bound needs
+# (modmath CIOS Montgomery mul). Covers `ecdsa_secp256r1_sha256` +
+# `ecdsa_secp384r1_sha384`.
+ecdsa = ["dep:krabiecdsa", "fixed-bigint/cios"]
 
 [dependencies]
 embedded-io = { version = "0.7.1", default-features = false }
@@ -113,6 +119,7 @@ thiserror = { version = "2", default-features = false }
 signature = { version = "3", default-features = false }
 rand_core = { version = "0.10", default-features = false }
 krabipqc = { version = "0.1.3", default-features = false, optional = true }
+krabiecdsa = { version = "0.1.0", default-features = false, optional = true }
 
 # Deterministic SeededRng + CannedTransport for the host facade replay
 # tests. Dev-only so the seed-mode RNG (a `TryCryptoRng` that is NOT a

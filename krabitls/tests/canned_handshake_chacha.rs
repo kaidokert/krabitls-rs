@@ -8,7 +8,8 @@
     not(feature = "cipher-aes"),
     not(feature = "rsa"),
     not(feature = "mldsa"),
-    not(feature = "mlkem")
+    not(feature = "mlkem"),
+    not(feature = "ecdsa")
 ))]
 
 mod common;

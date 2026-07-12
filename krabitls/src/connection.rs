@@ -306,6 +306,10 @@ pub enum ServerPubkeyOwned {
     },
     #[cfg(feature = "mldsa")]
     MlDsa(heapless::Vec<u8, 2592>),
+    #[cfg(feature = "ecdsa")]
+    EcdsaP256([u8; 65]),
+    #[cfg(feature = "ecdsa")]
+    EcdsaP384([u8; 97]),
 }
 
 impl ServerPubkeyOwned {
@@ -329,6 +333,18 @@ impl ServerPubkeyOwned {
                     .map_err(|_| FlightError::InternalEncoding)?;
                 Ok(Self::MlDsa(v))
             }
+            #[cfg(feature = "ecdsa")]
+            ServerPubkey::EcdsaP256(pk) => Ok(Self::EcdsaP256(
+                (*pk)
+                    .try_into()
+                    .map_err(|_| FlightError::InternalEncoding)?,
+            )),
+            #[cfg(feature = "ecdsa")]
+            ServerPubkey::EcdsaP384(pk) => Ok(Self::EcdsaP384(
+                (*pk)
+                    .try_into()
+                    .map_err(|_| FlightError::InternalEncoding)?,
+            )),
         }
     }
 }
@@ -489,6 +505,7 @@ where
         not(feature = "chacha20"),
         not(feature = "rsa"),
         not(feature = "mldsa"),
+        not(feature = "ecdsa"),
         not(feature = "mlkem")
     ))]
     pub fn assume_aes_128_gcm(

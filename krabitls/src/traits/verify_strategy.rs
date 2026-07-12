@@ -15,6 +15,12 @@ pub enum ServerPubkey<'a> {
     },
     #[cfg(feature = "mldsa")]
     MlDsa(&'a [u8]),
+    /// 65-byte SEC1 uncompressed point.
+    #[cfg(feature = "ecdsa")]
+    EcdsaP256(&'a [u8]),
+    /// 97-byte SEC1 uncompressed point.
+    #[cfg(feature = "ecdsa")]
+    EcdsaP384(&'a [u8]),
 }
 
 impl<'a> ServerPubkey<'a> {
@@ -58,7 +64,21 @@ use crate::traits::ed25519_verify::Ed25519VerifierProvider;
 use crate::traits::rsa_verify::RsaVerifierProvider;
 #[cfg(feature = "cert-der")]
 use crate::traits::time::TimeSource;
+#[cfg(feature = "ecdsa")]
+use sha2::{Digest, Sha256, Sha384};
 use signature::Verifier;
+#[cfg(feature = "ecdsa")]
+use subtle::ConstantTimeEq;
+
+/// Constant-time equality of a stored SEC1 point against a candidate. Length
+/// mismatch short-circuits to `Choice::from(0)`.
+#[cfg(feature = "ecdsa")]
+fn ct_eq_sec1(stored: &[u8], candidate: &[u8]) -> subtle::Choice {
+    if stored.len() != candidate.len() {
+        return subtle::Choice::from(0);
+    }
+    stored.ct_eq(candidate)
+}
 
 /// Prepared verifier the strategy hands back for the TLS stack to use in
 /// CertificateVerify. Stored by value in a caller-supplied slot so the
@@ -74,6 +94,12 @@ pub enum PreparedVerifier<E: Ed25519VerifierProvider, R: RsaVerifierProvider> {
     /// parameterized by a provider — the concrete verifier is held directly.
     #[cfg(feature = "mldsa")]
     MlDsa(crate::backends::mldsa_verify::MlDsaVerifierKey),
+    /// ECDSA has a single backend (krabiecdsa); the leaf/pinned SEC1 point is
+    /// held inline by value.
+    #[cfg(feature = "ecdsa")]
+    EcdsaP256([u8; 65]),
+    #[cfg(feature = "ecdsa")]
+    EcdsaP384([u8; 97]),
 }
 
 impl<E, R> PreparedVerifier<E, R>
@@ -112,7 +138,11 @@ where
             }),
             #[cfg(feature = "mldsa")]
             (Self::MlDsa(v), CertView::MlDsa { pubkey, .. }) => v.matches(MlDsaKeyMaterial(pubkey)),
-            #[cfg(any(feature = "rsa", feature = "mldsa"))]
+            #[cfg(feature = "ecdsa")]
+            (Self::EcdsaP256(pk), CertView::EcdsaP256 { pubkey, .. }) => ct_eq_sec1(pk, pubkey),
+            #[cfg(feature = "ecdsa")]
+            (Self::EcdsaP384(pk), CertView::EcdsaP384 { pubkey, .. }) => ct_eq_sec1(pk, pubkey),
+            #[cfg(any(feature = "rsa", feature = "mldsa", feature = "ecdsa"))]
             _ => subtle::Choice::from(0),
         }
     }
@@ -268,6 +298,9 @@ pub enum SafeStrategyError<TE> {
     #[cfg(feature = "mldsa")]
     #[error("ML-DSA verifier construction failed (bad public-key length)")]
     MlDsaVerifierInvalid,
+    #[cfg(feature = "ecdsa")]
+    #[error("ECDSA verifier construction failed (bad SEC1 point length)")]
+    EcdsaVerifierInvalid,
     /// Trust-root decision returned an error.
     #[error("trust root rejected: {0}")]
     Decision(TE),
@@ -348,6 +381,18 @@ where
                 crate::backends::mldsa_verify::MlDsaVerifierKey::new(pubkey)
                     .map_err(|_| SafeStrategyError::MlDsaVerifierInvalid)?,
             ),
+            #[cfg(feature = "ecdsa")]
+            CertView::EcdsaP256 { pubkey, .. } => PreparedVerifier::EcdsaP256(
+                (*pubkey)
+                    .try_into()
+                    .map_err(|_| SafeStrategyError::EcdsaVerifierInvalid)?,
+            ),
+            #[cfg(feature = "ecdsa")]
+            CertView::EcdsaP384 { pubkey, .. } => PreparedVerifier::EcdsaP384(
+                (*pubkey)
+                    .try_into()
+                    .map_err(|_| SafeStrategyError::EcdsaVerifierInvalid)?,
+            ),
         };
         *slot = Some(leaf_prepared);
         Ok(Trusted::new(slot.as_ref().unwrap()))
@@ -392,6 +437,10 @@ where
         CertView::Rsa { tbs, signature, .. } => (*tbs, *signature),
         #[cfg(feature = "mldsa")]
         CertView::MlDsa { tbs, signature, .. } => (*tbs, *signature),
+        #[cfg(feature = "ecdsa")]
+        CertView::EcdsaP256 { tbs, signature, .. } => (*tbs, *signature),
+        #[cfg(feature = "ecdsa")]
+        CertView::EcdsaP384 { tbs, signature, .. } => (*tbs, *signature),
     };
     match parent {
         CertView::Ed25519 { pubkey, .. } => {
@@ -419,15 +468,37 @@ where
             modulus, exponent, ..
         } => {
             // Padding scheme is identified by the CHILD's signatureAlgorithm
-            // (the alg the parent USED to sign the child).
+            // (the alg the parent USED to sign the child) — decoupled from the
+            // child's own SPKI kind, so an ECDSA cert under an RSA issuer works.
             let alg = match child {
                 CertView::Rsa { outer_sig_alg, .. } => {
+                    outer_sig_alg.ok_or(LinkErr::UnknownLinkSigAlg)?
+                }
+                #[cfg(feature = "ecdsa")]
+                CertView::EcdsaP256 { outer_sig_alg, .. }
+                | CertView::EcdsaP384 { outer_sig_alg, .. } => {
                     outer_sig_alg.ok_or(LinkErr::UnknownLinkSigAlg)?
                 }
                 _ => return Err(LinkErr::UnknownLinkSigAlg),
             };
             let v = R::prepare_rsa(modulus, *exponent).map_err(|_| LinkErr::RsaVerifierInvalid)?;
             crate::traits::rsa_verify::verify_cert_sig(&v, child_tbs, child_sig, alg)
+                .map_err(|_| LinkErr::LinkSignatureInvalid)
+        }
+        // ECDSA cert outer sigs carry no padding/hash discriminator in the
+        // CertView; the issuer's curve fixes the conventional hash pairing
+        // (P-256↔SHA-256, P-384↔SHA-384), matching real CA chains. A cert
+        // signed under a non-conventional hash fails closed here.
+        #[cfg(feature = "ecdsa")]
+        CertView::EcdsaP256 { pubkey, .. } => {
+            let digest = Sha256::digest(child_tbs);
+            crate::backends::ecdsa_verify::verify_p256(pubkey, &digest, child_sig)
+                .map_err(|_| LinkErr::LinkSignatureInvalid)
+        }
+        #[cfg(feature = "ecdsa")]
+        CertView::EcdsaP384 { pubkey, .. } => {
+            let digest = Sha384::digest(child_tbs);
+            crate::backends::ecdsa_verify::verify_p384(pubkey, &digest, child_sig)
                 .map_err(|_| LinkErr::LinkSignatureInvalid)
         }
     }
@@ -447,6 +518,8 @@ mod tests {
                 ServerPubkey::Rsa { .. } => None,
                 #[cfg(feature = "mldsa")]
                 ServerPubkey::MlDsa(_) => None,
+                #[cfg(feature = "ecdsa")]
+                ServerPubkey::EcdsaP256(_) | ServerPubkey::EcdsaP384(_) => None,
             }
         }
     }

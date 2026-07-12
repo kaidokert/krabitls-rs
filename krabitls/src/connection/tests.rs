@@ -8,6 +8,7 @@ use super::*;
         not(feature = "rsa"),
         not(feature = "chacha20"),
         not(feature = "mldsa"),
+        not(feature = "ecdsa"),
         not(feature = "mlkem")
     ),
     all(feature = "cipher-aes", feature = "chacha20", not(feature = "mlkem"))
@@ -18,6 +19,7 @@ use crate::backends::RustCrypto;
     not(feature = "chacha20"),
     not(feature = "rsa"),
     not(feature = "mldsa"),
+    not(feature = "ecdsa"),
     not(feature = "mlkem")
 ))]
 use crate::consts::{CLOSE_NOTIFY_ALERT, CT_ALERT};
@@ -28,6 +30,7 @@ use crate::consts::{CLOSE_NOTIFY_ALERT, CT_ALERT};
         not(feature = "rsa"),
         not(feature = "chacha20"),
         not(feature = "mldsa"),
+        not(feature = "ecdsa"),
         not(feature = "mlkem")
     ),
     all(feature = "cipher-aes", feature = "chacha20", not(feature = "mlkem"))
@@ -41,6 +44,7 @@ const FIXTURE_RANDOM: [u8; 32] = [
         not(feature = "rsa"),
         not(feature = "chacha20"),
         not(feature = "mldsa"),
+        not(feature = "ecdsa"),
         not(feature = "mlkem")
     ),
     all(feature = "cipher-aes", feature = "chacha20", not(feature = "mlkem"))
@@ -54,6 +58,7 @@ const FIXTURE_X25519_PUB: [u8; 32] = [
         not(feature = "rsa"),
         not(feature = "chacha20"),
         not(feature = "mldsa"),
+        not(feature = "ecdsa"),
         not(feature = "mlkem")
     ),
     all(feature = "cipher-aes", feature = "chacha20", not(feature = "mlkem"))
@@ -110,6 +115,7 @@ fn write_client_hello_with_aes_only_narrows_cipher_suites() {
     not(feature = "rsa"),
     not(feature = "chacha20"),
     not(feature = "mldsa"),
+    not(feature = "ecdsa"),
     not(feature = "mlkem")
 ))]
 mod aes_only {
@@ -315,6 +321,10 @@ mod aes_only {
             ServerPubkeyOwned::Rsa { .. } => panic!("expected Ed25519 pubkey"),
             #[cfg(feature = "mldsa")]
             ServerPubkeyOwned::MlDsa(_) => panic!("expected Ed25519 pubkey"),
+            #[cfg(feature = "ecdsa")]
+            ServerPubkeyOwned::EcdsaP256(_) | ServerPubkeyOwned::EcdsaP384(_) => {
+                panic!("expected Ed25519 pubkey")
+            }
         }
     }
 
@@ -741,6 +751,7 @@ mod aes_only {
     not(feature = "chacha20"),
     not(feature = "rsa"),
     not(feature = "mldsa"),
+    not(feature = "ecdsa"),
     not(feature = "mlkem")
 ))]
 impl<S, H, M> TlsConnection<WaitServerFlight<S, M>, H>
@@ -772,6 +783,7 @@ where
     not(feature = "chacha20"),
     not(feature = "rsa"),
     not(feature = "mldsa"),
+    not(feature = "ecdsa"),
     not(feature = "mlkem")
 ))]
 fn feed_server_record_inner<const N: usize, F>(
@@ -819,6 +831,7 @@ where
     not(feature = "chacha20"),
     not(feature = "rsa"),
     not(feature = "mldsa"),
+    not(feature = "ecdsa"),
     not(feature = "mlkem")
 ))]
 impl ServerPubkeyOwned {
@@ -832,6 +845,10 @@ impl ServerPubkeyOwned {
             },
             #[cfg(feature = "mldsa")]
             Self::MlDsa(pk) => ServerPubkey::MlDsa(&pk[..]),
+            #[cfg(feature = "ecdsa")]
+            Self::EcdsaP256(pk) => ServerPubkey::EcdsaP256(&pk[..]),
+            #[cfg(feature = "ecdsa")]
+            Self::EcdsaP384(pk) => ServerPubkey::EcdsaP384(&pk[..]),
         }
     }
 }
@@ -840,6 +857,7 @@ impl ServerPubkeyOwned {
     not(feature = "chacha20"),
     not(feature = "rsa"),
     not(feature = "mldsa"),
+    not(feature = "ecdsa"),
     not(feature = "mlkem")
 ))]
 impl<S, H, M> TlsConnection<ServerFlightDone<S, M>, H>
@@ -883,6 +901,7 @@ where
         not(feature = "chacha20"),
         not(feature = "rsa"),
         not(feature = "mldsa"),
+        not(feature = "ecdsa"),
         not(feature = "mlkem")
     ))]
     pub(crate) fn close_notify(mut self, out_buf: &mut [u8]) -> Result<&[u8], ConnectionError> {

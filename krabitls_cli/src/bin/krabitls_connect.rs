@@ -46,6 +46,10 @@ enum Pin {
     Ed25519([u8; 32]),
     #[cfg(feature = "rsa")]
     Rsa(Vec<u8>),
+    #[cfg(feature = "ecdsa")]
+    EcdsaP256([u8; 65]),
+    #[cfg(feature = "ecdsa")]
+    EcdsaP384([u8; 97]),
 }
 
 impl Pin {
@@ -57,6 +61,10 @@ impl Pin {
                 modulus,
                 exponent: 65537,
             },
+            #[cfg(feature = "ecdsa")]
+            Pin::EcdsaP256(pk) => PinnedPubkey::EcdsaP256(*pk),
+            #[cfg(feature = "ecdsa")]
+            Pin::EcdsaP384(pk) => PinnedPubkey::EcdsaP384(*pk),
         }
     }
 }
@@ -80,8 +88,39 @@ fn parse_pin(hex_str: &str) -> std::result::Result<Pin, String> {
                 Err("RSA pin requires building with --features rsa".into())
             }
         }
+        65 => {
+            #[cfg(feature = "ecdsa")]
+            {
+                if bytes[0] != 0x04 {
+                    return Err(
+                        "ECDSA P-256 pin must be a SEC1 uncompressed point (0x04 prefix)".into(),
+                    );
+                }
+                let mut pk = [0u8; 65];
+                pk.copy_from_slice(&bytes);
+                Ok(Pin::EcdsaP256(pk))
+            }
+            #[cfg(not(feature = "ecdsa"))]
+            Err("ECDSA P-256 pin requires building with --features ecdsa".into())
+        }
+        97 => {
+            #[cfg(feature = "ecdsa")]
+            {
+                if bytes[0] != 0x04 {
+                    return Err(
+                        "ECDSA P-384 pin must be a SEC1 uncompressed point (0x04 prefix)".into(),
+                    );
+                }
+                let mut pk = [0u8; 97];
+                pk.copy_from_slice(&bytes);
+                Ok(Pin::EcdsaP384(pk))
+            }
+            #[cfg(not(feature = "ecdsa"))]
+            Err("ECDSA P-384 pin requires building with --features ecdsa".into())
+        }
         n => Err(format!(
-            "--pin: expected 32 (Ed25519), 128 (RSA-1024), or 256 (RSA-2048) bytes, got {n}"
+            "--pin: expected 32 (Ed25519), 65 (ECDSA P-256), 97 (ECDSA P-384), \
+             128 (RSA-1024), or 256 (RSA-2048) bytes, got {n}"
         )),
     }
 }

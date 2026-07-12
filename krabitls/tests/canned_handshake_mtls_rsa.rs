@@ -9,14 +9,15 @@
 
 // AES-128-GCM + ed25519 server leaf, `rsa` on (it shifts the ClientHello's
 // signature_algorithms, so the capture requires it). `mldsa`/`mlkem`/
-// `chacha20` shift the captured bytes further and are excluded like the
-// sibling fixtures.
+// `chacha20`/`ecdsa` shift the captured bytes further and are excluded like
+// the sibling fixtures.
 #![cfg(all(
     feature = "cipher-aes",
     feature = "rsa",
     not(feature = "chacha20"),
     not(feature = "mldsa"),
-    not(feature = "mlkem")
+    not(feature = "mlkem"),
+    not(feature = "ecdsa")
 ))]
 
 use krabitls::client::{
