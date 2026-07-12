@@ -31,3 +31,14 @@ pub(crate) type RsaU2048 = fixed_bigint::FixedUInt<u32, 64>;
 /// exponent is the private `d`.
 #[cfg(feature = "rsa")]
 pub(crate) type RsaSignBn = fixed_bigint::FixedUInt<u32, 64, const_num_traits::Ct>;
+
+/// 256-bit vartime carrier for ECDSA P-256 *verification* — the signature is
+/// public data, so the faster non-CT personality.
+#[cfg(feature = "ecdsa")]
+#[allow(dead_code)] // consumed by the ECDSA cert/CV dispatch (later slice)
+pub(crate) type EcdsaP256Bn = fixed_bigint::FixedUInt<u32, 8>;
+
+/// 384-bit vartime carrier for ECDSA P-384 *verification*.
+#[cfg(feature = "ecdsa")]
+#[allow(dead_code)]
+pub(crate) type EcdsaP384Bn = fixed_bigint::FixedUInt<u32, 12>;
