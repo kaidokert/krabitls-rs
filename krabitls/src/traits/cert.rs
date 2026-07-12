@@ -79,6 +79,12 @@ pub enum CertView<'a> {
         signature: &'a [u8],
         /// 65-byte SEC1 uncompressed point (`0x04 || X || Y`).
         pubkey: &'a [u8],
+        /// RSA padding scheme when this cert's outer signature is RSA, i.e. an
+        /// ECDSA leaf/intermediate signed by an RSA issuer — a real chain shape
+        /// the ECDSA SPKI kind alone doesn't reveal. `None` for the conventional
+        /// ECDSA-issuer case (issuer curve fixes the hash at verify time).
+        #[cfg(feature = "rsa")]
+        outer_sig_alg: Option<RsaCertSigAlg>,
         /// SubjectAltName extension content; same shape as the other variants.
         san: Option<&'a [u8]>,
         /// Validity-SEQUENCE DER bytes; same as the other variants.
@@ -93,6 +99,10 @@ pub enum CertView<'a> {
         signature: &'a [u8],
         /// 97-byte SEC1 uncompressed point (`0x04 || X || Y`).
         pubkey: &'a [u8],
+        /// Outer RSA padding scheme when signed by an RSA issuer; see
+        /// [`CertView::EcdsaP256`].
+        #[cfg(feature = "rsa")]
+        outer_sig_alg: Option<RsaCertSigAlg>,
         /// SubjectAltName extension content; same shape as the other variants.
         san: Option<&'a [u8]>,
         /// Validity-SEQUENCE DER bytes; same as the other variants.

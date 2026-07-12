@@ -27,29 +27,40 @@ fn read_tlv<'a>(p: &mut &'a [u8], tag: u8) -> Result<&'a [u8], EcdsaVerifyError>
     if take(p, 1)?[0] != tag {
         return Err(EcdsaVerifyError);
     }
+    // DER long-form lengths must be minimal: reject a form that could have
+    // used a shorter one (TLS/X.509 mandate DER, not BER).
     let len = match take(p, 1)?[0] {
         n if n < 0x80 => n as usize,
-        0x81 => take(p, 1)?[0] as usize,
+        0x81 => match take(p, 1)?[0] {
+            n if n >= 0x80 => n as usize,
+            _ => return Err(EcdsaVerifyError),
+        },
         0x82 => {
             let b = take(p, 2)?;
-            ((b[0] as usize) << 8) | b[1] as usize
+            let n = ((b[0] as usize) << 8) | b[1] as usize;
+            if n < 0x100 {
+                return Err(EcdsaVerifyError);
+            }
+            n
         }
         _ => return Err(EcdsaVerifyError),
     };
     take(p, len)
 }
 
-/// Big-endian, left-pad a DER INTEGER value into `out`. `r`/`s` are positive:
-/// a leading `0x00` is only the DER sign byte, and a set high bit without it is
-/// a negative encoding (invalid here).
+/// Big-endian, left-pad a DER INTEGER value into `out`. `r`/`s` are positive,
+/// minimally-encoded DER INTEGERs: a set high bit with no `0x00` prefix is a
+/// negative encoding, and a `0x00` prefix is legal only to clear an otherwise-set
+/// MSB. Reject both, and any further redundant leading zeros (strict DER — TLS
+/// 1.3 / RFC 5280, guards against signature-encoding malleability).
 fn int_to_padded(v: &[u8], out: &mut [u8]) -> Result<(), EcdsaVerifyError> {
     if v.is_empty() || v[0] & 0x80 != 0 {
         return Err(EcdsaVerifyError);
     }
-    let mut val = v;
-    while val.len() > 1 && val[0] == 0 {
-        val = &val[1..];
+    if v.len() > 1 && v[0] == 0 && v[1] & 0x80 == 0 {
+        return Err(EcdsaVerifyError);
     }
+    let val = if v.len() > 1 && v[0] == 0 { &v[1..] } else { v };
     let start = out.len().checked_sub(val.len()).ok_or(EcdsaVerifyError)?;
     out.fill(0);
     out[start..].copy_from_slice(val);
@@ -58,6 +69,9 @@ fn int_to_padded(v: &[u8], out: &mut [u8]) -> Result<(), EcdsaVerifyError> {
 
 /// Decode `SEQUENCE { r, s }` into `out` (`2 * eb` bytes: `r || s`).
 fn der_sig_to_p1363(der: &[u8], eb: usize, out: &mut [u8]) -> Result<(), EcdsaVerifyError> {
+    if out.len() != 2 * eb {
+        return Err(EcdsaVerifyError);
+    }
     let mut outer = der;
     let mut body = read_tlv(&mut outer, 0x30)?;
     if !outer.is_empty() {

@@ -239,6 +239,8 @@ impl CertParser for DerCert {
                     tbs: tbs_full,
                     signature: sig_bytes,
                     pubkey: pk_bytes,
+                    #[cfg(feature = "rsa")]
+                    outer_sig_alg: classify_rsa_outer_sig_alg(outer_sig_alg_bytes)?,
                     san: san_bytes,
                     validity_der,
                 })
@@ -250,6 +252,8 @@ impl CertParser for DerCert {
                     tbs: tbs_full,
                     signature: sig_bytes,
                     pubkey: pk_bytes,
+                    #[cfg(feature = "rsa")]
+                    outer_sig_alg: classify_rsa_outer_sig_alg(outer_sig_alg_bytes)?,
                     san: san_bytes,
                     validity_der,
                 })

@@ -91,6 +91,11 @@ fn parse_pin(hex_str: &str) -> std::result::Result<Pin, String> {
         65 => {
             #[cfg(feature = "ecdsa")]
             {
+                if bytes[0] != 0x04 {
+                    return Err(
+                        "ECDSA P-256 pin must be a SEC1 uncompressed point (0x04 prefix)".into(),
+                    );
+                }
                 let mut pk = [0u8; 65];
                 pk.copy_from_slice(&bytes);
                 Ok(Pin::EcdsaP256(pk))
@@ -101,6 +106,11 @@ fn parse_pin(hex_str: &str) -> std::result::Result<Pin, String> {
         97 => {
             #[cfg(feature = "ecdsa")]
             {
+                if bytes[0] != 0x04 {
+                    return Err(
+                        "ECDSA P-384 pin must be a SEC1 uncompressed point (0x04 prefix)".into(),
+                    );
+                }
                 let mut pk = [0u8; 97];
                 pk.copy_from_slice(&bytes);
                 Ok(Pin::EcdsaP384(pk))

@@ -11,7 +11,8 @@
     feature = "mlkem",
     not(feature = "chacha20"),
     not(feature = "rsa"),
-    not(feature = "mldsa")
+    not(feature = "mldsa"),
+    not(feature = "ecdsa")
 ))]
 
 mod common;

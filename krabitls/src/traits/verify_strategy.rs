@@ -468,9 +468,15 @@ where
             modulus, exponent, ..
         } => {
             // Padding scheme is identified by the CHILD's signatureAlgorithm
-            // (the alg the parent USED to sign the child).
+            // (the alg the parent USED to sign the child) — decoupled from the
+            // child's own SPKI kind, so an ECDSA cert under an RSA issuer works.
             let alg = match child {
                 CertView::Rsa { outer_sig_alg, .. } => {
+                    outer_sig_alg.ok_or(LinkErr::UnknownLinkSigAlg)?
+                }
+                #[cfg(feature = "ecdsa")]
+                CertView::EcdsaP256 { outer_sig_alg, .. }
+                | CertView::EcdsaP384 { outer_sig_alg, .. } => {
                     outer_sig_alg.ok_or(LinkErr::UnknownLinkSigAlg)?
                 }
                 _ => return Err(LinkErr::UnknownLinkSigAlg),

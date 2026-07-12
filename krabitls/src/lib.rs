@@ -523,11 +523,11 @@ pub(crate) fn write_client_hello_with<W: Write>(
     out.write_u16(EXT_SIGNATURE_ALGORITHMS)?;
     out.write_u16(2 + 2 * SIG_SCHEME_COUNT)?; // ext_data: list_len field (2) + schemes
     out.write_u16(2 * SIG_SCHEME_COUNT)?; // supported_signature_algorithms list_len
+    out.write_u16(SIG_SCHEME_ED25519)?;
     if cfg!(feature = "ecdsa") {
         out.write_u16(SIG_SCHEME_ECDSA_P256)?;
         out.write_u16(SIG_SCHEME_ECDSA_P384)?;
     }
-    out.write_u16(SIG_SCHEME_ED25519)?;
     if cfg!(feature = "rsa") {
         out.write_u16(SIG_SCHEME_RSA_PSS_RSAE_SHA256)?;
     }
