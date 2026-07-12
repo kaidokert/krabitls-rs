@@ -9,7 +9,7 @@
 A hobby `no_std` TLS 1.3 client for microcontrollers. Don't use it for anything you care about.
 
 - TLS 1.3; X25519 or X25519MLKEM768 key exchange
-- Verifies Ed25519, RSA, or ML-DSA server certificates
+- Verifies Ed25519, RSA, ECDSA (P-256/P-384), or ML-DSA server certificates
 - Bundled trust is pin-a-pubkey or trust-SAN — no CA bundle or chain walking; verification is a pluggable `VerifyStrategy`
 - Hand-rolled, unaudited, not constant-time, no scalar blinding
 
