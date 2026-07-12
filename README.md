@@ -24,10 +24,12 @@ Cortex-M3 and RV32IMAC footprint — real-minus-baseline `.text` and peak stack.
 | M3       | ChaCha20-Poly1305 | X25519 / Ed25519           |        37.3 |     10916 |
 | M3       | AES-128-GCM       | X25519 / Ed25519           |        41.8 |     16444 |
 | M3       | AES-128-GCM       | X25519 / RSA-2048-PSS      |        55.5 |     31292 |
+| M3       | AES-128-GCM       | X25519 / ECDSA-P256        |        58.4 |     20668 |
 | M3       | AES-128-GCM       | X25519MLKEM768 / ML-DSA-44 |        60.6 |    117252 |
 | RV32IMAC | ChaCha20-Poly1305 | X25519 / Ed25519           |        55.9 |     10692 |
 | RV32IMAC | AES-128-GCM       | X25519 / Ed25519           |        65.2 |     16212 |
 | RV32IMAC | AES-128-GCM       | X25519 / RSA-2048-PSS      |        88.2 |     31012 |
+| RV32IMAC | AES-128-GCM       | X25519 / ECDSA-P256        |        90.4 |     20300 |
 | RV32IMAC | AES-128-GCM       | X25519MLKEM768 / ML-DSA-44 |        93.0 |    117112 |
 
 ## License
