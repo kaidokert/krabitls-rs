@@ -10,6 +10,7 @@
     feature = "cipher-aes",
     not(feature = "chacha20"),
     not(feature = "mldsa"),
+    not(feature = "ecdsa"),
     not(feature = "mlkem")
 ))]
 

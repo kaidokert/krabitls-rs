@@ -68,6 +68,36 @@ pub enum CertView<'a> {
         /// Validity-SEQUENCE DER bytes; same as the other variants.
         validity_der: &'a [u8],
     },
+    /// ECDSA P-256 server identity (RFC 5480). Available with `feature = "ecdsa"`.
+    /// The curve (and thus the CertificateVerify hash) is fixed by the variant;
+    /// like ML-DSA, no outer-sig discriminator is carried.
+    #[cfg(feature = "ecdsa")]
+    EcdsaP256 {
+        /// TBSCertificate bytes the cert's signature was computed over.
+        tbs: &'a [u8],
+        /// Cert outer signature, a DER `ECDSA-Sig-Value`.
+        signature: &'a [u8],
+        /// 65-byte SEC1 uncompressed point (`0x04 || X || Y`).
+        pubkey: &'a [u8],
+        /// SubjectAltName extension content; same shape as the other variants.
+        san: Option<&'a [u8]>,
+        /// Validity-SEQUENCE DER bytes; same as the other variants.
+        validity_der: &'a [u8],
+    },
+    /// ECDSA P-384 server identity (RFC 5480). Available with `feature = "ecdsa"`.
+    #[cfg(feature = "ecdsa")]
+    EcdsaP384 {
+        /// TBSCertificate bytes the cert's signature was computed over.
+        tbs: &'a [u8],
+        /// Cert outer signature, a DER `ECDSA-Sig-Value`.
+        signature: &'a [u8],
+        /// 97-byte SEC1 uncompressed point (`0x04 || X || Y`).
+        pubkey: &'a [u8],
+        /// SubjectAltName extension content; same shape as the other variants.
+        san: Option<&'a [u8]>,
+        /// Validity-SEQUENCE DER bytes; same as the other variants.
+        validity_der: &'a [u8],
+    },
 }
 
 /// RSA cert outer-signature padding scheme. Only sha256-based variants are
@@ -94,6 +124,10 @@ impl<'a> CertView<'a> {
             CertView::Rsa { tbs, .. } => tbs,
             #[cfg(feature = "mldsa")]
             CertView::MlDsa { tbs, .. } => tbs,
+            #[cfg(feature = "ecdsa")]
+            CertView::EcdsaP256 { tbs, .. } => tbs,
+            #[cfg(feature = "ecdsa")]
+            CertView::EcdsaP384 { tbs, .. } => tbs,
         }
     }
 
@@ -105,6 +139,10 @@ impl<'a> CertView<'a> {
             CertView::Rsa { san, .. } => *san,
             #[cfg(feature = "mldsa")]
             CertView::MlDsa { san, .. } => *san,
+            #[cfg(feature = "ecdsa")]
+            CertView::EcdsaP256 { san, .. } => *san,
+            #[cfg(feature = "ecdsa")]
+            CertView::EcdsaP384 { san, .. } => *san,
         }
     }
 
@@ -116,6 +154,10 @@ impl<'a> CertView<'a> {
             CertView::Rsa { validity_der, .. } => validity_der,
             #[cfg(feature = "mldsa")]
             CertView::MlDsa { validity_der, .. } => validity_der,
+            #[cfg(feature = "ecdsa")]
+            CertView::EcdsaP256 { validity_der, .. } => validity_der,
+            #[cfg(feature = "ecdsa")]
+            CertView::EcdsaP384 { validity_der, .. } => validity_der,
         }
     }
 }
@@ -183,4 +225,9 @@ pub enum CertParseError {
     #[cfg(feature = "mldsa")]
     #[error("ML-DSA SubjectPublicKey length did not match the OID's parameter set")]
     WrongMlDsaPubkeyLength,
+    /// The EC SubjectPublicKey wasn't a SEC1 uncompressed point (`0x04` prefix)
+    /// of the length the namedCurve requires (65 B for P-256, 97 B for P-384).
+    #[cfg(feature = "ecdsa")]
+    #[error("EC SubjectPublicKey was not a 65/97-byte SEC1 uncompressed point")]
+    WrongEcdsaPubkey,
 }

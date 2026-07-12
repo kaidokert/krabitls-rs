@@ -41,6 +41,12 @@ pub enum PinnedPubkey<'a> {
     /// with `feature = "mldsa"`.
     #[cfg(feature = "mldsa")]
     MlDsa(&'a [u8]),
+    /// 65-byte SEC1 uncompressed P-256 point. Available with `feature = "ecdsa"`.
+    #[cfg(feature = "ecdsa")]
+    EcdsaP256([u8; 65]),
+    /// 97-byte SEC1 uncompressed P-384 point. Available with `feature = "ecdsa"`.
+    #[cfg(feature = "ecdsa")]
+    EcdsaP384([u8; 97]),
     /// Uninhabited lifetime sentinel: binds `'a` in builds where no other
     /// variant borrows it (Ed25519-only). The `Infallible` field makes the
     /// variant impossible to construct, so the `to_owned_pin` arm for it isn't
@@ -69,6 +75,10 @@ impl<'a> PinnedPubkey<'a> {
             }
             #[cfg(feature = "mldsa")]
             PinnedPubkey::MlDsa(pk) => crate::backends::PinnedPubkeyOwned::mldsa(pk),
+            #[cfg(feature = "ecdsa")]
+            PinnedPubkey::EcdsaP256(pk) => Ok(crate::backends::PinnedPubkeyOwned::ecdsa_p256(*pk)),
+            #[cfg(feature = "ecdsa")]
+            PinnedPubkey::EcdsaP384(pk) => Ok(crate::backends::PinnedPubkeyOwned::ecdsa_p384(*pk)),
             PinnedPubkey::_Phantom(_, never) => match *never {},
         }
     }

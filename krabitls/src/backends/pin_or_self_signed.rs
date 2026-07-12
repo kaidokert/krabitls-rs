@@ -7,6 +7,8 @@
 use crate::traits::cert::CertView;
 use crate::traits::verify_strategy::TrustRootDecision;
 use crate::traits::{Ed25519VerifierProvider, RsaVerifierProvider};
+#[cfg(feature = "ecdsa")]
+use sha2::{Digest, Sha256, Sha384};
 use signature::Verifier;
 use subtle::ConstantTimeEq;
 
@@ -25,6 +27,10 @@ pub enum PinnedPubkeyOwned {
     },
     #[cfg(feature = "mldsa")]
     MlDsa(heapless::Vec<u8, { MAX_MLDSA_PUBKEY_BYTES }>),
+    #[cfg(feature = "ecdsa")]
+    EcdsaP256([u8; 65]),
+    #[cfg(feature = "ecdsa")]
+    EcdsaP384([u8; 97]),
 }
 
 /// Maximum RSA modulus size accepted in [`PinnedPubkeyOwned::Rsa`]
@@ -63,6 +69,16 @@ impl PinnedPubkeyOwned {
         v.extend_from_slice(pubkey)
             .map_err(|_| PinnedPubkeyOwnedError::PubkeyTooLong)?;
         Ok(PinnedPubkeyOwned::MlDsa(v))
+    }
+
+    #[cfg(feature = "ecdsa")]
+    pub fn ecdsa_p256(pubkey: [u8; 65]) -> Self {
+        PinnedPubkeyOwned::EcdsaP256(pubkey)
+    }
+
+    #[cfg(feature = "ecdsa")]
+    pub fn ecdsa_p384(pubkey: [u8; 97]) -> Self {
+        PinnedPubkeyOwned::EcdsaP384(pubkey)
     }
 }
 
@@ -179,6 +195,16 @@ where
     }
 }
 
+/// Constant-time SEC1-point pin compare (both sides are fixed-length here).
+#[cfg(feature = "ecdsa")]
+fn ct_eq_pin(pubkey: &[u8], pin: &[u8]) -> Result<(), PinOrSelfSignedError> {
+    if pubkey.len() == pin.len() && bool::from(pubkey.ct_eq(pin)) {
+        Ok(())
+    } else {
+        Err(PinOrSelfSignedError::PinMismatch)
+    }
+}
+
 fn verify_pin(leaf: &CertView<'_>, pin: &PinnedPubkeyOwned) -> Result<(), PinOrSelfSignedError> {
     match (leaf, pin) {
         (CertView::Ed25519 { pubkey, .. }, PinnedPubkeyOwned::Ed25519(expected)) => {
@@ -218,7 +244,15 @@ fn verify_pin(leaf: &CertView<'_>, pin: &PinnedPubkeyOwned) -> Result<(), PinOrS
                 Err(PinOrSelfSignedError::PinMismatch)
             }
         }
-        #[cfg(any(feature = "rsa", feature = "mldsa"))]
+        #[cfg(feature = "ecdsa")]
+        (CertView::EcdsaP256 { pubkey, .. }, PinnedPubkeyOwned::EcdsaP256(pin)) => {
+            ct_eq_pin(pubkey, pin)
+        }
+        #[cfg(feature = "ecdsa")]
+        (CertView::EcdsaP384 { pubkey, .. }, PinnedPubkeyOwned::EcdsaP384(pin)) => {
+            ct_eq_pin(pubkey, pin)
+        }
+        #[cfg(any(feature = "rsa", feature = "mldsa", feature = "ecdsa"))]
         _ => Err(PinOrSelfSignedError::PinAlgorithmMismatch),
     }
 }
@@ -269,6 +303,30 @@ where
             let v = crate::backends::mldsa_verify::MlDsaVerifierKey::new(pubkey)
                 .map_err(|_| PinOrSelfSignedError::MlDsaVerifierInvalid)?;
             v.verify(tbs, &crate::backends::mldsa_verify::MlDsaSig(signature))
+                .map_err(|_| PinOrSelfSignedError::SelfSignatureInvalid)
+        }
+        // Curve fixes the conventional CertVerify/cert-sig hash pairing
+        // (P-256↔SHA-256, P-384↔SHA-384); a non-conventional hash fails closed.
+        #[cfg(feature = "ecdsa")]
+        CertView::EcdsaP256 {
+            tbs,
+            signature,
+            pubkey,
+            ..
+        } => {
+            let digest = Sha256::digest(tbs);
+            crate::backends::ecdsa_verify::verify_p256(pubkey, &digest, signature)
+                .map_err(|_| PinOrSelfSignedError::SelfSignatureInvalid)
+        }
+        #[cfg(feature = "ecdsa")]
+        CertView::EcdsaP384 {
+            tbs,
+            signature,
+            pubkey,
+            ..
+        } => {
+            let digest = Sha384::digest(tbs);
+            crate::backends::ecdsa_verify::verify_p384(pubkey, &digest, signature)
                 .map_err(|_| PinOrSelfSignedError::SelfSignatureInvalid)
         }
     }

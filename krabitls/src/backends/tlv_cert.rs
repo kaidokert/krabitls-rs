@@ -30,6 +30,22 @@ const ML_DSA_65_OID: &[u8] = &[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0
 #[cfg(feature = "mldsa")]
 const ML_DSA_87_OID: &[u8] = &[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x13];
 
+/// `id-ecPublicKey` (`1.2.840.10045.2.1`) and the two namedCurves (RFC 5480).
+#[cfg(feature = "ecdsa")]
+const EC_PUBLIC_KEY_OID: &[u8] = &[0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x02, 0x01];
+/// `secp256r1` — `1.2.840.10045.3.1.7`.
+#[cfg(feature = "ecdsa")]
+const SECP256R1_OID: &[u8] = &[0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07];
+/// `secp384r1` — `1.3.132.0.34`.
+#[cfg(feature = "ecdsa")]
+const SECP384R1_OID: &[u8] = &[0x2B, 0x81, 0x04, 0x00, 0x22];
+
+/// SEC1 uncompressed-point byte lengths (`0x04 || X || Y`) per curve.
+#[cfg(feature = "ecdsa")]
+const P256_SEC1_LEN: usize = 65;
+#[cfg(feature = "ecdsa")]
+const P384_SEC1_LEN: usize = 97;
+
 /// `2.5.29.17` — `id-ce-subjectAltName`.
 const SAN_OID: &[u8] = &[0x55, 0x1D, 0x11];
 
@@ -44,6 +60,10 @@ enum SpkiKind {
     /// the parse step can reject an OID/key-length mismatch.
     #[cfg(feature = "mldsa")]
     MlDsa(usize),
+    #[cfg(feature = "ecdsa")]
+    EcdsaP256,
+    #[cfg(feature = "ecdsa")]
+    EcdsaP384,
 }
 
 fn malformed<E>(_: E) -> CertParseError {
@@ -212,8 +232,39 @@ impl CertParser for DerCert {
                     validity_der,
                 })
             }
+            #[cfg(feature = "ecdsa")]
+            SpkiKind::EcdsaP256 => {
+                ec_sec1_point(pk_bytes, P256_SEC1_LEN)?;
+                Ok(CertView::EcdsaP256 {
+                    tbs: tbs_full,
+                    signature: sig_bytes,
+                    pubkey: pk_bytes,
+                    san: san_bytes,
+                    validity_der,
+                })
+            }
+            #[cfg(feature = "ecdsa")]
+            SpkiKind::EcdsaP384 => {
+                ec_sec1_point(pk_bytes, P384_SEC1_LEN)?;
+                Ok(CertView::EcdsaP384 {
+                    tbs: tbs_full,
+                    signature: sig_bytes,
+                    pubkey: pk_bytes,
+                    san: san_bytes,
+                    validity_der,
+                })
+            }
         }
     }
+}
+
+/// Reject anything but a SEC1 uncompressed point (`0x04` prefix) of `expect_len`.
+#[cfg(feature = "ecdsa")]
+fn ec_sec1_point(pk_bytes: &[u8], expect_len: usize) -> Result<(), CertParseError> {
+    if pk_bytes.len() != expect_len || pk_bytes.first() != Some(&0x04) {
+        return Err(CertParseError::WrongEcdsaPubkey);
+    }
+    Ok(())
 }
 
 /// Skip past `[1]`/`[2]` unique identifiers and walk `[3] EXPLICIT
@@ -306,6 +357,21 @@ fn classify_spki_algorithm(alg_id_bytes: &[u8]) -> Result<SpkiKind, CertParseErr
             }
             return Ok(SpkiKind::MlDsa(pk_len));
         }
+    }
+    #[cfg(feature = "ecdsa")]
+    if oid_tlv.body == EC_PUBLIC_KEY_OID {
+        // RFC 5480 §2.1.1: parameters is the namedCurve OID.
+        let curve_tlv = take_tlv(&mut r)?;
+        if curve_tlv.tag != TAG_OID || !r.is_empty() {
+            return Err(CertParseError::AlgorithmHasParameters);
+        }
+        if curve_tlv.body == SECP256R1_OID {
+            return Ok(SpkiKind::EcdsaP256);
+        }
+        if curve_tlv.body == SECP384R1_OID {
+            return Ok(SpkiKind::EcdsaP384);
+        }
+        return Err(CertParseError::WrongAlgorithmOid);
     }
     Err(CertParseError::WrongAlgorithmOid)
 }

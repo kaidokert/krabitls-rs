@@ -14,6 +14,7 @@
     not(feature = "chacha20"),
     not(feature = "rsa"),
     not(feature = "mldsa"),
+    not(feature = "ecdsa"),
     not(feature = "mlkem")
 ))]
 

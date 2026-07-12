@@ -10,6 +10,8 @@ autobins = false
 # supplies a `SystemTimeSource` clock so it's active by default.
 default = []
 rsa = ["krabitls/rsa"]
+# ECDSA P-256/P-384 server-cert verification.
+ecdsa = ["krabitls/ecdsa"]
 # Advertise TLS_CHACHA20_POLY1305_SHA256 alongside AES-128-GCM-SHA256.
 chacha20 = ["krabitls/chacha20"]
 

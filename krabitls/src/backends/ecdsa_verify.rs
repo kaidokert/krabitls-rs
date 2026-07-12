@@ -6,10 +6,6 @@
 //! `PrehashVerifier` wants fixed-width IEEE-P1363 `r || s`, so the DER decoder
 //! here bridges the two before every verify.
 
-// The cert / CertificateVerify dispatch is the consumer of these verifiers; it
-// is wired in a following slice, so the surface is exercised only by tests here.
-#![allow(dead_code)]
-
 use crate::bigint::{EcdsaP256Bn, EcdsaP384Bn};
 use krabiecdsa::{p256, p384};
 use signature::hazmat::PrehashVerifier;
