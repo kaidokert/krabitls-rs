@@ -727,11 +727,13 @@ mod tests {
                 let ca = DerCert::parse(&RSA_CA).expect("parse RSA CA");
                 let mut der = LEAF_ECDSA_RSA_SIGNED;
                 der[30] ^= 0x01;
-                // Either the mutated TBS fails to parse, or it parses and the
-                // RSA issuer signature no longer covers it — both are rejects.
-                if let Ok(leaf) = DerCert::parse(&der) {
-                    assert!(verify_link::<RustCrypto, RustCrypto>(&leaf, &ca).is_err());
-                }
+                // The mutated TBS must be rejected whether it fails to parse or
+                // parses but the RSA issuer signature no longer covers it — a
+                // silent parse failure must not vacuously pass the test.
+                let verified = DerCert::parse(&der).map_err(|_| ()).and_then(|leaf| {
+                    verify_link::<RustCrypto, RustCrypto>(&leaf, &ca).map_err(|_| ())
+                });
+                assert!(verified.is_err());
             }
         }
     }
