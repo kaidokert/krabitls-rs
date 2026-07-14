@@ -20,6 +20,7 @@ chacha20 = ["footprint_handshakes/chacha20"]
 cert-der = ["footprint_handshakes/cert-der"]
 cipher-aes = ["footprint_handshakes/cipher-aes"]
 canned-replay = ["footprint_handshakes/canned-replay"]
+full-stack = ["footprint_handshakes/full-stack"]
 
 [[example]]
 name = "krabitls"
@@ -74,3 +75,15 @@ opt-level = "z"
 # Suppress unwind tables / `.eh_frame`; otherwise the rust-lld RV32 PCREL
 # relocations overflow once the binary grows past a few KiB.
 panic = "abort"
+
+# EXPERIMENT: HeaplessBigint backend — patch the shared trait/modmath crates to
+# the alpha line krabitls (path dep) pins. Patches do not propagate from
+# krabitls, so each footprint target root must carry them.
+[patch.crates-io]
+const-num-traits = { git = "https://github.com/kaidokert/num-traits.git", tag = "v0.2.1-alpha.1" }
+modmath = { git = "https://github.com/kaidokert/modmath-rs.git", tag = "v0.6.0-alpha.cios.8" }
+modmath-cios = { git = "https://github.com/kaidokert/modmath-rs.git", tag = "v0.6.0-alpha.cios.8" }
+
+[[example]]
+name = "krabitls_full"
+required-features = ["full-stack", "canned-replay"]

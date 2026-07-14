@@ -38,6 +38,7 @@ chacha20 = ["footprint_handshakes/chacha20"]
 # (`DefaultStream::connect`) through the seed-0 canned fixtures via
 # `SeededRng` + `CannedTransport`.
 canned-replay = ["footprint_handshakes/canned-replay"]
+full-stack = ["footprint_handshakes/full-stack"]
 # Opt-in size-clawback feature: forward to footprint_handshakes / krabitls.
 ip-host = ["footprint_handshakes/ip-host"]
 
@@ -107,3 +108,15 @@ unexpected_cfgs = { level = "warn", check-cfg = [
     'cfg(thumbv7m)',
     'cfg(thumbv7em)',
 ] }
+
+# EXPERIMENT: HeaplessBigint backend — patch the shared trait/modmath crates to
+# the alpha line krabitls (path dep) pins. Patches do not propagate from
+# krabitls, so each footprint target root must carry them.
+[patch.crates-io]
+const-num-traits = { git = "https://github.com/kaidokert/num-traits.git", tag = "v0.2.1-alpha.1" }
+modmath = { git = "https://github.com/kaidokert/modmath-rs.git", tag = "v0.6.0-alpha.cios.8" }
+modmath-cios = { git = "https://github.com/kaidokert/modmath-rs.git", tag = "v0.6.0-alpha.cios.8" }
+
+[[example]]
+name = "krabitls_full"
+required-features = ["full-stack", "canned-replay"]

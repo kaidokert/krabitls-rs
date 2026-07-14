@@ -33,6 +33,9 @@ mlkem = ["krabitls/mlkem"]
 mldsa = ["krabitls/mldsa"]
 # ECDSA P-256 server-cert verification (secp256r1 / SHA-256).
 ecdsa = ["krabitls/ecdsa"]
+# EXPERIMENT: fully-featured verify surface — plain krabitls/rsa (both U1024+U2048,
+# both PKCS1v15+PSS), all sig algos. NOT footprint `rsa` (that forces rsa_2048_only).
+full-stack = ["krabitls/rsa", "krabitls/ecdsa", "krabitls/mldsa", "krabitls/mlkem"]
 jedisct = ["krabitls/jedisct"]
 # Full handshake via `DefaultStream::connect` against the captured seed-0
 # fixtures (SeededRng + CannedTransport), now in the krabitls_fixtures crate.

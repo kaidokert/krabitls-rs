@@ -1,36 +1,43 @@
 //! Central bigint-backend selection. EXPERIMENT (branch
-//! `experiment/bigint-heapless-runtime-len`): the carriers are fixed-bigint
-//! 0.6's runtime-length `HeaplessBigInt<u32, CAP, P>` instead of the
-//! compile-time `FixedUInt<u32, N>`. `CAP` is the max limb count (== the old
-//! `N`); `len` tracks the used limbs at runtime. `const_num_traits::{Nct, Ct}`
-//! select the personality exactly as before. A backend-swap probe — never for
-//! merge.
+//! `experiment/bigint-heapless-unified-cap64`): every carrier collapses to a
+//! SINGLE runtime-length `HeaplessBigInt<u32, 64, P>` capacity (2048 bits).
+//! Because the carrier is runtime-*length* (`len` tracks used limbs, `CAP` is
+//! only the max), a 256-bit ECDSA scalar, a 512-bit curve value, and a 2048-bit
+//! RSA modulus all live in the same `CAP=64` type at different `len`. The bet:
+//! one monomorphization instead of five (CAP 8/12/16/32/64) shrinks `.text` at
+//! the cost of every value carrying a 256-byte footprint. Correctness rides
+//! entirely on the value-width arithmetic being CAP-independent — never for merge.
 
 use fixed_bigint::HeaplessBigInt;
 
-/// 512-bit vartime carrier for Ed25519 *verification*.
-pub(crate) type Curve25519VerifyBn = HeaplessBigInt<u32, 16>;
+/// Unified 2048-bit-capacity vartime carrier — one type for every Nct role.
+pub(crate) type UnifiedBn = HeaplessBigInt<u32, 64>;
 
-/// 512-bit constant-time carrier for X25519 + Ed25519 *signing* — secret scalar.
-pub(crate) type Curve25519CtBn = HeaplessBigInt<u32, 16, const_num_traits::Ct>;
+/// Unified 2048-bit-capacity constant-time carrier — one type for every Ct role.
+pub(crate) type UnifiedCtBn = HeaplessBigInt<u32, 64, const_num_traits::Ct>;
 
-/// 1024-bit RSA-1024 *verification* carrier.
+/// Ed25519 *verification* carrier (held at `len` 8 in CAP 64).
+pub(crate) type Curve25519VerifyBn = UnifiedBn;
+
+/// Constant-time carrier for X25519 + Ed25519 *signing* — secret scalar.
+pub(crate) type Curve25519CtBn = UnifiedCtBn;
+
+/// RSA-1024 *verification* carrier.
 #[cfg(all(feature = "rsa", not(feature = "rsa_2048_only")))]
-pub(crate) type RsaU1024 = HeaplessBigInt<u32, 32>;
+pub(crate) type RsaU1024 = UnifiedBn;
 
-/// 2048-bit RSA-2048 *verification* carrier — the modexp exponent is public.
+/// RSA-2048 *verification* carrier — the modexp exponent is public.
 #[cfg(feature = "rsa")]
-pub(crate) type RsaU2048 = HeaplessBigInt<u32, 64>;
+pub(crate) type RsaU2048 = UnifiedBn;
 
-/// 2048-bit constant-time carrier for RSA-2048 *signing* — the exponent is the
-/// private `d`.
+/// Constant-time carrier for RSA-2048 *signing* — the exponent is the private `d`.
 #[cfg(feature = "rsa")]
-pub(crate) type RsaSignBn = HeaplessBigInt<u32, 64, const_num_traits::Ct>;
+pub(crate) type RsaSignBn = UnifiedCtBn;
 
-/// 256-bit vartime carrier for ECDSA P-256 *verification*.
+/// ECDSA P-256 *verification* carrier (held at `len` 8 in CAP 64).
 #[cfg(feature = "ecdsa")]
-pub(crate) type EcdsaP256Bn = HeaplessBigInt<u32, 8>;
+pub(crate) type EcdsaP256Bn = UnifiedBn;
 
-/// 384-bit vartime carrier for ECDSA P-384 *verification*.
+/// ECDSA P-384 *verification* carrier (held at `len` 12 in CAP 64).
 #[cfg(feature = "ecdsa")]
-pub(crate) type EcdsaP384Bn = HeaplessBigInt<u32, 12>;
+pub(crate) type EcdsaP384Bn = UnifiedBn;
