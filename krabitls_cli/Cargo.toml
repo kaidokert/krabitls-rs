@@ -28,3 +28,6 @@ zeroize = { version = "1.8", default-features = false }
 [[bin]]
 name = "krabitls_connect"
 required-features = ["rsa"]
+
+[patch.crates-io]
+modmath = { git = "https://github.com/kaidokert/modmath-rs.git", tag = "v0.6.0-alpha.cios.36" }
