@@ -924,7 +924,11 @@ pub fn baseline_mlkem_mldsa_facade() -> bool {
 /// (CAP 64), ECDSA P-256 (CAP 8) + P-384 (CAP 12), ML-DSA. The empty transport
 /// makes `connect` return `Err`; only the *linked* `.text` matters for the size
 /// measurement, never run under QEMU.
-#[cfg(all(feature = "full-stack", feature = "canned-replay", feature = "cipher-aes"))]
+#[cfg(all(
+    feature = "full-stack",
+    feature = "canned-replay",
+    feature = "cipher-aes"
+))]
 pub fn run_full_stack() -> bool {
     facade_scratch::with(|scratch| {
         let mut rng = krabitls_fixtures::SeededRng::new(0);
