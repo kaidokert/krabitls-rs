@@ -1929,6 +1929,9 @@ mod cipher_aes {
         /// is RSA-2048-only by policy, so this drives the signing primitive
         /// directly to exercise the carrier at natural width `< CAP` — the one
         /// shape the `len == CAP` deployment tests never touch.
+        // RSA-1024 verify is compiled out under `rsa_2048_only`; the
+        // sub-capacity 1024-bit scenario only exists when it is present.
+        #[cfg(not(feature = "rsa_2048_only"))]
         #[test]
         fn rsa_sub_capacity_1024_sign_verify_round_trips() {
             use rsa::{
