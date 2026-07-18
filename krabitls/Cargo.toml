@@ -95,7 +95,7 @@ hmac-sha256 = { version = "1", default-features = false, features = ["traits011"
 # EXPERIMENT: rsa_heapless 0.5.0-alpha.1 (git) depends on modmath 0.6 (the
 # RuntimeBits/BitsPrecision line) — that's what lets the modmath 0.6 patch below
 # actually apply and clears PrimBits on the RSA path.
-rsa_heapless = { git = "https://github.com/kaidokert/RSA.git", tag = "v0.5.0-alpha.9", default-features = false, features = ["modmath"], optional = true }
+rsa_heapless = { git = "https://github.com/kaidokert/RSA.git", tag = "v0.5.0-alpha.11", default-features = false, features = ["modmath"], optional = true }
 
 # RustCrypto next line — all share hybrid-array / crypto-common 0.2.
 aes-gcm = { version = "0.11", default-features = false, features = ["aes", "zeroize"], optional = true }
@@ -111,14 +111,14 @@ sha2 = { version = "0.11", default-features = false }
 digest = { version = "0.11", default-features = false }
 hmac = { version = "0.13", default-features = false }
 hkdf = { version = "0.13", default-features = false }
-ed25519_heapless = { git = "https://github.com/kaidokert/ed25519.git", tag = "v0.5.0-alpha.10", default-features = false, features = ["sha512-sha2"] }
+ed25519_heapless = { git = "https://github.com/kaidokert/ed25519.git", tag = "v0.5.0-alpha.11", default-features = false, features = ["sha512-sha2"] }
 # EXPERIMENT (branch experiment/bigint-heapless-runtime-len): swap the compile-time
 # `FixedUInt<u32, N>` carriers in crate::bigint for fixed-bigint 0.6's runtime-length
-# `HeaplessBigInt<u32, CAP, P>` (same crate, alpha.6 git tag). Backend-swap probe:
+# `HeaplessBigInt<u32, CAP, P>` (fixed-bigint 0.6.0, crates.io). Backend-swap probe:
 # does the runtime-len carrier satisfy the ed25519_heapless / rsa_heapless / krabiecdsa
 # generic bounds? Never for merge.
-fixed-bigint = { git = "https://github.com/kaidokert/fixed-bigint-rs", tag = "v0.6.0-alpha.27", default-features = false, features = ["use-unsafe", "zeroize", "cios", "heapless-runtime-len"] }
-const-num-traits = { version = "0.2", default-features = false, features = ["ct"] }
+fixed-bigint = { version = "0.6.0", default-features = false, features = ["use-unsafe", "zeroize", "cios"] }
+const-num-traits = { version = "0.2.1", default-features = false, features = ["ct"] }
 der = { version = "0.8.0", default-features = false, features = ["oid"], optional = true }
 zeroize = { version = "1.8", default-features = false, features = ["derive"] }
 heapless = { version = "0.9", default-features = false }
@@ -126,8 +126,8 @@ subtle = { version = "2.6", default-features = false }
 thiserror = { version = "2", default-features = false }
 signature = { version = "3", default-features = false }
 rand_core = { version = "0.10", default-features = false }
-krabipqc = { git = "https://github.com/kaidokert/krabipqc-rs.git", tag = "v0.1.4-alpha.1", default-features = false, optional = true }
-krabiecdsa = { git = "https://github.com/kaidokert/krabiecdsa-rs.git", tag = "v0.2.0-alpha.9", default-features = false, optional = true }
+krabipqc = { git = "https://github.com/kaidokert/krabipqc-rs.git", tag = "v0.1.4-alpha.2", default-features = false, optional = true }
+krabiecdsa = { git = "https://github.com/kaidokert/krabiecdsa-rs.git", tag = "v0.2.0-alpha.10", default-features = false, optional = true }
 
 # Deterministic SeededRng + CannedTransport for the host facade replay
 # tests. Dev-only so the seed-mode RNG (a `TryCryptoRng` that is NOT a
@@ -138,14 +138,9 @@ krabiecdsa = { git = "https://github.com/kaidokert/krabiecdsa-rs.git", tag = "v0
 [dev-dependencies]
 krabitls_fixtures = { path = "../krabitls_fixtures", default-features = false }
 
-# EXPERIMENT: pin the whole graph to the const-num-traits alpha (carries the
-# RuntimeBits split) so krabitls, fixed-bigint, modmath, rsa_heapless,
-# ed25519_heapless and krabiecdsa all resolve to ONE const-num-traits — a bare
-# dep pin splits into 0.2.0 (crates.io) + 0.2.1 (git) and the traits mismatch.
+# modmath is the only unpublished layer — pin it by immutable git tag. cnt,
+# fixed-bigint and modmath-cios now resolve from crates.io (bottom layers
+# published); the graph stays single-modmath via the shared cios.36 tag that
+# every crypto crate pins.
 [patch.crates-io]
-const-num-traits = { git = "https://github.com/kaidokert/num-traits.git", tag = "v0.2.1-alpha.3" }
-# modmath alpha.cios.2 re-bounds UnsignedModularInt on RuntimeBits (transitive
-# via rsa_heapless/krabiecdsa/fixed-bigint); both workspace crates patched so
-# the trait surface stays consistent across the graph.
-modmath = { git = "https://github.com/kaidokert/modmath-rs.git", tag = "v0.6.0-alpha.cios.25" }
-modmath-cios = { git = "https://github.com/kaidokert/modmath-rs.git", tag = "v0.6.0-alpha.cios.25" }
+modmath = { git = "https://github.com/kaidokert/modmath-rs.git", tag = "v0.6.0-alpha.cios.36" }
