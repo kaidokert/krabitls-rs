@@ -95,7 +95,7 @@ hmac-sha256 = { version = "1", default-features = false, features = ["traits011"
 # EXPERIMENT: rsa_heapless 0.5.0-alpha.1 (git) depends on modmath 0.6 (the
 # RuntimeBits/BitsPrecision line) — that's what lets the modmath 0.6 patch below
 # actually apply and clears PrimBits on the RSA path.
-rsa_heapless = { git = "https://github.com/kaidokert/RSA.git", tag = "v0.5.0-alpha.11", default-features = false, features = ["modmath"], optional = true }
+rsa_heapless = { git = "https://github.com/kaidokert/RSA.git", tag = "v0.5.0-alpha.12", default-features = false, features = ["modmath"], optional = true }
 
 # RustCrypto next line — all share hybrid-array / crypto-common 0.2.
 aes-gcm = { version = "0.11", default-features = false, features = ["aes", "zeroize"], optional = true }
