@@ -113,9 +113,7 @@ unexpected_cfgs = { level = "warn", check-cfg = [
 # the alpha line krabitls (path dep) pins. Patches do not propagate from
 # krabitls, so each footprint target root must carry them.
 [patch.crates-io]
-const-num-traits = { git = "https://github.com/kaidokert/num-traits.git", tag = "v0.2.1-alpha.1" }
-modmath = { git = "https://github.com/kaidokert/modmath-rs.git", tag = "v0.6.0-alpha.cios.8" }
-modmath-cios = { git = "https://github.com/kaidokert/modmath-rs.git", tag = "v0.6.0-alpha.cios.8" }
+modmath = { git = "https://github.com/kaidokert/modmath-rs.git", tag = "v0.6.0-alpha.cios.36" }
 
 [[example]]
 name = "krabitls_full"
