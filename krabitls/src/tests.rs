@@ -1879,6 +1879,120 @@ mod cipher_aes {
             }
         }
 
+        /// RSA-3072 self-signed cert (openssl, same key as the 3072 KAT) parses
+        /// through the real DER path — exercises the parser's 384-byte accept
+        /// branch, not just the `RsaVerifierKey::new` fast path.
+        #[cfg(feature = "rsa-3072")]
+        #[test]
+        fn rsa_3072_cert_parses_as_rsa_view() {
+            const CERT: [u8; 1061] = crate::hex_decode(
+                "3082042130820289a003020102021477b19a597cf2de6f2caa8dad5380778945\
+                 ac2faa300d06092a864886f70d01010b05003020311e301c06035504030c156b\
+                 72616269746c732d727361333037322d74657374301e170d3236303731393039\
+                 303033315a170d3236303732303039303033315a3020311e301c06035504030c\
+                 156b72616269746c732d727361333037322d74657374308201a2300d06092a86\
+                 4886f70d01010105000382018f003082018a02820181008b3929bb82fb281911\
+                 5cc1ff58a41998d0b55e3885f8d0dc5c71496c351deb5ce840cfe6a364a8fd04\
+                 1bb8e8ab3d54d964c5d0e2bb08d3c5e9559b14cf8468e625011eb0edb39c04a0\
+                 cff9b52ebfd870e4f6c7ec79bd9c213406583ae7281c5c35bcfce64f4690af0f\
+                 f56a2a070bbc937843a6f05573b990593198c59d65a25f84dfc805ae76f9dd77\
+                 9cc42d1caacae54a9c0e68dc5d4fad3e955e77277b0f7735fd0bb09a111513b4\
+                 c49aa064c43d403640b13b415d495e43683d1e63d19313a4f8f2765780669643\
+                 14f882a66713e7e755f887a8a656f8783572782f7c87b3dc5a630a8a67c41984\
+                 57af5fba335bc3679f7be913b0d5329afc4a2a382ddcc553245fee3063f6f597\
+                 fba9b75473fa47b4a398401164c75a98f3422f47a7040b9db40ae9151e7b434c\
+                 04739194918ff542ce8c11fce8c71f139480aba898a42e534b1362264fa1576a\
+                 aecb67cc871b7572673cb3ff6c4b7f856b96b43c48c7111dafbabbdb0bd2d802\
+                 6fe80328c57ffd1f32f9abea322625fd19b7c5668fd80f0203010001a3533051\
+                 301d0603551d0e04160414a412b12f6744838034954c8c44a397d9cc192f3c30\
+                 1f0603551d23041830168014a412b12f6744838034954c8c44a397d9cc192f3c\
+                 300f0603551d130101ff040530030101ff300d06092a864886f70d01010b0500\
+                 038201810007a56f6757ef90b5f9daca40679ff9f2ddd041b8f7c9d287a6a74e\
+                 3add86212b5d7b4b9e8b17b27edacfb7e9526c05a46a0ccab994b2d9af5c6c5c\
+                 717933f0f7738294508560b1d173cecc3c84756c5ed7ca8043af284d20eb3f6b\
+                 4843a39856c959539076407946dc49fcc0444ab6ca42983c7fc3f014b88f06ed\
+                 88caf278157f3a55bdd1b8ad018dd81fdb8d8d9efb5fdd4a5a782a9619a010a5\
+                 01608a948b2ba4e15b116dbb52abc5abc350cdc9467b29f63214408df23c4eaf\
+                 d46f14176641ce11ee2809a03b6d32cabe16f53e867963bae70e9a0f3afa2afe\
+                 477b2a31850e62823412881f3afa8312e14e0ba159df33d3e61b752ce9ae795f\
+                 90eb8fafbef5700a631763fadf878994b7e8987999cf8a6207629c9b5989f02b\
+                 1aa07081ecb54ca2d66fcd6223200c1c80b0965b0104b883cf286ec2d5993803\
+                 6d5450fefec23ce7a38836a7a2ffe28a6969a92a9fb749a96453ef904ebbb82b\
+                 4df88ebda06e3b88be5cbf125677ccdcf295e2f6e71f9d545d3b2332f0e12b49\
+                 e1a4074bfc",
+            );
+            match <DerCert as CertParser>::parse(&CERT).expect("RSA-3072 cert parses") {
+                CertView::Rsa {
+                    modulus, exponent, ..
+                } => {
+                    assert_eq!(modulus.len(), 384);
+                    assert_eq!(exponent, 65537);
+                }
+                view => panic!("expected CertView::Rsa, got {:?}", view),
+            }
+        }
+
+        /// RSA-4096 self-signed cert (openssl, same key as the 4096 KAT) parses
+        /// through the real DER path — exercises the parser's 512-byte accept
+        /// branch, not just the `RsaVerifierKey::new` fast path.
+        #[cfg(feature = "rsa-4096")]
+        #[test]
+        fn rsa_4096_cert_parses_as_rsa_view() {
+            const CERT: [u8; 1317] = crate::hex_decode(
+                "3082052130820309a003020102021436f342c76097f73e8b74da666ab81b7423\
+                 af14db300d06092a864886f70d01010b05003020311e301c06035504030c156b\
+                 72616269746c732d727361343039362d74657374301e170d3236303731393039\
+                 303033315a170d3236303732303039303033315a3020311e301c06035504030c\
+                 156b72616269746c732d727361343039362d7465737430820222300d06092a86\
+                 4886f70d01010105000382020f003082020a0282020100bb5e23d903a3938b90\
+                 12ee497960f1b95b5fdfab87e18bf8b13c080d5501524e58c0ece4a8be7dfb41\
+                 58a61b9b0ea1480417e1204435a9162883d424a98c98c1fdd0baab4300f77eb4\
+                 a91bf76667a9300218b0c81abe03249c7e95661629cb401fcf8d16fb090a5ed9\
+                 689c628afd756eb828da77a71fa8a887b52083ae77100712529bd7eb7cb8788f\
+                 7a75de418c1551e737338cc81cc3bcbe431a373dc9f16f3d01147a7b18acc5c7\
+                 68342afbb6adf591867650a491cbefebda20197c96b6d5709f39e47c15162af1\
+                 c42c81e01f42d0654ecb778d94fffd2b46f33bb32e05b5f4298ebf7cf7b6a2de\
+                 e9993a1a82b5f46994a043215dc2bfe21c6f0bf3db6ef4e6c3d06f46489ac08a\
+                 ce5b7cd9ebec50f51b61447c57e13beedbb3830c488f16c61a48ecb6c0865c20\
+                 4fe0d19241852325b721e9593b37aefaf43fc043939b690c7964e5bfed029366\
+                 bf3be88667a57f27ebc6cff37caaaddee89c2029c98afb3c65c6996a3ed8a006\
+                 2d9478271b872f87ef149ed82d8f28aa5eb25d9ce6d9c0ce63f803a95f016cc4\
+                 c9b2862e9143dce4f85049721a6ba74dfe8fd9c7fc981a78b60272887b33d74a\
+                 88c0294a1fd4e3d2b82f351eb281cd1df6943c3741808b24ebb6316da8085dde\
+                 021cc65c1c6ee020a6920abd8d740a0dbd524e42088f2cf0189fa45a0d043db4\
+                 79ead8d60e52d894906ba8f2884827dfa3a93e11267de30203010001a3533051\
+                 301d0603551d0e041604147b252a88b046274b33ff67272d7a5ac5dd5f6ce130\
+                 1f0603551d230418301680147b252a88b046274b33ff67272d7a5ac5dd5f6ce1\
+                 300f0603551d130101ff040530030101ff300d06092a864886f70d01010b0500\
+                 03820201005e5a628cd21ef97fd8aa08ebb5ddf7d9cb317720bf8c6990a3baa3\
+                 82fcdb989845919e79adaaf64bb71ce2aa762320fefa47901349c07f45104f88\
+                 931d42f8e625f076d5fa2aaf4305b0c106fb8490c94cc7f9bca71c07abc85429\
+                 dcb8dee9da59c7a4ced8d7420e7190137a847ec3c435ce73ec15b5c8eee6104c\
+                 0bd1525f64e0d0abf4ae996d029378a199bb038e2dc29ac488514dfa8bb729b6\
+                 4c878132da309aa86ef3c64da9ecca1241715c75357360493dadc98b9e2c9040\
+                 6a5635e5eb6a711bb5e34461e5c2686d9ccd2587e315a3d158b79e27097e3225\
+                 d48eac499479f8ca3f01c778d785fb55aa0067d88e561bfb7674d044b0e048db\
+                 8303f27ee02e485bee498d6a1642ef7d3c34ddceab32016114b3009f808707ef\
+                 9b59a5eaaa71ff5058f20a84a9193a4867f73232a2eb5cc8a90c7a915dc8c7ab\
+                 6b92e456feaf66c90903d0a11755cef235a42d1ebd6a35ca67e9a99eb2e359f9\
+                 9e53a4d208223aa5460557da4a4159d2545f187dc8cda5b5f0d26d572fe177e2\
+                 49027295ed888444a45e26af66211a86679c4a9c40c771dcf90d9ac0828d786e\
+                 2a0073f3241b0999e0790c7b154900b6090cbd9bfb3c809fbcb17ac965eaeb27\
+                 30132c515384001a4827f082d70910bccd22fd3d54422e1a24fa7194d497ddd6\
+                 bb83b8e8ed06d32ff56b1cafbd489e8ac1d1a08d9b89708d05a7ded6546eb225\
+                 36b4160741",
+            );
+            match <DerCert as CertParser>::parse(&CERT).expect("RSA-4096 cert parses") {
+                CertView::Rsa {
+                    modulus, exponent, ..
+                } => {
+                    assert_eq!(modulus.len(), 512);
+                    assert_eq!(exponent, 65537);
+                }
+                view => panic!("expected CertView::Rsa, got {:?}", view),
+            }
+        }
+
         /// Throwaway RSA-2048 keypair (`openssl genpkey`) — a test vector,
         /// not a real credential.
         const CLIENT_N: [u8; 256] = crate::hex_decode(
