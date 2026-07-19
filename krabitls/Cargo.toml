@@ -28,6 +28,13 @@ rustdoc-args = ["--cfg", "docsrs"]
 default = ["cert-der", "cipher-aes"]
 # Expose internal helpers that aren't part of the TLS 1.3 API
 dev-utils = []
+# Bigint carrier config. Default (this feature OFF): per-role compile-time
+# `FixedUInt` widths — one monomorphization per width, smallest per-algo. ON: a
+# single runtime-length `HeaplessBigInt` (2048-bit CAP) with separate Nct+Ct
+# carriers (two monomorphizations) — one width holds every algorithm, far less
+# `.text` on multi-algo builds at a wider per-value footprint. Fixed is the
+# absence of this feature, so `--no-default-features` still selects a carrier.
+bigint-heapless = []
 # Optional RSA cert + CertificateVerify support (rsa_pss_rsae_sha256 + the
 # self-signed cert's outer PKCS#1-v1.5). Pulls in rsa_heapless. The default
 # (rsa-disabled) binary is untouched. Both 1024- and 2048-bit RSA moduli via
