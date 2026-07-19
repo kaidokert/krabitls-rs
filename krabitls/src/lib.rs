@@ -814,3 +814,6 @@ impl<'a> Reader<'a> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod backend_matrix;
