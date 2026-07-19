@@ -36,6 +36,9 @@ ecdsa = ["krabitls/ecdsa"]
 # Fully-featured verify surface — plain krabitls/rsa (both U1024+U2048,
 # both PKCS1v15+PSS), all sig algos. NOT footprint `rsa` (that forces rsa_2048_only).
 full-stack = ["krabitls/rsa", "krabitls/ecdsa", "krabitls/mldsa", "krabitls/mlkem"]
+# Forward the unified heapless carrier so the probes can measure it against the
+# default per-role FixedUInt carrier.
+bigint-heapless = ["krabitls/bigint-heapless"]
 jedisct = ["krabitls/jedisct"]
 # Full handshake via `DefaultStream::connect` against the captured seed-0
 # fixtures (SeededRng + CannedTransport), now in the krabitls_fixtures crate.

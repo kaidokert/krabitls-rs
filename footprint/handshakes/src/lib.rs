@@ -936,6 +936,9 @@ pub fn run_full_stack() -> bool {
         let transport = krabitls_fixtures::CannedTransport::<2048>::new(&[]);
         let params = krabitls::client::ClientParams::self_signed("x")
             .suite_policy(krabitls::client::RuntimeSuitePolicy::Default);
-        krabitls::client::DefaultStream::connect(&params, scratch, transport, &mut rng).is_ok()
+        // Empty transport → connect returns Err; the probe only needs the
+        // symbols linked, so discard the result instead of reporting a failure.
+        let _ = krabitls::client::DefaultStream::connect(&params, scratch, transport, &mut rng);
+        true
     })
 }

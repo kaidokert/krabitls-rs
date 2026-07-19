@@ -39,6 +39,7 @@ chacha20 = ["footprint_handshakes/chacha20"]
 # `SeededRng` + `CannedTransport`.
 canned-replay = ["footprint_handshakes/canned-replay"]
 full-stack = ["footprint_handshakes/full-stack"]
+bigint-heapless = ["footprint_handshakes/bigint-heapless"]
 # Opt-in size-clawback feature: forward to footprint_handshakes / krabitls.
 ip-host = ["footprint_handshakes/ip-host"]
 

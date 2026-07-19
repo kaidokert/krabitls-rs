@@ -52,6 +52,9 @@ jobs:
           - "cert-der,chacha20"                                    # ChaCha-only cipher
           - "cert-der,cipher-aes,mldsa,mlkem"
           - "cert-der,cipher-aes,rsa,ecdsa,mldsa,mlkem,chacha20"   # full
+          - "cert-der,cipher-aes,rsa,rsa_pss_only"                 # PSS-only cert path
+          - "cert-der,cipher-aes,jedisct"                          # jedisct HKDF backend
+          - "cert-der,cipher-aes,ip-host"                          # IP-literal SAN matching
     steps:
     - uses: actions/checkout@v4
       with:
