@@ -22,10 +22,10 @@ cipher-aes = ["krabitls/cipher-aes", "krabitls_fixtures?/cipher-aes"]
 # Optional ChaCha20-Poly1305 + RSA-PSS variants follow the krabitls feature
 # wiring so each target crate can include or exclude them.
 chacha20 = ["krabitls/chacha20", "krabitls_fixtures?/chacha20"]
-# Footprint replays a PSS-signed RSA-2048 captured cert; enable both
-# rsa_pss_only (drops PKCS#1-v1.5) and rsa_2048_only (drops U1024) so LTO
+# Footprint replays a PSS-signed RSA-2048 captured cert; `krabitls/rsa` is
+# already 2048-only (no U1024) and rsa_pss_only drops PKCS#1-v1.5 so LTO
 # strips the unreachable paths from the M3/RV measurement.
-rsa = ["krabitls/rsa", "krabitls/rsa_pss_only", "krabitls/rsa_2048_only"]
+rsa = ["krabitls/rsa", "krabitls/rsa_pss_only"]
 # X25519MLKEM768 hybrid key exchange and/or ML-DSA-44 server-cert verification
 # (post-quantum). `SeededRng` carries the ML-KEM keygen entropy unconditionally,
 # so no fixtures-crate feature is forwarded.
@@ -33,9 +33,9 @@ mlkem = ["krabitls/mlkem"]
 mldsa = ["krabitls/mldsa"]
 # ECDSA P-256 server-cert verification (secp256r1 / SHA-256).
 ecdsa = ["krabitls/ecdsa"]
-# Fully-featured verify surface — plain krabitls/rsa (both U1024+U2048,
-# both PKCS1v15+PSS), all sig algos. NOT footprint `rsa` (that forces rsa_2048_only).
-full-stack = ["krabitls/rsa", "krabitls/ecdsa", "krabitls/mldsa", "krabitls/mlkem"]
+# Fully-featured verify surface — U1024+U2048 (both PKCS1v15+PSS), all sig
+# algos. NOT footprint `rsa` (that is 2048-only, no U1024).
+full-stack = ["krabitls/rsa", "krabitls/rsa-1024", "krabitls/ecdsa", "krabitls/mldsa", "krabitls/mlkem"]
 # Forward the unified heapless carrier so the probes can measure it against the
 # default per-role FixedUInt carrier.
 bigint-heapless = ["krabitls/bigint-heapless"]

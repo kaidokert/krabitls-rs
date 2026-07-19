@@ -26,7 +26,7 @@ mod carrier {
     pub(crate) type Curve25519CtBn = FixedUInt<u32, 16, const_num_traits::Ct>;
 
     /// 1024-bit RSA *verification* carrier.
-    #[cfg(all(feature = "rsa", not(feature = "rsa_2048_only")))]
+    #[cfg(feature = "rsa-1024")]
     pub(crate) type RsaU1024 = FixedUInt<u32, 32>;
     /// 2048-bit RSA *verification* carrier.
     #[cfg(feature = "rsa")]
@@ -68,7 +68,7 @@ mod carrier {
     pub(crate) type Curve25519VerifyBn = UnifiedBn;
     pub(crate) type Curve25519CtBn = UnifiedCtBn;
 
-    #[cfg(all(feature = "rsa", not(feature = "rsa_2048_only")))]
+    #[cfg(feature = "rsa-1024")]
     pub(crate) type RsaU1024 = UnifiedBn;
     #[cfg(feature = "rsa")]
     pub(crate) type RsaU2048 = UnifiedBn;

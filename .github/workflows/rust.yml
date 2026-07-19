@@ -47,7 +47,7 @@ jobs:
           - "cert-der,cipher-aes"                                  # default
           - "cipher-aes"                                           # TLV parser (no der)
           - "cert-der,cipher-aes,rsa"
-          - "cert-der,cipher-aes,rsa,rsa_2048_only"
+          - "cert-der,cipher-aes,rsa,rsa-1024"                     # +1024 (legacy)
           - "cert-der,cipher-aes,rsa,rsa-3072"                     # +3072 (heapless CAP-96)
           - "cert-der,cipher-aes,rsa,rsa-3072,rsa-4096"            # +4096 (heapless CAP-128)
           - "cert-der,cipher-aes,ecdsa"

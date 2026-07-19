@@ -52,7 +52,7 @@ pub struct RsaPssSig<'a>(pub &'a [u8]);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RsaPkcs1Sig<'a>(pub &'a [u8]);
 
-#[cfg(not(feature = "rsa_2048_only"))]
+#[cfg(feature = "rsa-1024")]
 use crate::bigint::RsaU1024 as U1024;
 use crate::bigint::RsaU2048 as U2048;
 #[cfg(feature = "rsa-3072")]
@@ -81,8 +81,8 @@ use crate::bigint::RsaU4096 as U4096;
 // rather than a re-serialization from the FixedUInt limbs.
 #[allow(clippy::large_enum_variant)]
 pub enum RsaVerifierKey {
-    /// 1024-bit RSA key. Compiled out under `feature = "rsa_2048_only"`.
-    #[cfg(not(feature = "rsa_2048_only"))]
+    /// 1024-bit RSA key. Opt-in via `feature = "rsa-1024"` (2048 is the `rsa` baseline).
+    #[cfg(feature = "rsa-1024")]
     U1024 {
         vk: VkPair<U1024>,
         modulus_be: [u8; 128],
@@ -134,7 +134,7 @@ macro_rules! verify_scheme {
         pub fn $name(&self, message: &[u8], signature: &[u8]) -> Result<(), RsaVerifyError> {
             let prehash = Sha256::digest(message);
             match self {
-                #[cfg(not(feature = "rsa_2048_only"))]
+                #[cfg(feature = "rsa-1024")]
                 RsaVerifierKey::U1024 { vk, .. } => {
                     if signature.len() != 128 {
                         return Err(RsaVerifyError);
@@ -190,7 +190,7 @@ impl RsaVerifierKey {
     /// Build cached verifying keys for one RSA public key.
     pub fn new(modulus: &[u8], exponent: u32) -> Result<Self, RsaVerifyError> {
         match modulus.len() {
-            #[cfg(not(feature = "rsa_2048_only"))]
+            #[cfg(feature = "rsa-1024")]
             128 => {
                 let mut modulus_be = [0u8; 128];
                 modulus_be.copy_from_slice(modulus);
@@ -256,7 +256,7 @@ impl
         candidate: crate::traits::verify_strategy::RsaKeyMaterial<'_>,
     ) -> subtle::Choice {
         let (mod_bytes, exp) = match self {
-            #[cfg(not(feature = "rsa_2048_only"))]
+            #[cfg(feature = "rsa-1024")]
             RsaVerifierKey::U1024 {
                 modulus_be,
                 exponent,
