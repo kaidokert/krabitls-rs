@@ -77,8 +77,10 @@ pub enum ClientAuthFlightError {
 /// Largest client leaf DER the coalesced second-flight scratch holds. An
 /// Ed25519 self-signed leaf is ~300-600 B and an RSA-2048 one ~900 B; the
 /// bound tracks the widest enabled RSA width so a 3072/4096 leaf (whose modulus
-/// and self-signature together run ~2× the key width) still fits. A larger cert
-/// yields [`ClientAuthFlightError::BufferTooSmall`].
+/// and self-signature together run ~2× the key width) still fits. A cert over
+/// this bound is rejected with [`ClientAuthFlightError::CertificateTooLong`];
+/// [`ClientAuthFlightError::BufferTooSmall`] is separate — the encoded message
+/// not fitting `out`.
 pub const MAX_CLIENT_CERT_DER: usize = if cfg!(feature = "rsa-4096") {
     1536
 } else if cfg!(feature = "rsa-3072") {
