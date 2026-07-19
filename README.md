@@ -15,9 +15,9 @@ A hobby `no_std` TLS 1.3 client for microcontrollers. Don't use it for anything 
 - Bundled trust is pin-a-pubkey or trust-SAN — no CA bundle or chain walking; verification is a pluggable `VerifyStrategy`
 - Hand-rolled, unaudited, not constant-time, no scalar blinding
 
-No heap allocations, and prefer reduced flash + stack size over speed. The bigint
-carrier is a single compile-time swap point: per-role `FixedUInt` widths by
-default, or one unified `HeaplessBigInt` via the `bigint-heapless` feature.
+No heap allocations, and prefer reduced flash + stack size over speed. On builds
+that use several signature algorithms, the `bigint-heapless` feature cuts code
+size at the cost of some wasted stack.
 
 #### Resource usage
 
