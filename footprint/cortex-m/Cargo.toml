@@ -107,6 +107,3 @@ unexpected_cfgs = { level = "warn", check-cfg = [
     'cfg(thumbv7m)',
     'cfg(thumbv7em)',
 ] }
-
-[patch.crates-io]
-modmath = { git = "https://github.com/kaidokert/modmath-rs.git", tag = "v0.6.0-alpha.cios.36" }

@@ -74,6 +74,3 @@ opt-level = "z"
 # Suppress unwind tables / `.eh_frame`; otherwise the rust-lld RV32 PCREL
 # relocations overflow once the binary grows past a few KiB.
 panic = "abort"
-
-[patch.crates-io]
-modmath = { git = "https://github.com/kaidokert/modmath-rs.git", tag = "v0.6.0-alpha.cios.36" }
