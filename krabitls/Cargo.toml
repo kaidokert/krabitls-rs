@@ -28,7 +28,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 default = ["cert-der", "cipher-aes"]
 # Expose internal helpers that aren't part of the TLS 1.3 API
 dev-utils = []
-# Compile the cfg(test) backend honesty matrix (`src/backend_matrix.rs`), which
+# Compile the cfg(test) backend carrier matrix (`src/backend_matrix.rs`), which
 # references the git-only `_patched` dev-deps. Off by default so `cargo test` on
 # the published crate — where cargo strips those git deps — still compiles; CI
 # turns it on explicitly.
@@ -143,7 +143,7 @@ krabiecdsa = { version = "0.2.0", default-features = false, optional = true }
 [dev-dependencies]
 krabitls_fixtures = { path = "../krabitls_fixtures", default-features = false }
 
-# Backend honesty matrix (see `src/backend_matrix.rs`): the `_patched` forks add
+# Backend carrier matrix (see `src/backend_matrix.rs`): the `_patched` forks add
 # the const-num-traits + modmath-cios impls upstream lacks, so bnum and
 # crypto-bigint can stand in as `crate::bigint` carriers in tests. Git dev-deps
 # are stripped from the published manifest (as modmath does), so these have zero

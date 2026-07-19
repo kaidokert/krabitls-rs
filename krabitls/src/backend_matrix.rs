@@ -1,4 +1,4 @@
-//! Backend honesty matrix — `cfg(test)`-only, zero publish impact (the git
+//! Backend carrier matrix — `cfg(test)`-only, zero publish impact (the git
 //! dev-deps are stripped from the published manifest, as modmath's own manifest
 //! demonstrates). Proves the crypto crates krabitls builds on accept alternate
 //! bigint carriers — bnum and crypto-bigint — and return the correct answers, so
