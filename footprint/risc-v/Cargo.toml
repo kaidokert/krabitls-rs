@@ -75,13 +75,6 @@ opt-level = "z"
 # Suppress unwind tables / `.eh_frame`; otherwise the rust-lld RV32 PCREL
 # relocations overflow once the binary grows past a few KiB.
 panic = "abort"
-
-# EXPERIMENT: HeaplessBigint backend — patch the shared trait/modmath crates to
-# the alpha line krabitls (path dep) pins. Patches do not propagate from
-# krabitls, so each footprint target root must carry them.
-[patch.crates-io]
-modmath = { git = "https://github.com/kaidokert/modmath-rs.git", tag = "v0.6.0-alpha.cios.36" }
-
 [[example]]
 name = "krabitls_full"
 required-features = ["full-stack", "canned-replay"]
