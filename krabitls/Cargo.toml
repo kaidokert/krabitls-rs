@@ -35,11 +35,19 @@ dev-utils = []
 # `.text` on multi-algo builds at a wider per-value footprint. Fixed is the
 # absence of this feature, so `--no-default-features` still selects a carrier.
 bigint-heapless = []
-# Optional RSA cert + CertificateVerify support (rsa_pss_rsae_sha256 + the
-# self-signed cert's outer PKCS#1-v1.5). Pulls in rsa_heapless. The default
-# (rsa-disabled) binary is untouched. Both 1024- and 2048-bit RSA moduli via
-# runtime dispatch.
+# RSA cert + CertificateVerify support (rsa_pss_rsae_sha256 + the self-signed
+# cert's outer PKCS#1-v1.5). Pulls in rsa_heapless. The default (rsa-disabled)
+# binary is untouched. `rsa` carries the mandatory 2048-bit width; enabling it
+# alone is the 2048-only build (there is no subtractive `_only` knob). 1024/3072/
+# 4096 are additive opt-ins below.
 rsa = ["dep:rsa_heapless", "sha2/oid"]
+# Additional RSA modulus widths (verify + cert-parse acceptance). Additive — each
+# links its carrier + dispatch/parse arm on top of `rsa`'s 2048 baseline, so the
+# default build (and the thumbv7m -Oz Bug-2 zone) stays byte-identical unless a
+# width is opted in. RSA-1024 is legacy; 3072/4096 are non-critical.
+rsa-1024 = ["rsa"]
+rsa-3072 = ["rsa"]
+rsa-4096 = ["rsa"]
 # Alternate HKDF / SHA-256 backend wired to jedisct1's `hmac-sha256` crate
 # (a standalone all-in-one impl with no `digest` / `crypto-common` /
 # `generic-array` dependency). Pull this in when the binary should drop
@@ -63,13 +71,6 @@ cipher-aes = ["dep:aes-gcm"]
 # CertificateVerify always uses PSS for our advertised scheme so this
 # feature doesn't affect handshake semantics.
 rsa_pss_only = ["rsa"]
-# Sub-feature of `rsa`: drop the RSA-1024 bigint width. Only 2048-bit
-# moduli are accepted (parser + verify both reject 128 B modulus).
-# Saves ~2-4 KiB .text by dropping the U1024 monomorphizations of
-# `public_key_from_be_bytes`, `rsa_encrypt`, and the modmath kernels
-# (`cios_mont_mul`, `wide_redc`, `mod_exp2`) that LTO can't otherwise
-# prove unreachable through the cached `RsaVerifierKey` enum.
-rsa_2048_only = ["rsa"]
 # Cert parser backend selector + `der` gate. On (default) → der-crate-backed
 # parser, and the cert validity-window check (`.clocked()`) is available since
 # it decodes UTCTime/GeneralizedTime through `der`. Off → in-tree TLV walker,

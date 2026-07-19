@@ -472,13 +472,13 @@ mod rsa {
         if modulus.is_empty() || modulus[0] == 0 {
             return Err(CertParseError::BadRsaPubkey);
         }
-        // Only 1024-bit (128 B) and 2048-bit (256 B) moduli are supported.
-        // Under `rsa_2048_only` reject 128 too so LTO can drop the U1024
-        // monomorphizations from rsa_verify::*.
-        #[cfg(not(feature = "rsa_2048_only"))]
-        let modulus_ok = modulus.len() == 128 || modulus.len() == 256;
-        #[cfg(feature = "rsa_2048_only")]
-        let modulus_ok = modulus.len() == 256;
+        // Accept exactly the enabled RSA widths (2048 is the `rsa` baseline;
+        // 1024/3072/4096 are additive). Each disabled width's branch folds to a
+        // const `false`, so LTO drops that carrier's monomorphizations.
+        let modulus_ok = (cfg!(feature = "rsa-1024") && modulus.len() == 128)
+            || modulus.len() == 256
+            || (cfg!(feature = "rsa-3072") && modulus.len() == 384)
+            || (cfg!(feature = "rsa-4096") && modulus.len() == 512);
         if !modulus_ok {
             return Err(CertParseError::UnsupportedRsaKeySize);
         }

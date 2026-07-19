@@ -463,10 +463,12 @@ mod rsa {
         if modulus.is_empty() || modulus[0] == 0 {
             return Err(CertParseError::BadRsaPubkey);
         }
-        #[cfg(not(feature = "rsa_2048_only"))]
-        let modulus_ok = modulus.len() == 128 || modulus.len() == 256;
-        #[cfg(feature = "rsa_2048_only")]
-        let modulus_ok = modulus.len() == 256;
+        // Accept exactly the enabled RSA widths (2048 baseline; 1024/3072/4096
+        // additive). Disabled widths fold to const `false` so LTO drops them.
+        let modulus_ok = (cfg!(feature = "rsa-1024") && modulus.len() == 128)
+            || modulus.len() == 256
+            || (cfg!(feature = "rsa-3072") && modulus.len() == 384)
+            || (cfg!(feature = "rsa-4096") && modulus.len() == 512);
         if !modulus_ok {
             return Err(CertParseError::UnsupportedRsaKeySize);
         }
