@@ -87,6 +87,19 @@ jobs:
       working-directory: footprint/risc-v
       run: timeout 180 cargo run --release --example krabitls_rsa --target riscv32imac-unknown-none-elf --features rsa,canned-replay
 
+    - name: cortex-m / krabitls_full (fixed carrier)
+      working-directory: footprint/cortex-m
+      run: timeout 180 cargo run --release --example krabitls_full --target thumbv7m-none-eabi --features full-stack,canned-replay
+    - name: cortex-m / krabitls_full (heapless carrier)
+      working-directory: footprint/cortex-m
+      run: timeout 180 cargo run --release --example krabitls_full --target thumbv7m-none-eabi --features full-stack,bigint-heapless,canned-replay
+    - name: risc-v / krabitls_full (fixed carrier)
+      working-directory: footprint/risc-v
+      run: timeout 180 cargo run --release --example krabitls_full --target riscv32imac-unknown-none-elf --features full-stack,canned-replay
+    - name: risc-v / krabitls_full (heapless carrier)
+      working-directory: footprint/risc-v
+      run: timeout 180 cargo run --release --example krabitls_full --target riscv32imac-unknown-none-elf --features full-stack,bigint-heapless,canned-replay
+
     - name: Footprint suite
       working-directory: footprint
       run: |

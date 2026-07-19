@@ -557,10 +557,12 @@ where
             });
         }
 
-        let x25519_ss = zeroize::Zeroizing::new(ed25519_heapless::x25519::<Bn>(
-            &self.state.x25519_priv,
-            sh.x25519_share,
-        ));
+        // `CurveSetupError` is unreachable on the ≥256-bit carrier — fail closed
+        // into the same X25519 DH abort as the low-order-point check below.
+        let x25519_ss = zeroize::Zeroizing::new(
+            ed25519_heapless::x25519::<Bn>(&self.state.x25519_priv, sh.x25519_share)
+                .map_err(|_| ConnectionError::Parse(ParseError::DhAllZero))?,
+        );
         // RFC 8446 §7.4.2.1: all-zero X25519 output (low-order server share)
         // MUST abort with `illegal_parameter`. ML-KEM has no equivalent — its
         // implicit rejection always yields a deterministic-looking secret.

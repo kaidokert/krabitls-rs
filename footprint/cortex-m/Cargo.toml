@@ -38,6 +38,8 @@ chacha20 = ["footprint_handshakes/chacha20"]
 # (`DefaultStream::connect`) through the seed-0 canned fixtures via
 # `SeededRng` + `CannedTransport`.
 canned-replay = ["footprint_handshakes/canned-replay"]
+full-stack = ["footprint_handshakes/full-stack"]
+bigint-heapless = ["footprint_handshakes/bigint-heapless"]
 # Opt-in size-clawback feature: forward to footprint_handshakes / krabitls.
 ip-host = ["footprint_handshakes/ip-host"]
 
@@ -107,3 +109,6 @@ unexpected_cfgs = { level = "warn", check-cfg = [
     'cfg(thumbv7m)',
     'cfg(thumbv7em)',
 ] }
+[[example]]
+name = "krabitls_full"
+required-features = ["full-stack", "canned-replay"]

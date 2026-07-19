@@ -818,7 +818,8 @@ fn fixture_transcript_hash_ch_sh() {
 fn fixture_dhe_via_x25519() {
     type T = crate::bigint::Curve25519CtBn;
     let dhe =
-        ed25519_heapless::x25519::<T>(&FIXTURE_CLIENT_X25519_PRIV, &FIXTURE_SERVER_X25519_PUB_2);
+        ed25519_heapless::x25519::<T>(&FIXTURE_CLIENT_X25519_PRIV, &FIXTURE_SERVER_X25519_PUB_2)
+            .expect("x25519 infallible on >=256-bit carrier");
     assert_eq!(dhe, FIXTURE_DHE);
 }
 
@@ -826,7 +827,8 @@ fn fixture_dhe_via_x25519() {
 fn fixture_s_hs_traffic_secret_full_chain() {
     type T = crate::bigint::Curve25519CtBn;
     let dhe =
-        ed25519_heapless::x25519::<T>(&FIXTURE_CLIENT_X25519_PRIV, &FIXTURE_SERVER_X25519_PUB_2);
+        ed25519_heapless::x25519::<T>(&FIXTURE_CLIENT_X25519_PRIV, &FIXTURE_SERVER_X25519_PUB_2)
+            .expect("x25519 infallible on >=256-bit carrier");
     let hs = handshake_secret::<RustCrypto>(&dhe).unwrap();
     assert_eq!(hs.as_bytes(), &FIXTURE_HANDSHAKE_SECRET_BYTES);
     let th = {
@@ -914,7 +916,8 @@ fn jedisct_matches_rustcrypto() {
     // Full TLS 1.3 chain through to s_hs_traffic_secret must match.
     type Bn = crate::bigint::Curve25519CtBn;
     let dhe =
-        ed25519_heapless::x25519::<Bn>(&FIXTURE_CLIENT_X25519_PRIV, &FIXTURE_SERVER_X25519_PUB_2);
+        ed25519_heapless::x25519::<Bn>(&FIXTURE_CLIENT_X25519_PRIV, &FIXTURE_SERVER_X25519_PUB_2)
+            .expect("x25519 infallible on >=256-bit carrier");
     let rc_hs = handshake_secret::<RustCrypto>(&dhe).unwrap();
     let jd_hs = handshake_secret::<JedisctCrypto>(&dhe).unwrap();
     assert_eq!(rc_hs, jd_hs);
@@ -1427,7 +1430,8 @@ mod cipher_aes {
             let dhe = ed25519_heapless::x25519::<Bn>(
                 &FIXTURE_CLIENT_X25519_PRIV,
                 &FIXTURE_SERVER_X25519_PUB_2,
-            );
+            )
+            .expect("x25519 infallible on >=256-bit carrier");
             let hs = handshake_secret::<RustCrypto>(&dhe).unwrap();
             let th = {
                 let mut t = TranscriptHash::<RustCrypto>::new();
@@ -1921,6 +1925,65 @@ mod cipher_aes {
             assert_ne!(sig, sig2);
             vk.verify_pss_sha256(content, &sig2)
                 .expect("PSS verifies 2");
+        }
+
+        /// Sub-capacity SIGN coverage for the unified `CAP=64` thesis: a
+        /// 1024-bit key (`len` 32 in a 64-limb carrier) signed through the same
+        /// unblinded PSS path krabitls ships, then verified. `from_components`
+        /// is RSA-2048-only by policy, so this drives the signing primitive
+        /// directly to exercise the carrier at natural width `< CAP` — the one
+        /// shape the `len == CAP` deployment tests never touch.
+        // RSA-1024 verify is compiled out under `rsa_2048_only`; the
+        // sub-capacity 1024-bit scenario only exists when it is present.
+        #[cfg(not(feature = "rsa_2048_only"))]
+        #[test]
+        fn rsa_sub_capacity_1024_sign_verify_round_trips() {
+            use rsa::{
+                GenericRsaPrivateKey,
+                modmath_support::{ModMathParams, public_key_ct_from_be_bytes},
+                pss::GenericSigningKey,
+                traits::FixedWidthUnsignedInt,
+            };
+            use sha2::{Digest, Sha256};
+
+            const N1024: [u8; 128] = crate::hex_decode(
+                "bdce950d3a068d5b7d50016764753c68fcd4db684bc85f1f1a5e9f37c42aca1e\
+                 047d7c4e11670373d44f520a447430594d54c2c320549ba32c13a6f9a3d31fea\
+                 6eea251c8b0ef11916a1d5e2bc8aceffb01f010ac183a7bc579be8616d62d49f\
+                 df8396b4df13cf42cbd313d472c42dee3b4ebb75423684c5dea1fd6ba40153a9",
+            );
+            const D1024: [u8; 128] = crate::hex_decode(
+                "92266290d7b039e24ba0722449af1800034667576c9af1db82337fc7b1edfcc9\
+                 964d858c9b4bc5d5c791f82addc0d585bdccd956e42b21d847d52e0a254228dc\
+                 c756733788679b0ca2644fb6025f9b9978eee928929518085215dabe89a464d4\
+                 2a4e5a3013d1f795ac00f33337b67e614e9e003c165dea151d3efcbf7f5d0ab1",
+            );
+            type SignBn = crate::bigint::RsaSignBn;
+
+            let pubkey = public_key_ct_from_be_bytes::<SignBn>(&N1024, 65537).expect("pubkey");
+            let d =
+                <SignBn as FixedWidthUnsignedInt>::try_from_be_bytes_vartime(&D1024).expect("d");
+            let priv_key = GenericRsaPrivateKey::from_public_and_d(pubkey, d);
+            let sk = GenericSigningKey::<
+                Sha256,
+                SignBn,
+                ModMathParams<SignBn, const_num_traits::Ct>,
+            >::new_with_salt_len(priv_key, 32);
+
+            let content = b"sub-capacity CertificateVerify content";
+            let prehash = Sha256::digest(content);
+            // RSA-1024 → modulus-width EM + signature (128 B), not carrier width.
+            let mut em = [0u8; 128];
+            let mut sig = [0u8; 128];
+            let sig_slice = sk
+                .try_sign_prehash_with_salt_into(&prehash, &[0x5a; 32], &mut em, &mut sig)
+                .expect("sub-capacity sign");
+            assert_eq!(sig_slice.len(), 128, "RSA-1024 signature is modulus-width");
+
+            let vk = RsaVerifierKey::new(&N1024, 65537).expect("vk");
+            vk.verify_pss_sha256(content, sig_slice)
+                .expect("sub-capacity PSS verifies");
+            assert!(vk.verify_pss_sha256(b"tampered", sig_slice).is_err());
         }
 
         #[test]

@@ -1,42 +1,72 @@
-//! Central bigint-backend selection. Every bignum carrier krabitls
-//! instantiates is named here, by role — swapping the backend (or a width /
-//! personality policy) starts and mostly ends in this file.
+//! Central bigint carrier selection — one of two build-time configs, chosen by
+//! a cargo feature (not a type parameter; the public API stays monomorphic).
 //!
-//! A replacement backend must satisfy the trait surfaces the aliases feed:
-//! `ed25519_heapless`'s verify/sign generics for the curve types, and
-//! `rsa_heapless::modmath_support::ModMathInt` (`Nct`) / the CT signing
-//! bounds for the RSA types. `const_num_traits::{Nct, Ct}` select between
-//! vartime and constant-time arithmetic per alias.
+//! * **default** (no `bigint-heapless`): per-role compile-time
+//!   `FixedUInt<u32, N>` fitted to each algorithm's exact width. One
+//!   monomorphization per width — smallest per-algo `.text`, best for
+//!   one-or-few algorithms.
+//! * **`bigint-heapless`** (opt-in): a single runtime-length
+//!   `HeaplessBigInt<u32, CAP>` (2048-bit `CAP`) with separate Nct + Ct
+//!   carriers — two monomorphizations total. `len` tracks used limbs, so one
+//!   width holds a 256-bit ECDSA scalar, a 512-bit curve value and a 2048-bit
+//!   RSA modulus alike. Trades a wider per-value footprint for far less `.text`
+//!   on multi-algorithm builds.
+//!
+//! Fixed is the *absence* of `bigint-heapless`, so `--no-default-features`
+//! still selects a carrier — no explicit `bigint-fixed` feature to keep in sync.
 
-/// 512-bit vartime carrier for Ed25519 *verification* — public data, so the
-/// faster non-CT personality.
-pub(crate) type Curve25519VerifyBn = fixed_bigint::FixedUInt<u32, 16>;
+/// Config A — per-role compile-time `FixedUInt` widths (the default).
+#[cfg(not(feature = "bigint-heapless"))]
+mod carrier {
+    use fixed_bigint::FixedUInt;
 
-/// 512-bit constant-time carrier for the X25519 shared-secret computation
-/// and Ed25519 *signing* — the scalar is secret, so `ed25519_heapless`'s
-/// sign/DH bounds require CT field arithmetic.
-pub(crate) type Curve25519CtBn = fixed_bigint::FixedUInt<u32, 16, const_num_traits::Ct>;
+    /// 512-bit vartime carrier for Ed25519 *verification*.
+    pub(crate) type Curve25519VerifyBn = FixedUInt<u32, 16>;
+    /// 512-bit constant-time carrier for X25519 + Ed25519 *signing* (secret scalar).
+    pub(crate) type Curve25519CtBn = FixedUInt<u32, 16, const_num_traits::Ct>;
 
-/// 1024-bit vartime carrier for RSA-1024 *verification*. Compiled out under
-/// `feature = "rsa_2048_only"`.
-#[cfg(all(feature = "rsa", not(feature = "rsa_2048_only")))]
-pub(crate) type RsaU1024 = fixed_bigint::FixedUInt<u32, 32>;
+    /// 1024-bit RSA *verification* carrier.
+    #[cfg(all(feature = "rsa", not(feature = "rsa_2048_only")))]
+    pub(crate) type RsaU1024 = FixedUInt<u32, 32>;
+    /// 2048-bit RSA *verification* carrier.
+    #[cfg(feature = "rsa")]
+    pub(crate) type RsaU2048 = FixedUInt<u32, 64>;
+    /// 2048-bit constant-time carrier for RSA *signing* (private `d`).
+    #[cfg(feature = "rsa")]
+    pub(crate) type RsaSignBn = FixedUInt<u32, 64, const_num_traits::Ct>;
 
-/// 2048-bit vartime carrier for RSA-2048 *verification* — the modexp
-/// exponent is the public `e`.
-#[cfg(feature = "rsa")]
-pub(crate) type RsaU2048 = fixed_bigint::FixedUInt<u32, 64>;
+    /// 256-bit vartime carrier for ECDSA P-256 *verification*.
+    #[cfg(feature = "ecdsa")]
+    pub(crate) type EcdsaP256Bn = FixedUInt<u32, 8>;
+    /// 384-bit vartime carrier for ECDSA P-384 *verification*.
+    #[cfg(feature = "ecdsa")]
+    pub(crate) type EcdsaP384Bn = FixedUInt<u32, 12>;
+}
 
-/// 2048-bit constant-time carrier for RSA-2048 *signing* — the modexp
-/// exponent is the private `d`.
-#[cfg(feature = "rsa")]
-pub(crate) type RsaSignBn = fixed_bigint::FixedUInt<u32, 64, const_num_traits::Ct>;
+/// Config B — one runtime-length `HeaplessBigInt`, separate Nct + Ct.
+#[cfg(feature = "bigint-heapless")]
+mod carrier {
+    use fixed_bigint::HeaplessBigInt;
 
-/// 256-bit vartime carrier for ECDSA P-256 *verification* — the signature is
-/// public data, so the faster non-CT personality.
-#[cfg(feature = "ecdsa")]
-pub(crate) type EcdsaP256Bn = fixed_bigint::FixedUInt<u32, 8>;
+    /// Unified 2048-bit-capacity vartime carrier — every Nct role.
+    type UnifiedBn = HeaplessBigInt<u32, 64>;
+    /// Unified 2048-bit-capacity constant-time carrier — every Ct role.
+    type UnifiedCtBn = HeaplessBigInt<u32, 64, const_num_traits::Ct>;
 
-/// 384-bit vartime carrier for ECDSA P-384 *verification*.
-#[cfg(feature = "ecdsa")]
-pub(crate) type EcdsaP384Bn = fixed_bigint::FixedUInt<u32, 12>;
+    pub(crate) type Curve25519VerifyBn = UnifiedBn;
+    pub(crate) type Curve25519CtBn = UnifiedCtBn;
+
+    #[cfg(all(feature = "rsa", not(feature = "rsa_2048_only")))]
+    pub(crate) type RsaU1024 = UnifiedBn;
+    #[cfg(feature = "rsa")]
+    pub(crate) type RsaU2048 = UnifiedBn;
+    #[cfg(feature = "rsa")]
+    pub(crate) type RsaSignBn = UnifiedCtBn;
+
+    #[cfg(feature = "ecdsa")]
+    pub(crate) type EcdsaP256Bn = UnifiedBn;
+    #[cfg(feature = "ecdsa")]
+    pub(crate) type EcdsaP384Bn = UnifiedBn;
+}
+
+pub(crate) use carrier::*;

@@ -98,7 +98,10 @@ where
                 .map_err(|_| HandshakeError::Rng)?;
         }
 
-        let x25519_pub = ed25519_heapless::x25519_base::<X25519Bn>(&x25519_priv);
+        // `CurveSetupError` is unreachable on the ≥256-bit carrier — fail closed,
+        // matching the adjacent ephemeral-keygen error.
+        let x25519_pub = ed25519_heapless::x25519_base::<X25519Bn>(&x25519_priv)
+            .map_err(|_| HandshakeError::Rng)?;
 
         // Ephemeral ML-KEM-768 keypair for the X25519MLKEM768 key_share: the
         // decapsulator moves into the connection state; the public ek is

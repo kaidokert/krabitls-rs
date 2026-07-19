@@ -916,3 +916,29 @@ pub fn baseline_mlkem_mldsa_facade() -> bool {
     black_box(&CLIENT_FINISHED);
     true
 }
+
+/// Links every server-cert verify width into one binary — a `.text` size probe
+/// for the full monomorphization set. A single no-auth `connect()` statically
+/// references the runtime
+/// cert-verify dispatch, so with rsa+ecdsa+mldsa enabled every verify
+/// monomorphization is linked — Ed25519 (CAP 16), RSA U1024 (CAP 32) + U2048
+/// (CAP 64), ECDSA P-256 (CAP 8) + P-384 (CAP 12), ML-DSA. The empty transport
+/// makes `connect` return `Err`; only the *linked* `.text` matters for the size
+/// measurement, never run under QEMU.
+#[cfg(all(
+    feature = "full-stack",
+    feature = "canned-replay",
+    feature = "cipher-aes"
+))]
+pub fn run_full_stack() -> bool {
+    facade_scratch::with(|scratch| {
+        let mut rng = krabitls_fixtures::SeededRng::new(0);
+        let transport = krabitls_fixtures::CannedTransport::<2048>::new(&[]);
+        let params = krabitls::client::ClientParams::self_signed("x")
+            .suite_policy(krabitls::client::RuntimeSuitePolicy::Default);
+        // Empty transport → connect returns Err; the probe only needs the
+        // symbols linked, so discard the result instead of reporting a failure.
+        let _ = krabitls::client::DefaultStream::connect(&params, scratch, transport, &mut rng);
+        true
+    })
+}
