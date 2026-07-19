@@ -31,6 +31,12 @@ mod carrier {
     /// 2048-bit RSA *verification* carrier.
     #[cfg(feature = "rsa")]
     pub(crate) type RsaU2048 = FixedUInt<u32, 64>;
+    /// 3072-bit RSA *verification* carrier.
+    #[cfg(feature = "rsa-3072")]
+    pub(crate) type RsaU3072 = FixedUInt<u32, 96>;
+    /// 4096-bit RSA *verification* carrier.
+    #[cfg(feature = "rsa-4096")]
+    pub(crate) type RsaU4096 = FixedUInt<u32, 128>;
     /// 2048-bit constant-time carrier for RSA *signing* (private `d`).
     #[cfg(feature = "rsa")]
     pub(crate) type RsaSignBn = FixedUInt<u32, 64, const_num_traits::Ct>;
@@ -48,7 +54,13 @@ mod carrier {
 mod carrier {
     use fixed_bigint::HeaplessBigInt;
 
-    /// Unified 2048-bit-capacity vartime carrier — every Nct role.
+    /// Unified vartime carrier — every Nct role. CAP follows the widest enabled
+    /// RSA width so a 3072/4096-bit modulus still fits.
+    #[cfg(feature = "rsa-4096")]
+    type UnifiedBn = HeaplessBigInt<u32, 128>;
+    #[cfg(all(feature = "rsa-3072", not(feature = "rsa-4096")))]
+    type UnifiedBn = HeaplessBigInt<u32, 96>;
+    #[cfg(not(any(feature = "rsa-3072", feature = "rsa-4096")))]
     type UnifiedBn = HeaplessBigInt<u32, 64>;
     /// Unified 2048-bit-capacity constant-time carrier — every Ct role.
     type UnifiedCtBn = HeaplessBigInt<u32, 64, const_num_traits::Ct>;
@@ -60,6 +72,10 @@ mod carrier {
     pub(crate) type RsaU1024 = UnifiedBn;
     #[cfg(feature = "rsa")]
     pub(crate) type RsaU2048 = UnifiedBn;
+    #[cfg(feature = "rsa-3072")]
+    pub(crate) type RsaU3072 = UnifiedBn;
+    #[cfg(feature = "rsa-4096")]
+    pub(crate) type RsaU4096 = UnifiedBn;
     #[cfg(feature = "rsa")]
     pub(crate) type RsaSignBn = UnifiedCtBn;
 

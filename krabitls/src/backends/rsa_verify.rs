@@ -55,6 +55,10 @@ pub struct RsaPkcs1Sig<'a>(pub &'a [u8]);
 #[cfg(not(feature = "rsa_2048_only"))]
 use crate::bigint::RsaU1024 as U1024;
 use crate::bigint::RsaU2048 as U2048;
+#[cfg(feature = "rsa-3072")]
+use crate::bigint::RsaU3072 as U3072;
+#[cfg(feature = "rsa-4096")]
+use crate::bigint::RsaU4096 as U4096;
 
 /// Pre-built PKCS#1-v1.5 + RSA-PSS verifying keys for one RSA pubkey.
 ///
@@ -88,6 +92,20 @@ pub enum RsaVerifierKey {
     U2048 {
         vk: VkPair<U2048>,
         modulus_be: [u8; 256],
+        exponent: u32,
+    },
+    /// 3072-bit RSA key.
+    #[cfg(feature = "rsa-3072")]
+    U3072 {
+        vk: VkPair<U3072>,
+        modulus_be: [u8; 384],
+        exponent: u32,
+    },
+    /// 4096-bit RSA key.
+    #[cfg(feature = "rsa-4096")]
+    U4096 {
+        vk: VkPair<U4096>,
+        modulus_be: [u8; 512],
         exponent: u32,
     },
 }
@@ -139,6 +157,30 @@ macro_rules! verify_scheme {
                         .verify_prehash(&prehash, &sig)
                         .map_err(|_| RsaVerifyError)
                 }
+                #[cfg(feature = "rsa-3072")]
+                RsaVerifierKey::U3072 { vk, .. } => {
+                    if signature.len() != 384 {
+                        return Err(RsaVerifyError);
+                    }
+                    let val = <U3072 as FixedWidthUnsignedInt>::try_from_be_bytes_vartime(signature)
+                        .map_err(|_| RsaVerifyError)?;
+                    let sig = $sig::from(val);
+                    vk.$field
+                        .verify_prehash(&prehash, &sig)
+                        .map_err(|_| RsaVerifyError)
+                }
+                #[cfg(feature = "rsa-4096")]
+                RsaVerifierKey::U4096 { vk, .. } => {
+                    if signature.len() != 512 {
+                        return Err(RsaVerifyError);
+                    }
+                    let val = <U4096 as FixedWidthUnsignedInt>::try_from_be_bytes_vartime(signature)
+                        .map_err(|_| RsaVerifyError)?;
+                    let sig = $sig::from(val);
+                    vk.$field
+                        .verify_prehash(&prehash, &sig)
+                        .map_err(|_| RsaVerifyError)
+                }
             }
         }
     };
@@ -163,6 +205,26 @@ impl RsaVerifierKey {
                 modulus_be.copy_from_slice(modulus);
                 Ok(RsaVerifierKey::U2048 {
                     vk: build_vk_pair::<U2048>(modulus, exponent)?,
+                    modulus_be,
+                    exponent,
+                })
+            }
+            #[cfg(feature = "rsa-3072")]
+            384 => {
+                let mut modulus_be = [0u8; 384];
+                modulus_be.copy_from_slice(modulus);
+                Ok(RsaVerifierKey::U3072 {
+                    vk: build_vk_pair::<U3072>(modulus, exponent)?,
+                    modulus_be,
+                    exponent,
+                })
+            }
+            #[cfg(feature = "rsa-4096")]
+            512 => {
+                let mut modulus_be = [0u8; 512];
+                modulus_be.copy_from_slice(modulus);
+                Ok(RsaVerifierKey::U4096 {
+                    vk: build_vk_pair::<U4096>(modulus, exponent)?,
                     modulus_be,
                     exponent,
                 })
@@ -201,6 +263,18 @@ impl
                 ..
             } => (&modulus_be[..], *exponent),
             RsaVerifierKey::U2048 {
+                modulus_be,
+                exponent,
+                ..
+            } => (&modulus_be[..], *exponent),
+            #[cfg(feature = "rsa-3072")]
+            RsaVerifierKey::U3072 {
+                modulus_be,
+                exponent,
+                ..
+            } => (&modulus_be[..], *exponent),
+            #[cfg(feature = "rsa-4096")]
+            RsaVerifierKey::U4096 {
                 modulus_be,
                 exponent,
                 ..
