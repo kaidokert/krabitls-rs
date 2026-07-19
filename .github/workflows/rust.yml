@@ -33,10 +33,9 @@ jobs:
 
   # Parallel matrix over the two axes that matter — carrier config (fixed
   # per-role default vs `bigint-heapless`) × a curated set of real deployment
-  # profiles. Each cell is its own runner (clippy + test); wall-clock is the
-  # slowest single cell, not the sum. Replaces the serial `cargo hack`
-  # feature-powerset. `--no-default-features` + explicit features gives each cell
-  # exact control (cert parser, cipher, carrier).
+  # profiles — replacing the serial `cargo hack` feature-powerset.
+  # `--no-default-features` + explicit features give each cell exact control
+  # (cert parser, cipher, carrier).
   krabitls:
     name: krabitls [${{ matrix.profile }}${{ matrix.carrier }}]
     runs-on: ubuntu-latest

@@ -116,11 +116,6 @@ digest = { version = "0.11", default-features = false }
 hmac = { version = "0.13", default-features = false }
 hkdf = { version = "0.13", default-features = false }
 ed25519_heapless = { version = "0.5.0", default-features = false, features = ["sha512-sha2"] }
-# EXPERIMENT (branch experiment/bigint-heapless-runtime-len): swap the compile-time
-# `FixedUInt<u32, N>` carriers in crate::bigint for fixed-bigint 0.6's runtime-length
-# `HeaplessBigInt<u32, CAP, P>` (fixed-bigint 0.6.0, crates.io). Backend-swap probe:
-# does the runtime-len carrier satisfy the ed25519_heapless / rsa_heapless / krabiecdsa
-# generic bounds? Never for merge.
 fixed-bigint = { version = "0.6.0", default-features = false, features = ["use-unsafe", "zeroize", "cios"] }
 const-num-traits = { version = "0.2.1", default-features = false, features = ["ct"] }
 der = { version = "0.8.0", default-features = false, features = ["oid"], optional = true }

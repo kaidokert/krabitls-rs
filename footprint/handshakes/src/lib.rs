@@ -917,8 +917,9 @@ pub fn baseline_mlkem_mldsa_facade() -> bool {
     true
 }
 
-/// EXPERIMENT (mono-collapse .text probe): link every server-cert verify width
-/// in one binary. A single no-auth `connect()` statically references the runtime
+/// Links every server-cert verify width into one binary — a `.text` size probe
+/// for the full monomorphization set. A single no-auth `connect()` statically
+/// references the runtime
 /// cert-verify dispatch, so with rsa+ecdsa+mldsa enabled every verify
 /// monomorphization is linked — Ed25519 (CAP 16), RSA U1024 (CAP 32) + U2048
 /// (CAP 64), ECDSA P-256 (CAP 8) + P-384 (CAP 12), ML-DSA. The empty transport
