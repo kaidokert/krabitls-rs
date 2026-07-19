@@ -28,114 +28,78 @@ jobs:
     - uses: dtolnay/rust-toolchain@stable
       with:
         components: rustfmt, clippy
-    - uses: actions/cache@v4
-      with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          krabitls/target
-          krabitls_fixtures/target
-        key: pre-commit-${{ hashFiles('krabitls/Cargo.toml', 'krabitls_fixtures/Cargo.toml') }}
-        restore-keys: pre-commit-
+    - uses: Swatinem/rust-cache@v2
     - uses: pre-commit/action@v3.0.1
 
-  host:
+  # Parallel matrix over the two axes that matter — carrier config (fixed
+  # per-role default vs `bigint-heapless`) × a curated set of real deployment
+  # profiles. Each cell is its own runner (clippy + test); wall-clock is the
+  # slowest single cell, not the sum. Replaces the serial `cargo hack`
+  # feature-powerset. `--no-default-features` + explicit features gives each cell
+  # exact control (cert parser, cipher, carrier).
+  krabitls:
+    name: krabitls [${{ matrix.profile }}${{ matrix.carrier }}]
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        carrier: ["", ",bigint-heapless"]
+        profile:
+          - "cert-der,cipher-aes"                                  # default
+          - "cipher-aes"                                           # TLV parser (no der)
+          - "cert-der,cipher-aes,rsa"
+          - "cert-der,cipher-aes,rsa,rsa_2048_only"
+          - "cert-der,cipher-aes,ecdsa"
+          - "cert-der,chacha20"                                    # ChaCha-only cipher
+          - "cert-der,cipher-aes,mldsa,mlkem"
+          - "cert-der,cipher-aes,rsa,ecdsa,mldsa,mlkem,chacha20"   # full
     steps:
     - uses: actions/checkout@v4
       with:
         persist-credentials: false
     - uses: dtolnay/rust-toolchain@stable
       with:
-        components: rustfmt, clippy
-    - uses: actions/cache@v4
+        components: clippy
+    - uses: Swatinem/rust-cache@v2
       with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          krabitls/target
-          krabitls_cli/target
-        key: host-${{ hashFiles('krabitls/Cargo.toml', 'krabitls_cli/Cargo.toml') }}
-        restore-keys: host-
-    - uses: taiki-e/install-action@v2
+        key: ${{ matrix.profile }}${{ matrix.carrier }}
+    - name: Clippy
+      run: cargo clippy --manifest-path=krabitls/Cargo.toml --no-default-features --features "${{ matrix.profile }}${{ matrix.carrier }}" --all-targets -- -D warnings
+    - name: Test
+      run: cargo test --manifest-path=krabitls/Cargo.toml --no-default-features --features "${{ matrix.profile }}${{ matrix.carrier }}"
+
+  krabitls-cli:
+    name: krabitls_cli [${{ matrix.features || 'default' }}]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # `krabitls_connect` bin requires rsa, so ecdsa is paired with it.
+        features: ["", "rsa", "chacha20", "rsa,chacha20", "ecdsa,rsa"]
+    steps:
+    - uses: actions/checkout@v4
       with:
-        tool: cargo-hack
-
-    - name: Format check (krabitls)
-      run: cargo fmt --manifest-path=krabitls/Cargo.toml -- --check
-    - name: Format check (krabitls_cli)
-      run: cargo fmt --manifest-path=krabitls_cli/Cargo.toml -- --check
-
-    - name: Clippy (default features)
-      run: cargo clippy --manifest-path=krabitls/Cargo.toml --all-targets -- -D warnings
-    - name: Clippy (feature = rsa)
-      run: cargo clippy --manifest-path=krabitls/Cargo.toml --all-targets --features rsa -- -D warnings
-    - name: Clippy (no-default, TLV cert parser)
-      run: cargo clippy --manifest-path=krabitls/Cargo.toml --no-default-features --features cipher-aes --all-targets -- -D warnings
-    - name: Clippy (feature = chacha20)
-      run: cargo clippy --manifest-path=krabitls/Cargo.toml --all-targets --features chacha20 -- -D warnings
-    - name: Clippy (feature = chacha20 + rsa)
-      run: cargo clippy --manifest-path=krabitls/Cargo.toml --all-targets --features chacha20 --features rsa -- -D warnings
-    - name: Clippy (feature = mldsa)
-      run: cargo clippy --manifest-path=krabitls/Cargo.toml --all-targets --features mldsa -- -D warnings
-    - name: Clippy (feature = mlkem)
-      run: cargo clippy --manifest-path=krabitls/Cargo.toml --all-targets --features mlkem -- -D warnings
-    - name: Clippy (feature = ecdsa)
-      run: cargo clippy --manifest-path=krabitls/Cargo.toml --all-targets --features ecdsa -- -D warnings
-    - name: Clippy (krabitls_cli, default + rsa + chacha20)
+        persist-credentials: false
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        components: clippy
+    - uses: Swatinem/rust-cache@v2
+      with:
+        key: cli-${{ matrix.features }}
+    - name: Clippy + build
       run: |
-        cargo clippy --manifest-path=krabitls_cli/Cargo.toml --all-targets -- -D warnings
-        cargo clippy --manifest-path=krabitls_cli/Cargo.toml --all-targets --features rsa -- -D warnings
-        cargo clippy --manifest-path=krabitls_cli/Cargo.toml --all-targets --features chacha20 -- -D warnings
-        cargo clippy --manifest-path=krabitls_cli/Cargo.toml --all-targets --features rsa --features chacha20 -- -D warnings
-    - name: Clippy (krabitls_cli, feature = ecdsa)
-      # The `krabitls_connect` bin requires `rsa`; pair it so the ECDSA path
-      # actually compiles (feature = ecdsa alone matches no targets).
-      run: cargo clippy --manifest-path=krabitls_cli/Cargo.toml --all-targets --features ecdsa,rsa -- -D warnings
+        ARGS=""
+        [ -n "${{ matrix.features }}" ] && ARGS="--features ${{ matrix.features }}"
+        cargo clippy --manifest-path=krabitls_cli/Cargo.toml --all-targets $ARGS -- -D warnings
+        cargo build --manifest-path=krabitls_cli/Cargo.toml $ARGS --verbose
 
-    # Feature-powerset sweep — every realistic combo compiles, is warning-free,
-    # and its tests run (catches a combo where a test silently cfg's out or a
-    # test helper is dead only when a feature is off). At least one cipher;
-    # depth 2 bounds the combinatorics. Moved here from the pre-commit hooks so
-    # local commits stay fast.
-    - name: cargo hack clippy (feature-powerset)
-      run: cargo hack clippy --manifest-path=krabitls/Cargo.toml --feature-powerset --depth 2 --at-least-one-of cipher-aes,chacha20 --all-targets -- -D warnings
-    - name: cargo hack test (feature-powerset)
-      run: cargo hack test --manifest-path=krabitls/Cargo.toml --feature-powerset --depth 2 --at-least-one-of cipher-aes,chacha20
-
-    - name: Build (default features)
-      run: cargo build --manifest-path=krabitls/Cargo.toml --verbose
-    - name: Build (feature = rsa)
-      run: cargo build --manifest-path=krabitls/Cargo.toml --features rsa --verbose
-    - name: Build (no-default, TLV cert parser)
-      run: cargo build --manifest-path=krabitls/Cargo.toml --no-default-features --features cipher-aes --verbose
-    - name: Build (feature = chacha20)
-      run: cargo build --manifest-path=krabitls/Cargo.toml --features chacha20 --verbose
-
-    - name: Test (default features)
-      run: cargo test --manifest-path=krabitls/Cargo.toml --verbose
-    - name: Test (krabitls_fixtures seed KATs)
+  fixtures:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+    - uses: dtolnay/rust-toolchain@stable
+    - uses: Swatinem/rust-cache@v2
+    - name: Test krabitls_fixtures seed KATs
       run: cargo test --manifest-path=krabitls_fixtures/Cargo.toml --verbose
-    - name: Test (feature = rsa)
-      run: cargo test --manifest-path=krabitls/Cargo.toml --features rsa --verbose
-    - name: Test (no-default, TLV cert parser)
-      run: cargo test --manifest-path=krabitls/Cargo.toml --no-default-features --features cipher-aes --verbose
-    - name: Test (feature = chacha20)
-      run: cargo test --manifest-path=krabitls/Cargo.toml --features chacha20 --verbose
-    - name: Test (feature = mldsa)
-      run: cargo test --manifest-path=krabitls/Cargo.toml --features mldsa --verbose
-    - name: Test (feature = mlkem)
-      run: cargo test --manifest-path=krabitls/Cargo.toml --features mlkem --verbose
-    - name: Test (feature = ecdsa)
-      run: cargo test --manifest-path=krabitls/Cargo.toml --features ecdsa --verbose
-    - name: Test (all-features)
-      run: cargo test --manifest-path=krabitls/Cargo.toml --all-features --verbose
-
-    - name: Build krabitls_cli (default + rsa + chacha20)
-      run: |
-        cargo build --manifest-path=krabitls_cli/Cargo.toml --verbose
-        cargo build --manifest-path=krabitls_cli/Cargo.toml --features rsa --verbose
-        cargo build --manifest-path=krabitls_cli/Cargo.toml --features chacha20 --verbose
-        cargo build --manifest-path=krabitls_cli/Cargo.toml --features rsa --features chacha20 --verbose
-    - name: Build (krabitls_cli, feature = ecdsa)
-      run: cargo build --manifest-path=krabitls_cli/Cargo.toml --features ecdsa,rsa --verbose
