@@ -73,9 +73,8 @@ jobs:
     - name: Test
       run: cargo test --manifest-path=krabitls/Cargo.toml --no-default-features --features "${{ matrix.profile }}${{ matrix.carrier }}"
 
-  # Carrier-swap proof: recompile the whole stack on an alternate bigint backend
-  # (test-only, dev-dep forks) and run the full unit suite. Own job, not a
-  # `krabitls` matrix cell, so it isn't multiplied by the fixed/heapless axis.
+  # Own job, not a `krabitls` matrix cell, so it isn't multiplied by the
+  # fixed/heapless axis.
   carrier-swap:
     name: carrier-swap [${{ matrix.carrier }}]
     runs-on: ubuntu-latest

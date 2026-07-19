@@ -103,11 +103,8 @@ mod carrier {
     pub(crate) type EcdsaP384Bn = UnifiedBn;
 }
 
-// The two carriers above are the only ones krabitls ships. Test-only alternate
-// backends (bnum, crypto-bigint) for the carrier-swap proof live in a separate
-// submodule so a reader can't mistake them for production carriers; they are
-// dev-dep-only and `cfg(test)`-gated, absent from any shippable or published
-// build.
+// Test-only alternate carriers for the carrier-swap proof (see the submodule);
+// the two above are the only ones krabitls ships.
 #[cfg(all(test, any(feature = "carrier-bnum", feature = "carrier-crypto-bigint")))]
 mod test_carriers;
 

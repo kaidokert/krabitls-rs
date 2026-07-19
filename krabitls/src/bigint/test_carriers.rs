@@ -1,16 +1,24 @@
-//! Test-only alternate bigint carriers — **not a production capability.**
+//! Test-only alternate bigint carriers — not a production capability.
 //!
-//! Recompiles the entire stack on bnum or crypto-bigint (from the git dev-dep
-//! forks) so `cargo test --features carrier-crypto-bigint` / `carrier-bnum` runs
-//! the full unit suite on a swapped [`crate::bigint`] — a continuously-checked
-//! proof that the carrier can be re-pointed at another backend. Everything here
-//! is `cfg(test)`-gated and dev-dep-only, so none of it reaches a shippable or
-//! published build; the fixed-bigint / heapless carriers in the parent module
-//! are the only ones krabitls actually ships.
+//! `cargo test --features carrier-crypto-bigint` (or `carrier-bnum`) recompiles
+//! the library's unit tests with [`crate::bigint`] re-pointed at the fork,
+//! running the bigint-critical paths — verify, sign, mTLS, X25519 — on the
+//! swapped carrier so a backend regression is caught in CI. The forks are git
+//! dev-deps and this is `cfg(test)`-gated, so no shippable or published build
+//! sees them; fixed-bigint stays the only carrier krabitls ships.
 //!
-//! Nct roles use the plain `U…`; Ct roles use the `Ct<U…>` personality wrapper.
+//! Scope: `cfg(test)` reaches only the in-crate unit tests. Integration tests
+//! under `tests/` compile krabitls as an ordinary dependency, so they keep the
+//! shipped carrier — a dev-dep can't reach that build.
+//!
+//! Nct roles use the plain `U…`; Ct roles the `Ct<U…>` wrapper.
 
-// crypto-bigint carries every width krabitls needs.
+#[cfg(all(feature = "carrier-bnum", feature = "carrier-crypto-bigint"))]
+compile_error!("carrier-bnum and carrier-crypto-bigint are mutually exclusive; enable one");
+
+// crypto-bigint carries every width krabitls needs. `not(carrier-bnum)` so the
+// mutual-exclusion violation surfaces as the compile_error above, not a
+// duplicate-`carrier` error.
 #[cfg(all(feature = "carrier-crypto-bigint", not(feature = "carrier-bnum")))]
 mod carrier {
     use crypto_bigint_patched as cb;

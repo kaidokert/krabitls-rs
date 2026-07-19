@@ -33,11 +33,8 @@ dev-utils = []
 # the published crate — where cargo strips those git deps — still compiles; CI
 # turns it on explicitly.
 backend-matrix = []
-# Test-only: recompile the ENTIRE stack on an alternate bigint carrier (bnum or
-# crypto-bigint, from the git dev-dep forks) and run the full unit suite on it —
-# a continuously-checked proof that `crate::bigint` can be re-pointed at another
-# backend. cfg(test)-gated, so the published lib and every non-test build still
-# resolve fixed-bigint and never name the forks. Enable one at a time.
+# Test-only carrier-swap proof — recompile the stack on bnum / crypto-bigint.
+# See `src/bigint/test_carriers.rs`. Enable one at a time.
 carrier-bnum = []
 carrier-crypto-bigint = []
 # Bigint carrier config. Default (this feature OFF): per-role compile-time
