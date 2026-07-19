@@ -75,9 +75,17 @@ pub enum ClientAuthFlightError {
 }
 
 /// Largest client leaf DER the coalesced second-flight scratch holds. An
-/// Ed25519 self-signed leaf is ~300-600 B; this leaves headroom. A larger
-/// cert yields [`ClientAuthFlightError::BufferTooSmall`].
-pub const MAX_CLIENT_CERT_DER: usize = 1024;
+/// Ed25519 self-signed leaf is ~300-600 B and an RSA-2048 one ~900 B; the
+/// bound tracks the widest enabled RSA width so a 3072/4096 leaf (whose modulus
+/// and self-signature together run ~2× the key width) still fits. A larger cert
+/// yields [`ClientAuthFlightError::BufferTooSmall`].
+pub const MAX_CLIENT_CERT_DER: usize = if cfg!(feature = "rsa-4096") {
+    1536
+} else if cfg!(feature = "rsa-3072") {
+    1280
+} else {
+    1024
+};
 
 /// Handshake-message header: type(1) + u24 length.
 const HS_HEADER: usize = 4;
@@ -577,6 +585,17 @@ mod tests {
             build_client_empty_certificate(&big_ctx, &mut out),
             Err(ClientAuthFlightError::ContextTooLong)
         );
+    }
+
+    // A leaf at the widest enabled RSA width fits the feature-sized bound; a
+    // 4096-bit self-signed cert is ~1317 B (repo fixture) and was rejected under
+    // the old fixed 1024 cap. Framing only, so a synthetic blob suffices.
+    #[cfg(feature = "rsa-4096")]
+    #[test]
+    fn certificate_message_accepts_widest_rsa_leaf() {
+        let wide_der = [0xABu8; 1317];
+        let mut out = [0u8; MAX_CLIENT_AUTH_FLIGHT];
+        assert!(build_client_certificate(&wide_der, &[], &mut out).is_ok());
     }
 
     #[test]

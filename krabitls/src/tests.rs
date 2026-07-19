@@ -2236,12 +2236,13 @@ mod cipher_aes {
             );
         }
 
-        /// Sub-capacity SIGN coverage: a 1024-bit key (`len` 32 in a 64-limb
-        /// carrier) signed through the same unblinded PSS path krabitls ships,
-        /// then verified. Drives the signing primitive directly to exercise the
-        /// carrier at a natural width below its capacity — the sub-capacity shape
-        /// the width-general `from_components` itself now leans on for any key
-        /// narrower than the widest enabled width.
+        /// Sub-capacity SIGN coverage: a 1024-bit key (32 `u32` limbs used)
+        /// signed through the same unblinded PSS path krabitls ships, on the
+        /// feature-selected `RsaSignBn` width (64/96/128 limbs), then verified.
+        /// Drives the signing primitive directly to exercise the carrier at a
+        /// natural width below its capacity — the sub-capacity shape the
+        /// width-general `from_components` itself leans on for any key narrower
+        /// than the widest enabled width.
         // RSA-1024 is the legacy `rsa-1024` opt-in (2048 is the `rsa`
         // baseline); the sub-capacity scenario only exists when it is enabled.
         #[cfg(feature = "rsa-1024")]
@@ -2329,8 +2330,21 @@ mod cipher_aes {
         #[test]
         fn rsa_client_auth_oversized_d_fails() {
             use crate::backends::RsaClientAuth;
+            // `d` one byte over the modulus width is rejected at each enabled
+            // width (the guard is width-relative; a synthetic modulus never
+            // reaches the modexp since the length check fires first).
             assert!(
                 RsaClientAuth::from_components(&CLIENT_N, CLIENT_E, &[0xff; 257], &[0x30]).is_err()
+            );
+            #[cfg(feature = "rsa-3072")]
+            assert!(
+                RsaClientAuth::from_components(&[0x11u8; 384], CLIENT_E, &[0xff; 385], &[0x30])
+                    .is_err()
+            );
+            #[cfg(feature = "rsa-4096")]
+            assert!(
+                RsaClientAuth::from_components(&[0x11u8; 512], CLIENT_E, &[0xff; 513], &[0x30])
+                    .is_err()
             );
         }
     }
