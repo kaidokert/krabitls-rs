@@ -139,10 +139,9 @@ krabiecdsa = { version = "0.2.0", default-features = false, optional = true }
 krabitls_fixtures = { path = "../krabitls_fixtures", default-features = false }
 
 # Backend honesty matrix (see `src/backend_matrix.rs`): the `_patched` forks add
-# the const-num-traits + modmath-cios impls upstream lacks, so bnum /
-# crypto-bigint / num-bigint can stand in as `crate::bigint` carriers in tests.
-# Git dev-deps are stripped from the published manifest (as modmath does), so
-# these have zero publish impact. Tags track the modmath 0.6 line.
+# the const-num-traits + modmath-cios impls upstream lacks, so bnum and
+# crypto-bigint can stand in as `crate::bigint` carriers in tests. Git dev-deps
+# are stripped from the published manifest (as modmath does), so these have zero
+# publish impact. Tags track the modmath 0.6 line.
 bnum_patched = { package = "bnum", git = "https://github.com/kaidokert/bnum.git", tag = "v0.14.4-const-20", default-features = false, features = ["zeroize"] }
 crypto-bigint_patched = { package = "crypto-bigint", git = "https://github.com/kaidokert/crypto-bigint.git", tag = "v0.7.5-const-20", default-features = false, features = ["zeroize", "subtle"] }
-num-bigint_patched = { package = "num-bigint", git = "https://github.com/kaidokert/num-bigint.git", tag = "v0.4.4-const-10" }

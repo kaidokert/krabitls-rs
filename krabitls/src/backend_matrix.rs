@@ -1,14 +1,10 @@
 //! Backend honesty matrix — `cfg(test)`-only, zero publish impact (the git
 //! dev-deps are stripped from the published manifest, as modmath's own manifest
 //! demonstrates). Proves the crypto crates krabitls builds on accept alternate
-//! bigint carriers — bnum, crypto-bigint, num-bigint — and return the correct
-//! answers, so [`crate::bigint`] could be re-pointed at any of them.
-//!
-//! bnum + crypto-bigint are fixed-width `Copy` carriers covering both the
-//! vartime (verify) and constant-time (x25519) halves. num-bigint is a
-//! heap-backed runtime-width carrier that is *not* `Copy` and has no CT surface,
-//! so it appears on the vartime verify rows only (its x25519 row is absent by
-//! construction, not omission).
+//! bigint carriers — bnum and crypto-bigint — and return the correct answers, so
+//! [`crate::bigint`] could be re-pointed at either of them. Both are fixed-width
+//! `Copy` carriers covering the vartime (verify) and constant-time (x25519)
+//! halves.
 //!
 //! Each op is one `macro_rules!` per row so the body is monomorphic and needs no
 //! carrier trait bounds spelled out; `try_from_be_bytes_vartime` is the one
@@ -114,12 +110,6 @@ macro_rules! rsa_verify_row {
 rsa_verify_row!(rsa1024_verify_bnum, bnum_patched::types::U1024);
 #[cfg(feature = "rsa")]
 rsa_verify_row!(rsa1024_verify_crypto_bigint, crypto_bigint_patched::U1024);
-// num-bigint has NO op rows: its heap-backed, non-`Copy` `FixedWidthBigUint`
-// cannot satisfy any of the published crypto crates' carrier bounds — RSA wants
-// `DefaultIsZeroes` + `FromBytes`, Ed25519 `UnsignedModularInt`, ECDSA
-// `FieldFor`, all of which lean on `Copy`/constant-time-select the heap carrier
-// lacks (see heap-carrier autopsy). It stays a dev-dep + `num_bigint_present`
-// below so the matrix documents the limit as a fact, not an omission.
 
 // ── Ed25519 verify (vartime) ───────────────────────────────────────────────
 
@@ -193,15 +183,3 @@ x25519_row!(
     x25519_crypto_bigint,
     crypto_bigint_patched::Ct<crypto_bigint_patched::U256>
 );
-
-// ── num-bigint: resolves as an Nct carrier, but no crypto-crate op accepts it ──
-
-#[test]
-fn num_bigint_present_but_unsupported() {
-    use const_num_traits::{HasPersonality, Nct};
-    // The const-num-traits integration is real (personality = Nct)...
-    fn assert_nct<T: HasPersonality<P = Nct>>() {}
-    assert_nct::<num_bigint_patched::FixedWidthBigUint>();
-    // ...but the RSA/Ed25519/ECDSA rows above deliberately exclude it: the
-    // crypto crates' bounds need a `Copy` carrier this heap type can't be.
-}
