@@ -73,6 +73,34 @@ jobs:
     - name: Test
       run: cargo test --manifest-path=krabitls/Cargo.toml --no-default-features --features "${{ matrix.profile }}${{ matrix.carrier }}"
 
+  # Own job, not a `krabitls` matrix cell, so it isn't multiplied by the
+  # fixed/heapless axis.
+  carrier-swap:
+    name: carrier-swap [${{ matrix.carrier }}]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - carrier: crypto-bigint
+            features: "cert-der,cipher-aes,rsa,rsa-1024,rsa-3072,rsa-4096,ecdsa,carrier-crypto-bigint"
+          - carrier: bnum
+            features: "cert-der,cipher-aes,rsa,rsa-1024,rsa-4096,carrier-bnum"
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        components: clippy
+    - uses: Swatinem/rust-cache@v2
+      with:
+        key: carrier-${{ matrix.carrier }}
+    - name: Clippy
+      run: cargo clippy --manifest-path=krabitls/Cargo.toml --no-default-features --features "${{ matrix.features }}" --all-targets -- -D warnings
+    - name: Test
+      run: cargo test --manifest-path=krabitls/Cargo.toml --no-default-features --features "${{ matrix.features }}"
+
   krabitls-cli:
     name: krabitls_cli [${{ matrix.features || 'default' }}]
     runs-on: ubuntu-latest

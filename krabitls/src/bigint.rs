@@ -16,7 +16,10 @@
 //! still selects a carrier — no explicit `bigint-fixed` feature to keep in sync.
 
 /// Config A — per-role compile-time `FixedUInt` widths (the default).
-#[cfg(not(feature = "bigint-heapless"))]
+#[cfg(all(
+    not(feature = "bigint-heapless"),
+    not(all(test, any(feature = "carrier-bnum", feature = "carrier-crypto-bigint")))
+))]
 mod carrier {
     use fixed_bigint::FixedUInt;
 
@@ -56,7 +59,10 @@ mod carrier {
 }
 
 /// Config B — one runtime-length `HeaplessBigInt`, separate Nct + Ct.
-#[cfg(feature = "bigint-heapless")]
+#[cfg(all(
+    feature = "bigint-heapless",
+    not(all(test, any(feature = "carrier-bnum", feature = "carrier-crypto-bigint")))
+))]
 mod carrier {
     use fixed_bigint::HeaplessBigInt;
 
@@ -97,4 +103,12 @@ mod carrier {
     pub(crate) type EcdsaP384Bn = UnifiedBn;
 }
 
+// Test-only alternate carriers for the carrier-swap proof (see the submodule);
+// the two above are the only ones krabitls ships.
+#[cfg(all(test, any(feature = "carrier-bnum", feature = "carrier-crypto-bigint")))]
+mod test_carriers;
+
+#[cfg(not(all(test, any(feature = "carrier-bnum", feature = "carrier-crypto-bigint"))))]
 pub(crate) use carrier::*;
+#[cfg(all(test, any(feature = "carrier-bnum", feature = "carrier-crypto-bigint")))]
+pub(crate) use test_carriers::*;

@@ -33,6 +33,10 @@ dev-utils = []
 # the published crate — where cargo strips those git deps — still compiles; CI
 # turns it on explicitly.
 backend-matrix = []
+# Test-only carrier-swap proof — recompile the stack on bnum / crypto-bigint.
+# See `src/bigint/test_carriers.rs`. Enable one at a time.
+carrier-bnum = []
+carrier-crypto-bigint = []
 # Bigint carrier config. Default (this feature OFF): per-role compile-time
 # `FixedUInt` widths — one monomorphization per width, smallest per-algo. ON: a
 # single runtime-length `HeaplessBigInt` (2048-bit CAP) with separate Nct+Ct
