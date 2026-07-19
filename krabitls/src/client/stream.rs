@@ -98,9 +98,8 @@ where
                 .map_err(|_| HandshakeError::Rng)?;
         }
 
-        // x25519_base is fallible since ed25519_heapless 0.5.0 (`CurveSetupError`),
-        // unreachable for the ≥256-bit `X25519Bn` carrier — same fail-closed
-        // mapping as the adjacent ephemeral-keygen draws.
+        // `CurveSetupError` is unreachable on the ≥256-bit carrier — fail closed,
+        // matching the adjacent ephemeral-keygen error.
         let x25519_pub = ed25519_heapless::x25519_base::<X25519Bn>(&x25519_priv)
             .map_err(|_| HandshakeError::Rng)?;
 

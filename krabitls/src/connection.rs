@@ -557,9 +557,8 @@ where
             });
         }
 
-        // x25519 is fallible since ed25519_heapless 0.5.0 (`CurveSetupError`),
-        // unreachable for the ≥256-bit `Bn` carrier — fail closed into the same
-        // X25519 DH abort as the low-order-point check below.
+        // `CurveSetupError` is unreachable on the ≥256-bit carrier — fail closed
+        // into the same X25519 DH abort as the low-order-point check below.
         let x25519_ss = zeroize::Zeroizing::new(
             ed25519_heapless::x25519::<Bn>(&self.state.x25519_priv, sh.x25519_share)
                 .map_err(|_| ConnectionError::Parse(ParseError::DhAllZero))?,

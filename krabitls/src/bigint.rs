@@ -12,9 +12,8 @@
 //!   RSA modulus alike. Trades a wider per-value footprint for far less `.text`
 //!   on multi-algorithm builds.
 //!
-//! Both draw from fixed-bigint 0.6; the swap point is this one module. Fixed is
-//! the absence of `bigint-heapless`, so `--no-default-features` still has a
-//! carrier and the two are never both selected.
+//! Fixed is the *absence* of `bigint-heapless`, so `--no-default-features`
+//! still selects a carrier — no explicit `bigint-fixed` feature to keep in sync.
 
 /// Config A — per-role compile-time `FixedUInt` widths (the default).
 #[cfg(not(feature = "bigint-heapless"))]
