@@ -1,6 +1,6 @@
 //! Backend carrier matrix — `cfg(test)`-only, zero publish impact (the git
 //! dev-deps are stripped from the published manifest, as modmath's own manifest
-//! demonstrates). Proves the crypto crates krabitls builds on accept alternate
+//! demonstrates). Proves the crypto crates used by krabitls accept alternate
 //! bigint carriers — bnum and crypto-bigint — and return the correct answers, so
 //! [`crate::bigint`] could be re-pointed at either of them. Both are fixed-width
 //! `Copy` carriers covering the vartime (verify) and constant-time (x25519)
