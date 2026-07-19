@@ -37,8 +37,14 @@ mod carrier {
     /// 4096-bit RSA *verification* carrier.
     #[cfg(feature = "rsa-4096")]
     pub(crate) type RsaU4096 = FixedUInt<u32, 128>;
-    /// 2048-bit constant-time carrier for RSA *signing* (private `d`).
-    #[cfg(feature = "rsa")]
+    /// Constant-time carrier for RSA *signing* (private `d`). One carrier sized
+    /// to the widest enabled width; narrower keys sign sub-capacity, so the sign
+    /// path stays a single monomorphization across all widths.
+    #[cfg(feature = "rsa-4096")]
+    pub(crate) type RsaSignBn = FixedUInt<u32, 128, const_num_traits::Ct>;
+    #[cfg(all(feature = "rsa-3072", not(feature = "rsa-4096")))]
+    pub(crate) type RsaSignBn = FixedUInt<u32, 96, const_num_traits::Ct>;
+    #[cfg(all(feature = "rsa", not(any(feature = "rsa-3072", feature = "rsa-4096"))))]
     pub(crate) type RsaSignBn = FixedUInt<u32, 64, const_num_traits::Ct>;
 
     /// 256-bit vartime carrier for ECDSA P-256 *verification*.
@@ -62,7 +68,13 @@ mod carrier {
     type UnifiedBn = HeaplessBigInt<u32, 96>;
     #[cfg(not(any(feature = "rsa-3072", feature = "rsa-4096")))]
     type UnifiedBn = HeaplessBigInt<u32, 64>;
-    /// Unified 2048-bit-capacity constant-time carrier — every Ct role.
+    /// Unified constant-time carrier — every Ct role. CAP follows the widest
+    /// enabled RSA width (mirrors `UnifiedBn`) so RSA signing at 3072/4096 fits.
+    #[cfg(feature = "rsa-4096")]
+    type UnifiedCtBn = HeaplessBigInt<u32, 128, const_num_traits::Ct>;
+    #[cfg(all(feature = "rsa-3072", not(feature = "rsa-4096")))]
+    type UnifiedCtBn = HeaplessBigInt<u32, 96, const_num_traits::Ct>;
+    #[cfg(not(any(feature = "rsa-3072", feature = "rsa-4096")))]
     type UnifiedCtBn = HeaplessBigInt<u32, 64, const_num_traits::Ct>;
 
     pub(crate) type Curve25519VerifyBn = UnifiedBn;

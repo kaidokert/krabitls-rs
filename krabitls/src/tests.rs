@@ -2041,6 +2041,108 @@ mod cipher_aes {
                 .expect("PSS verifies 2");
         }
 
+        /// RSA-3072 client-auth sign round-trip — `from_components` signs
+        /// sub-capacity on the width-general `SignBn`, then the widened verifier
+        /// accepts it. Exercises the 384-byte sign + verify path end to end.
+        #[cfg(feature = "rsa-3072")]
+        #[test]
+        fn rsa_3072_client_auth_sign_round_trips() {
+            use crate::backends::RsaClientAuth;
+            use crate::traits::client_auth::ClientAuth;
+
+            const N: [u8; 384] = crate::hex_decode(
+                "8b3929bb82fb2819115cc1ff58a41998d0b55e3885f8d0dc5c71496c351deb5c\
+                 e840cfe6a364a8fd041bb8e8ab3d54d964c5d0e2bb08d3c5e9559b14cf8468e6\
+                 25011eb0edb39c04a0cff9b52ebfd870e4f6c7ec79bd9c213406583ae7281c5c\
+                 35bcfce64f4690af0ff56a2a070bbc937843a6f05573b990593198c59d65a25f\
+                 84dfc805ae76f9dd779cc42d1caacae54a9c0e68dc5d4fad3e955e77277b0f77\
+                 35fd0bb09a111513b4c49aa064c43d403640b13b415d495e43683d1e63d19313\
+                 a4f8f276578066964314f882a66713e7e755f887a8a656f8783572782f7c87b3\
+                 dc5a630a8a67c4198457af5fba335bc3679f7be913b0d5329afc4a2a382ddcc5\
+                 53245fee3063f6f597fba9b75473fa47b4a398401164c75a98f3422f47a7040b\
+                 9db40ae9151e7b434c04739194918ff542ce8c11fce8c71f139480aba898a42e\
+                 534b1362264fa1576aaecb67cc871b7572673cb3ff6c4b7f856b96b43c48c711\
+                 1dafbabbdb0bd2d8026fe80328c57ffd1f32f9abea322625fd19b7c5668fd80f",
+            );
+            const D: [u8; 384] = crate::hex_decode(
+                "15c631c68a64912fb927efe2bef0775d0f9df61252b308a8c0ea7f93100c51b5\
+                 bcfb4f53613af535112741785e392039448a0307f03c4ab16ede127c4d925b67\
+                 a1e24c1f06d0d5a0b7029ffec6c4d415f55c10063b94bc98f2ce8a8e627dc2fb\
+                 119fdba6823fe53c03fbc6dd5e2f11e60c8ea420281fdfd0a42a88c6b6130c5d\
+                 f2659f73c806ad408671bb102fd0c4728504903a5fe600cd4b219db321611d43\
+                 9b402c21098f8cb8d6c7a84402a3db2287a45433bcc98417dd3a0329156fd46d\
+                 28841090e73594bd80c3df226db931a24dee0ede81e3d488bb8a9f2c9d6856bf\
+                 88b00ff6a1c253fa03de987bb1649ca5240acb72eb4dd19794e9ec3c2132d02a\
+                 f667cae145c227d037d43763cb866a8377323f6940d570c5aacd8080db72d103\
+                 8301eee587a653c276c37d33f7f7a279f2fca92fac663524f92e5ff91214cc99\
+                 fbc1e37b12f39e3b081b466aa4088af1f260f1da6f587ceaeac215cbac72af04\
+                 290e7fb9bfa9c427cf54b43e1623b76809ad16016d02651ba3720b57bc6009e5",
+            );
+            let auth = RsaClientAuth::from_components(&N, 65537, &D, &[0x30])
+                .expect("components accepted");
+            let content = b"stand-in CertificateVerify signed content";
+            let sig = auth.sign(content, &[0x5a; 32]).expect("sign");
+            assert_eq!(sig.len(), 384);
+            let vk = RsaVerifierKey::new(&N, 65537).expect("vk");
+            vk.verify_pss_sha256(content, &sig).expect("PSS verifies");
+            assert!(vk.verify_pss_sha256(b"other content", &sig).is_err());
+        }
+
+        /// RSA-4096 client-auth sign round-trip — `from_components` signs
+        /// sub-capacity on the width-general `SignBn`, then the widened verifier
+        /// accepts it. Exercises the 512-byte sign + verify path end to end.
+        #[cfg(feature = "rsa-4096")]
+        #[test]
+        fn rsa_4096_client_auth_sign_round_trips() {
+            use crate::backends::RsaClientAuth;
+            use crate::traits::client_auth::ClientAuth;
+
+            const N: [u8; 512] = crate::hex_decode(
+                "bb5e23d903a3938b9012ee497960f1b95b5fdfab87e18bf8b13c080d5501524e\
+                 58c0ece4a8be7dfb4158a61b9b0ea1480417e1204435a9162883d424a98c98c1\
+                 fdd0baab4300f77eb4a91bf76667a9300218b0c81abe03249c7e95661629cb40\
+                 1fcf8d16fb090a5ed9689c628afd756eb828da77a71fa8a887b52083ae771007\
+                 12529bd7eb7cb8788f7a75de418c1551e737338cc81cc3bcbe431a373dc9f16f\
+                 3d01147a7b18acc5c768342afbb6adf591867650a491cbefebda20197c96b6d5\
+                 709f39e47c15162af1c42c81e01f42d0654ecb778d94fffd2b46f33bb32e05b5\
+                 f4298ebf7cf7b6a2dee9993a1a82b5f46994a043215dc2bfe21c6f0bf3db6ef4\
+                 e6c3d06f46489ac08ace5b7cd9ebec50f51b61447c57e13beedbb3830c488f16\
+                 c61a48ecb6c0865c204fe0d19241852325b721e9593b37aefaf43fc043939b69\
+                 0c7964e5bfed029366bf3be88667a57f27ebc6cff37caaaddee89c2029c98afb\
+                 3c65c6996a3ed8a0062d9478271b872f87ef149ed82d8f28aa5eb25d9ce6d9c0\
+                 ce63f803a95f016cc4c9b2862e9143dce4f85049721a6ba74dfe8fd9c7fc981a\
+                 78b60272887b33d74a88c0294a1fd4e3d2b82f351eb281cd1df6943c3741808b\
+                 24ebb6316da8085dde021cc65c1c6ee020a6920abd8d740a0dbd524e42088f2c\
+                 f0189fa45a0d043db479ead8d60e52d894906ba8f2884827dfa3a93e11267de3",
+            );
+            const D: [u8; 512] = crate::hex_decode(
+                "1a23d448d2a6fa642ba9ab20895f1034e5bdc144e5defe79fd315cb18e224790\
+                 7cf5b977088b144f693aa168a8e01dcf201c66c0eb7de304f4dfb8c93ea04a05\
+                 87d01c3832cfb537b24e5a2e50aaa0a227d60daa7529fce2998a02ca2c731093\
+                 4b2782786a206f97c8febd114b1bce4b8544d47f2ca13ae9fc38e0518ec061f6\
+                 37efaf7a01b55e3fc4f5f6f0c18b4b6ed2f252c3a428232f6209ec39386a6e95\
+                 0583f0e3f4e828892a91ebf3f28c761b945317e440a4188ec9d99e1b2ad46a00\
+                 957199658f8c1a3ccbe05711ed7f3456979e551397a73f1edbc54e6a38a17094\
+                 307d5b18205552351f22a4491a1411fcddd2a99883ff57e166531a33a6db53d0\
+                 ce0744209485797edbde546e03bf101dac03321c5f4728958aa6e8aea03da429\
+                 4b6e268c53998a451c9f21ff3246f78fde615deec94bfdb41664f9f0d69dbe7a\
+                 b658511b26983154911cbc052c412cd45b6b08957912bc69ad8ca2b1c626c495\
+                 21e9b6202485bab11ebc50da541d776aa481b1bffcfdcb94e4456a0be4332281\
+                 3663db71f2ee89b19b4fa483d88b9223d79a5bdd06c71eba14ef107a4ffd0463\
+                 22825449af9a37e846f9de6812846513f3d4da2c803d86c2f7808932e0da3e2d\
+                 c95dda6a452a8d74cc5ec49f57a00fa924bbe02706fcc234fd04d86b61c39cee\
+                 6972ed5538c6bbca0dc999746d8168e56a8bac49613ef94b2f890bf7f6346369",
+            );
+            let auth = RsaClientAuth::from_components(&N, 65537, &D, &[0x30])
+                .expect("components accepted");
+            let content = b"stand-in CertificateVerify signed content";
+            let sig = auth.sign(content, &[0x5a; 32]).expect("sign");
+            assert_eq!(sig.len(), 512);
+            let vk = RsaVerifierKey::new(&N, 65537).expect("vk");
+            vk.verify_pss_sha256(content, &sig).expect("PSS verifies");
+            assert!(vk.verify_pss_sha256(b"other content", &sig).is_err());
+        }
+
         /// RSA-3072 PSS-SHA256 verify KAT — throwaway `openssl genpkey` key,
         /// salt length 32. Drives the width-general `RsaVerifierKey` dispatch
         /// (384-byte modulus → `U3072`) end to end through the shared modexp.
@@ -2134,12 +2236,12 @@ mod cipher_aes {
             );
         }
 
-        /// Sub-capacity SIGN coverage for the unified `CAP=64` thesis: a
-        /// 1024-bit key (`len` 32 in a 64-limb carrier) signed through the same
-        /// unblinded PSS path krabitls ships, then verified. `from_components`
-        /// is RSA-2048-only by policy, so this drives the signing primitive
-        /// directly to exercise the carrier at natural width `< CAP` — the one
-        /// shape the `len == CAP` deployment tests never touch.
+        /// Sub-capacity SIGN coverage: a 1024-bit key (`len` 32 in a 64-limb
+        /// carrier) signed through the same unblinded PSS path krabitls ships,
+        /// then verified. Drives the signing primitive directly to exercise the
+        /// carrier at a natural width below its capacity — the sub-capacity shape
+        /// the width-general `from_components` itself now leans on for any key
+        /// narrower than the widest enabled width.
         // RSA-1024 is the legacy `rsa-1024` opt-in (2048 is the `rsa`
         // baseline); the sub-capacity scenario only exists when it is enabled.
         #[cfg(feature = "rsa-1024")]
@@ -2220,18 +2322,15 @@ mod cipher_aes {
             assert_eq!(dec(&padded), dec(&[0x03]));
         }
 
-        /// A `d` wider than the 256-byte carrier is rejected — pins the
-        /// over-long error the signing decode relies on (the length guard in
-        /// `from_components` leans on it).
+        /// A `d` longer than the modulus is rejected by the `from_components`
+        /// length guard. A widened `SignBn` (rsa-3072/4096) no longer overflows
+        /// on an over-long `d`, so the explicit `d.len() > n.len()` guard — not
+        /// the carrier decode — is what enforces it.
         #[test]
         fn rsa_client_auth_oversized_d_fails() {
-            type SignBn = crate::bigint::RsaSignBn;
-            let oversized = [0xffu8; 257];
+            use crate::backends::RsaClientAuth;
             assert!(
-                <SignBn as rsa::traits::FixedWidthUnsignedInt>::try_from_be_bytes_vartime(
-                    &oversized
-                )
-                .is_err()
+                RsaClientAuth::from_components(&CLIENT_N, CLIENT_E, &[0xff; 257], &[0x30]).is_err()
             );
         }
     }

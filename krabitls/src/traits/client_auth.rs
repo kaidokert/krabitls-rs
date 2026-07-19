@@ -2,9 +2,16 @@
 
 use heapless::Vec;
 
-/// Largest client-auth signature krabitls buffers. Ed25519 = 64 B; an RSA-2048
-/// PSS signature (a future scheme) = 256 B.
-pub const MAX_CLIENT_SIG_LEN: usize = 256;
+/// Largest client-auth signature krabitls buffers. Ed25519 = 64 B; RSA-PSS is
+/// modulus-width, so this tracks the widest enabled RSA width (256 B for
+/// 2048 / no-RSA, 384 for 3072, 512 for 4096).
+pub const MAX_CLIENT_SIG_LEN: usize = if cfg!(feature = "rsa-4096") {
+    512
+} else if cfg!(feature = "rsa-3072") {
+    384
+} else {
+    256
+};
 
 /// A `CertificateVerify` signature produced by a [`ClientAuth`] implementation.
 /// Length depends on the scheme (64 B for ed25519).
