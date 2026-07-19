@@ -815,5 +815,8 @@ impl<'a> Reader<'a> {
 #[cfg(test)]
 mod tests;
 
-#[cfg(test)]
+// Gated behind `backend-matrix` (not bare `cfg(test)`) so the git-only
+// `_patched` dev-deps it references don't break `cargo test` on the published
+// crate, where cargo strips them from the manifest. CI runs it explicitly.
+#[cfg(all(test, feature = "backend-matrix"))]
 mod backend_matrix;
