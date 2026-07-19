@@ -10,10 +10,14 @@ A hobby `no_std` TLS 1.3 client for microcontrollers. Don't use it for anything 
 
 - TLS 1.3; X25519 or X25519MLKEM768 key exchange
 - Verifies Ed25519, RSA, ECDSA (P-256/P-384), or ML-DSA server certificates
+- RSA is 2048-bit; 1024/3072/4096 are opt-in cargo features
+- Optional mutual-TLS client certificates (Ed25519 or RSA-PSS)
 - Bundled trust is pin-a-pubkey or trust-SAN — no CA bundle or chain walking; verification is a pluggable `VerifyStrategy`
 - Hand-rolled, unaudited, not constant-time, no scalar blinding
 
-No heap allocations, and prefer reduced flash + stack size over speed.
+No heap allocations, and prefer reduced flash + stack size over speed. On builds
+that use several signature algorithms, the `bigint-heapless` feature cuts code
+size at the cost of some wasted stack.
 
 #### Resource usage
 
