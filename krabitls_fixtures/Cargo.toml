@@ -26,3 +26,8 @@ krabitls = { path = "../krabitls", default-features = false }
 sha2 = { version = "0.11", default-features = false }
 rand_core = { version = "0.10", default-features = false }
 zeroize = { version = "1.8", default-features = false }
+
+# EXPERIMENT (heap-verify): unify modmath on the 0.6.1-alpha.1 git tag, matching
+# the krabitls dep it builds. Reverts to registry when modmath 0.6.1 publishes.
+[patch.crates-io]
+modmath = { git = "https://github.com/kaidokert/modmath-rs.git", tag = "v0.6.1-alpha.1" }

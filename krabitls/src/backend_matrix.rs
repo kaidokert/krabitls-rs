@@ -6,6 +6,12 @@
 //! `Copy` carriers covering the vartime (verify) and constant-time (x25519)
 //! halves.
 //!
+//! num-bigint is the verify-only exception to the `Copy`-carrier rule: its
+//! heap-backed, non-`Copy` `FixedWidthBigUint` can't reach any CT path, but the
+//! by-reference / schoolbook *verify* surfaces (`curve25519_schoolbook` +
+//! `verify_with_field`, `verify_for_curve_ref`) admit it, so it earns Ed25519
+//! and ECDSA verify rows and nothing else.
+//!
 //! Each op is one `macro_rules!` per row so the body is monomorphic and needs no
 //! carrier trait bounds spelled out; `try_from_be_bytes_vartime` is the one
 //! uniform constructor every carrier implements.
@@ -136,6 +142,23 @@ macro_rules! ed25519_verify_row {
 ed25519_verify_row!(ed25519_verify_bnum, bnum_patched::types::U512);
 ed25519_verify_row!(ed25519_verify_crypto_bigint, crypto_bigint_patched::U512);
 
+// num-bigint's heap carrier is barred from `verify::<T>` above (needs `Copy`);
+// the schoolbook Clone/by-reference field admits it.
+#[test]
+fn ed25519_verify_num_bigint_heap() {
+    use ed25519_heapless::{curve25519_schoolbook, verify_with_field};
+    let field = curve25519_schoolbook::<num_bigint_patched::FixedWidthBigUint>().expect("field");
+    assert!(verify_with_field(
+        &field,
+        ed_kat::PUB,
+        ed_kat::MSG,
+        ed_kat::SIG
+    ));
+    let mut bad = ed_kat::SIG;
+    bad[0] ^= 1;
+    assert!(!verify_with_field(&field, ed_kat::PUB, ed_kat::MSG, bad));
+}
+
 // ── ECDSA P-256 verify (vartime) ───────────────────────────────────────────
 
 #[cfg(feature = "ecdsa")]
@@ -165,6 +188,28 @@ macro_rules! p256_verify_row {
 p256_verify_row!(p256_verify_bnum, bnum_patched::types::U256);
 #[cfg(feature = "ecdsa")]
 p256_verify_row!(p256_verify_crypto_bigint, crypto_bigint_patched::U256);
+
+// num-bigint's heap carrier via the by-reference verify path.
+#[cfg(feature = "ecdsa")]
+#[test]
+fn p256_verify_num_bigint_heap() {
+    use krabiecdsa::{p256::P256, verify_for_curve_ref};
+    type Heap = num_bigint_patched::FixedWidthBigUint;
+    assert!(verify_for_curve_ref::<P256, Heap>(
+        &p256_kat::PUB,
+        &p256_kat::DIGEST,
+        &p256_kat::R,
+        &p256_kat::S,
+    ));
+    let mut bad = p256_kat::DIGEST;
+    bad[0] ^= 1;
+    assert!(!verify_for_curve_ref::<P256, Heap>(
+        &p256_kat::PUB,
+        &bad,
+        &p256_kat::R,
+        &p256_kat::S,
+    ));
+}
 
 // ── X25519 (constant-time) — Copy carriers only ────────────────────────────
 

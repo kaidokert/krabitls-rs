@@ -125,7 +125,9 @@ sha2 = { version = "0.11", default-features = false }
 digest = { version = "0.11", default-features = false }
 hmac = { version = "0.13", default-features = false }
 hkdf = { version = "0.13", default-features = false }
-ed25519_heapless = { version = "0.5.0", default-features = false, features = ["sha512-sha2"] }
+# EXPERIMENT (heap-verify): git tag with the SchoolbookFieldRef / VerifyBackend
+# verify surface that runs on a non-Copy heap carrier. On modmath 0.6.1-alpha.1.
+ed25519_heapless = { git = "https://github.com/kaidokert/ed25519.git", tag = "v0.5.1-alpha.1", default-features = false, features = ["sha512-sha2"] }
 fixed-bigint = { version = "0.6.0", default-features = false, features = ["use-unsafe", "zeroize", "cios"] }
 const-num-traits = { version = "0.2.1", default-features = false, features = ["ct"] }
 der = { version = "0.8.0", default-features = false, features = ["oid"], optional = true }
@@ -136,7 +138,8 @@ thiserror = { version = "2", default-features = false }
 signature = { version = "3", default-features = false }
 rand_core = { version = "0.10", default-features = false }
 krabipqc = { version = "0.1.4", default-features = false, optional = true }
-krabiecdsa = { version = "0.2.0", default-features = false, optional = true }
+# EXPERIMENT (heap-verify): git tag with verify_for_curve_ref / RefVerifyingKey.
+krabiecdsa = { git = "https://github.com/kaidokert/krabiecdsa-rs.git", tag = "v0.3.0-alpha.2", default-features = false, optional = true }
 
 # Deterministic SeededRng + CannedTransport for the host facade replay
 # tests. Dev-only so the seed-mode RNG (a `TryCryptoRng` that is NOT a
@@ -154,3 +157,13 @@ krabitls_fixtures = { path = "../krabitls_fixtures", default-features = false }
 # publish impact. Tags track the modmath 0.6 line.
 bnum_patched = { package = "bnum", git = "https://github.com/kaidokert/bnum.git", tag = "v0.14.4-const-20", default-features = false, features = ["zeroize"] }
 crypto-bigint_patched = { package = "crypto-bigint", git = "https://github.com/kaidokert/crypto-bigint.git", tag = "v0.7.5-const-20", default-features = false, features = ["zeroize", "subtle"] }
+# Heap-verify row: num-bigint's non-Copy FixedWidthBigUint via the ref path.
+num-bigint_patched = { package = "num-bigint", git = "https://github.com/kaidokert/num-bigint.git", tag = "v0.4.4-const-12" }
+
+# EXPERIMENT (heap-verify): unify the whole tree on the modmath 0.6.1-alpha.1 git
+# tag (SchoolbookFieldRef lives there). ed25519 + krabiecdsa reference it; this
+# patch redirects the crates.io modmath that rsa_heapless / krabipqc / fixed-bigint
+# still pull, so there is a single modmath instance. Reverts to registry when
+# modmath 0.6.1 publishes.
+[patch.crates-io]
+modmath = { git = "https://github.com/kaidokert/modmath-rs.git", tag = "v0.6.1-alpha.1" }

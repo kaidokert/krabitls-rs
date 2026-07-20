@@ -28,3 +28,8 @@ zeroize = { version = "1.8", default-features = false }
 [[bin]]
 name = "krabitls_connect"
 required-features = ["rsa"]
+
+# EXPERIMENT (heap-verify): unify modmath on the 0.6.1-alpha.1 git tag, matching
+# the krabitls dep it builds. Reverts to registry when modmath 0.6.1 publishes.
+[patch.crates-io]
+modmath = { git = "https://github.com/kaidokert/modmath-rs.git", tag = "v0.6.1-alpha.1" }
