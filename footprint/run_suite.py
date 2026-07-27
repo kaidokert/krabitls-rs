@@ -129,14 +129,17 @@ def qemu_run(target_dir, target_triple, example, no_default, features):
     return r.stdout + r.stderr
 
 
-METRIC_RE = re.compile(r"METRIC stack:(\d+) kcycles:\d+ target:(\S+) name:(\S+)")
+STACK_RE = re.compile(
+    r"EM_STACK schema:\d+ benchmark:(\S+) used:(\d+).* architecture:(\S+)"
+)
+OUTCOME_RE = re.compile(r"EM_OUTCOME schema:\d+ benchmark:(\S+) status:PASS(?: |$)")
 
 
 def parse_metric(output):
-    m = METRIC_RE.search(output)
+    m = STACK_RE.search(output)
     if not m:
         return None
-    return {"stack": int(m.group(1)), "target": m.group(2), "name": m.group(3)}
+    return {"stack": int(m.group(2)), "target": m.group(3), "name": m.group(1)}
 
 
 def measure(target_dir, target_triple, example, no_default, features):
@@ -145,7 +148,7 @@ def measure(target_dir, target_triple, example, no_default, features):
         return None, None
     ts = text_size(target_dir, target_triple, example)
     out = qemu_run(target_dir, target_triple, example, no_default, features)
-    if f"{example} ACCEPT" not in out:
+    if not any(match.group(1) == example for match in OUTCOME_RE.finditer(out)):
         print(
             f"NOT ACCEPTED: dir={target_dir} example={example} features={features}",
             file=sys.stderr,
