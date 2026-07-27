@@ -1,4 +1,4 @@
-//! Drives `krabitls_nal_cli::connect` end-to-end through the seed-0 fixtures
+//! Drives `krabitls_cli::connect` end-to-end through the seed-0 fixtures
 //! over a mock [`TcpClientStack`], proving the NAL transport carries a full
 //! handshake and byte-matches the Python reference — the same assertions as
 //! `krabitls/tests/canned_handshake.rs`, only the transport differs.
@@ -13,8 +13,8 @@ use core::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use embedded_nal::{TcpClientStack, TcpError, TcpErrorKind};
 use krabitls::client::{ClientParams, DefaultScratch, RuntimeSuitePolicy};
+use krabitls_cli::connect;
 use krabitls_fixtures::SeededRng;
-use krabitls_nal_cli::connect;
 
 mod common;
 use common::parse_hex;

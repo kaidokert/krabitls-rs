@@ -37,7 +37,7 @@ where
         path.as_bytes(),
         b" HTTP/1.0\r\nHost: ",
         host.as_bytes(),
-        b"\r\nUser-Agent: krabitls_nal_cli/0.1\r\nConnection: close\r\n\r\n",
+        b"\r\nUser-Agent: krabitls_cli/0.1\r\nConnection: close\r\n\r\n",
     ] {
         io.write_all(part).map_err(Error::Io)?;
     }

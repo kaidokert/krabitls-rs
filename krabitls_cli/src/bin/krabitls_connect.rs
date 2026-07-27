@@ -1,14 +1,14 @@
-//! `nal_connect` — the krabitls TLS 1.3 client, driven over `embedded-nal`.
+//! `krabitls_connect` — the krabitls TLS 1.3 client, driven over `embedded-nal`.
 //!
 //! The transport is an [`embedded_nal::TcpClientStack`]; here the concrete stack
-//! is `std-embedded-nal` (host `std::net`). The same `krabitls_nal_cli::connect`
+//! is `std-embedded-nal` (host `std::net`). The same `krabitls_cli::connect`
 //! and the `http` / `mqtt` probes run on any target NAL stack unchanged.
 //!
 //! Usage:
-//!     nal_connect --self-signed example.com
-//!     nal_connect --pin <hex> example.com:443
-//!     nal_connect --self-signed --mqtt test.mosquitto.org:8883
-//!     nal_connect --self-signed --client-cert leaf.der --client-seed <hex> host
+//!     krabitls_connect --self-signed example.com
+//!     krabitls_connect --pin <hex> example.com:443
+//!     krabitls_connect --self-signed --mqtt test.mosquitto.org:8883
+//!     krabitls_connect --self-signed --client-cert leaf.der --client-seed <hex> host
 
 #[cfg(feature = "rsa")]
 use std::io::Read as IoRead;
@@ -21,7 +21,7 @@ use krabitls::client::{
     ClientAuthPolicy, ClientParams, ClockedVerify, DefaultScratch, Ed25519ClientAuth,
     MAX_CLIENT_CERT_DER, PinnedPubkey, RuntimeSuitePolicy, TimeSource,
 };
-use krabitls_nal_cli::{connect, http, mqtt, resolve};
+use krabitls_cli::{connect, http, mqtt, resolve};
 use log::{error, info};
 use std_embedded_nal::Stack;
 use zeroize::Zeroizing;
@@ -438,7 +438,7 @@ where
 
 fn print_usage() {
     eprintln!(
-        "usage: nal_connect {{--pin <hex> | --self-signed}} [--mqtt] \\\n\
+        "usage: krabitls_connect {{--pin <hex> | --self-signed}} [--mqtt] \\\n\
          \x20             [--client-cert <der> {{--client-seed <hex> | --client-rsa-key <der>}}] \\\n\
          \x20             <host>[:<port>]\n\
          \n\

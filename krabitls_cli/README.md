@@ -1,4 +1,4 @@
-# krabitls_nal_cli
+# krabitls_cli
 
 The krabitls TLS 1.3 client, written against the [`embedded-nal`] network
 abstraction rather than `std::net`. The concrete stack is injected: on the host
@@ -18,16 +18,16 @@ variant.
   over a plaintext socket or a `TlsStream` (→ HTTPS / MQTT-over-TLS) unchanged.
   No allocation; the caller owns the buffers.
 
-The lib is `no_std`/no-alloc. `std` appears only in the `nal_connect` binary
+The lib is `no_std`/no-alloc. `std` appears only in the `krabitls_connect` binary
 (arg parsing, `std-embedded-nal`, mTLS key loading).
 
 ## Run
 
 ```
-cargo run --bin nal_connect -- --self-signed <host>[:<port>]
-cargo run --bin nal_connect -- --pin <hex> <host>
-cargo run --bin nal_connect -- --self-signed --mqtt <host>:8883
-cargo run --features rsa --bin nal_connect -- \
+cargo run --bin krabitls_connect -- --self-signed <host>[:<port>]
+cargo run --bin krabitls_connect -- --pin <hex> <host>
+cargo run --bin krabitls_connect -- --self-signed --mqtt <host>:8883
+cargo run --features rsa --bin krabitls_connect -- \
     --self-signed --client-cert leaf.der --client-rsa-key key.der <host>
 ```
 

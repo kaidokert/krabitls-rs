@@ -1,5 +1,5 @@
 [package]
-name = "krabitls_nal_cli"
+name = "krabitls_cli"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.87"
@@ -27,5 +27,5 @@ zeroize = { version = "1.8", default-features = false }
 krabitls_fixtures = { path = "../krabitls_fixtures" }
 
 [[bin]]
-name = "nal_connect"
-path = "src/bin/nal_connect.rs"
+name = "krabitls_connect"
+path = "src/bin/krabitls_connect.rs"

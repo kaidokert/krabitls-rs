@@ -1,5 +1,5 @@
 //! krabitls TLS 1.3 client over the [`embedded-nal`](embedded_nal) network
-//! abstraction — the reusable core shared by the `nal_connect` host binary and
+//! abstraction — the reusable core shared by the `krabitls_connect` host binary and
 //! any target demo.
 //!
 //! Layers, each independently reusable:

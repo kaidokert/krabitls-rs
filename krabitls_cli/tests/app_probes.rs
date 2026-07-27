@@ -2,7 +2,7 @@
 //! so no TLS is involved here.
 
 use embedded_io::{ErrorType, Read, Write};
-use krabitls_nal_cli::{http, mqtt};
+use krabitls_cli::{http, mqtt};
 
 #[derive(Debug)]
 struct MockError;
