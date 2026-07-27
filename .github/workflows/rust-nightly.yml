@@ -34,8 +34,8 @@ jobs:
           ~/.cargo/registry
           ~/.cargo/git
           krabitls/target
-          krabitls_cli/target
-        key: nightly-${{ hashFiles('krabitls/Cargo.toml', 'krabitls_cli/Cargo.toml') }}
+          krabitls_nal_cli/target
+        key: nightly-${{ hashFiles('krabitls/Cargo.toml', 'krabitls_nal_cli/Cargo.toml') }}
         restore-keys: nightly-
 
     - name: Build (default features)
@@ -56,9 +56,9 @@ jobs:
     - name: Test (feature = chacha20)
       run: cargo test --manifest-path=krabitls/Cargo.toml --features chacha20 --verbose
 
-    - name: Build krabitls_cli (default + rsa + chacha20)
+    - name: Build krabitls_nal_cli (default + rsa + chacha20)
       run: |
-        cargo build --manifest-path=krabitls_cli/Cargo.toml --verbose
-        cargo build --manifest-path=krabitls_cli/Cargo.toml --features rsa --verbose
-        cargo build --manifest-path=krabitls_cli/Cargo.toml --features chacha20 --verbose
-        cargo build --manifest-path=krabitls_cli/Cargo.toml --features rsa --features chacha20 --verbose
+        cargo build --manifest-path=krabitls_nal_cli/Cargo.toml --verbose
+        cargo build --manifest-path=krabitls_nal_cli/Cargo.toml --features rsa --verbose
+        cargo build --manifest-path=krabitls_nal_cli/Cargo.toml --features chacha20 --verbose
+        cargo build --manifest-path=krabitls_nal_cli/Cargo.toml --features rsa --features chacha20 --verbose

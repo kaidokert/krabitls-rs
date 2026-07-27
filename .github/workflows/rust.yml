@@ -101,13 +101,12 @@ jobs:
     - name: Test
       run: cargo test --manifest-path=krabitls/Cargo.toml --no-default-features --features "${{ matrix.features }}"
 
-  krabitls-cli:
-    name: krabitls_cli [${{ matrix.features || 'default' }}]
+  krabitls-nal-cli:
+    name: krabitls_nal_cli [${{ matrix.features || 'default' }}]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        # `krabitls_connect` bin requires rsa, so ecdsa is paired with it.
         features: ["", "rsa", "chacha20", "rsa,chacha20", "ecdsa,rsa"]
     steps:
     - uses: actions/checkout@v4
@@ -118,13 +117,14 @@ jobs:
         components: clippy
     - uses: Swatinem/rust-cache@v2
       with:
-        key: cli-${{ matrix.features }}
-    - name: Clippy + build
+        key: nal-cli-${{ matrix.features }}
+    - name: Clippy + build + test
       run: |
         ARGS=""
         [ -n "${{ matrix.features }}" ] && ARGS="--features ${{ matrix.features }}"
-        cargo clippy --manifest-path=krabitls_cli/Cargo.toml --all-targets $ARGS -- -D warnings
-        cargo build --manifest-path=krabitls_cli/Cargo.toml $ARGS --verbose
+        cargo clippy --manifest-path=krabitls_nal_cli/Cargo.toml --all-targets $ARGS -- -D warnings
+        cargo build --manifest-path=krabitls_nal_cli/Cargo.toml $ARGS --verbose
+        cargo test --manifest-path=krabitls_nal_cli/Cargo.toml $ARGS
 
   fixtures:
     runs-on: ubuntu-latest

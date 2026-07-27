@@ -18,8 +18,8 @@ repos:
         name: Fmt for krabitls
         args: ['--manifest-path=krabitls/Cargo.toml', '--']
     -   id: fmt
-        name: Fmt for krabitls_cli
-        args: ['--manifest-path=krabitls_cli/Cargo.toml', '--']
+        name: Fmt for krabitls_nal_cli
+        args: ['--manifest-path=krabitls_nal_cli/Cargo.toml', '--']
     -   id: fmt
         name: Fmt for krabitls_fixtures
         args: ['--manifest-path=krabitls_fixtures/Cargo.toml', '--']
