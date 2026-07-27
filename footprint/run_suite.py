@@ -135,11 +135,13 @@ STACK_RE = re.compile(
 OUTCOME_RE = re.compile(r"EM_OUTCOME schema:\d+ benchmark:(\S+) status:PASS(?: |$)")
 
 
-def parse_metric(output):
-    m = STACK_RE.search(output)
-    if not m:
-        return None
-    return {"stack": int(m.group(2)), "target": m.group(3), "name": m.group(1)}
+def parse_metric(output, example=None):
+    # Scope to the requested benchmark so a stray/stale EM_STACK record can't
+    # attribute the wrong stack value — matching the example-scoped outcome gate.
+    for m in STACK_RE.finditer(output):
+        if example is None or m.group(1) == example:
+            return {"stack": int(m.group(2)), "target": m.group(3), "name": m.group(1)}
+    return None
 
 
 def measure(target_dir, target_triple, example, no_default, features):
@@ -154,7 +156,7 @@ def measure(target_dir, target_triple, example, no_default, features):
             file=sys.stderr,
         )
         return ts, None
-    metric = parse_metric(out)
+    metric = parse_metric(out, example)
     return ts, metric["stack"] if metric else None
 
 
