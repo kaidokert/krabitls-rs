@@ -53,7 +53,13 @@ impl<'a, S: TcpClientStack> NalTransport<'a, S> {
     /// Open a socket on `stack` and connect it to `remote`.
     pub fn open(stack: &'a mut S, remote: SocketAddr) -> Result<Self, NalError<S::Error>> {
         let mut socket = stack.socket().map_err(NalError)?;
-        nb::block!(stack.connect(&mut socket, remote)).map_err(NalError)?;
+        if let Err(e) = nb::block!(stack.connect(&mut socket, remote)) {
+            // No `NalTransport` exists yet, so `Drop` won't run — hand the
+            // socket back explicitly. On stacks with a fixed handle pool, a
+            // dropped-but-unclosed socket leaks a slot.
+            let _ = stack.close(socket);
+            return Err(NalError(e));
+        }
         Ok(Self {
             stack,
             socket: Some(socket),

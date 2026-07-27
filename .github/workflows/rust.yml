@@ -125,6 +125,8 @@ jobs:
         cargo clippy --manifest-path=krabitls_cli/Cargo.toml --all-targets $ARGS -- -D warnings
         cargo build --manifest-path=krabitls_cli/Cargo.toml $ARGS --verbose
         cargo test --manifest-path=krabitls_cli/Cargo.toml $ARGS
+        # Reusable lib builds without the host feature (no std-only deps).
+        cargo build --manifest-path=krabitls_cli/Cargo.toml --no-default-features --lib
 
   fixtures:
     runs-on: ubuntu-latest

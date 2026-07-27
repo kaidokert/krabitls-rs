@@ -13,6 +13,8 @@
 #[cfg(feature = "rsa")]
 use std::io::Read as IoRead;
 use std::process::ExitCode;
+use std::sync::mpsc;
+use std::time::Duration;
 
 use getrandom::SysRng;
 #[cfg(feature = "rsa")]
@@ -555,10 +557,23 @@ fn main() -> ExitCode {
         }
     };
 
-    match run(&host, port, pin.as_ref(), auth.as_ref(), probe) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(e) => {
+    // embedded-nal has no timeout concept (a target bounds I/O with its own
+    // timer); the old std client set a 15 s socket timeout. Restore a bounded
+    // wait at the host level with a wall-clock watchdog so an unresponsive peer
+    // can't hang the CLI — `nb::block!` in the transport would otherwise spin
+    // forever.
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(run(&host, port, pin.as_ref(), auth.as_ref(), probe));
+    });
+    match rx.recv_timeout(Duration::from_secs(30)) {
+        Ok(Ok(())) => ExitCode::SUCCESS,
+        Ok(Err(e)) => {
             error!("{e}");
+            ExitCode::from(1)
+        }
+        Err(_) => {
+            error!("no response within 30s — aborting");
             ExitCode::from(1)
         }
     }

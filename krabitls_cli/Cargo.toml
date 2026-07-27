@@ -6,9 +6,12 @@ rust-version = "1.87"
 autobins = false
 
 [features]
-# Cert validity-window checking is always compiled in krabitls; the CLI
-# supplies a `SystemTimeSource` clock so it's active by default.
-default = []
+default = ["host"]
+# Host binary support: std-backed NAL stack, logging, system RNG, and the
+# `zeroize`-backed mTLS key handling. A bare-metal crate depending on the
+# reusable `transport` / `http` / `mqtt` lib builds with `default-features =
+# false`, pulling none of these std-only crates.
+host = ["dep:std-embedded-nal", "dep:env_logger", "dep:getrandom", "dep:log", "dep:zeroize"]
 rsa = ["krabitls/rsa"]
 # ECDSA P-256/P-384 server-cert verification.
 ecdsa = ["krabitls/ecdsa"]
@@ -16,22 +19,26 @@ ecdsa = ["krabitls/ecdsa"]
 chacha20 = ["krabitls/chacha20"]
 
 [dependencies]
+# Lib deps — no_std, buildable for a bare target.
 krabitls = { version = "0.4.0", path = "../krabitls", features = ["ip-host"] }
 embedded-nal = "0.9"
 embedded-io = "0.7"
-std-embedded-nal = "0.4"
 nb = "1"
 rand_core = { version = "0.10", default-features = false }
-log = "0.4"
-env_logger = { version = "0.11", default-features = false, features = ["auto-color", "humantime"] }
-getrandom = { version = "0.4", features = ["sys_rng"] }
-zeroize = { version = "1.8", default-features = false }
+
+# Host-only deps, gated by the `host` feature (see above).
+std-embedded-nal = { version = "0.4", optional = true }
+env_logger = { version = "0.11", default-features = false, features = ["auto-color", "humantime"], optional = true }
+getrandom = { version = "0.4", features = ["sys_rng"], optional = true }
+log = { version = "0.4", optional = true }
+zeroize = { version = "1.8", default-features = false, optional = true }
 
 [dev-dependencies]
 krabitls_fixtures = { path = "../krabitls_fixtures" }
 
 # The only CLI binary. Drives the `krabitls::client` facade over an
-# `embedded-nal` stack (`std-embedded-nal` on host). No `required-features`:
-# the Ed25519 / self-signed path builds without `rsa`.
+# `embedded-nal` stack (`std-embedded-nal` on host). Requires `host`; the
+# lib itself has no such dependency.
 [[bin]]
 name = "krabitls_connect"
+required-features = ["host"]
