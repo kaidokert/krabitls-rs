@@ -2,7 +2,9 @@ name: Rust nightly
 
 on:
   push:
-    branches: ["**"]
+    branches:
+      - main
+      - "feature/**"
   pull_request:
   workflow_dispatch:
   schedule:
