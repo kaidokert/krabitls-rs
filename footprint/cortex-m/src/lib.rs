@@ -6,9 +6,14 @@
 //! shared [`footprint_handshakes`] crate so the RISC-V target builds the same
 //! code.
 
+#[cfg(not(feature = "jtrace-f407"))]
 use cortex_m_semihosting::debug;
 use krabi_caliper::cortex_m::{FootprintConfig, run_footprint};
+#[cfg(feature = "jtrace-f407")]
+use krabi_caliper::protocol::rtt;
 use krabi_caliper::report::Field;
+#[cfg(feature = "jtrace-f407")]
+use stm32f4xx_hal::{pac, prelude::*};
 
 krabi_caliper::cortex_m_systick_overflow_handler!();
 
@@ -34,43 +39,63 @@ pub fn target_arch_name() -> &'static str {
 }
 
 pub fn test_fixture(testable: fn() -> bool, name: &str) {
+    #[cfg(feature = "jtrace-f407")]
+    let frequency_hz = {
+        let device = pac::Peripherals::take().expect("device peripherals already taken");
+        let clocks = device.RCC.constrain().cfgr.sysclk(30.MHz()).freeze();
+        clocks.hclk().raw() as u64
+    };
     let fields = [Field::token("architecture", target_arch_name())];
+    let config = FootprintConfig::new(name, &fields).enable_dwt(cfg!(feature = "jtrace-f407"));
+    #[cfg(feature = "jtrace-f407")]
+    let config = config.frequency_hz(frequency_hz);
     let result = unsafe {
         run_footprint::<256, _>(
-            || {
-                krabi_caliper::protocol::semihosting::init()
-                    .expect("failed to open semihosting stdout")
-            },
-            FootprintConfig::new(name, &fields),
+            || krabi_caliper::cortex_m_reporter!("jtrace-f407"),
+            config,
             testable,
         )
     };
     match result {
-        Ok(true) => debug::exit(debug::EXIT_SUCCESS),
-        Ok(false) => {
-            cortex_m_semihosting::hprintln!("MEASUREMENT FAILED");
-            debug::exit(debug::EXIT_FAILURE);
-        }
+        Ok(true) => measurement_success(),
+        Ok(false) => measurement_failure("workload returned false"),
         Err(krabi_caliper::FootprintError::CounterUnavailable) => {
-            cortex_m_semihosting::hprintln!("MEASUREMENT ERROR: counter unavailable");
-            debug::exit(debug::EXIT_FAILURE);
+            measurement_failure("counter unavailable");
         }
         Err(krabi_caliper::FootprintError::Stack(_)) => {
-            cortex_m_semihosting::hprintln!("MEASUREMENT ERROR: invalid stack bounds");
-            debug::exit(debug::EXIT_FAILURE);
+            measurement_failure("invalid stack bounds");
         }
         Err(krabi_caliper::FootprintError::Reporter(_)) => {
-            cortex_m_semihosting::hprintln!("MEASUREMENT ERROR: reporter failed");
-            debug::exit(debug::EXIT_FAILURE);
+            measurement_failure("reporter failed");
         }
     }
 }
 
+fn measurement_success() {
+    #[cfg(not(feature = "jtrace-f407"))]
+    debug::exit(debug::EXIT_SUCCESS);
+}
+
+fn measurement_failure(message: &str) -> ! {
+    #[cfg(feature = "jtrace-f407")]
+    rtt::print(format_args!("MEASUREMENT ERROR: {message}\n"));
+    #[cfg(not(feature = "jtrace-f407"))]
+    {
+        cortex_m_semihosting::hprintln!("MEASUREMENT ERROR: {}", message);
+        debug::exit(debug::EXIT_FAILURE);
+    }
+    krabi_caliper::cortex_m::park()
+}
+
 /// Custom panic handler: drops the `core::fmt` chain `panic-semihosting`
 /// would otherwise pull in (~3 KiB) and exits QEMU with EXIT_FAILURE so CI
-/// surfaces panics rather than hanging. Panic-info text is silent.
+/// surfaces panics rather than hanging. On the non-J-Trace (QEMU) path the
+/// panic-info text is silent; under `jtrace-f407` it's printed over RTT.
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
+    #[cfg(feature = "jtrace-f407")]
+    rtt::print(format_args!("PANIC: {_info}\n"));
+    #[cfg(not(feature = "jtrace-f407"))]
     debug::exit(debug::EXIT_FAILURE);
     loop {
         cortex_m::asm::nop();

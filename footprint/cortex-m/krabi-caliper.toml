@@ -1,0 +1,34 @@
+[profiles.jtrace-f407-30mhz]
+runner = "command"
+target = "thumbv7em-none-eabihf"
+board = "jtrace-reference-board"
+mcu = "STM32F407VG"
+transport = "rtt"
+probe = "${KRABI_PROBE}"
+clock-frequency-hz = 30000000
+build-features = ["canned-replay", "cert-der", "cipher-aes", "jtrace-f407"]
+executable = "probe-rs"
+args = [
+  "run",
+  "--chip", "STM32F407VGTx",
+  "--protocol", "swd",
+  "--probe", "${KRABI_PROBE}",
+  "--non-interactive",
+  "--disable-progressbars",
+  "--no-location",
+  "{artifact}",
+]
+completion-marker = "EM_OUTCOME"
+completion-action = "interrupt"
+timeout-seconds = 300
+target-dir = "target"
+artifact-extension = ""
+
+[[case-sets.ed25519-handshake]]
+name = "aes-ed25519-handshake"
+example = "krabitls"
+expected-benchmark = "krabitls"
+
+[campaigns.krabitls-ed25519-handshake-jtrace-f407]
+profile = "jtrace-f407-30mhz"
+case-set = "ed25519-handshake"

@@ -42,6 +42,12 @@ full-stack = ["footprint_handshakes/full-stack"]
 bigint-heapless = ["footprint_handshakes/bigint-heapless"]
 # Opt-in size-clawback feature: forward to footprint_handshakes / krabitls.
 ip-host = ["footprint_handshakes/ip-host"]
+# STM32F407/J-Trace execution with RTT reporting and an adjacent DWT reading.
+jtrace-f407 = [
+    "dep:stm32f4xx-hal",
+    "krabi-caliper/cortex-m-dwt",
+    "krabi-caliper/rtt",
+]
 
 [[example]]
 name = "krabitls"
@@ -90,12 +96,13 @@ required-features = ["chacha20", "mlkem", "mldsa", "canned-replay"]
 cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
 cortex-m-rt = "0.7"
 cortex-m-semihosting = "0.5"
-krabi-caliper = { version = "0.1.3", features = ["cortex-m", "semihosting", "stack"] }
+krabi-caliper = { version = "0.1.4", features = ["cortex-m", "semihosting", "stack"] }
 # Custom #[panic_handler] in src/lib.rs — drops the panic-semihosting
 # crate's core::fmt machinery (~3 KiB) while keeping the QEMU-FAILURE
 # exit on panic so CI surfaces failures rather than hanging.
 
 footprint_handshakes = { path = "../handshakes", default-features = false }
+stm32f4xx-hal = { version = "0.22", features = ["stm32f407"], optional = true }
 
 [profile.release]
 codegen-units = 1

@@ -8,11 +8,15 @@ fn main() {
 
     let include_bytes_cm0 = include_bytes!("memory_cm0.x").as_slice();
     let include_bytes_cm3 = include_bytes!("memory_cm3.x").as_slice();
-    let (memory_file, include_bytes) = match target.as_str() {
-        "thumbv6m-none-eabi" => ("memory_cm0.x", include_bytes_cm0),
-        "thumbv7m-none-eabi" => ("memory_cm3.x", include_bytes_cm3),
-        t if t.contains("thumbv7") => ("memory_cm3.x", include_bytes_cm3),
-        _ => panic!("Unsupported target: {}", target),
+    let include_bytes_f407 = include_bytes!("memory_f407.x").as_slice();
+    let hardware = env::var_os("CARGO_FEATURE_JTRACE_F407").is_some();
+    let (memory_file, include_bytes) = match (hardware, target.as_str()) {
+        (true, "thumbv7em-none-eabihf") => ("memory_f407.x", include_bytes_f407),
+        (true, _) => panic!("jtrace-f407 requires thumbv7em-none-eabihf"),
+        (false, "thumbv6m-none-eabi") => ("memory_cm0.x", include_bytes_cm0),
+        (false, "thumbv7m-none-eabi") => ("memory_cm3.x", include_bytes_cm3),
+        (false, t) if t.contains("thumbv7") => ("memory_cm3.x", include_bytes_cm3),
+        (false, _) => panic!("Unsupported target: {}", target),
     };
 
     let out = &PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR not set"));
