@@ -425,24 +425,47 @@ use krabitls::{backends::DerCert, client::TlsStream};
     not(feature = "mldsa"),
 ))]
 pub fn run_aes_ed25519_facade() -> Result<(), ()> {
-    facade_scratch::with(|scratch| {
-        let mut rng = SeededRng::new(0);
-        let transport = CannedTransport::<512>::new(&SERVER_STREAM);
-        let params = ClientParams::self_signed("tls-fixture.local")
-            .suite_policy(RuntimeSuitePolicy::Default);
+    facade_scratch::with(run_aes_ed25519_facade_with_scratch)
+}
 
-        let tls = DefaultStream::connect(&params, scratch, transport, &mut rng).map_err(|_| ())?;
+/// Run the AES/Ed25519 facade with scratch stored in the current stack frame.
+///
+/// Hardware cycle measurement uses this form because the shared static-scratch
+/// adapter protects its borrow by masking interrupts for the entire handshake.
+/// A local scratch value needs no guard, allowing the SysTick overflow handler
+/// to extend its counter while the operation runs.
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "cipher-aes",
+    not(feature = "chacha20"),
+    not(feature = "rsa"),
+    not(feature = "mlkem"),
+    not(feature = "mldsa"),
+))]
+pub fn run_aes_ed25519_facade_on_stack() -> Result<(), ()> {
+    let mut scratch = krabitls::client::DefaultScratch::new();
+    run_aes_ed25519_facade_with_scratch(&mut scratch)
+}
 
-        let captured = tls.transport().captured_tx();
-        let expected_len = CLIENT_HELLO.len() + CLIENT_FINISHED.len();
-        if captured.len() != expected_len
-            || captured[..CLIENT_HELLO.len()] != CLIENT_HELLO[..]
-            || captured[CLIENT_HELLO.len()..] != CLIENT_FINISHED[..]
-        {
-            return Err(());
-        }
-        Ok(())
-    })
+fn run_aes_ed25519_facade_with_scratch(
+    scratch: &mut krabitls::client::DefaultScratch,
+) -> Result<(), ()> {
+    let mut rng = SeededRng::new(0);
+    let transport = CannedTransport::<512>::new(&SERVER_STREAM);
+    let params =
+        ClientParams::self_signed("tls-fixture.local").suite_policy(RuntimeSuitePolicy::Default);
+
+    let tls = DefaultStream::connect(&params, scratch, transport, &mut rng).map_err(|_| ())?;
+
+    let captured = tls.transport().captured_tx();
+    let expected_len = CLIENT_HELLO.len() + CLIENT_FINISHED.len();
+    if captured.len() != expected_len
+        || captured[..CLIENT_HELLO.len()] != CLIENT_HELLO[..]
+        || captured[CLIENT_HELLO.len()..] != CLIENT_FINISHED[..]
+    {
+        return Err(());
+    }
+    Ok(())
 }
 
 /// Same facade as `run_aes_ed25519_facade`, but with a `Clocked` strategy so

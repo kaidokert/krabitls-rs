@@ -7,13 +7,23 @@
 
 use cortex_m_rt::entry;
 
+#[cfg(feature = "jtrace-f407")]
+fn run_handshake() -> bool {
+    footprint_handshakes::run_aes_ed25519_facade_on_stack().is_ok()
+}
+
+#[cfg(not(feature = "jtrace-f407"))]
+fn run_handshake() -> bool {
+    footprint_handshakes::run_aes_ed25519_facade().is_ok()
+}
+
 #[entry]
 fn main() -> ! {
     footprint_cortex_m::test_fixture(
         #[cfg(feature = "baseline")]
         || footprint_handshakes::baseline_aes_ed25519_facade(),
         #[cfg(not(feature = "baseline"))]
-        || footprint_handshakes::run_aes_ed25519_facade().is_ok(),
+        run_handshake,
         "krabitls",
     );
     loop {
