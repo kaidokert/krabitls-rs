@@ -65,6 +65,7 @@ riscv-rt = "0.13"
 # can take a critical section on QEMU's virt machine (single hart, no SMP).
 riscv = { version = "0.12", features = ["critical-section-single-hart"] }
 riscv-semihosting = "0.2"
+krabi-caliper = { version = "0.1.3", features = ["risc-v", "stack"] }
 
 footprint_handshakes = { path = "../handshakes", default-features = false }
 

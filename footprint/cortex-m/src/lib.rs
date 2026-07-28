@@ -1,18 +1,16 @@
 #![no_std]
 
-//! Cortex-M test harness for the krabitls footprint demos. Owns only the
-//! target-specific bits — cycle counter, stack painter, panic + semihosted
-//! ACCEPT/REJECT reporter. The handshake bodies and captured fixtures live
-//! in the shared [`footprint_handshakes`] crate so the risc-v target builds
-//! the same code.
+//! Cortex-M test harness for the krabitls footprint demos. Measurement and
+//! reporting come from `krabi-caliper`; this crate retains target termination
+//! and panic policy. The handshake bodies and captured fixtures live in the
+//! shared [`footprint_handshakes`] crate so the RISC-V target builds the same
+//! code.
 
-use cortex_m_semihosting::{debug, hprintln};
+use cortex_m_semihosting::debug;
+use krabi_caliper::cortex_m::{FootprintConfig, run_footprint};
+use krabi_caliper::report::Field;
 
-pub mod cyclecount;
-pub mod stack;
-
-use cyclecount::CycleCounter;
-use stack::{check_stack_high_water_mark, paint_stack};
+krabi_caliper::cortex_m_systick_overflow_handler!();
 
 pub fn target_arch_name() -> &'static str {
     #[cfg(thumbv6m)]
@@ -36,30 +34,35 @@ pub fn target_arch_name() -> &'static str {
 }
 
 pub fn test_fixture(testable: fn() -> bool, name: &str) {
-    // paint_stack MUST be the first call — anything (even hprintln) inlined ahead
-    // of it inflates test_fixture's frame past the 256-byte safe zone and paint
-    // ends up clobbering live stack.
-    paint_stack();
-    let counter = CycleCounter::new();
-    let result = testable();
-    let elapsed_kcycles = counter.elapsed() / 1000;
-    let stack = check_stack_high_water_mark();
-    if result {
-        hprintln!("{} ACCEPT", name);
-    } else {
-        hprintln!("{} REJECT", name);
-    }
-    hprintln!(
-        "METRIC stack:{} kcycles:{} target:{} name:{}",
-        stack,
-        elapsed_kcycles,
-        target_arch_name(),
-        name,
-    );
-    if result {
-        debug::exit(debug::EXIT_SUCCESS);
-    } else {
-        debug::exit(debug::EXIT_FAILURE);
+    let fields = [Field::token("architecture", target_arch_name())];
+    let result = unsafe {
+        run_footprint::<256, _>(
+            || {
+                krabi_caliper::protocol::semihosting::init()
+                    .expect("failed to open semihosting stdout")
+            },
+            FootprintConfig::new(name, &fields),
+            testable,
+        )
+    };
+    match result {
+        Ok(true) => debug::exit(debug::EXIT_SUCCESS),
+        Ok(false) => {
+            cortex_m_semihosting::hprintln!("MEASUREMENT FAILED");
+            debug::exit(debug::EXIT_FAILURE);
+        }
+        Err(krabi_caliper::FootprintError::CounterUnavailable) => {
+            cortex_m_semihosting::hprintln!("MEASUREMENT ERROR: counter unavailable");
+            debug::exit(debug::EXIT_FAILURE);
+        }
+        Err(krabi_caliper::FootprintError::Stack(_)) => {
+            cortex_m_semihosting::hprintln!("MEASUREMENT ERROR: invalid stack bounds");
+            debug::exit(debug::EXIT_FAILURE);
+        }
+        Err(krabi_caliper::FootprintError::Reporter(_)) => {
+            cortex_m_semihosting::hprintln!("MEASUREMENT ERROR: reporter failed");
+            debug::exit(debug::EXIT_FAILURE);
+        }
     }
 }
 
