@@ -89,7 +89,8 @@ fn measurement_failure(message: &str) -> ! {
 
 /// Custom panic handler: drops the `core::fmt` chain `panic-semihosting`
 /// would otherwise pull in (~3 KiB) and exits QEMU with EXIT_FAILURE so CI
-/// surfaces panics rather than hanging. Panic-info text is silent.
+/// surfaces panics rather than hanging. On the non-J-Trace (QEMU) path the
+/// panic-info text is silent; under `jtrace-f407` it's printed over RTT.
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     #[cfg(feature = "jtrace-f407")]

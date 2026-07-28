@@ -1,5 +1,8 @@
 name: hw-footprint
 
+permissions:
+  contents: read
+
 on:
   push:
     branches:

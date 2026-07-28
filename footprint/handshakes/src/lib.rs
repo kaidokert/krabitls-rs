@@ -447,6 +447,17 @@ pub fn run_aes_ed25519_facade_on_stack() -> Result<(), ()> {
     run_aes_ed25519_facade_with_scratch(&mut scratch)
 }
 
+// Same gate as its two callers: the AES/Ed25519 fixtures and
+// `RuntimeSuitePolicy` it references are only compiled for that suite, so an
+// ungated helper breaks the chacha / rsa / PQC footprint rows.
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "cipher-aes",
+    not(feature = "chacha20"),
+    not(feature = "rsa"),
+    not(feature = "mlkem"),
+    not(feature = "mldsa"),
+))]
 fn run_aes_ed25519_facade_with_scratch(
     scratch: &mut krabitls::client::DefaultScratch,
 ) -> Result<(), ()> {
