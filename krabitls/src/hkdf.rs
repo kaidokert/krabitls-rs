@@ -85,10 +85,9 @@ pub(crate) fn derive_secret<H: HkdfSha256>(
     label: &[u8],
     transcript_hash: &TranscriptDigest,
 ) -> Result<Secret, HkdfLabelError> {
-    // `ZeroBuf` wipes the stack buffer when the binding goes out of
-    // scope (covers the `?` early-return path too). The `Secret::new(*out)`
-    // copy below produces a long-lived `Secret` whose own `Drop` zeroes
-    // its own copy — defense in depth.
+    // `ZeroBuf` wipes the stack buffer when the binding goes out of scope
+    // (covers the `?` early-return path too); it's then moved into the
+    // returned `Secret`, which zeroes on its own drop.
     let mut out = ZeroBuf::<32>::new([0; 32]);
     hkdf_expand_label::<H>(
         secret.as_bytes(),
