@@ -117,7 +117,7 @@ aes-gcm = { version = "0.11", default-features = false, features = ["aes", "zero
 # Direct dep so the AEAD-trait imports stay valid even if `aes-gcm` later
 # becomes an optional `feature = "cipher-aes"` dep.
 aead = { version = "0.6", default-features = false }
-chacha20poly1305 = { version = "0.11", default-features = false, optional = true }
+chacha20poly1305 = { version = "0.11", default-features = false, features = ["zeroize"], optional = true }
 # sha2 0.11 dropped the `force-soft-compact` Cargo feature; the compact soft
 # SHA-256/512 core now lives behind `--cfg sha2_backend_soft="compact"`, set in
 # the footprint targets' `.cargo/config.toml`. Without it, soft builds gain ~6.5 KiB.
