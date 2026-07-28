@@ -54,6 +54,10 @@ name = "krabitls"
 required-features = ["canned-replay"]
 
 [[example]]
+name = "krabitls_mtls"
+required-features = ["cipher-aes", "canned-replay"]
+
+[[example]]
 name = "krabitls_jedisct"
 required-features = ["jedisct", "canned-replay"]
 
