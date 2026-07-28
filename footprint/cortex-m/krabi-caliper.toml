@@ -41,3 +41,42 @@ expected-benchmark = "krabitls-mtls"
 [campaigns.krabitls-ed25519-handshake-jtrace-f407]
 profile = "jtrace-f407-168mhz"
 case-set = "ed25519-handshake"
+
+# ---------------------------------------------------------------------------
+# Wall-clock timing (seconds) via PairedSuite / EM_SUMMARY. Same 168 MHz clock,
+# but the summary record carries `frequency_hz`, so the host renders real time.
+# ---------------------------------------------------------------------------
+[profiles.jtrace-f407-timing-168mhz]
+runner = "command"
+target = "thumbv7em-none-eabihf"
+board = "jtrace-reference-board"
+mcu = "STM32F407VG"
+transport = "rtt"
+probe = "${KRABI_PROBE}"
+clock-frequency-hz = 168000000
+build-features = ["canned-replay", "cert-der", "cipher-aes", "jtrace-f407"]
+executable = "probe-rs"
+args = [
+  "run",
+  "--chip", "STM32F407VGTx",
+  "--protocol", "swd",
+  "--probe", "${KRABI_PROBE}",
+  "--non-interactive",
+  "--disable-progressbars",
+  "--no-location",
+  "{artifact}",
+]
+completion-marker = "EM_SUMMARY"
+completion-action = "interrupt"
+timeout-seconds = 900
+target-dir = "target"
+artifact-extension = ""
+
+[[case-sets.handshake-timing]]
+name = "handshake-timing"
+example = "krabitls_timing"
+expected-suite = "krabitls-handshake"
+
+[campaigns.krabitls-handshake-timing-jtrace-f407]
+profile = "jtrace-f407-timing-168mhz"
+case-set = "handshake-timing"

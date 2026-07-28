@@ -16,6 +16,6 @@ jobs:
     uses: kaidokert/krabi-caliper-rs/.github/workflows/hw-ct.yml@hw-ct-v1
     with:
       invocation-name: krabitls
-      campaigns-json: '["krabitls-ed25519-handshake-jtrace-f407"]'
+      campaigns-json: '["krabitls-ed25519-handshake-jtrace-f407","krabitls-handshake-timing-jtrace-f407"]'
       working-directory: footprint/cortex-m
       prepared: true

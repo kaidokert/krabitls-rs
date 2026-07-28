@@ -47,6 +47,7 @@ jtrace-f407 = [
     "dep:stm32f4xx-hal",
     "krabi-caliper/cortex-m-dwt",
     "krabi-caliper/rtt",
+    "krabi-caliper/paired",
 ]
 
 [[example]]
@@ -56,6 +57,11 @@ required-features = ["canned-replay"]
 [[example]]
 name = "krabitls_mtls"
 required-features = ["cipher-aes", "canned-replay"]
+
+# Hardware-only wall-clock timing harness (PairedSuite / EM_SUMMARY).
+[[example]]
+name = "krabitls_timing"
+required-features = ["jtrace-f407", "cipher-aes", "canned-replay"]
 
 [[example]]
 name = "krabitls_jedisct"
