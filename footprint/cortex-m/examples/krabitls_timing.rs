@@ -19,7 +19,8 @@ use krabi_caliper::suite::{PairedSuite, PairedSuiteConfig, PairedSuiteFields};
 use stm32f4xx_hal::pac;
 use stm32f4xx_hal::prelude::*;
 
-const TRIALS: usize = 3;
+// Must be even — the paired runner splits it into A/B pairs (odd → OddSampleCapacity).
+const TRIALS: usize = 4;
 const HCLK_HZ: u64 = 168_000_000;
 // Timing harness, not a CT verdict: open the spread gate so ordinary
 // trial-to-trial jitter (µs on a multi-hundred-ms op) never fails the fixture.
