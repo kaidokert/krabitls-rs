@@ -347,7 +347,7 @@ mod aes_only {
 
     #[test]
     fn client_hello_carries_alpn_extension() {
-        const PROTOS: [&[u8]; 1] = [b"x-amzn-mqtt-ca"];
+        const PROTOS: [&[u8]; 1] = [b"h2"];
         let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
         let conn: TlsConnection<Init, RustCrypto> = TlsConnection::new(FIXTURE_RANDOM, priv_zb);
         let opts = crate::ClientHelloOptions {
@@ -359,9 +359,9 @@ mod aes_only {
         conn.write_client_hello_with(&mut cursor, &FIXTURE_X25519_PUB, &opts)
             .unwrap();
         let n = 256 - cursor.len();
-        // ext type 0x0010 | ext_data_len 0x0011 | list_len 0x000f | name_len
-        // 0x0e | "x-amzn-mqtt-ca".
-        let needle = b"\x00\x10\x00\x11\x00\x0f\x0ex-amzn-mqtt-ca";
+        // ext type 0x0010 | ext_data_len 0x0005 | list_len 0x0003 | name_len
+        // 0x02 | "h2".
+        let needle = b"\x00\x10\x00\x05\x00\x03\x02h2";
         assert!(
             out[..n].windows(needle.len()).any(|w| w == needle),
             "ALPN extension not found on the wire",
@@ -402,8 +402,8 @@ mod aes_only {
 
     #[test]
     fn server_hello_nonempty_echo_rejected_when_we_sent_none() {
-        // Guards the historical profile: we sent an empty id, so any non-empty
-        // echo means the ServerHello isn't ours.
+        // Guards the default (empty-id) profile: we sent an empty id, so any
+        // non-empty echo means the ServerHello isn't ours.
         let sh = server_hello_echoing(&[0xab; 1]);
         assert!(matches!(
             write_ch_then_read_sh(None, &sh),

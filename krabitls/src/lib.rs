@@ -292,13 +292,13 @@ pub(crate) struct ClientHelloOptions<'a> {
     /// extension. Must be in `[64, 2^14 + 1]`; the writer enforces this
     /// and returns [`ClientHelloError::RecordSizeLimitOutOfRange`] otherwise.
     pub record_size_limit: Option<u16>,
-    /// `legacy_session_id` to send. `None` emits an empty id (the historical
-    /// profile); `Some` sends the 32 bytes to enable middlebox-compatibility
-    /// mode (RFC 8446 §D.4). The server echoes it back verbatim (§4.1.3).
+    /// `legacy_session_id` to send. `None` emits an empty id (the default);
+    /// `Some` sends the 32 bytes to enable middlebox-compatibility mode
+    /// (RFC 8446 §D.4). The server echoes it back verbatim (§4.1.3).
     pub session_id: Option<&'a [u8; LEGACY_SESSION_ID_LEN]>,
     /// ALPN protocol names to advertise, in preference order. `None` omits the
     /// `application_layer_protocol_negotiation` extension. Each name must be
-    /// 1..=255 bytes (e.g. `b"x-amzn-mqtt-ca"`, `b"h2"`).
+    /// 1..=255 bytes (e.g. `b"h2"`, `b"http/1.1"`).
     pub alpn: Option<&'a [&'a [u8]]>,
     /// Suite list to advertise. See [`SuiteList`].
     pub suites: SuiteList,

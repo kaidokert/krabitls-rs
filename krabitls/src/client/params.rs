@@ -44,8 +44,7 @@ pub struct ClientParams<'a, V = DefaultVerify, A = NoClientAuth> {
     /// behind TLS-terminating load balancers / CDNs that expect it.
     pub(crate) middlebox_compat: bool,
     /// ALPN protocol names to advertise, in preference order. `None` omits
-    /// the extension. Required by some endpoints (e.g. AWS IoT on 443 wants
-    /// `x-amzn-mqtt-ca`).
+    /// the extension. Required by endpoints that gate on ALPN (e.g. `b"h2"`).
     pub(crate) alpn: Option<&'a [&'a [u8]]>,
 }
 
@@ -209,7 +208,8 @@ impl<'a, V, A> ClientParams<'a, V, A> {
 
     /// Send a random 32-byte `legacy_session_id` for TLS 1.3 middlebox-
     /// compatibility mode (RFC 8446 §D.4). Enable for endpoints behind
-    /// TLS-terminating load balancers or CDNs; off by default.
+    /// TLS-terminating load balancers or CDNs; off by default. This only sets
+    /// the id; the dummy ChangeCipherSpec of full compat mode is not sent.
     pub fn middlebox_compat(mut self, on: bool) -> Self {
         self.middlebox_compat = on;
         self
@@ -217,7 +217,7 @@ impl<'a, V, A> ClientParams<'a, V, A> {
 
     /// Advertise ALPN protocol names (RFC 7301), in preference order. Each
     /// name is 1..=255 bytes. Off by default; required by endpoints that
-    /// gate on ALPN (e.g. AWS IoT MQTT-over-443 wants `b"x-amzn-mqtt-ca"`).
+    /// gate on ALPN (e.g. `b"h2"`).
     pub fn alpn(mut self, protocols: &'a [&'a [u8]]) -> Self {
         self.alpn = Some(protocols);
         self
