@@ -137,6 +137,13 @@ pub(crate) mod consts {
     pub const LEGACY_VERSION: u16 = 0x0303;
     pub const TLS_1_3: u16 = 0x0304;
 
+    /// Length of the `legacy_session_id` we send. RFC 8446 §4.1.2 lets a
+    /// TLS 1.3 client send a 32-byte value here to drive middlebox-
+    /// compatibility mode (§D.4) — a resumed-1.2 look that lets the handshake
+    /// traverse TLS-terminating load balancers (some cloud front doors abort
+    /// on an empty id). The server echoes it verbatim (§4.1.3).
+    pub const LEGACY_SESSION_ID_LEN: usize = 32;
+
     pub const HS_CLIENT_HELLO: u8 = 1;
     pub const HS_SERVER_HELLO: u8 = 2;
     pub const HS_NEW_SESSION_TICKET: u8 = 4;
@@ -185,6 +192,7 @@ pub(crate) mod consts {
     pub const EXT_RECORD_SIZE_LIMIT: u16 = 28;
     pub const EXT_SUPPORTED_VERSIONS: u16 = 43;
     pub const EXT_KEY_SHARE: u16 = 51;
+    pub const EXT_ALPN: u16 = 16;
     /// `name_type` value inside the SNI extension (RFC 6066 §3). Krabitls
     /// only ever writes `host_name`; we don't carry other NameType values.
     pub const SNI_NAME_TYPE_HOST_NAME: u8 = 0;
@@ -284,6 +292,14 @@ pub(crate) struct ClientHelloOptions<'a> {
     /// extension. Must be in `[64, 2^14 + 1]`; the writer enforces this
     /// and returns [`ClientHelloError::RecordSizeLimitOutOfRange`] otherwise.
     pub record_size_limit: Option<u16>,
+    /// `legacy_session_id` to send. `None` emits an empty id (the historical
+    /// profile); `Some` sends the 32 bytes to enable middlebox-compatibility
+    /// mode (RFC 8446 §D.4). The server echoes it back verbatim (§4.1.3).
+    pub session_id: Option<&'a [u8; LEGACY_SESSION_ID_LEN]>,
+    /// ALPN protocol names to advertise, in preference order. `None` omits the
+    /// `application_layer_protocol_negotiation` extension. Each name must be
+    /// 1..=255 bytes (e.g. `b"x-amzn-mqtt-ca"`, `b"h2"`).
+    pub alpn: Option<&'a [&'a [u8]]>,
     /// Suite list to advertise. See [`SuiteList`].
     pub suites: SuiteList,
     /// ML-KEM-768 encapsulation key for the `X25519MLKEM768` key_share. Set by
@@ -322,9 +338,31 @@ const fn ch_cipher_suites_field_len(suites: SuiteList) -> usize {
     2 + 2 * ch_n_suites(suites)
 }
 
+/// Total wire size of the `application_layer_protocol_negotiation` extension
+/// for a protocol-name list, or 0 when ALPN is not advertised. Layout: 4
+/// (ext type+len) + 2 (ProtocolNameList length) + Σ (1 + name.len()).
+const fn alpn_ext_total(protocols: Option<&[&[u8]]>) -> usize {
+    match protocols {
+        None => 0,
+        Some(list) => {
+            let mut names = 0;
+            let mut i = 0;
+            while i < list.len() {
+                names += 1 + list[i].len();
+                i += 1;
+            }
+            4 + 2 + names
+        }
+    }
+}
+
 /// Total wire size of the variable extensions: fixed extensions + optional
-/// SNI + optional `record_size_limit`.
-const fn ch_extensions_total(sni_host_len: Option<usize>, has_record_size_limit: bool) -> usize {
+/// SNI + optional `record_size_limit` + optional ALPN.
+const fn ch_extensions_total(
+    sni_host_len: Option<usize>,
+    has_record_size_limit: bool,
+    alpn_total: usize,
+) -> usize {
     let sni = match sni_host_len {
         None => 0,
         Some(n) => sni_ext_total(n),
@@ -334,7 +372,7 @@ const fn ch_extensions_total(sni_host_len: Option<usize>, has_record_size_limit:
     } else {
         0
     };
-    CH_EXTENSIONS_FIXED_TOTAL as usize + sni + rsl
+    CH_EXTENSIONS_FIXED_TOTAL as usize + sni + rsl + alpn_total
 }
 
 /// ClientHello body length (the bytes after the 4-byte handshake header).
@@ -342,13 +380,20 @@ const fn ch_body_len(
     suites: SuiteList,
     sni_host_len: Option<usize>,
     has_record_size_limit: bool,
+    has_session_id: bool,
+    alpn_total: usize,
 ) -> usize {
+    let session_id = if has_session_id {
+        LEGACY_SESSION_ID_LEN
+    } else {
+        0
+    };
     2 + 32
-        + 1
+        + (1 + session_id)
         + ch_cipher_suites_field_len(suites)
         + (1 + 1)
         + 2
-        + ch_extensions_total(sni_host_len, has_record_size_limit)
+        + ch_extensions_total(sni_host_len, has_record_size_limit, alpn_total)
 }
 
 /// Total wire size of a ClientHello with the given dimensions (record
@@ -358,35 +403,53 @@ const fn ch_total_len(
     suites: SuiteList,
     sni_host_len: Option<usize>,
     has_record_size_limit: bool,
+    has_session_id: bool,
+    alpn_total: usize,
 ) -> usize {
-    5 + 4 + ch_body_len(suites, sni_host_len, has_record_size_limit)
+    5 + 4
+        + ch_body_len(
+            suites,
+            sni_host_len,
+            has_record_size_limit,
+            has_session_id,
+            alpn_total,
+        )
 }
 
 /// Compute the exact serialized size of a ClientHello with the given
-/// hostname option, using the compile-time default suite list and no
-/// `record_size_limit` extension. Use [`client_hello_len_with`] when
-/// emitting opts-driven extensions or narrowing the suite advertisement.
+/// hostname option, using the compile-time default suite list, no
+/// `record_size_limit`, no `legacy_session_id`, and no ALPN. Use
+/// [`client_hello_len_with`] when emitting opts-driven extensions or
+/// narrowing the suite advertisement.
 pub(crate) const fn client_hello_len(hostname_len: Option<usize>) -> usize {
-    ch_total_len(SuiteList::Default, hostname_len, false)
+    ch_total_len(SuiteList::Default, hostname_len, false, false, 0)
 }
 
 /// Opts-aware sibling of [`client_hello_len`]. Returns the exact byte size
 /// the corresponding opts-aware ClientHello writer call will emit for the
 /// supplied options. Single source of truth shared with the writer — the
-/// two cannot drift on the new (`record_size_limit` / `SuiteList::AesOnly`)
-/// paths.
+/// two cannot drift on the opts-driven (`record_size_limit`, `session_id`,
+/// ALPN, `SuiteList::AesOnly`) paths.
 pub(crate) const fn client_hello_len_with(opts: &ClientHelloOptions<'_>) -> usize {
     let sni_host_len = match opts.hostname {
         None => None,
         Some(h) => Some(h.len()),
     };
-    ch_total_len(opts.suites, sni_host_len, opts.record_size_limit.is_some())
+    ch_total_len(
+        opts.suites,
+        sni_host_len,
+        opts.record_size_limit.is_some(),
+        opts.session_id.is_some(),
+        alpn_ext_total(opts.alpn),
+    )
 }
 
 /// Serialized size of the ClientHello the default-opts writer produces
 /// when no SNI is supplied. 117 bytes by default, 119 with
 /// `feature = "rsa"` (one extra scheme entry), 123 with `feature = "mldsa"`
-/// (three extra scheme entries) in the signature_algorithms extension.
+/// (three extra scheme entries) in the signature_algorithms extension. The
+/// optional `legacy_session_id` and ALPN extension are off in the default
+/// opts, so this baseline is unaffected by them.
 pub(crate) const CLIENT_HELLO_LEN: usize = client_hello_len(None);
 
 // Combo-independent pin: 117-byte baseline (1 suite, ed25519-only) + 2 per
@@ -454,6 +517,12 @@ pub(crate) fn write_client_hello_with<W: Write>(
     {
         return Err(ClientHelloError::RecordSizeLimitOutOfRange);
     }
+    // RFC 7301 §3.1: each ProtocolName is a 1..=255-byte opaque.
+    if let Some(protocols) = opts.alpn
+        && protocols.iter().any(|n| n.is_empty() || n.len() > 255)
+    {
+        return Err(ClientHelloError::AlpnNameLen);
+    }
 
     // Compute the exact total in `usize` BEFORE any narrowing cast: an
     // oversized hostname can otherwise wrap intermediate `as u16` casts
@@ -470,9 +539,17 @@ pub(crate) fn write_client_hello_with<W: Write>(
 
     let sni_host_len = hostname.map(|h| h.len());
     let has_rsl = opts.record_size_limit.is_some();
+    let has_session_id = opts.session_id.is_some();
+    let alpn_total = alpn_ext_total(opts.alpn);
     let n_suites = ch_n_suites(opts.suites);
-    let extensions_total = ch_extensions_total(sni_host_len, has_rsl);
-    let body_len = ch_body_len(opts.suites, sni_host_len, has_rsl);
+    let extensions_total = ch_extensions_total(sni_host_len, has_rsl, alpn_total);
+    let body_len = ch_body_len(
+        opts.suites,
+        sni_host_len,
+        has_rsl,
+        has_session_id,
+        alpn_total,
+    );
     let hs_len = 4 + body_len;
 
     // ChaCha appears in the wire output iff the feature was compiled in
@@ -490,7 +567,13 @@ pub(crate) fn write_client_hello_with<W: Write>(
 
     out.write_u16(LEGACY_VERSION)?;
     out.write_all(random)?;
-    out.write_u8(0)?;
+    match opts.session_id {
+        None => out.write_u8(0)?,
+        Some(id) => {
+            out.write_u8(LEGACY_SESSION_ID_LEN as u8)?;
+            out.write_all(id)?;
+        }
+    }
     out.write_u16((2 * n_suites) as u16)?;
     // ChaCha first when offered (server preference convention). Then AES
     // when both `cipher-aes` is on and the suite list isn't ChaCha-only.
@@ -555,6 +638,18 @@ pub(crate) fn write_client_hello_with<W: Write>(
         out.write_u16(value)?;
     }
 
+    if let Some(protocols) = opts.alpn {
+        // ProtocolNameList: each name is a 1-byte-length-prefixed opaque.
+        let list_len = alpn_ext_total(Some(protocols)) - 6; // minus the two headers
+        out.write_u16(EXT_ALPN)?;
+        out.write_u16((2 + list_len) as u16)?;
+        out.write_u16(list_len as u16)?;
+        for name in protocols {
+            out.write_u8(name.len() as u8)?;
+            out.write_all(name)?;
+        }
+    }
+
     // Single key_share entry. Under `mlkem` the key_exchange is
     // `ML-KEM-768 ek (1184) || X25519 pub (32)` (draft-ietf-tls-ecdhe-mlkem
     // orders ML-KEM first for X25519MLKEM768); otherwise just the X25519 pub.
@@ -582,7 +677,8 @@ pub(crate) fn write_client_hello_with<W: Write>(
 pub(crate) struct ServerHelloView<'a> {
     /// `ServerHello.random` (32 bytes).
     pub random: &'a [u8; 32],
-    /// Echoed `legacy_session_id` — empty in our profile.
+    /// Echoed `legacy_session_id`. The caller matches it against the 32-byte
+    /// value it sent (RFC 8446 §4.1.3); a mismatch aborts the handshake.
     pub session_id_echo: &'a [u8],
     /// Selected cipher suite. `TLS_AES_128_GCM_SHA256` (`0x1301`), or
     /// `TLS_CHACHA20_POLY1305_SHA256` (`0x1303`) when `feature = "chacha20"`
@@ -653,9 +749,10 @@ pub(crate) fn parse_server_hello(input: &[u8]) -> Result<ServerHelloView<'_>, Pa
     }
 
     let session_id_echo = b.vec_u8()?;
-    // We always send an empty legacy_session_id; the server MUST echo it back
-    // unchanged (RFC 8446 §4.1.3).
-    if !session_id_echo.is_empty() {
+    // The server MUST echo the client's `legacy_session_id` verbatim
+    // (RFC 8446 §4.1.3). The exact match against what we sent happens in the
+    // caller (which holds it); here we only bound it to the legal 0..=32.
+    if session_id_echo.len() > LEGACY_SESSION_ID_LEN {
         return Err(ParseError::UnexpectedSessionIdEcho);
     }
     let cipher_suite = b.u16()?;

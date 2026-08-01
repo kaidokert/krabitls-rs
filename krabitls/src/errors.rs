@@ -49,6 +49,9 @@ pub enum ClientHelloError<E> {
     IntegerOverflow,
     /// `record_size_limit` is outside the RFC 8449 valid range `[64, 2^14 + 1]`.
     RecordSizeLimitOutOfRange,
+    /// An ALPN protocol name was empty or exceeded the 255-byte `ProtocolName`
+    /// cap (RFC 7301 §3.1).
+    AlpnNameLen,
     /// `mlkem` is on but the connection layer didn't supply the ML-KEM
     /// encapsulation key for the `X25519MLKEM768` key_share. Structurally
     /// unreachable (the connection always sets it); propagated, not panicked.
@@ -74,6 +77,7 @@ impl<E> ClientHelloError<E> {
             Self::MessageTooLong => ClientHelloError::MessageTooLong,
             Self::IntegerOverflow => ClientHelloError::IntegerOverflow,
             Self::RecordSizeLimitOutOfRange => ClientHelloError::RecordSizeLimitOutOfRange,
+            Self::AlpnNameLen => ClientHelloError::AlpnNameLen,
             #[cfg(feature = "mlkem")]
             Self::MissingMlKemKeyShare => ClientHelloError::MissingMlKemKeyShare,
             Self::Write(e) => ClientHelloError::Write(f(e)),
@@ -103,6 +107,9 @@ impl<E: core::fmt::Display> core::fmt::Display for ClientHelloError<E> {
             Self::RecordSizeLimitOutOfRange => {
                 f.write_str("record_size_limit is outside the RFC 8449 valid range")
             }
+            Self::AlpnNameLen => {
+                f.write_str("an ALPN protocol name was empty or exceeded 255 bytes")
+            }
             #[cfg(feature = "mlkem")]
             Self::MissingMlKemKeyShare => {
                 f.write_str("ML-KEM encapsulation key was not supplied for the key_share")
@@ -119,7 +126,8 @@ impl<E: core::error::Error + 'static> core::error::Error for ClientHelloError<E>
             Self::HostnameTooLong
             | Self::MessageTooLong
             | Self::IntegerOverflow
-            | Self::RecordSizeLimitOutOfRange => None,
+            | Self::RecordSizeLimitOutOfRange
+            | Self::AlpnNameLen => None,
             #[cfg(feature = "mlkem")]
             Self::MissingMlKemKeyShare => None,
         }
@@ -168,10 +176,10 @@ pub enum ParseError {
     /// RFC 8446 §4.2 forbids this.
     #[error("extension type 0x{0:04x} appeared twice in the same extension block")]
     DuplicateExtension(u16),
-    /// Server echoed back a non-empty `legacy_session_id_echo`, but the client
-    /// sent an empty `legacy_session_id`. RFC 8446 §4.1.3 requires the echo to
-    /// match what was sent.
-    #[error("server echoed a non-empty legacy_session_id_echo")]
+    /// `legacy_session_id_echo` didn't match the `legacy_session_id` we sent,
+    /// or exceeded the legal 32 bytes. RFC 8446 §4.1.3 requires the server to
+    /// echo it back verbatim.
+    #[error("server echoed a mismatched legacy_session_id_echo")]
     UnexpectedSessionIdEcho,
     /// `ServerHello.random` carries the magic value indicating this message is
     /// really a HelloRetryRequest. Our profile never expects HRR, so this is

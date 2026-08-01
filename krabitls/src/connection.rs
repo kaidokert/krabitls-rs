@@ -249,6 +249,9 @@ pub struct Init {
 }
 
 pub struct WaitServerHello {
+    /// `legacy_session_id` we sent (`None` = empty), retained to verify the
+    /// ServerHello echoes it back verbatim (RFC 8446 §4.1.3).
+    pub(crate) session_id: Option<[u8; 32]>,
     pub(crate) x25519_priv: ZeroBuf<32>,
     #[cfg(feature = "mlkem")]
     pub(crate) mlkem: crate::backends::mlkem::MlKem768,
@@ -438,6 +441,9 @@ where
             ClientHelloError::RecordSizeLimitOutOfRange => {
                 ConnectionError::ClientHello(ClientHelloError::RecordSizeLimitOutOfRange)
             }
+            ClientHelloError::AlpnNameLen => {
+                ConnectionError::ClientHello(ClientHelloError::AlpnNameLen)
+            }
             #[cfg(feature = "mlkem")]
             ClientHelloError::MissingMlKemKeyShare => {
                 ConnectionError::ClientHello(ClientHelloError::MissingMlKemKeyShare)
@@ -454,6 +460,7 @@ where
         Ok(TlsConnection {
             transcript: self.transcript,
             state: WaitServerHello {
+                session_id: opts.session_id.copied(),
                 x25519_priv: self.state.x25519_priv,
                 #[cfg(feature = "mlkem")]
                 mlkem: self.state.mlkem,
@@ -531,6 +538,17 @@ where
         sh_record: &[u8],
     ) -> Result<NegotiatedSuite<H>, ConnectionError> {
         let sh = parse_server_hello(sh_record)?;
+        // RFC 8446 §4.1.3: the server MUST echo our `legacy_session_id`
+        // verbatim (the empty string when we sent none). A mismatch means the
+        // ServerHello isn't a response to our ClientHello — abort rather than
+        // key off a foreign transcript.
+        let sent_id: &[u8] = match &self.state.session_id {
+            Some(id) => id,
+            None => &[],
+        };
+        if sh.session_id_echo != sent_id {
+            return Err(ConnectionError::Parse(ParseError::UnexpectedSessionIdEcho));
+        }
         // Selected suite must have been in the advertised cipher_suites list.
         let advertised_ok = match sh.cipher_suite {
             #[cfg(feature = "cipher-aes")]
