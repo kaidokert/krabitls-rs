@@ -86,6 +86,17 @@ where
             .map_err(|_| HandshakeError::Rng)?;
         rng.try_fill_bytes(&mut *x25519_priv)
             .map_err(|_| HandshakeError::Rng)?;
+        // 32-byte legacy_session_id for middlebox-compatibility mode (RFC 8446
+        // §D.4), only when opted in. Drawn after the always-present keys so the
+        // deterministic fixture entropy stream stays a stable prefix.
+        let session_id = if params.middlebox_compat {
+            let mut id = [0u8; 32];
+            rng.try_fill_bytes(&mut id)
+                .map_err(|_| HandshakeError::Rng)?;
+            Some(id)
+        } else {
+            None
+        };
 
         // Signing entropy for a randomized client CertificateVerify (RSA-PSS
         // salt), drawn up front because the RNG borrow ends when `connect`
@@ -123,6 +134,8 @@ where
         let opts = crate::ClientHelloOptions {
             hostname: Some(params.hostname.as_bytes()),
             record_size_limit: Some(our_recv_limit.get()),
+            session_id: session_id.as_ref(),
+            alpn: params.alpn,
             suites,
             #[cfg(feature = "mlkem")]
             mlkem_ek: Some(&mlkem_ek),

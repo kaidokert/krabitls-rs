@@ -23,6 +23,8 @@ impl ClientHelloOptions<'_> {
         Self {
             hostname: None,
             record_size_limit: None,
+            session_id: None,
+            alpn: None,
             suites: SuiteList::Default,
             #[cfg(feature = "mlkem")]
             mlkem_ek: None,
@@ -251,6 +253,8 @@ fn client_hello_len_with_agrees_with_legacy_for_default_opts() {
         let opts = ClientHelloOptions {
             hostname,
             record_size_limit: None,
+            session_id: None,
+            alpn: None,
             suites: SuiteList::Default,
             #[cfg(feature = "mlkem")]
             mlkem_ek: None,
@@ -571,20 +575,75 @@ fn downgrade_marker_rejected() {
     assert_eq!(parse_server_hello(&bad), Err(ParseError::DowngradeDetected));
 }
 
-#[test]
-fn non_empty_session_id_echo_rejected() {
-    let mut buf = [0u8; FIXTURE_SERVER_HELLO.len() + 1];
-    buf[..43].copy_from_slice(&FIXTURE_SERVER_HELLO[..43]);
-    buf[43] = 0x01;
-    buf[44] = 0xab;
-    buf[45..].copy_from_slice(&FIXTURE_SERVER_HELLO[44..]);
-    buf[3..5].copy_from_slice(&[0x00, 0x5b]);
-    buf[6..9].copy_from_slice(&[0x00, 0x00, 0x57]);
+/// Splice a `session_id_echo` of length `id_len` (bytes `0xab`) into the
+/// fixture ServerHello, fixing the record + handshake length prefixes. The
+/// fixture's own echo is empty, so growth is exactly `id_len`.
+// `FIXTURE_SERVER_HELLO` is the non-mlkem ServerHello; under `mlkem` the parser
+// requires the hybrid key_share and rejects it (`BadKeyShare`).
+#[cfg(not(feature = "mlkem"))]
+fn server_hello_with_session_id_echo(id_len: usize) -> Vec<u8> {
+    let mut out = Vec::with_capacity(FIXTURE_SERVER_HELLO.len() + id_len);
+    out.extend_from_slice(&FIXTURE_SERVER_HELLO[..43]); // bytes before the len byte
+    out.push(id_len as u8); // legacy_session_id_echo length
+    out.extend(core::iter::repeat_n(0xab, id_len));
+    out.extend_from_slice(&FIXTURE_SERVER_HELLO[44..]); // past the original empty id
+    let rec_len = (out.len() - 5) as u16;
+    out[3..5].copy_from_slice(&rec_len.to_be_bytes());
+    let hs_len = (out.len() - 9) as u32;
+    out[6..9].copy_from_slice(&hs_len.to_be_bytes()[1..]);
+    out
+}
 
+#[cfg(not(feature = "mlkem"))]
+#[test]
+fn parse_surfaces_session_id_echo_up_to_32() {
+    // The exact-match against what we sent is the caller's job now; the parser
+    // only surfaces the (0..=32) echo. A 32-byte echo parses.
+    let sh = server_hello_with_session_id_echo(32);
+    let v = parse_server_hello(&sh).expect("32-byte echo parses");
+    assert_eq!(v.session_id_echo, &[0xab; 32][..]);
+}
+
+#[cfg(not(feature = "mlkem"))]
+#[test]
+fn parse_rejects_session_id_echo_over_32() {
+    let sh = server_hello_with_session_id_echo(33);
     assert_eq!(
-        parse_server_hello(&buf),
+        parse_server_hello(&sh),
         Err(ParseError::UnexpectedSessionIdEcho),
     );
+}
+
+#[test]
+fn empty_alpn_list_rejected() {
+    // `.alpn(&[])` would serialize a zero-entry ProtocolNameList (RFC 7301
+    // requires ≥1). The top-of-writer guard fires before the key_share, so this
+    // holds under `mlkem` too.
+    let mut buf = [0u8; 256];
+    let mut cursor: &mut [u8] = &mut buf;
+    let empty: [&[u8]; 0] = [];
+    let opts = ClientHelloOptions {
+        alpn: Some(&empty),
+        ..ClientHelloOptions::legacy()
+    };
+    let err = write_client_hello_with(&mut cursor, &FIXTURE_RANDOM, &FIXTURE_X25519_PUB, &opts)
+        .unwrap_err();
+    assert_eq!(err, ClientHelloError::AlpnNameLen);
+}
+
+#[test]
+fn oversize_alpn_name_rejected() {
+    let big = [b'a'; 256];
+    let names: [&[u8]; 1] = [&big];
+    let mut buf = [0u8; 512];
+    let mut cursor: &mut [u8] = &mut buf;
+    let opts = ClientHelloOptions {
+        alpn: Some(&names),
+        ..ClientHelloOptions::legacy()
+    };
+    let err = write_client_hello_with(&mut cursor, &FIXTURE_RANDOM, &FIXTURE_X25519_PUB, &opts)
+        .unwrap_err();
+    assert_eq!(err, ClientHelloError::AlpnNameLen);
 }
 
 #[cfg(not(feature = "mlkem"))]
@@ -2366,6 +2425,8 @@ mod mlkem_keyshare {
         let opts = ClientHelloOptions {
             hostname: None,
             record_size_limit: None,
+            session_id: None,
+            alpn: None,
             suites: SuiteList::Default,
             mlkem_ek: Some(&ek),
         };
@@ -2405,6 +2466,8 @@ mod mlkem_keyshare {
         let opts = ClientHelloOptions {
             hostname: None,
             record_size_limit: None,
+            session_id: None,
+            alpn: None,
             suites: SuiteList::Default,
             mlkem_ek: Some(&ek),
         };
