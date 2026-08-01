@@ -22,6 +22,20 @@ use crate::bigint::RsaSignBn as SignBn;
 use crate::consts::SIG_SCHEME_ED25519;
 use crate::traits::client_auth::{ClientAuth, ClientAuthError, ClientSignature};
 
+// ECDSA client-auth signing draws RFC 6979's HMAC-DRBG through krabiecdsa's
+// `digest 0.10`-line bound, so `Hmac<Sha256/384>` here is the 0.10/0.12 crates;
+// the prehash uses the crate's own `sha2 0.11`. `Digest as _` pulls the trait
+// method without a name that could clash with the `rsa` block's import.
+#[cfg(feature = "ecdsa-sign")]
+use {
+    crate::bigint::{EcdsaP256CtBn, EcdsaP384CtBn},
+    crate::consts::{SIG_SCHEME_ECDSA_P256, SIG_SCHEME_ECDSA_P384},
+    hmac_v10::Hmac,
+    krabiecdsa::{dangerous::SigningKey as EcdsaSigningKey, p256::P256, p384::P384},
+    sha2::{Digest as _, Sha256 as Sha256v11, Sha384 as Sha384v11},
+    sha2_v10::{Sha256 as Sha256v10, Sha384 as Sha384v10},
+};
+
 /// Ed25519 client authenticator: a seed-derived signing key (long-term
 /// secret wiped on drop inside [`SigningKey`]) paired with the leaf
 /// certificate it authenticates.
@@ -155,5 +169,187 @@ impl ClientAuth for RsaClientAuth<'_> {
         out.extend_from_slice(sig_slice)
             .map_err(|_| ClientAuthError)?;
         Ok(out)
+    }
+}
+
+/// ECDSA client authenticator (P-256 / P-384) producing DER `ECDSA-Sig-Value`
+/// `CertificateVerify` signatures with an RFC 6979 deterministic nonce.
+///
+/// **Experimental** (`feature = "ecdsa-sign"`): krabiecdsa's sign path is
+/// constant-time but unaudited — do not use it on keys you care about. The
+/// secret scalar wipes on drop inside the [`SigningKey`].
+#[cfg(feature = "ecdsa-sign")]
+pub enum EcdsaClientAuth<'a> {
+    P256 {
+        key: EcdsaSigningKey<P256>,
+        cert_der: &'a [u8],
+    },
+    P384 {
+        key: EcdsaSigningKey<P384>,
+        cert_der: &'a [u8],
+    },
+}
+
+#[cfg(feature = "ecdsa-sign")]
+impl<'a> EcdsaClientAuth<'a> {
+    /// Build from a 32-byte big-endian P-256 private scalar and the DER leaf
+    /// certifying the matching public key. Zeroize the caller's copy after.
+    pub fn p256_from_scalar(
+        scalar: &[u8; 32],
+        cert_der: &'a [u8],
+    ) -> Result<Self, ClientAuthError> {
+        let key = EcdsaSigningKey::<P256>::from_bytes(scalar).ok_or(ClientAuthError)?;
+        Ok(Self::P256 { key, cert_der })
+    }
+
+    /// Build from a 48-byte big-endian P-384 private scalar and the DER leaf.
+    pub fn p384_from_scalar(
+        scalar: &[u8; 48],
+        cert_der: &'a [u8],
+    ) -> Result<Self, ClientAuthError> {
+        let key = EcdsaSigningKey::<P384>::from_bytes(scalar).ok_or(ClientAuthError)?;
+        Ok(Self::P384 { key, cert_der })
+    }
+
+    /// SEC1-uncompressed public key (`0x04 || X || Y`) derived from the scalar,
+    /// so callers can check it against the certified leaf. `out` must be 65
+    /// (P-256) or 97 (P-384) bytes.
+    pub fn public_key_sec1(&self, out: &mut [u8]) -> Result<(), ClientAuthError> {
+        let ok = match self {
+            Self::P256 { key, .. } => key.verifying_key_sec1::<EcdsaP256CtBn>(out),
+            Self::P384 { key, .. } => key.verifying_key_sec1::<EcdsaP384CtBn>(out),
+        };
+        if ok { Ok(()) } else { Err(ClientAuthError) }
+    }
+}
+
+/// Append `bytes` (a big-endian scalar half) as a minimal DER INTEGER.
+#[cfg(feature = "ecdsa-sign")]
+fn der_int(bytes: &[u8], out: &mut ClientSignature) -> Result<(), ClientAuthError> {
+    let mut v = bytes;
+    while v.len() > 1 && v[0] == 0 {
+        v = &v[1..];
+    }
+    // A leading 0x80+ byte reads as a negative INTEGER; prepend 0x00 to keep it
+    // positive, per DER.
+    let pad = v[0] & 0x80 != 0;
+    out.push(0x02).map_err(|_| ClientAuthError)?;
+    out.push((v.len() + pad as usize) as u8)
+        .map_err(|_| ClientAuthError)?;
+    if pad {
+        out.push(0x00).map_err(|_| ClientAuthError)?;
+    }
+    out.extend_from_slice(v).map_err(|_| ClientAuthError)?;
+    Ok(())
+}
+
+/// DER `ECDSA-Sig-Value ::= SEQUENCE { r INTEGER, s INTEGER }` from the P1363
+/// halves. P-256/P-384 bodies stay < 128 bytes, so the SEQUENCE length is one
+/// byte.
+#[cfg(feature = "ecdsa-sign")]
+fn der_ecdsa_sig(r: &[u8], s: &[u8]) -> Result<ClientSignature, ClientAuthError> {
+    let mut body = ClientSignature::new();
+    der_int(r, &mut body)?;
+    der_int(s, &mut body)?;
+    let mut out = ClientSignature::new();
+    out.push(0x30).map_err(|_| ClientAuthError)?;
+    out.push(body.len() as u8).map_err(|_| ClientAuthError)?;
+    out.extend_from_slice(&body).map_err(|_| ClientAuthError)?;
+    Ok(out)
+}
+
+#[cfg(feature = "ecdsa-sign")]
+impl ClientAuth for EcdsaClientAuth<'_> {
+    fn cert_der(&self) -> &[u8] {
+        match self {
+            Self::P256 { cert_der, .. } | Self::P384 { cert_der, .. } => cert_der,
+        }
+    }
+
+    fn scheme(&self) -> u16 {
+        match self {
+            Self::P256 { .. } => SIG_SCHEME_ECDSA_P256,
+            Self::P384 { .. } => SIG_SCHEME_ECDSA_P384,
+        }
+    }
+
+    // RFC 6979 deterministic nonce — no entropy draw.
+    fn needs_entropy(&self) -> bool {
+        false
+    }
+
+    fn sign(
+        &self,
+        content: &[u8],
+        _entropy: &[u8; 32],
+    ) -> Result<ClientSignature, ClientAuthError> {
+        match self {
+            Self::P256 { key, .. } => {
+                let digest = Sha256v11::digest(content);
+                let (mut r, mut s) = ([0u8; 32], [0u8; 32]);
+                if !key.sign_prehashed::<EcdsaP256CtBn, Hmac<Sha256v10>>(
+                    digest.as_slice(),
+                    &mut r,
+                    &mut s,
+                ) {
+                    return Err(ClientAuthError);
+                }
+                der_ecdsa_sig(&r, &s)
+            }
+            Self::P384 { key, .. } => {
+                let digest = Sha384v11::digest(content);
+                let (mut r, mut s) = ([0u8; 48], [0u8; 48]);
+                if !key.sign_prehashed::<EcdsaP384CtBn, Hmac<Sha384v10>>(
+                    digest.as_slice(),
+                    &mut r,
+                    &mut s,
+                ) {
+                    return Err(ClientAuthError);
+                }
+                der_ecdsa_sig(&r, &s)
+            }
+        }
+    }
+}
+
+#[cfg(all(test, feature = "ecdsa-sign"))]
+mod ecdsa_sign_tests {
+    use super::*;
+    use crate::backends::ecdsa_verify::{verify_p256, verify_p384};
+
+    const CONTENT: &[u8] = b"TLS 1.3, client CertificateVerify\x00<transcript-hash>";
+
+    #[test]
+    fn p256_sign_round_trips_through_own_verifier() {
+        let auth = EcdsaClientAuth::p256_from_scalar(&[0x11u8; 32], b"leaf-der").unwrap();
+        let mut pk = [0u8; 65];
+        auth.public_key_sec1(&mut pk).unwrap();
+        let der = auth.sign(CONTENT, &[0u8; 32]).unwrap();
+        let prehash = Sha256v11::digest(CONTENT);
+        assert!(verify_p256(&pk, prehash.as_slice(), &der).is_ok());
+        // A signature over one content must not verify against another's digest.
+        let other = Sha256v11::digest(b"tampered");
+        assert!(verify_p256(&pk, other.as_slice(), &der).is_err());
+    }
+
+    #[test]
+    fn p384_sign_round_trips_through_own_verifier() {
+        let auth = EcdsaClientAuth::p384_from_scalar(&[0x22u8; 48], b"leaf-der").unwrap();
+        let mut pk = [0u8; 97];
+        auth.public_key_sec1(&mut pk).unwrap();
+        let der = auth.sign(CONTENT, &[0u8; 32]).unwrap();
+        let prehash = Sha384v11::digest(CONTENT);
+        assert!(verify_p384(&pk, prehash.as_slice(), &der).is_ok());
+    }
+
+    #[test]
+    fn scheme_and_rfc6979_determinism() {
+        let auth = EcdsaClientAuth::p256_from_scalar(&[0x11u8; 32], b"c").unwrap();
+        assert_eq!(auth.scheme(), SIG_SCHEME_ECDSA_P256);
+        assert!(!auth.needs_entropy());
+        // RFC 6979: deterministic — the (ignored) entropy can't change the output.
+        let a = auth.sign(CONTENT, &[0u8; 32]).unwrap();
+        let b = auth.sign(CONTENT, &[0xffu8; 32]).unwrap();
+        assert_eq!(a, b);
     }
 }

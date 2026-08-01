@@ -34,6 +34,8 @@ pub use crate::traits::TimeSource;
 // Client (mutual) authentication — the compile-time policy (default
 // `NoClientAuth` links no cert-emission code), the caller-supplied signer
 // trait, the bundled Ed25519 implementation, and its error.
+#[cfg(feature = "ecdsa-sign")]
+pub use crate::backends::EcdsaClientAuth;
 pub use crate::backends::Ed25519ClientAuth;
 #[cfg(feature = "rsa")]
 pub use crate::backends::RsaClientAuth;
