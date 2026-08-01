@@ -179,7 +179,12 @@ impl ClientAuth for RsaClientAuth<'_> {
 /// constant-time but unaudited — do not use it on keys you care about. The
 /// secret scalar wipes on drop inside the [`SigningKey`].
 #[cfg(feature = "ecdsa-sign")]
-pub enum EcdsaClientAuth<'a> {
+pub struct EcdsaClientAuth<'a>(EcdsaKey<'a>);
+
+/// Curve-tagged key + leaf, kept private so callers can't destructure the
+/// public authenticator and move the secret [`EcdsaSigningKey`] out of it.
+#[cfg(feature = "ecdsa-sign")]
+enum EcdsaKey<'a> {
     P256 {
         key: EcdsaSigningKey<P256>,
         cert_der: &'a [u8],
@@ -199,7 +204,7 @@ impl<'a> EcdsaClientAuth<'a> {
         cert_der: &'a [u8],
     ) -> Result<Self, ClientAuthError> {
         let key = EcdsaSigningKey::<P256>::from_bytes(scalar).ok_or(ClientAuthError)?;
-        Ok(Self::P256 { key, cert_der })
+        Ok(Self(EcdsaKey::P256 { key, cert_der }))
     }
 
     /// Build from a 48-byte big-endian P-384 private scalar and the DER leaf.
@@ -208,16 +213,16 @@ impl<'a> EcdsaClientAuth<'a> {
         cert_der: &'a [u8],
     ) -> Result<Self, ClientAuthError> {
         let key = EcdsaSigningKey::<P384>::from_bytes(scalar).ok_or(ClientAuthError)?;
-        Ok(Self::P384 { key, cert_der })
+        Ok(Self(EcdsaKey::P384 { key, cert_der }))
     }
 
     /// SEC1-uncompressed public key (`0x04 || X || Y`) derived from the scalar,
     /// so callers can check it against the certified leaf. `out` must be 65
     /// (P-256) or 97 (P-384) bytes.
     pub fn public_key_sec1(&self, out: &mut [u8]) -> Result<(), ClientAuthError> {
-        let ok = match self {
-            Self::P256 { key, .. } => key.verifying_key_sec1::<EcdsaP256CtBn>(out),
-            Self::P384 { key, .. } => key.verifying_key_sec1::<EcdsaP384CtBn>(out),
+        let ok = match &self.0 {
+            EcdsaKey::P256 { key, .. } => key.verifying_key_sec1::<EcdsaP256CtBn>(out),
+            EcdsaKey::P384 { key, .. } => key.verifying_key_sec1::<EcdsaP384CtBn>(out),
         };
         if ok { Ok(()) } else { Err(ClientAuthError) }
     }
@@ -261,15 +266,15 @@ fn der_ecdsa_sig(r: &[u8], s: &[u8]) -> Result<ClientSignature, ClientAuthError>
 #[cfg(feature = "ecdsa-sign")]
 impl ClientAuth for EcdsaClientAuth<'_> {
     fn cert_der(&self) -> &[u8] {
-        match self {
-            Self::P256 { cert_der, .. } | Self::P384 { cert_der, .. } => cert_der,
+        match &self.0 {
+            EcdsaKey::P256 { cert_der, .. } | EcdsaKey::P384 { cert_der, .. } => cert_der,
         }
     }
 
     fn scheme(&self) -> u16 {
-        match self {
-            Self::P256 { .. } => SIG_SCHEME_ECDSA_P256,
-            Self::P384 { .. } => SIG_SCHEME_ECDSA_P384,
+        match &self.0 {
+            EcdsaKey::P256 { .. } => SIG_SCHEME_ECDSA_P256,
+            EcdsaKey::P384 { .. } => SIG_SCHEME_ECDSA_P384,
         }
     }
 
@@ -283,8 +288,8 @@ impl ClientAuth for EcdsaClientAuth<'_> {
         content: &[u8],
         _entropy: &[u8; 32],
     ) -> Result<ClientSignature, ClientAuthError> {
-        match self {
-            Self::P256 { key, .. } => {
+        match &self.0 {
+            EcdsaKey::P256 { key, .. } => {
                 let digest = Sha256v11::digest(content);
                 let (mut r, mut s) = ([0u8; 32], [0u8; 32]);
                 if !key.sign_prehashed::<EcdsaP256CtBn, Hmac<Sha256v10>>(
@@ -296,7 +301,7 @@ impl ClientAuth for EcdsaClientAuth<'_> {
                 }
                 der_ecdsa_sig(&r, &s)
             }
-            Self::P384 { key, .. } => {
+            EcdsaKey::P384 { key, .. } => {
                 let digest = Sha384v11::digest(content);
                 let (mut r, mut s) = ([0u8; 48], [0u8; 48]);
                 if !key.sign_prehashed::<EcdsaP384CtBn, Hmac<Sha384v10>>(
