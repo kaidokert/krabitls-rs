@@ -578,6 +578,9 @@ fn downgrade_marker_rejected() {
 /// Splice a `session_id_echo` of length `id_len` (bytes `0xab`) into the
 /// fixture ServerHello, fixing the record + handshake length prefixes. The
 /// fixture's own echo is empty, so growth is exactly `id_len`.
+// `FIXTURE_SERVER_HELLO` is the non-mlkem ServerHello; under `mlkem` the parser
+// requires the hybrid key_share and rejects it (`BadKeyShare`).
+#[cfg(not(feature = "mlkem"))]
 fn server_hello_with_session_id_echo(id_len: usize) -> Vec<u8> {
     let mut out = Vec::with_capacity(FIXTURE_SERVER_HELLO.len() + id_len);
     out.extend_from_slice(&FIXTURE_SERVER_HELLO[..43]); // bytes before the len byte
@@ -591,6 +594,7 @@ fn server_hello_with_session_id_echo(id_len: usize) -> Vec<u8> {
     out
 }
 
+#[cfg(not(feature = "mlkem"))]
 #[test]
 fn parse_surfaces_session_id_echo_up_to_32() {
     // The exact-match against what we sent is the caller's job now; the parser
@@ -600,6 +604,7 @@ fn parse_surfaces_session_id_echo_up_to_32() {
     assert_eq!(v.session_id_echo, &[0xab; 32][..]);
 }
 
+#[cfg(not(feature = "mlkem"))]
 #[test]
 fn parse_rejects_session_id_echo_over_32() {
     let sh = server_hello_with_session_id_echo(33);
@@ -607,6 +612,38 @@ fn parse_rejects_session_id_echo_over_32() {
         parse_server_hello(&sh),
         Err(ParseError::UnexpectedSessionIdEcho),
     );
+}
+
+#[test]
+fn empty_alpn_list_rejected() {
+    // `.alpn(&[])` would serialize a zero-entry ProtocolNameList (RFC 7301
+    // requires ≥1). The top-of-writer guard fires before the key_share, so this
+    // holds under `mlkem` too.
+    let mut buf = [0u8; 256];
+    let mut cursor: &mut [u8] = &mut buf;
+    let empty: [&[u8]; 0] = [];
+    let opts = ClientHelloOptions {
+        alpn: Some(&empty),
+        ..ClientHelloOptions::legacy()
+    };
+    let err = write_client_hello_with(&mut cursor, &FIXTURE_RANDOM, &FIXTURE_X25519_PUB, &opts)
+        .unwrap_err();
+    assert_eq!(err, ClientHelloError::AlpnNameLen);
+}
+
+#[test]
+fn oversize_alpn_name_rejected() {
+    let big = [b'a'; 256];
+    let names: [&[u8]; 1] = [&big];
+    let mut buf = [0u8; 512];
+    let mut cursor: &mut [u8] = &mut buf;
+    let opts = ClientHelloOptions {
+        alpn: Some(&names),
+        ..ClientHelloOptions::legacy()
+    };
+    let err = write_client_hello_with(&mut cursor, &FIXTURE_RANDOM, &FIXTURE_X25519_PUB, &opts)
+        .unwrap_err();
+    assert_eq!(err, ClientHelloError::AlpnNameLen);
 }
 
 #[cfg(not(feature = "mlkem"))]

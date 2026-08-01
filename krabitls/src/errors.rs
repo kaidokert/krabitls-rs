@@ -49,8 +49,8 @@ pub enum ClientHelloError<E> {
     IntegerOverflow,
     /// `record_size_limit` is outside the RFC 8449 valid range `[64, 2^14 + 1]`.
     RecordSizeLimitOutOfRange,
-    /// An ALPN protocol name was empty or exceeded the 255-byte `ProtocolName`
-    /// cap (RFC 7301 §3.1).
+    /// The ALPN list was empty, or a protocol name was empty or exceeded the
+    /// 255-byte `ProtocolName` cap (RFC 7301 §3.1).
     AlpnNameLen,
     /// `mlkem` is on but the connection layer didn't supply the ML-KEM
     /// encapsulation key for the `X25519MLKEM768` key_share. Structurally
@@ -108,7 +108,7 @@ impl<E: core::fmt::Display> core::fmt::Display for ClientHelloError<E> {
                 f.write_str("record_size_limit is outside the RFC 8449 valid range")
             }
             Self::AlpnNameLen => {
-                f.write_str("an ALPN protocol name was empty or exceeded 255 bytes")
+                f.write_str("ALPN list was empty, or a name was empty or exceeded 255 bytes")
             }
             #[cfg(feature = "mlkem")]
             Self::MissingMlKemKeyShare => {

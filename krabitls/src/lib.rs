@@ -517,9 +517,11 @@ pub(crate) fn write_client_hello_with<W: Write>(
     {
         return Err(ClientHelloError::RecordSizeLimitOutOfRange);
     }
-    // RFC 7301 §3.1: each ProtocolName is a 1..=255-byte opaque.
+    // RFC 7301 §3.1: the ProtocolNameList is `<2..2^16-1>` (≥1 entry) and each
+    // ProtocolName is a 1..=255-byte opaque. An empty list would serialize a
+    // zero-length list a conformant peer rejects.
     if let Some(protocols) = opts.alpn
-        && protocols.iter().any(|n| n.is_empty() || n.len() > 255)
+        && (protocols.is_empty() || protocols.iter().any(|n| n.is_empty() || n.len() > 255))
     {
         return Err(ClientHelloError::AlpnNameLen);
     }
