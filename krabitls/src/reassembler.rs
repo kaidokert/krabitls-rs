@@ -47,6 +47,20 @@ impl<const N: usize> ServerFlightReassembler<N> {
         Self { buf: Vec::new() }
     }
 
+    /// Drop any buffered flight so the reassembler is empty for a new
+    /// handshake. A `Scratch` is designed to be reused across `connect()`
+    /// calls, and the flight buffer is the one field that carries state
+    /// between them — a stale flight here would corrupt the next transcript.
+    pub(crate) fn clear(&mut self) {
+        self.buf.clear();
+    }
+
+    /// No buffered flight bytes.
+    #[cfg(test)]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.buf.is_empty()
+    }
+
     /// Append one record's worth of decrypted inner-handshake content.
     pub fn push_content(&mut self, content: &[u8]) -> Result<(), ReassemblyError> {
         self.buf
