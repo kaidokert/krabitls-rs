@@ -50,6 +50,8 @@ pub(crate) mod bigint;
 pub mod client;
 pub(crate) mod client_flight;
 pub(crate) mod connection;
+#[cfg(feature = "dtls")]
+pub mod dtls;
 pub(crate) mod errors;
 pub(crate) mod hkdf;
 pub(crate) mod identity;

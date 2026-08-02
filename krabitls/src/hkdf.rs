@@ -229,6 +229,19 @@ pub(crate) fn traffic_keys<H: HkdfSha256, const N: usize>(
     Ok((key, AeadIv::new(iv)))
 }
 
+/// Derive the DTLS 1.3 record-number-encryption key (RFC 9147 §5.9) from a
+/// traffic secret: `sn_key = HKDF-Expand-Label(secret, "sn", "", key_length)`.
+/// `N` matches the AEAD key length (16 for AES-128, 32 for ChaCha20), since the
+/// mask is produced by that suite's primitive keyed with `sn_key`.
+#[cfg(feature = "dtls")]
+pub(crate) fn sn_key<H: HkdfSha256, const N: usize>(
+    traffic_secret: &Secret,
+) -> Result<ZeroBuf<N>, HkdfLabelError> {
+    let mut key = ZeroBuf::<N>::new([0; N]);
+    hkdf_expand_label::<H>(traffic_secret.as_bytes(), b"sn", &[], &mut key[..])?;
+    Ok(key)
+}
+
 /// `master_secret = HKDF-Extract(Derive-Secret(handshake_secret, "derived", H("")), 0_hash)`
 /// per RFC 8446 §7.1.
 pub(crate) fn master_secret<H: HkdfSha256>(

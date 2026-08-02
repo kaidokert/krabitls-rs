@@ -64,8 +64,16 @@ rsa-4096 = ["rsa"]
 # generic-array` chain. AEAD stays on `aes-gcm` either way — jedisct1
 # has no AES-GCM equivalent in the same family.
 jedisct = ["dep:hmac-sha256"]
-# Advertise TLS_CHACHA20_POLY1305_SHA256 alongside AES-128-GCM-SHA256.
-chacha20 = ["dep:chacha20poly1305"]
+# Advertise TLS_CHACHA20_POLY1305_SHA256 alongside AES-128-GCM-SHA256. The raw
+# `chacha20` stream cipher is pulled alongside the AEAD so the DTLS record-number
+# mask (RFC 9147 §4.2.3) can key it; it is already a transitive dep of
+# `chacha20poly1305`, so the direct entry adds no code to a TLS-only build.
+chacha20 = ["dep:chacha20poly1305", "dep:chacha20"]
+# DTLS 1.3 (RFC 9147) datagram client. Additive: parallel record/handshake
+# modules under `src/dtls/`, reusing the TLS 1.3 key schedule, cipher suites, and
+# verify path unchanged. A cipher (`cipher-aes` and/or `chacha20`) is required as
+# for TLS.
+dtls = []
 # TLS_AES_128_GCM_SHA256 cipher suite. Default ON. Disable with
 # `--no-default-features --features chacha20,...` for a ChaCha-only build
 # (drops `aes-gcm` + `aes` + `ghash` deps). At least one of `cipher-aes`
@@ -126,6 +134,9 @@ aes-gcm = { version = "0.11", default-features = false, features = ["aes", "zero
 # becomes an optional `feature = "cipher-aes"` dep.
 aead = { version = "0.6", default-features = false }
 chacha20poly1305 = { version = "0.11", default-features = false, features = ["zeroize"], optional = true }
+# Raw ChaCha20 stream cipher for the DTLS record-number mask (RFC 9147 §4.2.3);
+# a transitive dep of `chacha20poly1305`, pinned here so the mask can key it.
+chacha20 = { version = "0.10", default-features = false, features = ["zeroize"], optional = true }
 # sha2 0.11 dropped the `force-soft-compact` Cargo feature; the compact soft
 # SHA-256/512 core now lives behind `--cfg sha2_backend_soft="compact"`, set in
 # the footprint targets' `.cargo/config.toml`. Without it, soft builds gain ~6.5 KiB.

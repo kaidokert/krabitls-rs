@@ -286,6 +286,34 @@ impl<S: CipherSuite> RecordKeys<S> {
             |nonce, aad, buf| run_encrypt::<S>(&self.cipher, nonce, aad, buf),
         )
     }
+
+    /// AEAD-seal `buf` in place under an explicit `aad`, returning the tag. The
+    /// DTLS record layer (RFC 9147) builds its own unified-header AAD, so it
+    /// drives the cipher directly rather than through the TLS-shaped
+    /// [`encrypt_record`](Self::encrypt_record); `seq` is the epoch-local
+    /// record sequence number.
+    #[cfg(feature = "dtls")]
+    pub(crate) fn seal_in_place(
+        &self,
+        aad: &[u8],
+        seq: u64,
+        buf: &mut [u8],
+    ) -> Result<[u8; 16], crate::traits::AeadError> {
+        run_encrypt::<S>(&self.cipher, &aead_nonce(&self.iv, seq), aad, buf)
+    }
+
+    /// AEAD-open `buf` in place under an explicit `aad`. DTLS counterpart of
+    /// [`seal_in_place`](Self::seal_in_place).
+    #[cfg(feature = "dtls")]
+    pub(crate) fn open_in_place(
+        &self,
+        aad: &[u8],
+        seq: u64,
+        buf: &mut [u8],
+        tag: &[u8; 16],
+    ) -> Result<(), crate::traits::AeadError> {
+        run_decrypt::<S>(&self.cipher, &aead_nonce(&self.iv, seq), aad, buf, tag)
+    }
 }
 
 fn run_decrypt<S: CipherSuite>(
