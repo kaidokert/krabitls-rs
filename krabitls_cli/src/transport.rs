@@ -1,11 +1,14 @@
 //! [`embedded-nal`](embedded_nal) → krabitls transport bridge.
 //!
-//! [`NalTransport`] presents a connected [`embedded_nal::TcpClientStack`] socket
-//! as an [`embedded_io`] byte stream. krabitls's blanket `Transport` impl over
-//! `embedded_io::Read + Write` then applies, so the handshake runs over it with
-//! nothing krabitls-side to change; and because the transport error implements
-//! [`embedded_io::Error`], the resulting [`TlsStream`](krabitls::client::TlsStream)
-//! itself is an `embedded_io` stream that the [`http`](crate::http) /
+//! [`NalTransport`] bridges a connected [`embedded_nal::TcpClientStack`] socket
+//! to krabitls's [`Transport`](krabitls::client::Transport). It implements the
+//! trait directly (rather than via the `embedded_io::Read + Write` blanket) so
+//! it can override [`read_nb`](krabitls::client::Transport::read_nb): the NAL
+//! stack's `receive` is already `nb`, so a `WouldBlock` becomes `Ok(None)`
+//! instead of the blocking spin, giving a caller a non-blocking `try_read`. It
+//! keeps the `embedded_io::Write` impl only to reuse that trait's robust
+//! `write_all`. The resulting [`TlsStream`](krabitls::client::TlsStream) is
+//! itself an `embedded_io` stream that the [`http`](crate::http) /
 //! [`mqtt`](crate::mqtt) layers consume.
 
 use core::net::{IpAddr, SocketAddr};
@@ -14,7 +17,7 @@ use embedded_io::{ErrorKind, ErrorType};
 use embedded_nal::{AddrType, Dns, TcpClientStack};
 use krabitls::client::{
     ClientAuthPolicy, ClientConfig, ClientParams, ConnectError, DefaultConfig, DefaultScratch,
-    DefaultStreamWith, VerifyStrategy,
+    DefaultStreamWith, Transport, VerifyStrategy,
 };
 
 const SOCKET_LIVE: &str = "socket is present for the whole stream lifetime";
@@ -76,7 +79,9 @@ impl<S: TcpClientStack> ErrorType for NalTransport<'_, S> {
     type Error = NalError<S::Error>;
 }
 
-impl<S: TcpClientStack> embedded_io::Read for NalTransport<'_, S> {
+impl<S: TcpClientStack> Transport for NalTransport<'_, S> {
+    type Error = NalError<S::Error>;
+
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
         // `block!` returns on `Ok(n)` — including `Ok(0)`, EOF — and only spins
         // on `WouldBlock`.
@@ -85,6 +90,26 @@ impl<S: TcpClientStack> embedded_io::Read for NalTransport<'_, S> {
                 .receive(self.socket.as_mut().expect(SOCKET_LIVE), buf)
         )
         .map_err(NalError)
+    }
+
+    /// One `receive`; `WouldBlock` surfaces as `Ok(None)` instead of spinning,
+    /// which is what lets [`TlsStream::try_read`](krabitls::client::TlsStream::try_read)
+    /// service the NAL stack between polls rather than parking on it.
+    fn read_nb(&mut self, buf: &mut [u8]) -> Result<Option<usize>, Self::Error> {
+        match self
+            .stack
+            .receive(self.socket.as_mut().expect(SOCKET_LIVE), buf)
+        {
+            Ok(n) => Ok(Some(n)),
+            Err(nb::Error::WouldBlock) => Ok(None),
+            Err(nb::Error::Other(e)) => Err(NalError(e)),
+        }
+    }
+
+    /// Reuse `embedded_io::Write`'s robust `write_all` (partial-send loop +
+    /// `WriteZero` handling) so the direct `Transport` impl doesn't re-derive it.
+    fn write_all(&mut self, buf: &[u8]) -> Result<(), Self::Error> {
+        embedded_io::Write::write_all(self, buf)
     }
 }
 

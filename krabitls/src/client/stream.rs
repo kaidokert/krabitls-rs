@@ -49,6 +49,16 @@ pub type DefaultStreamWith<'s, T, V> =
 /// Standard profile alias paired with `DefaultScratch`.
 pub type DefaultStream<'s, T> = DefaultStreamWith<'s, T, super::DefaultVerify>;
 
+/// Outcome of one non-blocking transport read inside [`TlsStream::try_read`].
+enum RecvProgress {
+    /// Bytes arrived and were fed to the engine — re-step.
+    Fed,
+    /// The transport had nothing ready; the caller should retry later.
+    WouldBlock,
+    /// The transport reported EOF (`Ok(Some(0))`).
+    Eof,
+}
+
 impl<'s, T, C, V, const FLIGHT: usize, const RECV: usize, const SEND: usize, const MAX_CHAIN: usize>
     TlsStream<'s, T, C, V, FLIGHT, RECV, SEND, MAX_CHAIN>
 where
@@ -179,6 +189,44 @@ where
         }
     }
 
+    /// Non-blocking counterpart to [`read`](Self::read). `Ok(Some(n))` = `n`
+    /// plaintext bytes (`Some(0)` ⇒ the peer sent `close_notify`); `Ok(None)`
+    /// = no application data is ready yet — service the transport (which pumps
+    /// the underlying network stack) and call again.
+    ///
+    /// This is the hook for a single-threaded event loop that must interleave
+    /// TLS reads with timers, keepalives, and inbound servicing: the blocking
+    /// [`read`](Self::read) would park the stack for the whole idle interval.
+    /// Outbound TLS control records (e.g. a `KeyUpdate` response) are still
+    /// serviced here via blocking writes; only the *read* is non-blocking. The
+    /// transport must implement [`Transport::read_nb`](crate::client::Transport::read_nb)
+    /// (its default blocks, so a purely blocking transport still works — it just
+    /// can't yield `Ok(None)`).
+    pub fn try_read(&mut self, out: &mut [u8]) -> Result<Option<usize>, ConnectError<T::Error>> {
+        if out.is_empty() {
+            return Ok(Some(0));
+        }
+        loop {
+            match self.engine.step()? {
+                EngineEvent::Send(_n) => {
+                    self.drive_one_send_step()?;
+                }
+                EngineEvent::Recv => match self.drive_one_recv_step_nb()? {
+                    RecvProgress::Fed => continue,
+                    RecvProgress::WouldBlock => return Ok(None),
+                    RecvProgress::Eof => return Err(ConnectError::UnexpectedEof),
+                },
+                EngineEvent::AppData => return Ok(Some(self.engine.read_app(out))),
+                EngineEvent::HandshakeDone => {
+                    return Err(ConnectError::Handshake(HandshakeError::Internal(
+                        InternalError::HandshakeDoneInDataPhase,
+                    )));
+                }
+                EngineEvent::Closed => return Ok(Some(0)),
+            }
+        }
+    }
+
     /// Write all of `buf` as one or more `application_data` records.
     pub fn write_all(&mut self, mut buf: &[u8]) -> Result<(), ConnectError<T::Error>> {
         while !buf.is_empty() {
@@ -268,6 +316,25 @@ where
         }
         self.engine.advance(n)?;
         Ok(())
+    }
+
+    /// Non-blocking sibling of [`drive_one_recv_step`](Self::drive_one_recv_step):
+    /// one `read_nb`, feeding the engine only if bytes actually arrived.
+    fn drive_one_recv_step_nb(&mut self) -> Result<RecvProgress, ConnectError<T::Error>> {
+        let buf = self.engine.recv_buffer();
+        if buf.is_empty() {
+            return Err(ConnectError::Handshake(HandshakeError::Internal(
+                InternalError::RecvBufferEmptyOnRecvEvent,
+            )));
+        }
+        match self.transport.read_nb(buf).map_err(ConnectError::Io)? {
+            None => Ok(RecvProgress::WouldBlock),
+            Some(0) => Ok(RecvProgress::Eof),
+            Some(n) => {
+                self.engine.advance(n)?;
+                Ok(RecvProgress::Fed)
+            }
+        }
     }
 
     /// Drain any pending Send to completion.
