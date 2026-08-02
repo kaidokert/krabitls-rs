@@ -20,4 +20,4 @@ pub mod http;
 pub mod mqtt;
 pub mod transport;
 
-pub use transport::{NalError, NalStream, NalTransport, connect, resolve};
+pub use transport::{NalError, NalStream, NalTransport, PollNal, connect, resolve};
