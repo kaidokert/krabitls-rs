@@ -224,6 +224,33 @@ fn try_read_returns_none_then_the_app_record() {
     assert_eq!(&buf[..n], APP_DATA_REPLY_PLAINTEXT);
 }
 
+#[cfg(all(not(feature = "rsa"), not(feature = "chacha20")))]
+#[test]
+fn reconnect_on_reused_scratch_completes() {
+    // Smoke test: a static `Scratch` reused across `connect()` calls is the
+    // embedded reconnect pattern; a second handshake must complete without
+    // panicking or overflowing the flight reassembler. (This can't detect a
+    // *stale* flight on its own — both replays are the byte-identical seed-0
+    // fixture, so a leftover flight would coincide with the correct one; the
+    // reassembler reset is guarded directly by the engine unit test.)
+    let server_hello = parse_hex(SERVER_HELLO_HEX);
+    let server_flight = parse_hex(SERVER_FLIGHT_HEX);
+    let mut server_stream = Vec::with_capacity(server_hello.len() + server_flight.len());
+    server_stream.extend_from_slice(&server_hello);
+    server_stream.extend_from_slice(&server_flight);
+
+    let mut scratch = DefaultScratch::new();
+    let params =
+        ClientParams::self_signed("tls-fixture.local").suite_policy(RuntimeSuitePolicy::Default);
+
+    for attempt in 0..2 {
+        let mut rng = SeededRng::new(0);
+        let transport = CannedTransport::<512>::new(&server_stream);
+        DefaultStream::connect(&params, &mut scratch, transport, &mut rng)
+            .unwrap_or_else(|e| panic!("connect attempt {attempt} on the reused scratch: {e:?}"));
+    }
+}
+
 #[cfg(all(feature = "rsa", feature = "cipher-aes", not(feature = "chacha20")))]
 #[test]
 fn facade_completes_rsa_handshake_against_canned_fixtures() {

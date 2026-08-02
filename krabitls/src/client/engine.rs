@@ -184,6 +184,11 @@ impl<
         peer_recv_limit: RecordSizeLimit,
         cv_entropy: [u8; 32],
     ) -> Self {
+        // A reused static `Scratch` may still hold the previous connection's
+        // reassembled flight; start each handshake with an empty reassembler so
+        // a reconnect can't fold stale bytes into the new transcript (which
+        // otherwise surfaces as a `CertificateVerify` failure).
+        scratch.reassembler.clear();
         Self {
             scratch,
             state: init_state,
@@ -1234,6 +1239,26 @@ mod tests {
             RecordSizeLimit::from_clamped(16384),
             [0u8; 32],
         )
+    }
+
+    // Reused-scratch reconnect: `new` must drop a previous connection's flight
+    // so it can't be folded into the next transcript (would fail CertVerify).
+    #[test]
+    fn new_clears_a_stale_reassembler() {
+        let mut scratch = DefaultScratch::new();
+        scratch
+            .reassembler
+            .push_content(&[0x42; 64])
+            .expect("seed a stale flight");
+        assert!(
+            !scratch.reassembler.is_empty(),
+            "precondition: stale flight"
+        );
+        let e = closed_engine(&mut scratch);
+        assert!(
+            e.scratch.reassembler.is_empty(),
+            "TlsEngine::new must start each handshake with an empty reassembler",
+        );
     }
 
     // advance / recv_buffer
