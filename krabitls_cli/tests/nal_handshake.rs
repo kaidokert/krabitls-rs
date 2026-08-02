@@ -12,8 +12,8 @@
 use core::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use embedded_nal::{TcpClientStack, TcpError, TcpErrorKind};
-use krabitls::client::{ClientParams, DefaultScratch, RuntimeSuitePolicy};
-use krabitls_cli::connect;
+use krabitls::client::{ClientParams, DefaultScratch, RuntimeSuitePolicy, Transport};
+use krabitls_cli::{NalError, NalTransport, PollNal, connect};
 use krabitls_fixtures::SeededRng;
 
 mod common;
@@ -240,4 +240,43 @@ fn nal_transport_try_read_yields_none_then_reply() {
         .expect("second poll")
         .expect("app data ready");
     assert_eq!(&buf[..n], APP_REPLY_PLAINTEXT);
+}
+
+/// A stack whose `receive` fails outright — distinct from `WouldBlock`, which
+/// `read_nb` must not conflate with it: a real error has to propagate.
+struct ErringStack;
+
+impl TcpClientStack for ErringStack {
+    type TcpSocket = ();
+    type Error = MockError;
+
+    fn socket(&mut self) -> Result<(), MockError> {
+        Ok(())
+    }
+
+    fn connect(&mut self, _s: &mut (), _remote: SocketAddr) -> nb::Result<(), MockError> {
+        Ok(())
+    }
+
+    fn send(&mut self, _s: &mut (), buf: &[u8]) -> nb::Result<usize, MockError> {
+        Ok(buf.len())
+    }
+
+    fn receive(&mut self, _s: &mut (), _buf: &mut [u8]) -> nb::Result<usize, MockError> {
+        Err(nb::Error::Other(MockError))
+    }
+
+    fn close(&mut self, _s: ()) -> Result<(), MockError> {
+        Ok(())
+    }
+}
+
+#[test]
+fn poll_nal_read_nb_propagates_socket_error() {
+    let mut stack = ErringStack;
+    let nal = NalTransport::open(&mut stack, dummy_addr()).expect("open socket");
+    let mut poll = PollNal::new(nal);
+
+    let mut buf = [0u8; 16];
+    assert!(matches!(poll.read_nb(&mut buf), Err(NalError(MockError))));
 }
