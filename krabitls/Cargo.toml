@@ -1,6 +1,6 @@
 [package]
 name = "krabitls"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 rust-version = "1.87"
 readme = "../README.md"
@@ -144,9 +144,7 @@ thiserror = { version = "2", default-features = false }
 signature = { version = "3", default-features = false }
 rand_core = { version = "0.10", default-features = false }
 krabipqc = { version = "0.1.4", default-features = false, optional = true }
-# Git-pinned to v0.3.0 (first release with the constant-time `experimental-signing`
-# path) until it publishes to crates.io; swap to a version dep on release.
-krabiecdsa = { git = "https://github.com/kaidokert/krabiecdsa-rs", tag = "v0.3.0", default-features = false, optional = true }
+krabiecdsa = { version = "0.3.0", default-features = false, optional = true }
 # ECDSA-sign only: RFC 6979's HMAC-DRBG in krabiecdsa 0.3.0 is on the `digest 0.10`
 # line, so `Hmac<Sha256/384>` for that bound must come from the matching 0.10/0.12
 # crates rather than the crate's `sha2 0.11`.
