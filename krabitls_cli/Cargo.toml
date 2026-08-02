@@ -20,7 +20,7 @@ chacha20 = ["krabitls/chacha20"]
 
 [dependencies]
 # Lib deps — no_std, buildable for a bare target.
-krabitls = { version = "0.4.0", path = "../krabitls", features = ["ip-host"] }
+krabitls = { version = "0.4.1", path = "../krabitls", features = ["ip-host"] }
 embedded-nal = "0.9"
 embedded-io = "0.7"
 nb = "1"
