@@ -14,10 +14,13 @@
     not(feature = "mlkem")
 ))]
 
-use krabitls::client::{
-    ClientParams, DefaultScratch, DefaultStream, RuntimeSuitePolicy, Transport,
-};
-use krabitls_fixtures::{CannedError, CannedTransport, SeededRng};
+use krabitls::client::{ClientParams, DefaultScratch, DefaultStream, RuntimeSuitePolicy};
+// Only the `try_read` test (gated off `rsa`/`chacha20`) drives a custom transport.
+#[cfg(all(not(feature = "rsa"), not(feature = "chacha20")))]
+use krabitls::client::Transport;
+#[cfg(all(not(feature = "rsa"), not(feature = "chacha20")))]
+use krabitls_fixtures::CannedError;
+use krabitls_fixtures::{CannedTransport, SeededRng};
 
 mod common;
 use common::parse_hex;
@@ -156,6 +159,7 @@ fn facade_round_trips_first_app_record_pair() {
 /// is held out of the handshake stream so the engine can't buffer it early (one
 /// `CannedTransport` read pulls everything available), which is what lets the
 /// first `try_read` observe the would-block instead of the record.
+#[cfg(all(not(feature = "rsa"), not(feature = "chacha20")))]
 struct HandshakeThenPolledReply<'r, const TX: usize> {
     hs: CannedTransport<'r, TX>,
     reply: &'r [u8],
@@ -163,6 +167,7 @@ struct HandshakeThenPolledReply<'r, const TX: usize> {
     blocked_once: bool,
 }
 
+#[cfg(all(not(feature = "rsa"), not(feature = "chacha20")))]
 impl<const TX: usize> Transport for HandshakeThenPolledReply<'_, TX> {
     type Error = CannedError;
 
