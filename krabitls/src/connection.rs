@@ -21,6 +21,7 @@ use crate::consts::CIPHER_AES_128_GCM_SHA256;
 use crate::consts::CIPHER_CHACHA20_POLY1305_SHA256;
 use crate::consts::{
     CONTENT_TYPE_LEN, CT_APPLICATION_DATA, CT_CHANGE_CIPHER_SPEC, CT_HANDSHAKE, HS_KEY_UPDATE,
+    LEGACY_SESSION_ID_LEN,
 };
 use crate::errors::{ClientHelloError, ParseError};
 use crate::hkdf::{
@@ -39,13 +40,16 @@ use subtle::ConstantTimeEq;
 
 use crate::bigint::Curve25519CtBn as Bn;
 
-/// Internal scratch for the outgoing ClientHello before it's forwarded
-/// to the caller's `Write`. Sized for the locked profile + a 255-char SNI;
-/// under `mlkem` the `X25519MLKEM768` key_share adds the 1184-byte ML-KEM ek.
+/// Internal scratch for the outgoing ClientHello before it's forwarded to the
+/// caller's `Write`. Sized for the locked profile with a 255-char SNI, the full
+/// signature_algorithms set, the optional 33-byte `legacy_session_id`, and an
+/// ALPN advertisement; under `mlkem` the `X25519MLKEM768` key_share adds the
+/// 1184-byte ML-KEM ek. A ClientHello that still overflows (say a pathologically
+/// large ALPN list) returns a clean `MessageTooLong`, never a truncated record.
 /// Authoritative ClientHello scratch capacity; the engine-path
 /// [`crate::client::scratch::CH_LEN`] derives from this.
 #[cfg(not(feature = "mlkem"))]
-pub(crate) const CH_SCRATCH: usize = 512;
+pub(crate) const CH_SCRATCH: usize = 768;
 #[cfg(feature = "mlkem")]
 pub(crate) const CH_SCRATCH: usize = 2048;
 
@@ -249,6 +253,9 @@ pub struct Init {
 }
 
 pub struct WaitServerHello {
+    /// `legacy_session_id` we sent (`None` = empty), retained to verify the
+    /// ServerHello echoes it back verbatim (RFC 8446 §4.1.3).
+    pub(crate) session_id: Option<[u8; LEGACY_SESSION_ID_LEN]>,
     pub(crate) x25519_priv: ZeroBuf<32>,
     #[cfg(feature = "mlkem")]
     pub(crate) mlkem: crate::backends::mlkem::MlKem768,
@@ -438,6 +445,9 @@ where
             ClientHelloError::RecordSizeLimitOutOfRange => {
                 ConnectionError::ClientHello(ClientHelloError::RecordSizeLimitOutOfRange)
             }
+            ClientHelloError::AlpnNameLen => {
+                ConnectionError::ClientHello(ClientHelloError::AlpnNameLen)
+            }
             #[cfg(feature = "mlkem")]
             ClientHelloError::MissingMlKemKeyShare => {
                 ConnectionError::ClientHello(ClientHelloError::MissingMlKemKeyShare)
@@ -454,6 +464,7 @@ where
         Ok(TlsConnection {
             transcript: self.transcript,
             state: WaitServerHello {
+                session_id: opts.session_id.copied(),
                 x25519_priv: self.state.x25519_priv,
                 #[cfg(feature = "mlkem")]
                 mlkem: self.state.mlkem,
@@ -531,6 +542,17 @@ where
         sh_record: &[u8],
     ) -> Result<NegotiatedSuite<H>, ConnectionError> {
         let sh = parse_server_hello(sh_record)?;
+        // RFC 8446 §4.1.3: the server MUST echo our `legacy_session_id`
+        // verbatim (the empty string when we sent none). A mismatch means the
+        // ServerHello isn't a response to our ClientHello — abort rather than
+        // key off a foreign transcript.
+        let sent_id: &[u8] = match &self.state.session_id {
+            Some(id) => id,
+            None => &[],
+        };
+        if sh.session_id_echo != sent_id {
+            return Err(ConnectionError::Parse(ParseError::UnexpectedSessionIdEcho));
+        }
         // Selected suite must have been in the advertised cipher_suites list.
         let advertised_ok = match sh.cipher_suite {
             #[cfg(feature = "cipher-aes")]

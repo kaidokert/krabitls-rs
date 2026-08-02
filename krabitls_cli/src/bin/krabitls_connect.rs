@@ -350,18 +350,24 @@ fn run(
     pin: Option<&Pin>,
     auth: Option<&ClientAuthMaterial>,
     probe: Probe,
+    middlebox_compat: bool,
+    alpn: &[&[u8]],
 ) -> Result<()> {
     let mut stack = Stack;
     let addr = resolve(&mut stack, host, port).map_err(|e| format!("resolve {host}: {e:?}"))?;
     info!("connecting to {addr}");
 
-    let base = if let Some(p) = pin {
+    let mut base = if let Some(p) = pin {
         ClientParams::pinned(host, p.as_pinned()).map_err(|e| format!("invalid --pin: {e}"))?
     } else {
         ClientParams::self_signed(host)
     }
     .suite_policy(RuntimeSuitePolicy::Default)
-    .clocked(SystemTimeSource);
+    .clocked(SystemTimeSource)
+    .middlebox_compat(middlebox_compat);
+    if !alpn.is_empty() {
+        base = base.alpn(alpn);
+    }
 
     // The client-auth policy is a type, so with-auth and no-auth dispatch to
     // distinct monomorphizations — the no-auth binary never links the cert path.
@@ -442,7 +448,7 @@ fn print_usage() {
     eprintln!(
         "usage: krabitls_connect {{--pin <hex> | --self-signed}} [--mqtt] \\\n\
          \x20             [--client-cert <der> {{--client-seed <hex> | --client-rsa-key <der>}}] \\\n\
-         \x20             <host>[:<port>]\n\
+         \x20             [--alpn <name>]... [--middlebox-compat] <host>[:<port>]\n\
          \n\
          krabitls TLS 1.3 client over embedded-nal (std-embedded-nal on host).\n\
          \n\
@@ -469,6 +475,8 @@ fn main() -> ExitCode {
     let mut client_cert: Option<String> = None;
     let mut client_seed: Option<String> = None;
     let mut client_rsa_key: Option<String> = None;
+    let mut alpn: Vec<String> = Vec::new();
+    let mut middlebox_compat = false;
 
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -494,6 +502,8 @@ fn main() -> ExitCode {
             "--client-cert" => client_cert = Some(value!("--client-cert")),
             "--client-seed" => client_seed = Some(value!("--client-seed")),
             "--client-rsa-key" => client_rsa_key = Some(value!("--client-rsa-key")),
+            "--alpn" => alpn.push(value!("--alpn")),
+            "--middlebox-compat" => middlebox_compat = true,
             "--help" | "-h" => {
                 print_usage();
                 return ExitCode::SUCCESS;
@@ -564,7 +574,16 @@ fn main() -> ExitCode {
     // forever.
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        let _ = tx.send(run(&host, port, pin.as_ref(), auth.as_ref(), probe));
+        let alpn_refs: Vec<&[u8]> = alpn.iter().map(|s| s.as_bytes()).collect();
+        let _ = tx.send(run(
+            &host,
+            port,
+            pin.as_ref(),
+            auth.as_ref(),
+            probe,
+            middlebox_compat,
+            &alpn_refs,
+        ));
     });
     match rx.recv_timeout(Duration::from_secs(30)) {
         Ok(Ok(())) => ExitCode::SUCCESS,

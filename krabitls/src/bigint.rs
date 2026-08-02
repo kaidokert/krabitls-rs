@@ -56,6 +56,12 @@ mod carrier {
     /// 384-bit vartime carrier for ECDSA P-384 *verification*.
     #[cfg(feature = "ecdsa")]
     pub(crate) type EcdsaP384Bn = FixedUInt<u32, 12>;
+    /// 256-/384-bit constant-time carriers for ECDSA *signing* (secret scalar +
+    /// RFC 6979 nonce), matching the widths krabiecdsa's Ct sign path expects.
+    #[cfg(feature = "ecdsa-sign")]
+    pub(crate) type EcdsaP256CtBn = FixedUInt<u32, 8, const_num_traits::Ct>;
+    #[cfg(feature = "ecdsa-sign")]
+    pub(crate) type EcdsaP384CtBn = FixedUInt<u32, 12, const_num_traits::Ct>;
 }
 
 /// Config B — one runtime-length `HeaplessBigInt`, separate Nct + Ct.
@@ -101,6 +107,10 @@ mod carrier {
     pub(crate) type EcdsaP256Bn = UnifiedBn;
     #[cfg(feature = "ecdsa")]
     pub(crate) type EcdsaP384Bn = UnifiedBn;
+    #[cfg(feature = "ecdsa-sign")]
+    pub(crate) type EcdsaP256CtBn = UnifiedCtBn;
+    #[cfg(feature = "ecdsa-sign")]
+    pub(crate) type EcdsaP384CtBn = UnifiedCtBn;
 }
 
 // Test-only alternate carriers for the carrier-swap proof (see the submodule);

@@ -39,6 +39,13 @@ pub struct ClientParams<'a, V = DefaultVerify, A = NoClientAuth> {
     pub(crate) verify: V,
     pub(crate) suite_policy: RuntimeSuitePolicy,
     pub(crate) client_auth: A,
+    /// Send a random 32-byte `legacy_session_id` for TLS 1.3 middlebox-
+    /// compatibility mode (RFC 8446 §D.4). Off by default; enable for peers
+    /// behind TLS-terminating load balancers / CDNs that expect it.
+    pub(crate) middlebox_compat: bool,
+    /// ALPN protocol names to advertise, in preference order. `None` omits
+    /// the extension. Required by endpoints that gate on ALPN (e.g. `b"h2"`).
+    pub(crate) alpn: Option<&'a [&'a [u8]]>,
 }
 
 impl<'a, V, A> core::fmt::Debug for ClientParams<'a, V, A> {
@@ -74,6 +81,8 @@ impl<'a> ClientParams<'a, DefaultVerify, NoClientAuth> {
             verify: SafeStrategy::new(PinOrSelfSigned::pinned(owned)),
             suite_policy: RuntimeSuitePolicy::Default,
             client_auth: NoClientAuth,
+            middlebox_compat: false,
+            alpn: None,
         })
     }
 
@@ -93,6 +102,8 @@ impl<'a> ClientParams<'a, DefaultVerify, NoClientAuth> {
             verify: SafeStrategy::new(PinOrSelfSigned::self_signed()),
             suite_policy: RuntimeSuitePolicy::Default,
             client_auth: NoClientAuth,
+            middlebox_compat: false,
+            alpn: None,
         }
     }
 }
@@ -113,6 +124,8 @@ impl<'a, A> ClientParams<'a, DefaultVerify, A> {
             hostname: self.hostname,
             verify: SafeStrategy::with_clock(self.verify.decision, Clocked(clock)),
             suite_policy: self.suite_policy,
+            middlebox_compat: self.middlebox_compat,
+            alpn: self.alpn,
             client_auth: self.client_auth,
         }
     }
@@ -134,6 +147,8 @@ impl<'a, V> ClientParams<'a, V, NoClientAuth> {
             verify,
             suite_policy: RuntimeSuitePolicy::Default,
             client_auth: NoClientAuth,
+            middlebox_compat: false,
+            alpn: None,
         }
     }
 }
@@ -169,6 +184,8 @@ impl<'a, V, A> ClientParams<'a, V, A> {
             hostname: self.hostname,
             verify: self.verify,
             suite_policy: self.suite_policy,
+            middlebox_compat: self.middlebox_compat,
+            alpn: self.alpn,
             client_auth: WithClientAuth(auth),
         }
     }
@@ -183,8 +200,27 @@ impl<'a, V, A> ClientParams<'a, V, A> {
             hostname: self.hostname,
             verify: self.verify,
             suite_policy: self.suite_policy,
+            middlebox_compat: self.middlebox_compat,
+            alpn: self.alpn,
             client_auth: DeclineClientAuth,
         }
+    }
+
+    /// Send a random 32-byte `legacy_session_id` for TLS 1.3 middlebox-
+    /// compatibility mode (RFC 8446 §D.4). Enable for endpoints behind
+    /// TLS-terminating load balancers or CDNs; off by default. This only sets
+    /// the id; the dummy ChangeCipherSpec of full compat mode is not sent.
+    pub fn middlebox_compat(mut self, on: bool) -> Self {
+        self.middlebox_compat = on;
+        self
+    }
+
+    /// Advertise ALPN protocol names (RFC 7301), in preference order. Each
+    /// name is 1..=255 bytes. Off by default; required by endpoints that
+    /// gate on ALPN (e.g. `b"h2"`).
+    pub fn alpn(mut self, protocols: &'a [&'a [u8]]) -> Self {
+        self.alpn = Some(protocols);
+        self
     }
 
     /// Hostname (SNI + cert-identity check).

@@ -91,6 +91,8 @@ fn write_client_hello_with_aes_only_narrows_cipher_suites() {
     let aes_opts = crate::ClientHelloOptions {
         hostname: None,
         record_size_limit: None,
+        session_id: None,
+        alpn: None,
         suites: crate::SuiteList::AesOnly,
     };
     let (written_aes, _) = conn_aes
@@ -143,6 +145,8 @@ mod aes_only {
         crate::ClientHelloOptions {
             hostname: Some(b"tls-fixture.local"),
             record_size_limit: Some(16385),
+            session_id: None,
+            alpn: None,
             suites: crate::SuiteList::Default,
         }
     }
@@ -234,6 +238,8 @@ mod aes_only {
         let opts = crate::ClientHelloOptions {
             hostname: None,
             record_size_limit: Some(8192),
+            session_id: None,
+            alpn: None,
             suites: crate::SuiteList::Default,
         };
         let (written, _next) = conn
@@ -284,6 +290,125 @@ mod aes_only {
             #[allow(unreachable_patterns)]
             _ => panic!("expected AES-128-GCM variant"),
         }
+    }
+
+    /// Splice `echo` into the fixture ServerHello as its `legacy_session_id_echo`
+    /// (the fixture's own is empty), fixing the record + handshake length
+    /// prefixes so the rest of the message stays valid.
+    fn server_hello_echoing(echo: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(FIXTURE_SERVER_HELLO.len() + echo.len());
+        out.extend_from_slice(&FIXTURE_SERVER_HELLO[..43]);
+        out.push(echo.len() as u8);
+        out.extend_from_slice(echo);
+        out.extend_from_slice(&FIXTURE_SERVER_HELLO[44..]);
+        let rec_len = (out.len() - 5) as u16;
+        out[3..5].copy_from_slice(&rec_len.to_be_bytes());
+        let hs_len = (out.len() - 9) as u32;
+        out[6..9].copy_from_slice(&hs_len.to_be_bytes()[1..]);
+        out
+    }
+
+    fn write_ch_then_read_sh(
+        session_id: Option<&[u8; 32]>,
+        sh: &[u8],
+    ) -> Result<NegotiatedSuite<RustCrypto>, ConnectionError> {
+        let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
+        let conn: TlsConnection<Init, RustCrypto> = TlsConnection::new(FIXTURE_RANDOM, priv_zb);
+        let opts = crate::ClientHelloOptions {
+            session_id,
+            ..fixture_opts()
+        };
+        let mut out = [0u8; 256];
+        let mut cursor: &mut [u8] = &mut out[..];
+        let conn = conn
+            .write_client_hello_with(&mut cursor, &FIXTURE_X25519_PUB, &opts)
+            .unwrap();
+        conn.read_server_hello(sh)
+    }
+
+    #[test]
+    fn client_hello_carries_32_byte_session_id_when_enabled() {
+        const ID: [u8; 32] = [0x5a; 32];
+        let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
+        let conn: TlsConnection<Init, RustCrypto> = TlsConnection::new(FIXTURE_RANDOM, priv_zb);
+        let opts = crate::ClientHelloOptions {
+            session_id: Some(&ID),
+            ..fixture_opts()
+        };
+        let mut out = [0u8; 256];
+        let mut cursor: &mut [u8] = &mut out[..];
+        conn.write_client_hello_with(&mut cursor, &FIXTURE_X25519_PUB, &opts)
+            .unwrap();
+        // record(5) + hs header(4) + legacy_version(2) + random(32) => the
+        // session_id length byte sits at offset 43, its 32 bytes at 44..76.
+        assert_eq!(out[43], 32);
+        assert_eq!(&out[44..76], &ID);
+    }
+
+    #[test]
+    fn client_hello_carries_alpn_extension() {
+        const PROTOS: [&[u8]; 1] = [b"h2"];
+        let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
+        let conn: TlsConnection<Init, RustCrypto> = TlsConnection::new(FIXTURE_RANDOM, priv_zb);
+        let opts = crate::ClientHelloOptions {
+            alpn: Some(&PROTOS),
+            ..fixture_opts()
+        };
+        let mut out = [0u8; 256];
+        let mut cursor: &mut [u8] = &mut out[..];
+        conn.write_client_hello_with(&mut cursor, &FIXTURE_X25519_PUB, &opts)
+            .unwrap();
+        let n = 256 - cursor.len();
+        // ext type 0x0010 | ext_data_len 0x0005 | list_len 0x0003 | name_len
+        // 0x02 | "h2".
+        let needle = b"\x00\x10\x00\x05\x00\x03\x02h2";
+        assert!(
+            out[..n].windows(needle.len()).any(|w| w == needle),
+            "ALPN extension not found on the wire",
+        );
+    }
+
+    #[test]
+    fn server_hello_matching_session_id_echo_accepted() {
+        let id = [0xab; 32];
+        let sh = server_hello_echoing(&id);
+        let negotiated = write_ch_then_read_sh(Some(&id), &sh).expect("matching echo accepted");
+        match negotiated {
+            #[cfg(feature = "cipher-aes")]
+            NegotiatedSuite::Aes128Gcm(_) => {}
+            #[allow(unreachable_patterns)]
+            _ => panic!("expected AES-128-GCM variant"),
+        }
+    }
+
+    #[test]
+    fn server_hello_mismatched_session_id_echo_rejected() {
+        let sent = [0xab; 32];
+        let sh = server_hello_echoing(&[0xcd; 32]);
+        assert!(matches!(
+            write_ch_then_read_sh(Some(&sent), &sh),
+            Err(ConnectionError::Parse(ParseError::UnexpectedSessionIdEcho)),
+        ));
+    }
+
+    #[test]
+    fn server_hello_empty_echo_rejected_when_we_sent_an_id() {
+        // We sent 32 bytes; an empty echo (the fixture's own) must abort.
+        assert!(matches!(
+            write_ch_then_read_sh(Some(&[0xab; 32]), &FIXTURE_SERVER_HELLO),
+            Err(ConnectionError::Parse(ParseError::UnexpectedSessionIdEcho)),
+        ));
+    }
+
+    #[test]
+    fn server_hello_nonempty_echo_rejected_when_we_sent_none() {
+        // Guards the default (empty-id) profile: we sent an empty id, so any
+        // non-empty echo means the ServerHello isn't ours.
+        let sh = server_hello_echoing(&[0xab; 1]);
+        assert!(matches!(
+            write_ch_then_read_sh(None, &sh),
+            Err(ConnectionError::Parse(ParseError::UnexpectedSessionIdEcho)),
+        ));
     }
 
     #[test]
