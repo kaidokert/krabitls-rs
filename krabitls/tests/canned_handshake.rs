@@ -15,6 +15,11 @@
 ))]
 
 use krabitls::client::{ClientParams, DefaultScratch, DefaultStream, RuntimeSuitePolicy};
+// Only the `try_read` test (gated off `rsa`/`chacha20`) drives a custom transport.
+#[cfg(all(not(feature = "rsa"), not(feature = "chacha20")))]
+use krabitls::client::Transport;
+#[cfg(all(not(feature = "rsa"), not(feature = "chacha20")))]
+use krabitls_fixtures::CannedError;
 use krabitls_fixtures::{CannedTransport, SeededRng};
 
 mod common;
@@ -147,6 +152,81 @@ fn facade_round_trips_first_app_record_pair() {
         expected_tx.as_slice(),
         "facade-encrypted record must byte-match Python's seed-0 packet 005",
     );
+}
+
+/// Blocking-`read` handshake, then serve the app reply only through `read_nb`
+/// — and make the first `read_nb` report "nothing yet" (`Ok(None)`). The reply
+/// is held out of the handshake stream so the engine can't buffer it early (one
+/// `CannedTransport` read pulls everything available), which is what lets the
+/// first `try_read` observe the would-block instead of the record.
+#[cfg(all(not(feature = "rsa"), not(feature = "chacha20")))]
+struct HandshakeThenPolledReply<'r, const TX: usize> {
+    hs: CannedTransport<'r, TX>,
+    reply: &'r [u8],
+    reply_off: usize,
+    blocked_once: bool,
+}
+
+#[cfg(all(not(feature = "rsa"), not(feature = "chacha20")))]
+impl<const TX: usize> Transport for HandshakeThenPolledReply<'_, TX> {
+    type Error = CannedError;
+
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
+        self.hs.read(buf)
+    }
+
+    fn write_all(&mut self, buf: &[u8]) -> Result<(), Self::Error> {
+        self.hs.write_all(buf)
+    }
+
+    fn read_nb(&mut self, buf: &mut [u8]) -> Result<Option<usize>, Self::Error> {
+        if !self.blocked_once {
+            self.blocked_once = true;
+            return Ok(None);
+        }
+        let rem = &self.reply[self.reply_off..];
+        let n = rem.len().min(buf.len());
+        buf[..n].copy_from_slice(&rem[..n]);
+        self.reply_off += n;
+        Ok(Some(n))
+    }
+}
+
+#[cfg(all(not(feature = "rsa"), not(feature = "chacha20")))]
+#[test]
+fn try_read_returns_none_then_the_app_record() {
+    let server_hello = parse_hex(SERVER_HELLO_HEX);
+    let server_flight = parse_hex(SERVER_FLIGHT_HEX);
+    let app_reply = parse_hex(APP_DATA_REPLY_HEX);
+    let mut handshake_stream = Vec::with_capacity(server_hello.len() + server_flight.len());
+    handshake_stream.extend_from_slice(&server_hello);
+    handshake_stream.extend_from_slice(&server_flight);
+
+    let mut scratch = DefaultScratch::new();
+    let mut rng = SeededRng::new(0);
+    let transport = HandshakeThenPolledReply {
+        hs: CannedTransport::<1024>::new(&handshake_stream),
+        reply: &app_reply,
+        reply_off: 0,
+        blocked_once: false,
+    };
+    let params =
+        ClientParams::self_signed("tls-fixture.local").suite_policy(RuntimeSuitePolicy::Default);
+
+    let mut tls = DefaultStream::connect(&params, &mut scratch, transport, &mut rng)
+        .expect("handshake against canned fixtures");
+    tls.write_all(APP_DATA_SEND_PLAINTEXT).expect("write_all");
+
+    let mut buf = [0u8; 128];
+    // First poll: the transport reported would-block, so no app data yet — and
+    // crucially `try_read` returned instead of parking.
+    assert_eq!(tls.try_read(&mut buf).expect("first poll"), None);
+    // Second poll: the record is now available, so the plaintext surfaces.
+    let n = tls
+        .try_read(&mut buf)
+        .expect("second poll")
+        .expect("app data now ready");
+    assert_eq!(&buf[..n], APP_DATA_REPLY_PLAINTEXT);
 }
 
 #[cfg(all(not(feature = "rsa"), not(feature = "chacha20")))]

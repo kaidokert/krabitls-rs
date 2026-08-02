@@ -12,8 +12,8 @@
 use core::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use embedded_nal::{TcpClientStack, TcpError, TcpErrorKind};
-use krabitls::client::{ClientParams, DefaultScratch, RuntimeSuitePolicy};
-use krabitls_cli::connect;
+use krabitls::client::{ClientParams, DefaultScratch, RuntimeSuitePolicy, Transport};
+use krabitls_cli::{NalError, NalTransport, PollNal, connect};
 use krabitls_fixtures::SeededRng;
 
 mod common;
@@ -152,4 +152,131 @@ fn nal_transport_round_trips_first_app_record() {
         expected.as_slice(),
         "encrypted app record over NAL must byte-match seed-0 packet 005",
     );
+}
+
+/// Socket that serves the handshake bytes, then reports one `WouldBlock`
+/// before the app reply — modelling a stack with nothing ready yet, which is
+/// what `read_nb` must surface as `Ok(None)`.
+struct PollSocket {
+    rx: Vec<u8>,
+    rx_pos: usize,
+    reply: Vec<u8>,
+    reply_pos: usize,
+    blocked_once: bool,
+}
+
+struct PollStack {
+    handshake: Vec<u8>,
+    reply: Vec<u8>,
+}
+
+impl TcpClientStack for PollStack {
+    type TcpSocket = PollSocket;
+    type Error = MockError;
+
+    fn socket(&mut self) -> Result<PollSocket, MockError> {
+        Ok(PollSocket {
+            rx: self.handshake.clone(),
+            rx_pos: 0,
+            reply: self.reply.clone(),
+            reply_pos: 0,
+            blocked_once: false,
+        })
+    }
+
+    fn connect(&mut self, _s: &mut PollSocket, _remote: SocketAddr) -> nb::Result<(), MockError> {
+        Ok(())
+    }
+
+    fn send(&mut self, _s: &mut PollSocket, buf: &[u8]) -> nb::Result<usize, MockError> {
+        Ok(buf.len())
+    }
+
+    fn receive(&mut self, s: &mut PollSocket, buf: &mut [u8]) -> nb::Result<usize, MockError> {
+        if s.rx_pos < s.rx.len() {
+            let take = (s.rx.len() - s.rx_pos).min(buf.len());
+            buf[..take].copy_from_slice(&s.rx[s.rx_pos..s.rx_pos + take]);
+            s.rx_pos += take;
+            Ok(take)
+        } else if !s.blocked_once {
+            s.blocked_once = true;
+            Err(nb::Error::WouldBlock)
+        } else {
+            let take = (s.reply.len() - s.reply_pos).min(buf.len());
+            buf[..take].copy_from_slice(&s.reply[s.reply_pos..s.reply_pos + take]);
+            s.reply_pos += take;
+            Ok(take)
+        }
+    }
+
+    fn close(&mut self, _s: PollSocket) -> Result<(), MockError> {
+        Ok(())
+    }
+}
+
+#[test]
+fn nal_transport_try_read_yields_none_then_reply() {
+    let mut handshake = parse_hex(SERVER_HELLO);
+    handshake.extend_from_slice(&parse_hex(SERVER_FLIGHT));
+    let reply = parse_hex(APP_REPLY);
+
+    let mut stack = PollStack { handshake, reply };
+    let mut scratch = DefaultScratch::new();
+    let mut rng = SeededRng::new(0);
+    let params =
+        ClientParams::self_signed("tls-fixture.local").suite_policy(RuntimeSuitePolicy::Default);
+
+    let mut tls = connect(&mut stack, dummy_addr(), &params, &mut scratch, &mut rng)
+        .expect("handshake over the NAL transport");
+    tls.write_all(APP_SEND_PLAINTEXT).expect("write app record");
+
+    let mut buf = [0u8; 128];
+    // The stack reported `WouldBlock`, so `NalTransport::read_nb` returned
+    // `Ok(None)` and `try_read` didn't spin.
+    assert_eq!(tls.try_read(&mut buf).expect("first poll"), None);
+    // Next poll: the reply is available.
+    let n = tls
+        .try_read(&mut buf)
+        .expect("second poll")
+        .expect("app data ready");
+    assert_eq!(&buf[..n], APP_REPLY_PLAINTEXT);
+}
+
+/// A stack whose `receive` fails outright — distinct from `WouldBlock`, which
+/// `read_nb` must not conflate with it: a real error has to propagate.
+struct ErringStack;
+
+impl TcpClientStack for ErringStack {
+    type TcpSocket = ();
+    type Error = MockError;
+
+    fn socket(&mut self) -> Result<(), MockError> {
+        Ok(())
+    }
+
+    fn connect(&mut self, _s: &mut (), _remote: SocketAddr) -> nb::Result<(), MockError> {
+        Ok(())
+    }
+
+    fn send(&mut self, _s: &mut (), buf: &[u8]) -> nb::Result<usize, MockError> {
+        Ok(buf.len())
+    }
+
+    fn receive(&mut self, _s: &mut (), _buf: &mut [u8]) -> nb::Result<usize, MockError> {
+        Err(nb::Error::Other(MockError))
+    }
+
+    fn close(&mut self, _s: ()) -> Result<(), MockError> {
+        Ok(())
+    }
+}
+
+#[test]
+fn poll_nal_read_nb_propagates_socket_error() {
+    let mut stack = ErringStack;
+    let nal = NalTransport::open(&mut stack, dummy_addr()).expect("open socket");
+    let mut poll = PollNal::new(nal);
+
+    let mut buf = [0u8; 16];
+    assert!(matches!(poll.read_nb(&mut buf), Err(NalError(MockError))));
 }
