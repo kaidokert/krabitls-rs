@@ -560,4 +560,92 @@ mod tests {
         let hh = HandshakeHeader::parse(opened.content).unwrap();
         assert_eq!(hh.msg_type, HS_ENCRYPTED_EXTENSIONS);
     }
+
+    /// Decrypt the whole epoch-2 server flight (one message per record on
+    /// loopback), reassemble it into the TLS 4-byte-header form, and confirm the
+    /// existing `parse_server_flight` accepts it — validating the flight-verify
+    /// reuse path against a real DTLS 1.3 peer.
+    #[test]
+    #[ignore = "needs a live wolfSSL DTLS 1.3 server (set KRABITLS_DTLS_PORT)"]
+    fn live_decrypts_and_parses_full_server_flight() {
+        use crate::aead::Aes128GcmSha256 as Suite;
+        use crate::backends::RustCrypto;
+        use crate::consts::HS_FINISHED;
+        use crate::dtls::keys::derive_handshake_keys;
+        use crate::hkdf::TranscriptHash;
+        use crate::server_flight::parse_server_flight;
+        use std::net::UdpSocket;
+        use std::time::Duration;
+
+        let port: u16 = std::env::var("KRABITLS_DTLS_PORT")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let sock = UdpSocket::bind("127.0.0.1:0").unwrap();
+        sock.connect(("127.0.0.1", port)).unwrap();
+        sock.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+
+        let (priv_key, pub_key) = x25519_keypair([0x42u8; 32]);
+        let random = [0x77u8; 32];
+        let mut ch1 = [0u8; 512];
+        let ch1_len = write_client_hello(&random, &pub_key, None, None, &mut ch1).unwrap();
+        send_ch_body(&sock, &ch1[..ch1_len], 0, 0);
+        let hrr_body = hello_body_of(&recv_dgram(&sock));
+        let cookie = match parse_server_hello(&hrr_body).unwrap() {
+            ServerHelloKind::Retry { cookie } => cookie.to_vec(),
+            _ => panic!("expected HRR"),
+        };
+        let mut ch2 = [0u8; 512];
+        let ch2_len = write_client_hello(&random, &pub_key, None, Some(&cookie), &mut ch2).unwrap();
+        send_ch_body(&sock, &ch2[..ch2_len], 1, 1);
+        let sh_body = hello_body_of(&recv_dgram(&sock));
+        let server_share = match parse_server_hello(&sh_body).unwrap() {
+            ServerHelloKind::Hello { server_key_share } => *server_key_share,
+            _ => panic!("expected ServerHello"),
+        };
+
+        let ch1_hash = {
+            let mut t = TranscriptHash::<RustCrypto>::new();
+            t.update(&transcript_msg(1, &ch1[..ch1_len]));
+            t.snapshot()
+        };
+        let mut transcript = TranscriptHash::<RustCrypto>::new();
+        transcript.update(&[0xFE, 0x00, 0x00, 0x20]);
+        transcript.update(ch1_hash.as_bytes());
+        transcript.update(&transcript_msg(2, &hrr_body));
+        transcript.update(&transcript_msg(1, &ch2[..ch2_len]));
+        transcript.update(&transcript_msg(2, &sh_body));
+        let hk = derive_handshake_keys::<Suite, RustCrypto>(
+            &priv_key,
+            &server_share,
+            &transcript.snapshot(),
+        )
+        .unwrap();
+
+        // Decrypt each epoch-2 record (one per datagram here) and rebuild the
+        // flight as `msg_type ‖ u24 len ‖ body` messages.
+        let mut plaintext: Vec<u8> = Vec::new();
+        let mut seq = 0u64;
+        loop {
+            let mut dg = recv_dgram(&sock);
+            let opened = hk.server.open(0, seq, &mut dg).unwrap();
+            let hh = HandshakeHeader::parse(opened.content).unwrap();
+            let body = &opened.content[HS_HEADER_LEN..HS_HEADER_LEN + hh.length as usize];
+            plaintext.extend_from_slice(&transcript_msg(hh.msg_type, body));
+            seq += 1;
+            if hh.msg_type == HS_FINISHED {
+                break;
+            }
+        }
+
+        let flight = parse_server_flight(&plaintext).expect("reassembled flight parses");
+        assert!(!flight.ee_full.is_empty(), "EncryptedExtensions present");
+        assert!(
+            flight.cert_request_full.is_some(),
+            "CertificateRequest present"
+        );
+        assert!(!flight.cert_full.is_empty(), "Certificate present");
+        assert!(!flight.cv_full.is_empty(), "CertificateVerify present");
+        assert!(!flight.fin_full.is_empty(), "Finished present");
+    }
 }
