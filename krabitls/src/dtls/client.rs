@@ -62,6 +62,11 @@ pub(crate) struct DtlsClient<S: DtlsSuite> {
     /// lost (RFC 9147 §5.8).
     fin_flight: [u8; 128],
     fin_flight_len: usize,
+    /// Remaining Finished resends. The epoch-2 retransmit trigger is an
+    /// unauthenticated cleartext-header test, so it is budget-capped; it also
+    /// drops to zero once any authenticated epoch-3 record confirms the server
+    /// completed the handshake (so an injected epoch-2 header can't spin `recv`).
+    fin_resends_left: u8,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -305,8 +310,9 @@ impl<S: DtlsSuite> DtlsClient<S> {
         // ACK the server's handshake flight (RFC 9147 §7) so it can stop
         // retransmitting without waiting to observe the client Finished. Epoch-2
         // records were sequence numbers 0..srv_seq; acknowledge up to ACK_CAP of
-        // them (a single-datagram-per-message flight is far smaller). The ACK
-        // rides epoch 2 at the next sequence number after the Finished.
+        // them (a single-datagram-per-message flight is far smaller — a flight
+        // exceeding ACK_CAP would leave its tail unacked). The ACK rides epoch 2
+        // at the next sequence number after the Finished.
         const ACK_CAP: usize = 8;
         let acked = (srv_seq as usize).min(ACK_CAP);
         let mut records = [(0u64, 0u64); ACK_CAP];
@@ -351,6 +357,7 @@ impl<S: DtlsSuite> DtlsClient<S> {
             server_replay: ReplayWindow::new(),
             fin_flight,
             fin_flight_len,
+            fin_resends_left: MAX_FLIGHT_ATTEMPTS,
         })
     }
 
@@ -411,11 +418,18 @@ impl<S: DtlsSuite> DtlsClient<S> {
             // The low two epoch bits distinguish a retransmitted epoch-2 server
             // flight (0b10) from epoch-3 application data (0b11) without a
             // decrypt: an epoch-2 record here means the server did not get our
-            // Finished, so resend it (RFC 9147 §5.8) and keep waiting.
+            // Finished, so resend it (RFC 9147 §5.8) and keep waiting. This test
+            // is unauthenticated, so the resend is budget-capped and stops once
+            // an epoch-3 record has confirmed the handshake (below). (Only
+            // epochs 2 and 3 exist without KeyUpdate; a future epoch 6 would also
+            // be `0b10` and this discriminator would need the full epoch.)
             if first & 0b11 == 0b10 {
-                transport
-                    .send(&self.fin_flight[..self.fin_flight_len])
-                    .map_err(DtlsClientError::Transport)?;
+                if self.fin_resends_left > 0 {
+                    self.fin_resends_left -= 1;
+                    transport
+                        .send(&self.fin_flight[..self.fin_flight_len])
+                        .map_err(DtlsClientError::Transport)?;
+                }
                 continue;
             }
             let Ok(opened) = self.server_app.open(0, self.recv_hint, &mut dg[..n]) else {
@@ -431,6 +445,9 @@ impl<S: DtlsSuite> DtlsClient<S> {
             }
             self.server_replay.mark(opened.seq);
             self.recv_hint = self.recv_hint.max(opened.seq + 1);
+            // An authenticated epoch-3 record proves the server derived epoch-3
+            // keys, i.e. it received our Finished — stop resending it.
+            self.fin_resends_left = 0;
             if opened.content_type == CT_APPLICATION_DATA {
                 let len = opened.content.len();
                 buf.get_mut(..len)
@@ -499,8 +516,10 @@ fn parse_hello_body<E>(datagram: &[u8]) -> Result<&[u8], DtlsClientError<E>> {
         .ok_or(DtlsClientError::Protocol)
 }
 
-/// Receive one datagram, mapping a timeout (`Ok(None)`) to a terminal error
-/// until the reliability layer lands.
+/// Receive one datagram, mapping a timeout (`Ok(None)`) to a terminal
+/// [`DtlsClientError::Timeout`]. Used for the encrypted epoch-2 flight, whose
+/// inbound retransmit recovery is not implemented, so a timeout there is final
+/// (unlike the ClientHello flights, which retransmit).
 fn recv_datagram<T: DatagramTransport>(
     transport: &mut T,
     buf: &mut [u8],
@@ -670,6 +689,7 @@ mod tests {
             server_replay: ReplayWindow::new(),
             fin_flight: [0u8; 128],
             fin_flight_len: 0,
+            fin_resends_left: 0,
         };
 
         // Seal one epoch-3 record with the server's app keys, then feed it twice.
@@ -869,6 +889,7 @@ mod tests {
             server_replay: ReplayWindow::new(),
             fin_flight,
             fin_flight_len: 3,
+            fin_resends_left: MAX_FLIGHT_ATTEMPTS,
         };
 
         // Seal a real epoch-3 application record to deliver after the retransmit.
