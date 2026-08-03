@@ -24,6 +24,7 @@ use crate::dtls::handshake::{
 };
 use crate::dtls::keys::derive_handshake_keys;
 use crate::dtls::record::{DtlsSuite, EpochKeys, SealHeader, SeqNumLen};
+use crate::dtls::replay::ReplayWindow;
 use crate::dtls::transport::DatagramTransport;
 use crate::hkdf::{
     TranscriptHash, dtls_application_traffic_secrets, dtls_finished_mac, dtls_master_secret,
@@ -43,7 +44,12 @@ pub(crate) struct DtlsClient<S: DtlsSuite> {
     client_app: EpochKeys<S>,
     server_app: EpochKeys<S>,
     send_seq: u64,
-    recv_seq: u64,
+    /// Monotonic hint for reconstructing the next inbound record's full sequence
+    /// number from its truncated on-wire form; the replay window is the actual
+    /// duplicate/too-old gate.
+    recv_hint: u64,
+    /// Anti-replay window over the epoch-3 record sequence space (RFC 9147 §4.5.1).
+    server_replay: ReplayWindow,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -278,7 +284,8 @@ impl<S: DtlsSuite> DtlsClient<S> {
             server_app: EpochKeys::<S>::derive::<H>(&s_ap)
                 .map_err(|_| DtlsClientError::KeySchedule)?,
             send_seq: 0,
-            recv_seq: 0,
+            recv_hint: 0,
+            server_replay: ReplayWindow::new(),
         })
     }
 
@@ -314,6 +321,7 @@ impl<S: DtlsSuite> DtlsClient<S> {
     /// Receive and decrypt the next epoch-3 application_data record into `buf`,
     /// returning the plaintext length. Non-application records (the server's
     /// post-handshake NewSessionTicket/ACK) are skipped. `Ok(None)` on timeout.
+    /// Duplicates and records older than the anti-replay window are dropped.
     pub(crate) fn recv<T>(
         &mut self,
         transport: &mut T,
@@ -332,22 +340,31 @@ impl<S: DtlsSuite> DtlsClient<S> {
                 None => return Ok(None),
             };
             // Only unified-header (epoch >0) records can be application data.
-            if dg.first().is_none_or(|&b| b & 0xE0 != 0x20) {
+            if dg[..n].first().is_none_or(|&b| b & 0xE0 != 0x20) {
                 continue;
             }
-            match self.server_app.open(0, self.recv_seq, &mut dg[..n]) {
-                Ok(opened) if opened.content_type == CT_APPLICATION_DATA => {
-                    self.recv_seq += 1;
-                    let len = opened.content.len();
-                    buf.get_mut(..len)
-                        .ok_or(DtlsClientError::BufferTooSmall)?
-                        .copy_from_slice(opened.content);
-                    return Ok(Some(len));
-                }
-                // A record we can't open at this epoch/seq (handshake or ACK) is
-                // skipped without advancing the app-data counter.
-                _ => continue,
+            let Ok(opened) = self.server_app.open(0, self.recv_hint, &mut dg[..n]) else {
+                // Injected/garbage record: fails AEAD, skipped without touching
+                // the replay window or the reconstruction hint.
+                continue;
+            };
+            // Anti-replay over the epoch-3 sequence space, marked only after the
+            // AEAD tag verifies (RFC 9147 §4.5.1). Applies to every authenticated
+            // record, so a replayed NewSessionTicket/ACK is dropped too.
+            if !self.server_replay.accepts(opened.seq) {
+                continue;
             }
+            self.server_replay.mark(opened.seq);
+            self.recv_hint = self.recv_hint.max(opened.seq + 1);
+            if opened.content_type == CT_APPLICATION_DATA {
+                let len = opened.content.len();
+                buf.get_mut(..len)
+                    .ok_or(DtlsClientError::BufferTooSmall)?
+                    .copy_from_slice(opened.content);
+                return Ok(Some(len));
+            }
+            // Authenticated non-application record (handshake/ACK): counted for
+            // replay, not delivered to the caller.
         }
     }
 }
@@ -510,5 +527,78 @@ mod tests {
             .expect("recv succeeds")
             .expect("an application_data reply, not a timeout");
         assert!(reply > 0, "decrypted a non-empty application_data reply");
+    }
+
+    /// A [`DatagramTransport`] that replays queued datagrams — no socket needed.
+    struct QueueTransport {
+        inbound: std::collections::VecDeque<Vec<u8>>,
+    }
+
+    impl DatagramTransport for QueueTransport {
+        type Error = ();
+        fn send(&mut self, _datagram: &[u8]) -> Result<(), ()> {
+            Ok(())
+        }
+        fn recv(&mut self, buf: &mut [u8]) -> Result<Option<usize>, ()> {
+            match self.inbound.pop_front() {
+                Some(d) => {
+                    buf[..d.len()].copy_from_slice(&d);
+                    Ok(Some(d.len()))
+                }
+                None => Ok(None),
+            }
+        }
+    }
+
+    /// A duplicated epoch-3 application record must be delivered once and then
+    /// dropped by the anti-replay window (RFC 9147 §4.5.1), even though its AEAD
+    /// tag verifies on the replay.
+    #[cfg(feature = "cipher-aes")]
+    #[test]
+    fn recv_delivers_once_then_drops_replay() {
+        use crate::aead::Aes128GcmSha256 as Suite;
+        use crate::backends::RustCrypto;
+        use crate::newtype::Secret;
+        use zeroize::Zeroizing;
+
+        let s_ap = Secret::new(Zeroizing::new([0x5au8; 32]));
+        let mut client = DtlsClient::<Suite> {
+            client_app: EpochKeys::<Suite>::derive::<RustCrypto>(&Secret::new(Zeroizing::new(
+                [0xc1u8; 32],
+            )))
+            .unwrap(),
+            server_app: EpochKeys::<Suite>::derive::<RustCrypto>(&s_ap).unwrap(),
+            send_seq: 0,
+            recv_hint: 0,
+            server_replay: ReplayWindow::new(),
+        };
+
+        // Seal one epoch-3 record with the server's app keys, then feed it twice.
+        let sealer = EpochKeys::<Suite>::derive::<RustCrypto>(&s_ap).unwrap();
+        let mut rec = [0u8; 128];
+        let sealed = sealer
+            .seal(
+                SealHeader {
+                    epoch: 3,
+                    seq: 0,
+                    seq_len: SeqNumLen::Two,
+                    cid: None,
+                },
+                b"payload",
+                CT_APPLICATION_DATA,
+                &mut rec,
+            )
+            .unwrap()
+            .to_vec();
+        let mut transport = QueueTransport {
+            inbound: [sealed.clone(), sealed].into(),
+        };
+
+        let mut buf = [0u8; 64];
+        assert_eq!(client.recv(&mut transport, &mut buf).unwrap(), Some(7));
+        assert_eq!(&buf[..7], b"payload");
+        // Second copy authenticates but is a replay → dropped; the queue then
+        // drains to a timeout (`Ok(None)`).
+        assert_eq!(client.recv(&mut transport, &mut buf).unwrap(), None);
     }
 }
