@@ -9,9 +9,11 @@
 //! ([`record`]) — the unified header codec, record-number encryption, and
 //! per-epoch key state — and the anti-replay window ([`replay`]).
 
-// The record and replay primitives are consumed by tests and by the DTLS
-// handshake engine; where the engine is not yet present, a non-test build sees
-// them as unused.
+// The record, framing, and replay primitives are consumed by tests and by the
+// DTLS handshake engine; where the engine is not yet present, a non-test build
+// sees them as unused.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) mod framing;
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod record;
 #[cfg_attr(not(test), allow(dead_code))]
