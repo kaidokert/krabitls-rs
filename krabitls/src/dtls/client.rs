@@ -12,9 +12,13 @@
 //! hostname match, and CertificateVerify signature check. The server Finished MAC
 //! is the one piece that cannot be reused — the TLS `verify_server_flight` bundles
 //! a `"tls13 "`-prefixed Finished — so DTLS sequences the transcript here and
-//! verifies the Finished with the `"dtls13"` schedule. Absent: the RFC 9147 §7
-//! reliability layer (retransmit timer + ACKs); a lost datagram surfaces as
-//! [`DtlsClientError::Timeout`] rather than triggering a retransmit.
+//! verifies the Finished with the `"dtls13"` schedule.
+//!
+//! Reliability (RFC 9147 §5.8): each ClientHello flight is buffered and
+//! retransmitted on a receive timeout, up to [`MAX_FLIGHT_ATTEMPTS`] sends, so an
+//! early lost datagram no longer aborts the handshake. Still absent: ACK records
+//! (§7) and retransmission of the encrypted epoch-2/epoch-3 flights; a persistent
+//! loss there surfaces as [`DtlsClientError::Timeout`].
 
 use crate::bigint::Curve25519CtBn as Bn;
 use crate::consts::{CT_APPLICATION_DATA, CT_HANDSHAKE, HS_FINISHED};
@@ -56,8 +60,8 @@ pub(crate) struct DtlsClient<S: DtlsSuite> {
 pub(crate) enum DtlsClientError<E> {
     /// The transport surfaced an error.
     Transport(E),
-    /// A datagram was expected but none arrived before the transport timeout.
-    /// With no reliability layer yet, this is terminal rather than a retransmit.
+    /// No reply arrived after exhausting a flight's retransmissions, or an
+    /// encrypted flight (which is not yet retransmitted) timed out.
     Timeout,
     /// A received datagram was not a well-formed DTLS record for this phase.
     Protocol,
@@ -78,6 +82,10 @@ pub(crate) enum DtlsClientError<E> {
     /// CertificateVerify signature or the server Finished MAC failed.
     CertVerify,
 }
+
+/// Total sends of a handshake flight before giving up (RFC 9147 §5.8): the
+/// initial transmission plus retransmissions on receive timeout.
+const MAX_FLIGHT_ATTEMPTS: u8 = 5;
 
 /// The X25519 basepoint (u = 9); a scalar-mult against it yields the client's
 /// public key from its private scalar.
@@ -115,15 +123,34 @@ impl<S: DtlsSuite> DtlsClient<S> {
         let pub_key = ed25519_heapless::x25519::<Bn>(x25519_priv, &X25519_BASEPOINT)
             .map_err(|_| DtlsClientError::KeySchedule)?;
 
+        // A single reused receive buffer + a reused flight buffer carry both
+        // ClientHello exchanges; each flight is retransmitted on timeout. The
+        // transcript is folded in as messages arrive, so no borrowed datagram has
+        // to outlive the reused receive buffer.
+        let mut rbuf = [0u8; 2048];
+        let mut ch_dgram = [0u8; HS_HEADER_LEN + 512 + 16];
+        let mut transcript = TranscriptHash::<H>::new();
+
         // --- CH1 -> HelloRetryRequest ---
         let mut ch1 = [0u8; 512];
         let ch1_len = write_client_hello(client_random, &pub_key, None, None, &mut ch1)
             .map_err(|_| DtlsClientError::BufferTooSmall)?;
-        send_client_hello(transport, &ch1[..ch1_len], 0, 0)?;
-
-        let mut rbuf = [0u8; 2048];
-        let hrr_body = recv_hello(transport, &mut rbuf)?;
+        let ch1_rec = build_client_hello_record(&ch1[..ch1_len], 0, 0, &mut ch_dgram)?;
+        let hrr_len = send_flight_await_reply(transport, ch1_rec, &mut rbuf, MAX_FLIGHT_ATTEMPTS)?;
         let cookie_buf = {
+            let hrr_body = parse_hello_body::<T::Error>(&rbuf[..hrr_len])?;
+            // HRR message-hash substitution: message_hash(H(CH1)) ‖ HRR.
+            let ch1_hash = {
+                let mut t = TranscriptHash::<H>::new();
+                t.update(&transcript_msg_header(CLIENT_HELLO_MSG_TYPE, ch1_len));
+                t.update(&ch1[..ch1_len]);
+                t.snapshot()
+            };
+            transcript.update(&[0xFE, 0x00, 0x00, 0x20]);
+            transcript.update(ch1_hash.as_bytes());
+            transcript.update(&transcript_msg_header(2, hrr_body.len()));
+            transcript.update(hrr_body);
+
             let mut cb = [0u8; 256];
             let cookie =
                 match parse_server_hello(hrr_body).map_err(|_| DtlsClientError::Handshake)? {
@@ -147,32 +174,19 @@ impl<S: DtlsSuite> DtlsClient<S> {
             &mut ch2,
         )
         .map_err(|_| DtlsClientError::BufferTooSmall)?;
-        send_client_hello(transport, &ch2[..ch2_len], 1, 1)?;
-
-        let mut sbuf = [0u8; 2048];
-        let sh_body = recv_hello(transport, &mut sbuf)?;
-        let server_share =
+        let ch2_rec = build_client_hello_record(&ch2[..ch2_len], 1, 1, &mut ch_dgram)?;
+        let sh_len = send_flight_await_reply(transport, ch2_rec, &mut rbuf, MAX_FLIGHT_ATTEMPTS)?;
+        transcript.update(&transcript_msg_header(CLIENT_HELLO_MSG_TYPE, ch2_len));
+        transcript.update(&ch2[..ch2_len]);
+        let server_share = {
+            let sh_body = parse_hello_body::<T::Error>(&rbuf[..sh_len])?;
+            transcript.update(&transcript_msg_header(2, sh_body.len()));
+            transcript.update(sh_body);
             match parse_server_hello(sh_body).map_err(|_| DtlsClientError::Handshake)? {
                 ServerHelloKind::Hello { server_key_share } => *server_key_share,
                 ServerHelloKind::Retry { .. } => return Err(DtlsClientError::Handshake),
-            };
-
-        // --- transcript through ServerHello (HRR message-hash substitution) ---
-        let mut transcript = TranscriptHash::<H>::new();
-        let ch1_hash = {
-            let mut t = TranscriptHash::<H>::new();
-            t.update(&transcript_msg_header(CLIENT_HELLO_MSG_TYPE, ch1_len));
-            t.update(&ch1[..ch1_len]);
-            t.snapshot()
+            }
         };
-        transcript.update(&[0xFE, 0x00, 0x00, 0x20]);
-        transcript.update(ch1_hash.as_bytes());
-        transcript.update(&transcript_msg_header(2, hrr_body.len()));
-        transcript.update(hrr_body);
-        transcript.update(&transcript_msg_header(CLIENT_HELLO_MSG_TYPE, ch2_len));
-        transcript.update(&ch2[..ch2_len]);
-        transcript.update(&transcript_msg_header(2, sh_body.len()));
-        transcript.update(sh_body);
 
         let hk = derive_handshake_keys::<S, H>(x25519_priv, &server_share, &transcript.snapshot())
             .map_err(|_| DtlsClientError::KeySchedule)?;
@@ -370,29 +384,51 @@ impl<S: DtlsSuite> DtlsClient<S> {
 }
 
 /// Frame a ClientHello body in a 12-byte DTLS handshake header + a plaintext
-/// (epoch-0) record and send it.
-fn send_client_hello<T: DatagramTransport>(
-    transport: &mut T,
+/// (epoch-0) record into `out`, returning the record slice. The bytes are
+/// retained by the caller so a lost flight can be retransmitted.
+fn build_client_hello_record<'o, E>(
     body: &[u8],
     message_seq: u16,
     record_seq: u64,
-) -> Result<(), DtlsClientError<T::Error>> {
+    out: &'o mut [u8],
+) -> Result<&'o [u8], DtlsClientError<E>> {
     let mut msg = [0u8; HS_HEADER_LEN + 512];
     let msg = write_hs_msg(&mut msg, CLIENT_HELLO_MSG_TYPE, message_seq, body)?;
-    let mut dgram = [0u8; HS_HEADER_LEN + 512 + 16];
-    let rec = PlaintextRecord::write(CT_HANDSHAKE, 0, record_seq, msg, &mut dgram)
-        .map_err(|_| DtlsClientError::BufferTooSmall)?;
-    transport.send(rec).map_err(DtlsClientError::Transport)
+    PlaintextRecord::write(CT_HANDSHAKE, 0, record_seq, msg, out)
+        .map_err(|_| DtlsClientError::BufferTooSmall)
 }
 
-/// Receive one plaintext handshake record and return its ServerHello/HRR body,
-/// borrowed from `rbuf`.
-fn recv_hello<'a, T: DatagramTransport>(
+/// Send `flight`, then wait for one reply datagram, retransmitting the buffered
+/// flight on each timeout up to `max_attempts` sends total (RFC 9147 §5.8). The
+/// per-attempt deadline is the transport's own receive timeout; true exponential
+/// backoff would need a transport deadline hook, so this retransmits at a fixed
+/// interval. Returns the reply length in `reply`.
+fn send_flight_await_reply<T: DatagramTransport>(
     transport: &mut T,
-    rbuf: &'a mut [u8],
-) -> Result<&'a [u8], DtlsClientError<T::Error>> {
-    let n = recv_datagram(transport, rbuf)?;
-    let (rec, _) = PlaintextRecord::parse(&rbuf[..n]).map_err(|_| DtlsClientError::Protocol)?;
+    flight: &[u8],
+    reply: &mut [u8],
+    max_attempts: u8,
+) -> Result<usize, DtlsClientError<T::Error>> {
+    transport.send(flight).map_err(DtlsClientError::Transport)?;
+    let mut attempts: u8 = 1;
+    loop {
+        match transport.recv(reply).map_err(DtlsClientError::Transport)? {
+            Some(n) => return Ok(n),
+            None => {
+                if attempts >= max_attempts {
+                    return Err(DtlsClientError::Timeout);
+                }
+                attempts += 1;
+                transport.send(flight).map_err(DtlsClientError::Transport)?;
+            }
+        }
+    }
+}
+
+/// Parse a received plaintext handshake datagram and return its ServerHello/HRR
+/// message body.
+fn parse_hello_body<E>(datagram: &[u8]) -> Result<&[u8], DtlsClientError<E>> {
+    let (rec, _) = PlaintextRecord::parse(datagram).map_err(|_| DtlsClientError::Protocol)?;
     if rec.content_type != CT_HANDSHAKE {
         return Err(DtlsClientError::Protocol);
     }
@@ -600,5 +636,125 @@ mod tests {
         // Second copy authenticates but is a replay → dropped; the queue then
         // drains to a timeout (`Ok(None)`).
         assert_eq!(client.recv(&mut transport, &mut buf).unwrap(), None);
+    }
+
+    /// A transport that reports `n` receive timeouts before finally delivering a
+    /// reply, counting every send so a test can assert the retransmit behaviour.
+    struct FlakyTransport {
+        sent: usize,
+        timeouts_before_reply: usize,
+        reply: Vec<u8>,
+    }
+
+    impl DatagramTransport for FlakyTransport {
+        type Error = ();
+        fn send(&mut self, _datagram: &[u8]) -> Result<(), ()> {
+            self.sent += 1;
+            Ok(())
+        }
+        fn recv(&mut self, buf: &mut [u8]) -> Result<Option<usize>, ()> {
+            if self.timeouts_before_reply > 0 {
+                self.timeouts_before_reply -= 1;
+                return Ok(None);
+            }
+            buf[..self.reply.len()].copy_from_slice(&self.reply);
+            Ok(Some(self.reply.len()))
+        }
+    }
+
+    #[test]
+    fn flight_is_retransmitted_until_the_reply_arrives() {
+        let mut t = FlakyTransport {
+            sent: 0,
+            timeouts_before_reply: 2,
+            reply: vec![1, 2, 3],
+        };
+        let mut buf = [0u8; 8];
+        let n = send_flight_await_reply(&mut t, b"flight", &mut buf, MAX_FLIGHT_ATTEMPTS).unwrap();
+        assert_eq!(&buf[..n], &[1, 2, 3]);
+        assert_eq!(t.sent, 3, "1 initial send + 2 retransmits after 2 timeouts");
+    }
+
+    #[test]
+    fn flight_gives_up_after_max_attempts() {
+        let mut t = FlakyTransport {
+            sent: 0,
+            timeouts_before_reply: usize::MAX,
+            reply: vec![],
+        };
+        let mut buf = [0u8; 8];
+        let err = send_flight_await_reply(&mut t, b"flight", &mut buf, MAX_FLIGHT_ATTEMPTS);
+        assert_eq!(err, Err(DtlsClientError::Timeout));
+        assert_eq!(t.sent, MAX_FLIGHT_ATTEMPTS as usize);
+    }
+
+    /// Wraps a transport and silently drops the first `drop_sends` outbound
+    /// datagrams, simulating early-flight loss on the wire.
+    struct DropFirstSends<T> {
+        inner: T,
+        drop_sends: usize,
+    }
+
+    impl<T: DatagramTransport> DatagramTransport for DropFirstSends<T> {
+        type Error = T::Error;
+        fn send(&mut self, datagram: &[u8]) -> Result<(), T::Error> {
+            if self.drop_sends > 0 {
+                self.drop_sends -= 1;
+                return Ok(());
+            }
+            self.inner.send(datagram)
+        }
+        fn recv(&mut self, buf: &mut [u8]) -> Result<Option<usize>, T::Error> {
+            self.inner.recv(buf)
+        }
+    }
+
+    /// The handshake still completes when the first ClientHello datagram is lost:
+    /// the client retransmits CH1 after the receive timeout. Uses a short socket
+    /// timeout so the single retransmit is quick. Same wolfSSL contract as
+    /// [`live_client_round_trips_app_data`].
+    #[test]
+    #[ignore = "needs a live wolfSSL DTLS 1.3 server (set KRABITLS_DTLS_PORT)"]
+    fn live_handshake_survives_first_flight_loss() {
+        use crate::aead::Aes128GcmSha256 as Suite;
+        use crate::backends::{DerCert, PinOrSelfSigned, PinnedPubkeyOwned, RustCrypto};
+        use crate::traits::verify_strategy::SafeStrategy;
+
+        let port: u16 = std::env::var("KRABITLS_DTLS_PORT")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let sock = UdpSocket::bind("127.0.0.1:0").unwrap();
+        sock.connect(("127.0.0.1", port)).unwrap();
+        sock.set_read_timeout(Some(Duration::from_millis(800)))
+            .unwrap();
+        let mut transport = DropFirstSends {
+            inner: UdpTransport::new(sock),
+            drop_sends: 1,
+        };
+
+        let pin = PinnedPubkeyOwned::ed25519([
+            0x23, 0xaa, 0x4d, 0x60, 0x50, 0xe0, 0x13, 0xd3, 0x3a, 0xed, 0xab, 0xf6, 0xa9, 0xcc,
+            0x4a, 0xfe, 0xd7, 0x4d, 0x2f, 0xd2, 0x5b, 0x1a, 0x10, 0x05, 0xef, 0x5a, 0x41, 0x25,
+            0xce, 0x1b, 0x53, 0x78,
+        ]);
+        let strategy = SafeStrategy::<_, DerCert>::new(PinOrSelfSigned::pinned(pin));
+
+        let mut flight_buf = [0u8; 4096];
+        let mut client =
+            DtlsClient::<Suite>::connect::<_, RustCrypto, _, RustCrypto, RustCrypto, DerCert, 4>(
+                &mut transport,
+                &strategy,
+                None,
+                &[0x42u8; 32],
+                &[0x77u8; 32],
+                &mut flight_buf,
+            )
+            .expect("handshake completes despite the dropped CH1");
+
+        let mut out = [0u8; 128];
+        client
+            .send(&mut transport, b"hello from krabitls", &mut out)
+            .expect("app data sends");
     }
 }
