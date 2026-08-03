@@ -648,4 +648,190 @@ mod tests {
         assert!(!flight.cv_full.is_empty(), "CertificateVerify present");
         assert!(!flight.fin_full.is_empty(), "Finished present");
     }
+
+    /// Wrap a handshake-message body in a 12-byte DTLS handshake header
+    /// (unfragmented).
+    #[cfg(test)]
+    fn dtls_hs_msg(msg_type: u8, msg_seq: u16, body: &[u8]) -> Vec<u8> {
+        let mut v = Vec::new();
+        v.push(msg_type);
+        v.extend_from_slice(&(body.len() as u32).to_be_bytes()[1..4]);
+        v.extend_from_slice(&msg_seq.to_be_bytes());
+        v.extend_from_slice(&[0, 0, 0]); // fragment_offset
+        v.extend_from_slice(&(body.len() as u32).to_be_bytes()[1..4]); // fragment_length
+        v.extend_from_slice(body);
+        v
+    }
+
+    /// The end-to-end goal: complete the full DTLS 1.3 handshake against wolfSSL
+    /// (client Certificate + Finished) and round-trip application data.
+    #[test]
+    #[ignore = "needs a live wolfSSL DTLS 1.3 server (set KRABITLS_DTLS_PORT)"]
+    fn live_full_handshake_and_app_data_round_trip() {
+        use crate::aead::Aes128GcmSha256 as Suite;
+        use crate::backends::RustCrypto;
+        use crate::consts::{CT_APPLICATION_DATA, CT_HANDSHAKE, HS_FINISHED};
+        use crate::dtls::keys::derive_handshake_keys;
+        use crate::dtls::record::{EpochKeys, SealHeader, SeqNumLen};
+        use crate::hkdf::{
+            TranscriptHash, dtls_application_traffic_secrets, dtls_finished_mac, dtls_master_secret,
+        };
+        use crate::server_flight::parse_server_flight;
+        use std::net::UdpSocket;
+        use std::time::Duration;
+
+        let port: u16 = std::env::var("KRABITLS_DTLS_PORT")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let sock = UdpSocket::bind("127.0.0.1:0").unwrap();
+        sock.connect(("127.0.0.1", port)).unwrap();
+        sock.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+
+        // --- CH1 -> HRR -> CH2 -> SH ---
+        let (priv_key, pub_key) = x25519_keypair([0x42u8; 32]);
+        let random = [0x77u8; 32];
+        let mut ch1 = [0u8; 512];
+        let ch1_len = write_client_hello(&random, &pub_key, None, None, &mut ch1).unwrap();
+        send_ch_body(&sock, &ch1[..ch1_len], 0, 0);
+        let hrr_body = hello_body_of(&recv_dgram(&sock));
+        let cookie = match parse_server_hello(&hrr_body).unwrap() {
+            ServerHelloKind::Retry { cookie } => cookie.to_vec(),
+            _ => panic!("HRR"),
+        };
+        let mut ch2 = [0u8; 512];
+        let ch2_len = write_client_hello(&random, &pub_key, None, Some(&cookie), &mut ch2).unwrap();
+        send_ch_body(&sock, &ch2[..ch2_len], 1, 1);
+        let sh_body = hello_body_of(&recv_dgram(&sock));
+        let server_share = match parse_server_hello(&sh_body).unwrap() {
+            ServerHelloKind::Hello { server_key_share } => *server_key_share,
+            _ => panic!("SH"),
+        };
+
+        // --- transcript through ServerHello + handshake keys ---
+        let mut transcript = TranscriptHash::<RustCrypto>::new();
+        let ch1_hash = {
+            let mut t = TranscriptHash::<RustCrypto>::new();
+            t.update(&transcript_msg(1, &ch1[..ch1_len]));
+            t.snapshot()
+        };
+        transcript.update(&[0xFE, 0x00, 0x00, 0x20]);
+        transcript.update(ch1_hash.as_bytes());
+        transcript.update(&transcript_msg(2, &hrr_body));
+        transcript.update(&transcript_msg(1, &ch2[..ch2_len]));
+        transcript.update(&transcript_msg(2, &sh_body));
+        let hk = derive_handshake_keys::<Suite, RustCrypto>(
+            &priv_key,
+            &server_share,
+            &transcript.snapshot(),
+        )
+        .unwrap();
+
+        // --- decrypt + reassemble the server flight, feeding the transcript ---
+        let mut plaintext: Vec<u8> = Vec::new();
+        let mut srv_seq = 0u64;
+        loop {
+            let mut dg = recv_dgram(&sock);
+            let opened = hk.server.open(0, srv_seq, &mut dg).unwrap();
+            let hh = HandshakeHeader::parse(opened.content).unwrap();
+            let body = &opened.content[HS_HEADER_LEN..HS_HEADER_LEN + hh.length as usize];
+            plaintext.extend_from_slice(&transcript_msg(hh.msg_type, body));
+            srv_seq += 1;
+            if hh.msg_type == HS_FINISHED {
+                break;
+            }
+        }
+        let flight = parse_server_flight(&plaintext).unwrap();
+        transcript.update(flight.ee_full);
+        if let Some(creq) = flight.cert_request_full {
+            transcript.update(creq);
+        }
+        transcript.update(flight.cert_full);
+        transcript.update(flight.cv_full);
+        transcript.update(flight.fin_full);
+        let th_server_fin = transcript.snapshot();
+
+        // --- client Finished, epoch 2 (server runs with `-d`, no client auth,
+        // so the client flight is a bare Finished; message_seq continues 0,1,2) ---
+        let fin_data = dtls_finished_mac::<RustCrypto>(&hk.client_hs_ts, &th_server_fin).unwrap();
+        let fin_msg = dtls_hs_msg(HS_FINISHED, 2, &fin_data[..]);
+        let mut rec = [0u8; 128];
+        let n = hk
+            .client
+            .seal(
+                SealHeader {
+                    epoch: 2,
+                    seq: 0,
+                    seq_len: SeqNumLen::Two,
+                    cid: None,
+                },
+                &fin_msg,
+                CT_HANDSHAKE,
+                &mut rec,
+            )
+            .unwrap()
+            .len();
+        sock.send(&rec[..n]).unwrap();
+
+        // --- epoch-3 application keys ---
+        let master = dtls_master_secret::<RustCrypto>(&hk.hs_secret).unwrap();
+        let (c_ap, s_ap) =
+            dtls_application_traffic_secrets::<RustCrypto>(&master, &th_server_fin).unwrap();
+        let client_app = EpochKeys::<Suite>::derive::<RustCrypto>(&c_ap).unwrap();
+        let server_app = EpochKeys::<Suite>::derive::<RustCrypto>(&s_ap).unwrap();
+
+        // --- send app data, then read the server's echo (epoch 3) ---
+        let mut apprec = [0u8; 128];
+        let m = client_app
+            .seal(
+                SealHeader {
+                    epoch: 3,
+                    seq: 0,
+                    seq_len: SeqNumLen::Two,
+                    cid: None,
+                },
+                b"hello from krabitls",
+                CT_APPLICATION_DATA,
+                &mut apprec,
+            )
+            .unwrap()
+            .len();
+        sock.send(&apprec[..m]).unwrap();
+
+        // The server may send epoch-3 handshake records (NewSessionTicket/ACK)
+        // before the app-data echo; scan for the application_data record.
+        let mut got_echo = false;
+        for app_seq in 0..16u64 {
+            let dg = match recv_dgram_opt(&sock) {
+                Some(dg) => dg,
+                None => break,
+            };
+            let mut dg = dg;
+            if dg.first().is_none_or(|&b| b & 0xE0 != 0x20) {
+                continue;
+            }
+            if let Ok(opened) = server_app.open(0, app_seq, &mut dg)
+                && opened.content_type == CT_APPLICATION_DATA
+            {
+                got_echo = true;
+                break;
+            }
+        }
+        assert!(
+            got_echo,
+            "expected an application_data echo from the server"
+        );
+    }
+
+    #[cfg(test)]
+    fn recv_dgram_opt(sock: &std::net::UdpSocket) -> Option<Vec<u8>> {
+        let mut resp = vec![0u8; 2048];
+        match sock.recv(&mut resp) {
+            Ok(len) => {
+                resp.truncate(len);
+                Some(resp)
+            }
+            Err(_) => None,
+        }
+    }
 }

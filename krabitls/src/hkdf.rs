@@ -324,6 +324,54 @@ pub(crate) fn dtls_traffic_keys<H: HkdfSha256, const N: usize>(
     Ok((key, AeadIv::new(iv)))
 }
 
+/// DTLS 1.3 Finished verify-data — the `"dtls13"`-prefixed counterpart of
+/// [`finished_mac`].
+#[cfg(feature = "dtls")]
+pub(crate) fn dtls_finished_mac<H: HkdfSha256>(
+    traffic_secret: &Secret,
+    transcript_hash: &TranscriptDigest,
+) -> Result<ZeroBuf<32>, HkdfLabelError> {
+    let mut finished_key = ZeroBuf::<32>::new([0; 32]);
+    dtls_expand_label::<H>(
+        traffic_secret.as_bytes(),
+        b"finished",
+        &[],
+        &mut finished_key[..],
+    )?;
+    Ok(H::extract(&finished_key[..], transcript_hash.as_bytes()))
+}
+
+/// DTLS 1.3 master secret — the `"dtls13"`-prefixed counterpart of
+/// [`master_secret`].
+#[cfg(feature = "dtls")]
+pub(crate) fn dtls_master_secret<H: HkdfSha256>(
+    handshake_secret: &Secret,
+) -> Result<Secret, HkdfLabelError> {
+    let salt = dtls_derive_secret::<H>(handshake_secret, b"derived", &EMPTY_TRANSCRIPT_HASH)?;
+    Ok(Secret::new(H::extract(salt.as_bytes(), &[0u8; 32])))
+}
+
+/// DTLS 1.3 application traffic secrets — the `"dtls13"`-prefixed counterpart of
+/// [`application_traffic_secrets`].
+#[cfg(feature = "dtls")]
+pub(crate) fn dtls_application_traffic_secrets<H: HkdfSha256>(
+    master_secret: &Secret,
+    transcript_hash_through_server_finished: &TranscriptDigest,
+) -> Result<(Secret, Secret), HkdfLabelError> {
+    Ok((
+        dtls_derive_secret::<H>(
+            master_secret,
+            b"c ap traffic",
+            transcript_hash_through_server_finished,
+        )?,
+        dtls_derive_secret::<H>(
+            master_secret,
+            b"s ap traffic",
+            transcript_hash_through_server_finished,
+        )?,
+    ))
+}
+
 /// `master_secret = HKDF-Extract(Derive-Secret(handshake_secret, "derived", H("")), 0_hash)`
 /// per RFC 8446 §7.1.
 pub(crate) fn master_secret<H: HkdfSha256>(
