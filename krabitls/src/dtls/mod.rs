@@ -23,6 +23,8 @@ pub(crate) mod handshake;
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod keys;
 #[cfg_attr(not(test), allow(dead_code))]
+pub(crate) mod reassembly;
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod record;
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod replay;
