@@ -17,6 +17,10 @@ rsa = ["krabitls/rsa"]
 ecdsa = ["krabitls/ecdsa"]
 # Advertise TLS_CHACHA20_POLY1305_SHA256 alongside AES-128-GCM-SHA256.
 chacha20 = ["krabitls/chacha20"]
+# DTLS 1.3 (UDP) client + the `krabidtls_connect` probe binary. Host-only: the
+# datagram transport uses `std::net::UdpSocket` for real receive-timeout
+# semantics (the retransmit clock), so it implies `host`.
+dtls = ["krabitls/dtls", "host"]
 
 [dependencies]
 # Lib deps — no_std, buildable for a bare target.
@@ -42,3 +46,8 @@ krabitls_fixtures = { path = "../krabitls_fixtures" }
 [[bin]]
 name = "krabitls_connect"
 required-features = ["host"]
+
+# DTLS 1.3 UDP probe. Drives `krabitls::dtls::DtlsStream` over a std UDP socket.
+[[bin]]
+name = "krabidtls_connect"
+required-features = ["dtls"]

@@ -5,13 +5,13 @@
 //! is shared unchanged with the TLS 1.3 client; DTLS differs only in the record
 //! framing and the handshake reliability layer, which live here.
 //!
-//! This module is built up in phases. Landed so far: the record layer
-//! ([`record`]) — the unified header codec, record-number encryption, and
-//! per-epoch key state — and the anti-replay window ([`replay`]).
+//! The public surface is [`DatagramTransport`] (the caller's UDP adapter) and
+//! [`DtlsStream`] (the blocking client façade over it); the record/handshake
+//! internals stay crate-private.
 
 // The record, framing, and replay primitives are consumed by tests and by the
-// DTLS handshake driver; the driver is not yet reachable from a public entry
-// point, so a non-test build still sees parts of the surface as unused.
+// DTLS handshake driver; parts of the surface a given build doesn't reach are
+// allowed to be unused.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod ack;
 #[cfg_attr(not(test), allow(dead_code))]
@@ -26,5 +26,12 @@ pub(crate) mod keys;
 pub(crate) mod record;
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod replay;
+#[cfg(feature = "cipher-aes")]
+pub(crate) mod stream;
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod transport;
+
+pub use client::DtlsClientError;
+#[cfg(feature = "cipher-aes")]
+pub use stream::DtlsStream;
+pub use transport::DatagramTransport;

@@ -70,7 +70,7 @@ pub(crate) struct DtlsClient<S: DtlsSuite> {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum DtlsClientError<E> {
+pub enum DtlsClientError<E> {
     /// The transport surfaced an error.
     Transport(E),
     /// No reply arrived after exhausting a flight's retransmissions, or an
