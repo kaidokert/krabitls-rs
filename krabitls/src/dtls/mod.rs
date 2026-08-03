@@ -13,6 +13,8 @@
 // DTLS handshake driver; the driver is not yet reachable from a public entry
 // point, so a non-test build still sees parts of the surface as unused.
 #[cfg_attr(not(test), allow(dead_code))]
+pub(crate) mod ack;
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod client;
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod framing;

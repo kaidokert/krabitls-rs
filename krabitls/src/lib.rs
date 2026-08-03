@@ -127,6 +127,9 @@ pub(crate) mod consts {
     pub const CT_HANDSHAKE: u8 = 22;
     pub const CT_APPLICATION_DATA: u8 = 23;
     pub const CT_ALERT: u8 = 21;
+    /// DTLS 1.3 ACK record content type (RFC 9147 §7).
+    #[cfg(feature = "dtls")]
+    pub const CT_ACK: u8 = 26;
     /// Middlebox-compat ChangeCipherSpec — accepted and dropped without
     /// bumping `seq_in` in TLS 1.3.
     pub const CT_CHANGE_CIPHER_SPEC: u8 = 0x14;

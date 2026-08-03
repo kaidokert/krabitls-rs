@@ -21,7 +21,8 @@
 //! loss there surfaces as [`DtlsClientError::Timeout`].
 
 use crate::bigint::Curve25519CtBn as Bn;
-use crate::consts::{CT_APPLICATION_DATA, CT_HANDSHAKE, HS_FINISHED};
+use crate::consts::{CT_ACK, CT_APPLICATION_DATA, CT_HANDSHAKE, HS_FINISHED};
+use crate::dtls::ack::write_ack;
 use crate::dtls::framing::{HS_HEADER_LEN, HandshakeHeader, PlaintextRecord};
 use crate::dtls::handshake::{
     CLIENT_HELLO_MSG_TYPE, ServerHelloKind, parse_server_hello, write_client_hello,
@@ -286,6 +287,40 @@ impl<S: DtlsSuite> DtlsClient<S> {
             )
             .map_err(|_| DtlsClientError::Protocol)?;
         transport.send(sealed).map_err(DtlsClientError::Transport)?;
+
+        // ACK the server's handshake flight (RFC 9147 §7) so it can stop
+        // retransmitting without waiting to observe the client Finished. Epoch-2
+        // records were sequence numbers 0..srv_seq; acknowledge up to ACK_CAP of
+        // them (a single-datagram-per-message flight is far smaller). The ACK
+        // rides epoch 2 at the next sequence number after the Finished.
+        const ACK_CAP: usize = 8;
+        let acked = (srv_seq as usize).min(ACK_CAP);
+        let mut records = [(0u64, 0u64); ACK_CAP];
+        for (i, slot) in records[..acked].iter_mut().enumerate() {
+            *slot = (2, i as u64);
+        }
+        // 16 bytes per RecordNumber (epoch u64 + seq u64) + the 2-byte list length.
+        let mut ack_body = [0u8; 2 + ACK_CAP * 16];
+        let ack_len = write_ack(&records[..acked], &mut ack_body)
+            .map_err(|_| DtlsClientError::BufferTooSmall)?;
+        let mut ack_rec = [0u8; 2 + ACK_CAP * 16 + 32];
+        let ack_sealed = hk
+            .client
+            .seal(
+                SealHeader {
+                    epoch: 2,
+                    seq: 1,
+                    seq_len: SeqNumLen::Two,
+                    cid: None,
+                },
+                &ack_body[..ack_len],
+                CT_ACK,
+                &mut ack_rec,
+            )
+            .map_err(|_| DtlsClientError::Protocol)?;
+        transport
+            .send(ack_sealed)
+            .map_err(DtlsClientError::Transport)?;
 
         // --- epoch-3 application keys ---
         let master =
