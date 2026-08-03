@@ -9,41 +9,84 @@
 //! (e.g. the wolfSSL example server) whose certificates carry no SAN. `message`
 //! defaults to `hello from krabitls`.
 //!
-//! Host-only: the datagram transport is a `std::net::UdpSocket` with a receive
-//! timeout, which drives the DTLS retransmit clock.
+//! The datagram transport is an [`embedded_nal::UdpClientStack`] socket
+//! (`std-embedded-nal` on the host), mirroring how the TLS binary drives a
+//! `TcpClientStack`. The NAL `receive` is non-blocking, so [`NalDatagram::recv`]
+//! polls it to a wall-clock deadline — that timeout is the DTLS retransmit clock.
+//! Host-only for that clock and the system stack.
 
-use std::net::{ToSocketAddrs, UdpSocket};
+use std::net::ToSocketAddrs;
 use std::process::ExitCode;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use embedded_nal::{UdpClientStack, nb};
 use krabitls::backends::{DerCert, PinOrSelfSigned, PinnedPubkeyOwned};
 use krabitls::client::SafeStrategy;
 use krabitls::dtls::{DatagramTransport, DtlsStream};
 
-/// `std::net::UdpSocket` as a [`DatagramTransport`]. The socket is connected to
-/// one peer and carries a read timeout, so a quiet link surfaces as `Ok(None)`.
-struct UdpDatagram(UdpSocket);
+/// One receive timeout, the DTLS retransmit interval.
+const RECV_TIMEOUT: Duration = Duration::from_secs(1);
+/// Poll interval while waiting on the non-blocking NAL `receive`.
+const POLL_INTERVAL: Duration = Duration::from_millis(2);
 
-impl DatagramTransport for UdpDatagram {
-    type Error = std::io::Error;
+/// A connected [`embedded_nal::UdpClientStack`] socket as a
+/// [`DatagramTransport`]. The stack's `receive` is `nb`, so `recv` polls it until
+/// a datagram arrives or the timeout elapses (`Ok(None)`).
+struct NalDatagram<'a, S: UdpClientStack> {
+    stack: &'a mut S,
+    socket: Option<S::UdpSocket>,
+}
+
+impl<'a, S: UdpClientStack> NalDatagram<'a, S> {
+    fn open(stack: &'a mut S, remote: std::net::SocketAddr) -> Result<Self, S::Error> {
+        let mut socket = stack.socket()?;
+        if let Err(e) = stack.connect(&mut socket, remote) {
+            let _ = stack.close(socket);
+            return Err(e);
+        }
+        Ok(Self {
+            stack,
+            socket: Some(socket),
+        })
+    }
+}
+
+impl<S: UdpClientStack> DatagramTransport for NalDatagram<'_, S> {
+    type Error = S::Error;
 
     fn send(&mut self, datagram: &[u8]) -> Result<(), Self::Error> {
-        self.0.send(datagram)?;
-        Ok(())
+        let socket = self
+            .socket
+            .as_mut()
+            .expect("socket lives for the transport");
+        nb::block!(self.stack.send(socket, datagram))
     }
 
     fn recv(&mut self, buf: &mut [u8]) -> Result<Option<usize>, Self::Error> {
-        match self.0.recv(buf) {
-            Ok(n) => Ok(Some(n)),
-            Err(e)
-                if matches!(
-                    e.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ) =>
-            {
-                Ok(None)
+        let deadline = Instant::now() + RECV_TIMEOUT;
+        loop {
+            let socket = self
+                .socket
+                .as_mut()
+                .expect("socket lives for the transport");
+            match self.stack.receive(socket, buf) {
+                Ok((n, _peer)) => return Ok(Some(n)),
+                Err(nb::Error::WouldBlock) => {
+                    if Instant::now() >= deadline {
+                        return Ok(None);
+                    }
+                    std::thread::sleep(POLL_INTERVAL);
+                }
+                Err(nb::Error::Other(e)) => return Err(e),
             }
-            Err(e) => Err(e),
+        }
+    }
+}
+
+impl<S: UdpClientStack> Drop for NalDatagram<'_, S> {
+    fn drop(&mut self) {
+        if let Some(socket) = self.socket.take() {
+            let _ = self.stack.close(socket);
         }
     }
 }
@@ -94,16 +137,9 @@ fn run() -> Result<(), String> {
         .next()
         .ok_or_else(|| format!("no address for {endpoint}"))?;
 
-    let sock = UdpSocket::bind(if remote.is_ipv4() {
-        "0.0.0.0:0"
-    } else {
-        "[::]:0"
-    })
-    .map_err(|e| format!("bind: {e}"))?;
-    sock.connect(remote).map_err(|e| format!("connect: {e}"))?;
-    sock.set_read_timeout(Some(Duration::from_secs(1)))
-        .map_err(|e| format!("set_read_timeout: {e}"))?;
-    let transport = UdpDatagram(sock);
+    let mut stack = std_embedded_nal::Stack;
+    let transport =
+        NalDatagram::open(&mut stack, remote).map_err(|e| format!("udp connect: {e}"))?;
 
     let strategy =
         SafeStrategy::<_, DerCert>::new(PinOrSelfSigned::pinned(PinnedPubkeyOwned::ed25519(pin)));
