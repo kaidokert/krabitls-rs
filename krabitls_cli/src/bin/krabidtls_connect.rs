@@ -113,7 +113,8 @@ fn run() -> Result<(), String> {
     getrandom::fill(&mut x25519_priv).map_err(|e| format!("rng: {e}"))?;
     getrandom::fill(&mut client_random).map_err(|e| format!("rng: {e}"))?;
 
-    let mut flight_buf = [0u8; 4096];
+    let mut flight_buf = [0u8; 8192];
+    let mut reasm_buf = [0u8; 8192];
     let mut stream = DtlsStream::connect::<_, 4>(
         transport,
         &strategy,
@@ -121,6 +122,7 @@ fn run() -> Result<(), String> {
         &x25519_priv,
         &client_random,
         &mut flight_buf,
+        &mut reasm_buf,
     )
     .map_err(|e| format!("handshake: {e:?}"))?;
     log::info!("DTLS 1.3 handshake complete with {remote}");

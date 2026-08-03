@@ -30,6 +30,7 @@ use crate::dtls::handshake::{
     CLIENT_HELLO_MSG_TYPE, ServerHelloKind, parse_server_hello, write_client_hello,
 };
 use crate::dtls::keys::derive_handshake_keys;
+use crate::dtls::reassembly::Reassembler;
 use crate::dtls::record::{DtlsSuite, EpochKeys, SealHeader, SeqNumLen};
 use crate::dtls::replay::ReplayWindow;
 use crate::dtls::transport::DatagramTransport;
@@ -100,6 +101,14 @@ pub enum DtlsClientError<E> {
 /// initial transmission plus retransmissions on receive timeout.
 const MAX_FLIGHT_ATTEMPTS: u8 = 5;
 
+/// Distinct handshake messages the server flight reassembler tracks at once
+/// (EncryptedExtensions, optional CertificateRequest, Certificate,
+/// CertificateVerify, Finished — plus slack).
+const MAX_FLIGHT_MSGS: usize = 8;
+
+/// Disjoint received fragment ranges tracked per message before they merge.
+const MAX_MSG_FRAGS: usize = 16;
+
 /// The X25519 basepoint (u = 9); a scalar-mult against it yields the client's
 /// public key from its private scalar.
 const X25519_BASEPOINT: [u8; 32] = {
@@ -114,8 +123,9 @@ impl<S: DtlsSuite> DtlsClient<S> {
     /// server chain; `hostname`, when `Some`, is matched against the leaf SAN
     /// (`None` skips the check — sound only when the strategy pins the key, since
     /// then the pin is the identity binding). `flight_buf` receives the
-    /// reassembled epoch-2 server flight (`msg_type ‖ u24 len ‖ body` messages);
-    /// it must be large enough for the whole flight (a few KiB for a typical
+    /// reassembled epoch-2 server flight (`msg_type ‖ u24 len ‖ body` messages)
+    /// and `reasm_buf` is scratch for the fragment bodies before reassembly; both
+    /// must be large enough for the whole flight (a few KiB for a typical
     /// certificate chain).
     pub(crate) fn connect<T, H, V, E, R, P, const MAX_CHAIN: usize>(
         transport: &mut T,
@@ -124,6 +134,7 @@ impl<S: DtlsSuite> DtlsClient<S> {
         x25519_priv: &[u8; 32],
         client_random: &[u8; 32],
         flight_buf: &mut [u8],
+        reasm_buf: &mut [u8],
     ) -> Result<Self, DtlsClientError<T::Error>>
     where
         T: DatagramTransport,
@@ -151,7 +162,7 @@ impl<S: DtlsSuite> DtlsClient<S> {
         let ch1_rec = build_client_hello_record(&ch1[..ch1_len], 0, 0, &mut ch_dgram)?;
         let hrr_len = send_flight_await_reply(transport, ch1_rec, &mut rbuf, MAX_FLIGHT_ATTEMPTS)?;
         let cookie_buf = {
-            let hrr_body = parse_hello_body::<T::Error>(&rbuf[..hrr_len])?;
+            let (hrr_body, _, _) = parse_hello_body::<T::Error>(&rbuf[..hrr_len])?;
             // HRR message-hash substitution: message_hash(H(CH1)) ‖ HRR.
             let ch1_hash = {
                 let mut t = TranscriptHash::<H>::new();
@@ -191,41 +202,52 @@ impl<S: DtlsSuite> DtlsClient<S> {
         let sh_len = send_flight_await_reply(transport, ch2_rec, &mut rbuf, MAX_FLIGHT_ATTEMPTS)?;
         transcript.update(&transcript_msg_header(CLIENT_HELLO_MSG_TYPE, ch2_len));
         transcript.update(&ch2[..ch2_len]);
-        let server_share = {
-            let sh_body = parse_hello_body::<T::Error>(&rbuf[..sh_len])?;
+        let (server_share, sh_seq, sh_trailing) = {
+            let (sh_body, sh_seq, sh_trailing) = parse_hello_body::<T::Error>(&rbuf[..sh_len])?;
             transcript.update(&transcript_msg_header(2, sh_body.len()));
             transcript.update(sh_body);
-            match parse_server_hello(sh_body).map_err(|_| DtlsClientError::Handshake)? {
+            let share = match parse_server_hello(sh_body).map_err(|_| DtlsClientError::Handshake)? {
                 ServerHelloKind::Hello { server_key_share } => *server_key_share,
                 ServerHelloKind::Retry { .. } => return Err(DtlsClientError::Handshake),
-            }
+            };
+            (share, sh_seq, sh_trailing)
         };
+        // The encrypted flight's messages are numbered from one past ServerHello.
+        let base_seq = sh_seq.wrapping_add(1);
 
         let hk = derive_handshake_keys::<S, H>(x25519_priv, &server_share, &transcript.snapshot())
             .map_err(|_| DtlsClientError::KeySchedule)?;
 
-        // --- decrypt + reassemble the epoch-2 server flight into `flight_buf` ---
-        let mut flight_len = 0usize;
+        // --- decrypt the epoch-2 server flight, reassembling fragmented and/or
+        // reordered handshake messages, then serialize it in `message_seq` order.
+        let mut reasm = Reassembler::<MAX_FLIGHT_MSGS, MAX_MSG_FRAGS>::new();
         let mut srv_seq = 0u64;
-        loop {
+        // The server may coalesce EncryptedExtensions (epoch 2) into the tail of
+        // the ServerHello (epoch 0) datagram; feed those records before reading on.
+        if sh_trailing > 0 {
+            let start = sh_len - sh_trailing;
+            feed_epoch2_records::<S, T::Error>(
+                &hk.server,
+                &mut rbuf[start..sh_len],
+                &mut reasm,
+                reasm_buf,
+                &mut srv_seq,
+            )?;
+        }
+        while !reasm.flight_complete(base_seq, HS_FINISHED) {
             let mut dg = [0u8; 2048];
             let n = recv_datagram(transport, &mut dg)?;
-            let opened = hk
-                .server
-                .open(0, srv_seq, &mut dg[..n])
-                .map_err(|_| DtlsClientError::Protocol)?;
-            let hh =
-                HandshakeHeader::parse(opened.content).map_err(|_| DtlsClientError::Protocol)?;
-            let body = opened
-                .content
-                .get(HS_HEADER_LEN..HS_HEADER_LEN + hh.length as usize)
-                .ok_or(DtlsClientError::Protocol)?;
-            flight_len = append_transcript_msg(flight_buf, flight_len, hh.msg_type, body)?;
-            srv_seq += 1;
-            if hh.msg_type == HS_FINISHED {
-                break;
-            }
+            feed_epoch2_records::<S, T::Error>(
+                &hk.server,
+                &mut dg[..n],
+                &mut reasm,
+                reasm_buf,
+                &mut srv_seq,
+            )?;
         }
+        let flight_len = reasm
+            .serialize_flight(reasm_buf, flight_buf)
+            .map_err(|_| DtlsClientError::Protocol)?;
         // Verify the flight. The cert-chain trust decision, the leaf pubkey
         // cross-check, the hostname match, and the CertificateVerify signature
         // reuse the TLS path unchanged. The server Finished MAC does NOT:
@@ -504,16 +526,23 @@ fn send_flight_await_reply<T: DatagramTransport>(
 }
 
 /// Parse a received plaintext handshake datagram and return its ServerHello/HRR
-/// message body.
-fn parse_hello_body<E>(datagram: &[u8]) -> Result<&[u8], DtlsClientError<E>> {
-    let (rec, _) = PlaintextRecord::parse(datagram).map_err(|_| DtlsClientError::Protocol)?;
+/// message body, the message's `message_seq` (needed to anchor the encrypted
+/// flight's base sequence), and the number of trailing bytes after the record —
+/// the ServerHello datagram can coalesce a following epoch-2 record (typically
+/// EncryptedExtensions), which the caller must not drop. ServerHello/HRR are
+/// small and never fragmented, so a single record carries the whole message.
+fn parse_hello_body<E>(datagram: &[u8]) -> Result<(&[u8], u16, usize), DtlsClientError<E>> {
+    let (rec, consumed) =
+        PlaintextRecord::parse(datagram).map_err(|_| DtlsClientError::Protocol)?;
     if rec.content_type != CT_HANDSHAKE {
         return Err(DtlsClientError::Protocol);
     }
     let hh = HandshakeHeader::parse(rec.fragment).map_err(|_| DtlsClientError::Protocol)?;
-    rec.fragment
+    let body = rec
+        .fragment
         .get(HS_HEADER_LEN..HS_HEADER_LEN + hh.fragment_length as usize)
-        .ok_or(DtlsClientError::Protocol)
+        .ok_or(DtlsClientError::Protocol)?;
+    Ok((body, hh.message_seq, datagram.len() - consumed))
 }
 
 /// Receive one datagram, mapping a timeout (`Ok(None)`) to a terminal
@@ -528,6 +557,61 @@ fn recv_datagram<T: DatagramTransport>(
         .recv(buf)
         .map_err(DtlsClientError::Transport)?
         .ok_or(DtlsClientError::Timeout)
+}
+
+/// Decrypt the epoch-2 records packed in `records` (one datagram, possibly
+/// several coalesced records) and feed each handshake fragment to `reasm`.
+/// Advances `srv_seq` per record. Stops at the first non-ciphertext record (e.g.
+/// a coalesced epoch-0 retransmit or trailing padding).
+fn feed_epoch2_records<S: DtlsSuite, E>(
+    server_keys: &EpochKeys<S>,
+    records: &mut [u8],
+    reasm: &mut Reassembler<MAX_FLIGHT_MSGS, MAX_MSG_FRAGS>,
+    reasm_buf: &mut [u8],
+    srv_seq: &mut u64,
+) -> Result<(), DtlsClientError<E>> {
+    let n = records.len();
+    let mut rec_pos = 0usize;
+    while rec_pos < n {
+        // Only DTLS 1.3 ciphertext (unified-header) records belong to the flight.
+        if records[rec_pos] & 0xE0 != 0x20 {
+            break;
+        }
+        let opened = server_keys
+            .open(0, *srv_seq, &mut records[rec_pos..n])
+            .map_err(|_| DtlsClientError::Protocol)?;
+        let record_len = opened.record_len;
+        if record_len == 0 {
+            break;
+        }
+        if opened.content_type == CT_HANDSHAKE {
+            // A record may carry several coalesced handshake fragments.
+            let content = opened.content;
+            let mut p = 0usize;
+            while p + HS_HEADER_LEN <= content.len() {
+                let hh =
+                    HandshakeHeader::parse(&content[p..]).map_err(|_| DtlsClientError::Protocol)?;
+                let frag_len = hh.fragment_length as usize;
+                let frag = content
+                    .get(p + HS_HEADER_LEN..p + HS_HEADER_LEN + frag_len)
+                    .ok_or(DtlsClientError::Protocol)?;
+                reasm
+                    .push(
+                        reasm_buf,
+                        hh.msg_type,
+                        hh.message_seq,
+                        hh.length as usize,
+                        hh.fragment_offset as usize,
+                        frag,
+                    )
+                    .map_err(|_| DtlsClientError::Protocol)?;
+                p += HS_HEADER_LEN + frag_len;
+            }
+        }
+        *srv_seq += 1;
+        rec_pos += record_len;
+    }
+    Ok(())
 }
 
 /// Write a 12-byte DTLS handshake header (unfragmented) + `body` into `out`,
@@ -559,24 +643,6 @@ fn write_hs_msg<'o, E>(
 fn transcript_msg_header(msg_type: u8, len: usize) -> [u8; 4] {
     let l = len as u32;
     [msg_type, (l >> 16) as u8, (l >> 8) as u8, l as u8]
-}
-
-/// Append a reassembled flight message to `buf` in transcript form
-/// (`msg_type ‖ u24 len ‖ body`), returning the new length.
-fn append_transcript_msg<E>(
-    buf: &mut [u8],
-    at: usize,
-    msg_type: u8,
-    body: &[u8],
-) -> Result<usize, DtlsClientError<E>> {
-    let hdr = transcript_msg_header(msg_type, body.len());
-    let end = at + hdr.len() + body.len();
-    if end > buf.len() {
-        return Err(DtlsClientError::BufferTooSmall);
-    }
-    buf[at..at + 4].copy_from_slice(&hdr);
-    buf[at + 4..end].copy_from_slice(body);
-    Ok(end)
 }
 
 #[cfg(test)]
@@ -617,6 +683,7 @@ mod tests {
         let strategy = SafeStrategy::<_, DerCert>::new(PinOrSelfSigned::pinned(pin));
 
         let mut flight_buf = [0u8; 4096];
+        let mut reasm_buf = [0u8; 4096];
         let mut client =
             DtlsClient::<Suite>::connect::<_, RustCrypto, _, RustCrypto, RustCrypto, DerCert, 4>(
                 &mut transport,
@@ -625,6 +692,7 @@ mod tests {
                 &[0x42u8; 32],
                 &[0x77u8; 32],
                 &mut flight_buf,
+                &mut reasm_buf,
             )
             .expect("handshake completes");
 
@@ -637,6 +705,61 @@ mod tests {
         // server's application reply comes back on a single call. (The wolfSSL
         // example server sends a fixed reply, not an echo, so only the decrypt
         // is asserted, not the content.)
+        let mut buf = [0u8; 256];
+        let reply = client
+            .recv(&mut transport, &mut buf)
+            .expect("recv succeeds")
+            .expect("an application_data reply, not a timeout");
+        assert!(reply > 0, "decrypted a non-empty application_data reply");
+    }
+
+    /// The handshake completes when the server fragments its flight across the
+    /// path MTU — the Certificate arrives as several offset-indexed fragments the
+    /// client reassembles, and EncryptedExtensions rides the tail of the
+    /// ServerHello datagram. Run the wolfSSL example server with a small MTU:
+    /// `KRABITLS_DTLS_MTU=512 ./examples/server/server -v 4 -u -d …` (needs
+    /// `--enable-dtls-mtu`), then set `KRABITLS_DTLS_PORT`.
+    #[test]
+    #[ignore = "needs a small-MTU wolfSSL DTLS 1.3 server (KRABITLS_DTLS_PORT + server MTU)"]
+    fn live_handshake_over_fragmented_flight() {
+        use crate::aead::Aes128GcmSha256 as Suite;
+        use crate::backends::{DerCert, PinOrSelfSigned, PinnedPubkeyOwned, RustCrypto};
+        use crate::traits::verify_strategy::SafeStrategy;
+
+        let port: u16 = std::env::var("KRABITLS_DTLS_PORT")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let sock = UdpSocket::bind("127.0.0.1:0").unwrap();
+        sock.connect(("127.0.0.1", port)).unwrap();
+        sock.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        let mut transport = UdpTransport::new(sock);
+
+        let pin = PinnedPubkeyOwned::ed25519([
+            0x23, 0xaa, 0x4d, 0x60, 0x50, 0xe0, 0x13, 0xd3, 0x3a, 0xed, 0xab, 0xf6, 0xa9, 0xcc,
+            0x4a, 0xfe, 0xd7, 0x4d, 0x2f, 0xd2, 0x5b, 0x1a, 0x10, 0x05, 0xef, 0x5a, 0x41, 0x25,
+            0xce, 0x1b, 0x53, 0x78,
+        ]);
+        let strategy = SafeStrategy::<_, DerCert>::new(PinOrSelfSigned::pinned(pin));
+
+        let mut flight_buf = [0u8; 8192];
+        let mut reasm_buf = [0u8; 8192];
+        let mut client =
+            DtlsClient::<Suite>::connect::<_, RustCrypto, _, RustCrypto, RustCrypto, DerCert, 4>(
+                &mut transport,
+                &strategy,
+                None,
+                &[0x42u8; 32],
+                &[0x77u8; 32],
+                &mut flight_buf,
+                &mut reasm_buf,
+            )
+            .expect("handshake completes over a fragmented flight");
+
+        let mut out = [0u8; 128];
+        client
+            .send(&mut transport, b"hello over fragments", &mut out)
+            .expect("app data sends");
         let mut buf = [0u8; 256];
         let reply = client
             .recv(&mut transport, &mut buf)
@@ -824,6 +947,7 @@ mod tests {
         let strategy = SafeStrategy::<_, DerCert>::new(PinOrSelfSigned::pinned(pin));
 
         let mut flight_buf = [0u8; 4096];
+        let mut reasm_buf = [0u8; 4096];
         let mut client =
             DtlsClient::<Suite>::connect::<_, RustCrypto, _, RustCrypto, RustCrypto, DerCert, 4>(
                 &mut transport,
@@ -832,6 +956,7 @@ mod tests {
                 &[0x42u8; 32],
                 &[0x77u8; 32],
                 &mut flight_buf,
+                &mut reasm_buf,
             )
             .expect("handshake completes despite the dropped CH1");
 

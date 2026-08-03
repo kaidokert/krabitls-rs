@@ -27,7 +27,9 @@ impl<T: DatagramTransport> DtlsStream<T> {
     /// `client_random` are caller-supplied entropy; `flight_buf` receives the
     /// reassembled server flight and must fit it (a few KiB).
     ///
-    /// `MAX_CHAIN` bounds the accepted certificate-chain length.
+    /// `MAX_CHAIN` bounds the accepted certificate-chain length. `flight_buf`
+    /// receives the reassembled server flight and `reasm_buf` is scratch for
+    /// fragment reassembly; both must fit the whole flight.
     pub fn connect<V, const MAX_CHAIN: usize>(
         mut transport: T,
         strategy: &V,
@@ -35,6 +37,7 @@ impl<T: DatagramTransport> DtlsStream<T> {
         x25519_priv: &[u8; 32],
         client_random: &[u8; 32],
         flight_buf: &mut [u8],
+        reasm_buf: &mut [u8],
     ) -> Result<Self, DtlsClientError<T::Error>>
     where
         V: VerifyStrategy<RustCrypto, RustCrypto>,
@@ -54,6 +57,7 @@ impl<T: DatagramTransport> DtlsStream<T> {
             x25519_priv,
             client_random,
             flight_buf,
+            reasm_buf,
         )?;
         Ok(Self { client, transport })
     }

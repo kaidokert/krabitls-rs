@@ -256,6 +256,7 @@ impl<S: DtlsSuite> EpochKeys<S> {
             seq,
             content_type,
             content,
+            record_len: body_end,
         })
     }
 }
@@ -266,6 +267,9 @@ pub(crate) struct Opened<'r> {
     pub(crate) seq: u64,
     pub(crate) content_type: u8,
     pub(crate) content: &'r [u8],
+    /// On-wire length of this record (header + body), so a caller can advance to
+    /// the next record when several are coalesced in one datagram.
+    pub(crate) record_len: usize,
 }
 
 fn write_seq(out: &mut [u8], seq: u64) {
