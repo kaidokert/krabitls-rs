@@ -14,11 +14,13 @@
 //! a `"tls13 "`-prefixed Finished — so DTLS sequences the transcript here and
 //! verifies the Finished with the `"dtls13"` schedule.
 //!
-//! Reliability (RFC 9147 §5.8): each ClientHello flight is buffered and
+//! Reliability (RFC 9147 §5.8, §7): each ClientHello flight is buffered and
 //! retransmitted on a receive timeout, up to [`MAX_FLIGHT_ATTEMPTS`] sends, so an
-//! early lost datagram no longer aborts the handshake. Still absent: ACK records
-//! (§7) and retransmission of the encrypted epoch-2/epoch-3 flights; a persistent
-//! loss there surfaces as [`DtlsClientError::Timeout`].
+//! early lost datagram no longer aborts the handshake; after the client Finished
+//! an ACK of the server flight is sent so the peer stops retransmitting; and a
+//! lost Finished is recovered — a retransmitted epoch-2 server flight (detected
+//! by the record's epoch bits, no decrypt) triggers a resend of the buffered
+//! Finished.
 
 use crate::bigint::Curve25519CtBn as Bn;
 use crate::consts::{CT_ACK, CT_APPLICATION_DATA, CT_HANDSHAKE, HS_FINISHED};
@@ -55,6 +57,11 @@ pub(crate) struct DtlsClient<S: DtlsSuite> {
     recv_hint: u64,
     /// Anti-replay window over the epoch-3 record sequence space (RFC 9147 §4.5.1).
     server_replay: ReplayWindow,
+    /// The sealed client Finished record, retained so it can be resent if the
+    /// server retransmits its (epoch-2) flight — the sign that the Finished was
+    /// lost (RFC 9147 §5.8).
+    fin_flight: [u8; 128],
+    fin_flight_len: usize,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -286,6 +293,13 @@ impl<S: DtlsSuite> DtlsClient<S> {
                 &mut rec,
             )
             .map_err(|_| DtlsClientError::Protocol)?;
+        // Retain the sealed Finished for retransmission before sending it.
+        let mut fin_flight = [0u8; 128];
+        let fin_flight_len = sealed.len();
+        fin_flight
+            .get_mut(..fin_flight_len)
+            .ok_or(DtlsClientError::BufferTooSmall)?
+            .copy_from_slice(sealed);
         transport.send(sealed).map_err(DtlsClientError::Transport)?;
 
         // ACK the server's handshake flight (RFC 9147 §7) so it can stop
@@ -335,6 +349,8 @@ impl<S: DtlsSuite> DtlsClient<S> {
             send_seq: 0,
             recv_hint: 0,
             server_replay: ReplayWindow::new(),
+            fin_flight,
+            fin_flight_len,
         })
     }
 
@@ -388,8 +404,18 @@ impl<S: DtlsSuite> DtlsClient<S> {
                 Some(n) => n,
                 None => return Ok(None),
             };
-            // Only unified-header (epoch >0) records can be application data.
-            if dg[..n].first().is_none_or(|&b| b & 0xE0 != 0x20) {
+            // Only unified-header (epoch >0) records reach here.
+            let Some(&first) = dg[..n].first().filter(|&&b| b & 0xE0 == 0x20) else {
+                continue;
+            };
+            // The low two epoch bits distinguish a retransmitted epoch-2 server
+            // flight (0b10) from epoch-3 application data (0b11) without a
+            // decrypt: an epoch-2 record here means the server did not get our
+            // Finished, so resend it (RFC 9147 §5.8) and keep waiting.
+            if first & 0b11 == 0b10 {
+                transport
+                    .send(&self.fin_flight[..self.fin_flight_len])
+                    .map_err(DtlsClientError::Transport)?;
                 continue;
             }
             let Ok(opened) = self.server_app.open(0, self.recv_hint, &mut dg[..n]) else {
@@ -642,6 +668,8 @@ mod tests {
             send_seq: 0,
             recv_hint: 0,
             server_replay: ReplayWindow::new(),
+            fin_flight: [0u8; 128],
+            fin_flight_len: 0,
         };
 
         // Seal one epoch-3 record with the server's app keys, then feed it twice.
@@ -791,5 +819,85 @@ mod tests {
         client
             .send(&mut transport, b"hello from krabitls", &mut out)
             .expect("app data sends");
+    }
+
+    /// Records every outbound datagram and serves queued inbound ones.
+    struct RecordingTransport {
+        inbound: std::collections::VecDeque<Vec<u8>>,
+        sent: Vec<Vec<u8>>,
+    }
+
+    impl DatagramTransport for RecordingTransport {
+        type Error = ();
+        fn send(&mut self, datagram: &[u8]) -> Result<(), ()> {
+            self.sent.push(datagram.to_vec());
+            Ok(())
+        }
+        fn recv(&mut self, buf: &mut [u8]) -> Result<Option<usize>, ()> {
+            match self.inbound.pop_front() {
+                Some(d) => {
+                    buf[..d.len()].copy_from_slice(&d);
+                    Ok(Some(d.len()))
+                }
+                None => Ok(None),
+            }
+        }
+    }
+
+    /// A retransmitted epoch-2 server flight (recognised by the record's epoch
+    /// bits, no decrypt) makes `recv` resend the buffered Finished before going on
+    /// to deliver the real application record (RFC 9147 §5.8).
+    #[cfg(feature = "cipher-aes")]
+    #[test]
+    fn recv_resends_finished_on_server_flight_retransmit() {
+        use crate::aead::Aes128GcmSha256 as Suite;
+        use crate::backends::RustCrypto;
+        use crate::newtype::Secret;
+        use zeroize::Zeroizing;
+
+        let s_ap = Secret::new(Zeroizing::new([0x5au8; 32]));
+        let mut fin_flight = [0u8; 128];
+        fin_flight[..3].copy_from_slice(b"FIN");
+        let mut client = DtlsClient::<Suite> {
+            client_app: EpochKeys::<Suite>::derive::<RustCrypto>(&Secret::new(Zeroizing::new(
+                [0xc1u8; 32],
+            )))
+            .unwrap(),
+            server_app: EpochKeys::<Suite>::derive::<RustCrypto>(&s_ap).unwrap(),
+            send_seq: 0,
+            recv_hint: 0,
+            server_replay: ReplayWindow::new(),
+            fin_flight,
+            fin_flight_len: 3,
+        };
+
+        // Seal a real epoch-3 application record to deliver after the retransmit.
+        let sealer = EpochKeys::<Suite>::derive::<RustCrypto>(&s_ap).unwrap();
+        let mut rec = [0u8; 128];
+        let app = sealer
+            .seal(
+                SealHeader {
+                    epoch: 3,
+                    seq: 0,
+                    seq_len: SeqNumLen::Two,
+                    cid: None,
+                },
+                b"data",
+                CT_APPLICATION_DATA,
+                &mut rec,
+            )
+            .unwrap()
+            .to_vec();
+        // A one-byte datagram whose unified header marks epoch 2 (0x20 | 0b10).
+        let mut transport = RecordingTransport {
+            inbound: [vec![0x22u8], app].into(),
+            sent: Vec::new(),
+        };
+
+        let mut buf = [0u8; 64];
+        assert_eq!(client.recv(&mut transport, &mut buf).unwrap(), Some(4));
+        assert_eq!(&buf[..4], b"data");
+        // The Finished was resent exactly once, in response to the epoch-2 record.
+        assert_eq!(transport.sent, vec![b"FIN".to_vec()]);
     }
 }
