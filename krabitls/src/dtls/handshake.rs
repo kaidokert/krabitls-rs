@@ -440,4 +440,124 @@ mod tests {
             ServerHelloKind::Retry { .. } => panic!("expected ServerHello after the cookie"),
         }
     }
+
+    #[cfg(test)]
+    fn transcript_msg(msg_type: u8, body: &[u8]) -> Vec<u8> {
+        let mut v = Vec::with_capacity(4 + body.len());
+        v.push(msg_type);
+        v.extend_from_slice(&(body.len() as u32).to_be_bytes()[1..4]);
+        v.extend_from_slice(body);
+        v
+    }
+
+    #[cfg(test)]
+    fn x25519_keypair(seed: [u8; 32]) -> ([u8; 32], [u8; 32]) {
+        let mut base = [0u8; 32];
+        base[0] = 9;
+        let public =
+            ed25519_heapless::x25519::<crate::bigint::Curve25519CtBn>(&seed, &base).unwrap();
+        (seed, public)
+    }
+
+    #[cfg(test)]
+    fn send_ch_body(sock: &std::net::UdpSocket, body: &[u8], msg_seq: u16, seq: u64) {
+        let mut msg = [0u8; 560];
+        HandshakeHeader {
+            msg_type: CLIENT_HELLO_MSG_TYPE,
+            length: body.len() as u32,
+            message_seq: msg_seq,
+            fragment_offset: 0,
+            fragment_length: body.len() as u32,
+        }
+        .write(&mut msg)
+        .unwrap();
+        msg[12..12 + body.len()].copy_from_slice(body);
+        let mut dgram = [0u8; 600];
+        let rec = PlaintextRecord::write(
+            crate::consts::CT_HANDSHAKE,
+            0,
+            seq,
+            &msg[..12 + body.len()],
+            &mut dgram,
+        )
+        .unwrap();
+        sock.send(rec).unwrap();
+    }
+
+    #[cfg(test)]
+    fn recv_dgram(sock: &std::net::UdpSocket) -> Vec<u8> {
+        let mut resp = vec![0u8; 2048];
+        let len = sock.recv(&mut resp).unwrap();
+        resp.truncate(len);
+        resp
+    }
+
+    /// The end-to-end milestone: after the plaintext handshake, build the HRR
+    /// transcript, derive the handshake-epoch keys (DTLS `"dtls13"` schedule),
+    /// and decrypt the server's first epoch-2 record — proving the key schedule
+    /// and protected record layer interoperate with a real DTLS 1.3 peer.
+    #[test]
+    #[ignore = "needs a live wolfSSL DTLS 1.3 server (set KRABITLS_DTLS_PORT)"]
+    fn live_derives_keys_and_decrypts_encrypted_extensions() {
+        use crate::aead::Aes128GcmSha256 as Suite;
+        use crate::backends::RustCrypto;
+        use crate::consts::{CT_HANDSHAKE, HS_ENCRYPTED_EXTENSIONS};
+        use crate::dtls::keys::derive_handshake_keys;
+        use crate::hkdf::TranscriptHash;
+        use std::net::UdpSocket;
+        use std::time::Duration;
+
+        let port: u16 = std::env::var("KRABITLS_DTLS_PORT")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let sock = UdpSocket::bind("127.0.0.1:0").unwrap();
+        sock.connect(("127.0.0.1", port)).unwrap();
+        sock.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+
+        let (priv_key, pub_key) = x25519_keypair([0x42u8; 32]);
+        let random = [0x77u8; 32];
+
+        let mut ch1 = [0u8; 512];
+        let ch1_len = write_client_hello(&random, &pub_key, None, None, &mut ch1).unwrap();
+        send_ch_body(&sock, &ch1[..ch1_len], 0, 0);
+        let hrr_body = hello_body_of(&recv_dgram(&sock));
+        let cookie = match parse_server_hello(&hrr_body).unwrap() {
+            ServerHelloKind::Retry { cookie } => cookie.to_vec(),
+            _ => panic!("expected HRR"),
+        };
+
+        let mut ch2 = [0u8; 512];
+        let ch2_len = write_client_hello(&random, &pub_key, None, Some(&cookie), &mut ch2).unwrap();
+        send_ch_body(&sock, &ch2[..ch2_len], 1, 1);
+        let sh_body = hello_body_of(&recv_dgram(&sock));
+        let server_share = match parse_server_hello(&sh_body).unwrap() {
+            ServerHelloKind::Hello { server_key_share } => *server_key_share,
+            _ => panic!("expected ServerHello"),
+        };
+        let mut flight = recv_dgram(&sock);
+
+        // HRR transcript: message_hash(H(CH1)) ‖ HRR ‖ CH2 ‖ SH (RFC 8446 §4.4.1).
+        let ch1_hash = {
+            let mut t = TranscriptHash::<RustCrypto>::new();
+            t.update(&transcript_msg(1, &ch1[..ch1_len]));
+            t.snapshot()
+        };
+        let mut transcript = TranscriptHash::<RustCrypto>::new();
+        transcript.update(&[0xFE, 0x00, 0x00, 0x20]);
+        transcript.update(ch1_hash.as_bytes());
+        transcript.update(&transcript_msg(2, &hrr_body));
+        transcript.update(&transcript_msg(1, &ch2[..ch2_len]));
+        transcript.update(&transcript_msg(2, &sh_body));
+        let th = transcript.snapshot();
+
+        let hk = derive_handshake_keys::<Suite, RustCrypto>(&priv_key, &server_share, &th).unwrap();
+        let opened = hk
+            .server
+            .open(0, 0, &mut flight)
+            .expect("AEAD open of the epoch-2 flight failed");
+        assert_eq!(opened.content_type, CT_HANDSHAKE);
+        let hh = HandshakeHeader::parse(opened.content).unwrap();
+        assert_eq!(hh.msg_type, HS_ENCRYPTED_EXTENSIONS);
+    }
 }

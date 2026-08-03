@@ -7,7 +7,7 @@
 
 use crate::bigint::Curve25519CtBn as Bn;
 use crate::dtls::record::{DtlsSuite, EpochKeys};
-use crate::hkdf::{HkdfLabelError, handshake_secret, handshake_traffic_secrets};
+use crate::hkdf::{HkdfLabelError, dtls_handshake_secret, dtls_handshake_traffic_secrets};
 use crate::newtype::{Secret, TranscriptDigest};
 use crate::traits::HkdfSha256;
 use subtle::ConstantTimeEq;
@@ -53,8 +53,9 @@ pub(crate) fn derive_handshake_keys<S: DtlsSuite, H: HkdfSha256>(
         return Err(KeyScheduleError::DhAllZero);
     }
 
-    let hs = handshake_secret::<H>(&ss[..])?;
-    let (client_hs_ts, server_hs_ts) = handshake_traffic_secrets::<H>(&hs, transcript_hash_ch_sh)?;
+    let hs = dtls_handshake_secret::<H>(&ss[..])?;
+    let (client_hs_ts, server_hs_ts) =
+        dtls_handshake_traffic_secrets::<H>(&hs, transcript_hash_ch_sh)?;
     Ok(HandshakeKeys {
         client: EpochKeys::<S>::derive::<H>(&client_hs_ts)?,
         server: EpochKeys::<S>::derive::<H>(&server_hs_ts)?,

@@ -13,7 +13,7 @@
 //! 1.3 peer lands with the handshake.
 
 use crate::aead::{CipherSuite, RecordKeys, split_inner_plaintext};
-use crate::hkdf::{HkdfLabelError, sn_key};
+use crate::hkdf::HkdfLabelError;
 use crate::newtype::Secret;
 use crate::traits::HkdfSha256;
 
@@ -97,10 +97,11 @@ pub(crate) struct EpochKeys<S: DtlsSuite> {
 
 impl<S: DtlsSuite> EpochKeys<S> {
     /// Derive both the AEAD keys and the sequence-number masker from one
-    /// traffic secret.
+    /// traffic secret. The AEAD key/iv use the DTLS `"dtls13"` label prefix
+    /// (RFC 9147 §5.9), so this cannot reuse the TLS `RecordKeys::derive`.
     pub(crate) fn derive<H: HkdfSha256>(traffic_secret: &Secret) -> Result<Self, HkdfLabelError> {
         Ok(Self {
-            keys: RecordKeys::<S>::derive::<H>(traffic_secret)?,
+            keys: S::derive_record_keys::<H>(traffic_secret)?,
             masker: S::derive_masker::<H>(traffic_secret)?,
         })
     }
@@ -310,6 +311,11 @@ fn reconstruct_seq(wire_low: u64, bits: u32, expected: u64) -> u64 {
 /// through the supertrait: [`CipherSuite`] admits only the two in-tree suites.
 pub(crate) trait DtlsSuite: CipherSuite {
     type Masker;
+    /// Derive this suite's AEAD `RecordKeys` from a traffic secret using the
+    /// DTLS `"dtls13"` label prefix (not the TLS `RecordKeys::derive`).
+    fn derive_record_keys<H: HkdfSha256>(
+        traffic_secret: &Secret,
+    ) -> Result<RecordKeys<Self>, HkdfLabelError>;
     fn derive_masker<H: HkdfSha256>(
         traffic_secret: &Secret,
     ) -> Result<Self::Masker, HkdfLabelError>;
@@ -320,14 +326,25 @@ pub(crate) trait DtlsSuite: CipherSuite {
 
 #[cfg(feature = "cipher-aes")]
 mod aes_mask {
-    use super::{DtlsSuite, HkdfLabelError, SN_SAMPLE_LEN, Secret, sn_key};
-    use crate::aead::Aes128GcmSha256;
+    use super::{DtlsSuite, HkdfLabelError, RecordKeys, SN_SAMPLE_LEN, Secret};
+    use crate::aead::{Aes128GcmSha256, CipherSuite};
+    use crate::hkdf::{dtls_traffic_keys, sn_key};
     use crate::traits::HkdfSha256;
     use aes_gcm::aes::Aes128;
     use aes_gcm::aes::cipher::{Array, BlockCipherEncrypt, KeyInit};
 
     impl DtlsSuite for Aes128GcmSha256 {
         type Masker = Aes128;
+
+        fn derive_record_keys<H: HkdfSha256>(
+            traffic_secret: &Secret,
+        ) -> Result<RecordKeys<Self>, HkdfLabelError> {
+            let (key, iv) = dtls_traffic_keys::<H, 16>(traffic_secret)?;
+            Ok(RecordKeys {
+                cipher: Self::make_cipher(&key),
+                iv,
+            })
+        }
 
         fn derive_masker<H: HkdfSha256>(
             traffic_secret: &Secret,
@@ -349,8 +366,9 @@ mod aes_mask {
 
 #[cfg(feature = "chacha20")]
 mod chacha_mask {
-    use super::{DtlsSuite, HkdfLabelError, SN_SAMPLE_LEN, Secret, sn_key};
-    use crate::aead::ChaCha20Poly1305Sha256;
+    use super::{DtlsSuite, HkdfLabelError, RecordKeys, SN_SAMPLE_LEN, Secret};
+    use crate::aead::{ChaCha20Poly1305Sha256, CipherSuite};
+    use crate::hkdf::{dtls_traffic_keys, sn_key};
     use crate::newtype::ZeroBuf;
     use crate::traits::HkdfSha256;
     use chacha20::cipher::{Array, KeyIvInit, StreamCipher, StreamCipherSeek};
@@ -358,6 +376,16 @@ mod chacha_mask {
 
     impl DtlsSuite for ChaCha20Poly1305Sha256 {
         type Masker = ZeroBuf<32>;
+
+        fn derive_record_keys<H: HkdfSha256>(
+            traffic_secret: &Secret,
+        ) -> Result<RecordKeys<Self>, HkdfLabelError> {
+            let (key, iv) = dtls_traffic_keys::<H, 32>(traffic_secret)?;
+            Ok(RecordKeys {
+                cipher: Self::make_cipher(&key),
+                iv,
+            })
+        }
 
         fn derive_masker<H: HkdfSha256>(
             traffic_secret: &Secret,

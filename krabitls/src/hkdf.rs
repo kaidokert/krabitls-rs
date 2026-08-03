@@ -47,19 +47,48 @@ impl From<heapless::CapacityError> for HkdfLabelError {
     }
 }
 
-/// `HKDF-Expand-Label(secret, label, context, len)` per RFC 8446 §7.1.
+/// TLS 1.3 label prefix (RFC 8446 §7.1).
+const TLS13_LABEL_PREFIX: &[u8] = b"tls13 ";
+/// DTLS 1.3 label prefix (RFC 9147 §5.9) — note: `"dtls13"` with no trailing
+/// space, unlike TLS's `"tls13 "`.
+#[cfg(feature = "dtls")]
+const DTLS13_LABEL_PREFIX: &[u8] = b"dtls13";
+
+/// `HKDF-Expand-Label(secret, label, context, len)` per RFC 8446 §7.1, using the
+/// TLS 1.3 `"tls13 "` label prefix.
 pub(crate) fn hkdf_expand_label<H: HkdfSha256>(
     secret: &[u8; 32],
     label: &[u8],
     context: &[u8],
     out: &mut [u8],
 ) -> Result<(), HkdfLabelError> {
-    const PREFIX: &[u8] = b"tls13 ";
+    hkdf_expand_label_prefixed::<H>(TLS13_LABEL_PREFIX, secret, label, context, out)
+}
 
+/// DTLS 1.3 counterpart of [`hkdf_expand_label`], using the `"dtls13"` label
+/// prefix (RFC 9147 §5.9). Every derived secret in the DTLS key schedule differs
+/// from TLS solely because of this prefix.
+#[cfg(feature = "dtls")]
+pub(crate) fn dtls_expand_label<H: HkdfSha256>(
+    secret: &[u8; 32],
+    label: &[u8],
+    context: &[u8],
+    out: &mut [u8],
+) -> Result<(), HkdfLabelError> {
+    hkdf_expand_label_prefixed::<H>(DTLS13_LABEL_PREFIX, secret, label, context, out)
+}
+
+fn hkdf_expand_label_prefixed<H: HkdfSha256>(
+    prefix: &[u8],
+    secret: &[u8; 32],
+    label: &[u8],
+    context: &[u8],
+    out: &mut [u8],
+) -> Result<(), HkdfLabelError> {
     if out.len() > u16::MAX as usize {
         return Err(HkdfLabelError::OutputTooLong);
     }
-    let label_total = PREFIX.len() + label.len();
+    let label_total = prefix.len() + label.len();
     if label_total > u8::MAX as usize {
         return Err(HkdfLabelError::LabelTooLong);
     }
@@ -70,7 +99,7 @@ pub(crate) fn hkdf_expand_label<H: HkdfSha256>(
     let mut info: heapless::Vec<u8, HKDF_LABEL_MAX> = heapless::Vec::new();
     info.extend_from_slice(&(out.len() as u16).to_be_bytes())?;
     info.extend_from_slice(&[label_total as u8])?;
-    info.extend_from_slice(PREFIX)?;
+    info.extend_from_slice(prefix)?;
     info.extend_from_slice(label)?;
     info.extend_from_slice(&[context.len() as u8])?;
     info.extend_from_slice(context)?;
@@ -238,8 +267,61 @@ pub(crate) fn sn_key<H: HkdfSha256, const N: usize>(
     traffic_secret: &Secret,
 ) -> Result<ZeroBuf<N>, HkdfLabelError> {
     let mut key = ZeroBuf::<N>::new([0; N]);
-    hkdf_expand_label::<H>(traffic_secret.as_bytes(), b"sn", &[], &mut key[..])?;
+    dtls_expand_label::<H>(traffic_secret.as_bytes(), b"sn", &[], &mut key[..])?;
     Ok(key)
+}
+
+/// DTLS 1.3 `Derive-Secret` — the `"dtls13"`-prefixed counterpart of
+/// [`derive_secret`].
+#[cfg(feature = "dtls")]
+pub(crate) fn dtls_derive_secret<H: HkdfSha256>(
+    secret: &Secret,
+    label: &[u8],
+    transcript_hash: &TranscriptDigest,
+) -> Result<Secret, HkdfLabelError> {
+    let mut out = ZeroBuf::<32>::new([0; 32]);
+    dtls_expand_label::<H>(
+        secret.as_bytes(),
+        label,
+        transcript_hash.as_bytes(),
+        &mut out[..],
+    )?;
+    Ok(Secret::new(out))
+}
+
+/// DTLS 1.3 handshake secret — the `"dtls13"`-prefixed counterpart of
+/// [`handshake_secret`]. `early_secret` is prefix-independent (a bare
+/// HKDF-Extract), so only the `"derived"` step changes.
+#[cfg(feature = "dtls")]
+pub(crate) fn dtls_handshake_secret<H: HkdfSha256>(dhe: &[u8]) -> Result<Secret, HkdfLabelError> {
+    let salt = dtls_derive_secret::<H>(&early_secret::<H>(), b"derived", &EMPTY_TRANSCRIPT_HASH)?;
+    Ok(Secret::new(H::extract(salt.as_bytes(), dhe)))
+}
+
+/// DTLS 1.3 handshake traffic secrets — the `"dtls13"`-prefixed counterpart of
+/// [`handshake_traffic_secrets`].
+#[cfg(feature = "dtls")]
+pub(crate) fn dtls_handshake_traffic_secrets<H: HkdfSha256>(
+    hs: &Secret,
+    transcript_hash_ch_sh: &TranscriptDigest,
+) -> Result<(Secret, Secret), HkdfLabelError> {
+    Ok((
+        dtls_derive_secret::<H>(hs, b"c hs traffic", transcript_hash_ch_sh)?,
+        dtls_derive_secret::<H>(hs, b"s hs traffic", transcript_hash_ch_sh)?,
+    ))
+}
+
+/// DTLS 1.3 AEAD `(key, iv)` — the `"dtls13"`-prefixed counterpart of
+/// [`traffic_keys`].
+#[cfg(feature = "dtls")]
+pub(crate) fn dtls_traffic_keys<H: HkdfSha256, const N: usize>(
+    traffic_secret: &Secret,
+) -> Result<(ZeroBuf<N>, AeadIv), HkdfLabelError> {
+    let mut key = ZeroBuf::<N>::new([0; N]);
+    let mut iv = ZeroBuf::<12>::new([0; 12]);
+    dtls_expand_label::<H>(traffic_secret.as_bytes(), b"key", &[], &mut key[..])?;
+    dtls_expand_label::<H>(traffic_secret.as_bytes(), b"iv", &[], &mut iv[..])?;
+    Ok((key, AeadIv::new(iv)))
 }
 
 /// `master_secret = HKDF-Extract(Derive-Secret(handshake_secret, "derived", H("")), 0_hash)`
