@@ -7,11 +7,12 @@
 //! application keys, then [`DtlsClient::send`] / [`DtlsClient::recv`] carry
 //! application data.
 //!
-//! Not yet wired: **server-certificate verification**. The driver decrypts and
-//! transcript-hashes the server flight but does not yet run
-//! [`crate::server_flight::verify_server_flight`] (CertificateVerify + Finished
-//! MAC + trust decision) — that reuse is the next slice. Until then this is an
-//! internal driver, not a public secure `connect`. Also absent: the RFC 9147 §7
+//! Server-certificate verification reuses the TLS path behind a caller
+//! [`VerifyStrategy`]: the same chain trust decision, leaf pubkey cross-check,
+//! hostname match, and CertificateVerify signature check. The server Finished MAC
+//! is the one piece that cannot be reused — the TLS `verify_server_flight` bundles
+//! a `"tls13 "`-prefixed Finished — so DTLS sequences the transcript here and
+//! verifies the Finished with the `"dtls13"` schedule. Absent: the RFC 9147 §7
 //! reliability layer (retransmit timer + ACKs); a lost datagram surfaces as
 //! [`DtlsClientError::Timeout`] rather than triggering a retransmit.
 
@@ -27,8 +28,13 @@ use crate::dtls::transport::DatagramTransport;
 use crate::hkdf::{
     TranscriptHash, dtls_application_traffic_secrets, dtls_finished_mac, dtls_master_secret,
 };
-use crate::server_flight::parse_server_flight;
-use crate::traits::HkdfSha256;
+use crate::identity::verify_hostname;
+use crate::server_flight::{
+    extract_chain, parse_server_flight, verify_certificate_verify_with_prepared,
+};
+use crate::traits::verify_strategy::{CertChainView, PreparedVerifier, VerifyStrategy};
+use crate::traits::{CertParser, Ed25519VerifierProvider, HkdfSha256, RsaVerifierProvider};
+use subtle::ConstantTimeEq;
 
 /// The two DTLS 1.3 epochs this driver produces after the handshake plus the
 /// per-epoch send/receive counters. Epoch 2 (handshake) keys are consumed during
@@ -57,6 +63,14 @@ pub(crate) enum DtlsClientError<E> {
     /// A working buffer (ClientHello, record, or the flight-reassembly buffer)
     /// was too small.
     BufferTooSmall,
+    /// The verify strategy rejected the server certificate chain.
+    StrategyRejected,
+    /// The strategy's prepared verifier did not match the leaf certificate.
+    PubkeyMismatch,
+    /// The leaf certificate did not match the requested hostname.
+    HostnameMismatch,
+    /// CertificateVerify signature or the server Finished MAC failed.
+    CertVerify,
 }
 
 /// The X25519 basepoint (u = 9); a scalar-mult against it yields the client's
@@ -69,12 +83,17 @@ const X25519_BASEPOINT: [u8; 32] = {
 
 impl<S: DtlsSuite> DtlsClient<S> {
     /// Drive a full DTLS 1.3 handshake against the connected peer and return a
-    /// client ready to carry application data. `flight_buf` receives the
+    /// client ready to carry application data. `strategy` decides trust in the
+    /// server chain; `hostname`, when `Some`, is matched against the leaf SAN
+    /// (`None` skips the check — sound only when the strategy pins the key, since
+    /// then the pin is the identity binding). `flight_buf` receives the
     /// reassembled epoch-2 server flight (`msg_type ‖ u24 len ‖ body` messages);
     /// it must be large enough for the whole flight (a few KiB for a typical
     /// certificate chain).
-    pub(crate) fn connect<T, H>(
+    pub(crate) fn connect<T, H, V, E, R, P, const MAX_CHAIN: usize>(
         transport: &mut T,
+        strategy: &V,
+        hostname: Option<&str>,
         x25519_priv: &[u8; 32],
         client_random: &[u8; 32],
         flight_buf: &mut [u8],
@@ -82,6 +101,10 @@ impl<S: DtlsSuite> DtlsClient<S> {
     where
         T: DatagramTransport,
         H: HkdfSha256,
+        V: VerifyStrategy<E, R>,
+        E: Ed25519VerifierProvider,
+        R: RsaVerifierProvider,
+        P: CertParser,
     {
         let pub_key = ed25519_heapless::x25519::<Bn>(x25519_priv, &X25519_BASEPOINT)
             .map_err(|_| DtlsClientError::KeySchedule)?;
@@ -170,19 +193,55 @@ impl<S: DtlsSuite> DtlsClient<S> {
                 break;
             }
         }
-        // NEXT SLICE: verify_server_flight over `&flight_buf[..flight_len]`
-        // (CertificateVerify signature + server Finished MAC + trust decision)
-        // before trusting the peer. Currently the flight is only reassembled and
-        // hashed into the transcript.
-        let flight = parse_server_flight(&flight_buf[..flight_len])
+        // Verify the flight. The cert-chain trust decision, the leaf pubkey
+        // cross-check, the hostname match, and the CertificateVerify signature
+        // reuse the TLS path unchanged. The server Finished MAC does NOT:
+        // `verify_server_flight` bundles a `"tls13 "`-prefixed Finished check, so
+        // DTLS must sequence the transcript itself and verify the Finished with
+        // the `"dtls13"` schedule (`dtls_finished_mac`).
+        let flight_plaintext = &flight_buf[..flight_len];
+        let flight_view =
+            parse_server_flight(flight_plaintext).map_err(|_| DtlsClientError::Protocol)?;
+        let chain = extract_chain::<MAX_CHAIN>(flight_view.cert_body)
             .map_err(|_| DtlsClientError::Protocol)?;
-        transcript.update(flight.ee_full);
-        if let Some(creq) = flight.cert_request_full {
+        let mut slot: Option<PreparedVerifier<E, R>> = None;
+        let trusted = strategy
+            .verify_chain(CertChainView { certs: &chain }, &mut slot)
+            .map_err(|_| DtlsClientError::StrategyRejected)?;
+        let leaf_der = chain.first().copied().ok_or(DtlsClientError::Protocol)?;
+        let leaf_view = P::parse(leaf_der).map_err(|_| DtlsClientError::Protocol)?;
+        if !bool::from(trusted.prepared().matches_cert(&leaf_view)) {
+            return Err(DtlsClientError::PubkeyMismatch);
+        }
+        if let Some(host) = hostname {
+            verify_hostname(&leaf_view, host).map_err(|_| DtlsClientError::HostnameMismatch)?;
+        }
+
+        transcript.update(flight_view.ee_full);
+        if let Some(creq) = flight_view.cert_request_full {
             transcript.update(creq);
         }
-        transcript.update(flight.cert_full);
-        transcript.update(flight.cv_full);
-        transcript.update(flight.fin_full);
+        transcript.update(flight_view.cert_full);
+        let th_after_cert = transcript.snapshot();
+        verify_certificate_verify_with_prepared::<E, R>(
+            trusted.prepared(),
+            &th_after_cert,
+            flight_view.cv_body,
+        )
+        .map_err(|_| DtlsClientError::CertVerify)?;
+        transcript.update(flight_view.cv_full);
+        let th_after_cv = transcript.snapshot();
+
+        // Server Finished: recompute the verify-data with the DTLS schedule and
+        // compare in constant time.
+        let expected_fin = dtls_finished_mac::<H>(&hk.server_hs_ts, &th_after_cv)
+            .map_err(|_| DtlsClientError::KeySchedule)?;
+        if flight_view.fin_body.len() != expected_fin.len()
+            || !bool::from(expected_fin[..].ct_eq(flight_view.fin_body))
+        {
+            return Err(DtlsClientError::CertVerify);
+        }
+        transcript.update(flight_view.fin_full);
         let th_server_fin = transcript.snapshot();
 
         // --- client Finished (epoch 2). The server accepts a bare Finished when
@@ -403,7 +462,8 @@ mod tests {
     #[ignore = "needs a live wolfSSL DTLS 1.3 server (set KRABITLS_DTLS_PORT)"]
     fn live_client_round_trips_app_data() {
         use crate::aead::Aes128GcmSha256 as Suite;
-        use crate::backends::RustCrypto;
+        use crate::backends::{DerCert, PinOrSelfSigned, PinnedPubkeyOwned, RustCrypto};
+        use crate::traits::verify_strategy::SafeStrategy;
 
         let port: u16 = std::env::var("KRABITLS_DTLS_PORT")
             .unwrap()
@@ -414,14 +474,26 @@ mod tests {
         sock.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
         let mut transport = UdpTransport::new(sock);
 
+        // Pin the wolfSSL server-ed25519.pem leaf key (the cert carries no SAN,
+        // so hostname matching is skipped and the pin is the identity binding).
+        let pin = PinnedPubkeyOwned::ed25519([
+            0x23, 0xaa, 0x4d, 0x60, 0x50, 0xe0, 0x13, 0xd3, 0x3a, 0xed, 0xab, 0xf6, 0xa9, 0xcc,
+            0x4a, 0xfe, 0xd7, 0x4d, 0x2f, 0xd2, 0x5b, 0x1a, 0x10, 0x05, 0xef, 0x5a, 0x41, 0x25,
+            0xce, 0x1b, 0x53, 0x78,
+        ]);
+        let strategy = SafeStrategy::<_, DerCert>::new(PinOrSelfSigned::pinned(pin));
+
         let mut flight_buf = [0u8; 4096];
-        let mut client = DtlsClient::<Suite>::connect::<_, RustCrypto>(
-            &mut transport,
-            &[0x42u8; 32],
-            &[0x77u8; 32],
-            &mut flight_buf,
-        )
-        .expect("handshake completes");
+        let mut client =
+            DtlsClient::<Suite>::connect::<_, RustCrypto, _, RustCrypto, RustCrypto, DerCert, 4>(
+                &mut transport,
+                &strategy,
+                None,
+                &[0x42u8; 32],
+                &[0x77u8; 32],
+                &mut flight_buf,
+            )
+            .expect("handshake completes");
 
         let mut out = [0u8; 128];
         client
