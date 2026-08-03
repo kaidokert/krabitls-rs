@@ -109,6 +109,13 @@ const MAX_FLIGHT_MSGS: usize = 8;
 /// Disjoint received fragment ranges tracked per message before they merge.
 const MAX_MSG_FRAGS: usize = 16;
 
+/// Upper bound on datagrams accepted while reassembling one server flight. A
+/// legitimate flight is a few dozen even at a tiny MTU with retransmits; the cap
+/// stops a peer that streams endless partial/duplicate fragments (which never
+/// complete the flight and keep resetting the receive timeout) from spinning the
+/// client forever.
+const MAX_FLIGHT_DATAGRAMS: usize = 256;
+
 /// The X25519 basepoint (u = 9); a scalar-mult against it yields the client's
 /// public key from its private scalar.
 const X25519_BASEPOINT: [u8; 32] = {
@@ -234,7 +241,12 @@ impl<S: DtlsSuite> DtlsClient<S> {
                 &mut srv_seq,
             )?;
         }
+        let mut datagrams = 0usize;
         while !reasm.flight_complete(base_seq, HS_FINISHED) {
+            if datagrams >= MAX_FLIGHT_DATAGRAMS {
+                return Err(DtlsClientError::Timeout);
+            }
+            datagrams += 1;
             let mut dg = [0u8; 2048];
             let n = recv_datagram(transport, &mut dg)?;
             feed_epoch2_records::<S, T::Error>(
