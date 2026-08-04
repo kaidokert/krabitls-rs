@@ -43,6 +43,9 @@
 //! `TcpStream` wrapper); `rng` is any [`rand_core::TryCryptoRng`].
 
 #![cfg_attr(not(test), no_std)]
+// This crate contains no `unsafe` — a compile-time guarantee, not a convention.
+// (Dependencies may use `unsafe` internally; this only governs krabitls itself.)
+#![forbid(unsafe_code)]
 
 pub(crate) mod aead;
 pub mod backends;
