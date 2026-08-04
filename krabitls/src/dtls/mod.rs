@@ -8,6 +8,18 @@
 //! The public surface is [`DatagramTransport`] (the caller's UDP adapter) and
 //! [`DtlsStream`] (the blocking client façade over it); the record/handshake
 //! internals stay crate-private.
+//!
+//! Explicit-panic constructs are compile-forbidden in this module's non-test
+//! code: `unwrap`, `expect`, and `panic!` are denied, so every failure path is a
+//! typed error instead. (Slice indexing is *not* denied — the parsers use an
+//! up-front length guard then index, which `clippy::indexing_slicing` flags even
+//! when provably safe; converting the whole codec to `.get()?` costs readability
+//! for no real gain, so bounds rest on those guards, verified by review.)
+
+#![cfg_attr(
+    not(test),
+    deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)
+)]
 
 // The record, framing, and replay primitives are consumed by tests and by the
 // DTLS handshake driver; parts of the surface a given build doesn't reach are

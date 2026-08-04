@@ -64,8 +64,10 @@ impl Iterator for AckRecords<'_> {
     fn next(&mut self) -> Option<(u64, u64)> {
         let chunk = self.entries.get(self.pos..self.pos + RECORD_NUMBER_LEN)?;
         self.pos += RECORD_NUMBER_LEN;
-        let epoch = u64::from_be_bytes(chunk[..8].try_into().unwrap());
-        let seq = u64::from_be_bytes(chunk[8..16].try_into().unwrap());
+        // `chunk` is exactly 16 bytes, so both conversions succeed; `.ok()?`
+        // keeps that infallible without an `unwrap`.
+        let epoch = u64::from_be_bytes(chunk.get(..8)?.try_into().ok()?);
+        let seq = u64::from_be_bytes(chunk.get(8..16)?.try_into().ok()?);
         Some((epoch, seq))
     }
 }

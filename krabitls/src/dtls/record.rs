@@ -404,6 +404,10 @@ mod chacha_mask {
             let counter = u32::from_le_bytes([sample[0], sample[1], sample[2], sample[3]]);
             let mut nonce = [0u8; 12];
             nonce.copy_from_slice(&sample[4..16]);
+            // `masker` is a fixed 32-byte `sn_key`, so this views it as a ChaCha20
+            // key without copying and cannot fail; the `expect` is unreachable but
+            // kept loud (a silent fallback would leave the seq unmasked).
+            #[allow(clippy::expect_used)]
             let key = <&Key>::try_from(&masker[..]).expect("sn_key is the ChaCha20 key length");
             let mut cipher = ChaCha20::new(key, &Array::from(nonce));
             cipher.seek(counter as u64 * 64);
