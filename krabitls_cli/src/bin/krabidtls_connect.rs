@@ -131,6 +131,7 @@ fn usage() {
         "usage: krabidtls_connect {{--pin <hex> | --self-signed}} host:port [coap-path]\n\
          \x20 --pin <hex>    server pubkey to pin: 32 (Ed25519), 65/97 (ECDSA), 128/256 (RSA)\n\
          \x20 --self-signed  trust any self-signed leaf (TOFU; dev only)\n\
+         \x20 --cid <hex>    advertise an RFC 9146 connection id\n\
          \x20 coap-path      CoAP resource to GET (default /.well-known/core)"
     );
 }
@@ -138,6 +139,7 @@ fn usage() {
 fn run() -> Result<(), String> {
     let mut pin: Option<PinnedPubkeyOwned> = None;
     let mut self_signed = false;
+    let mut cid: Option<Vec<u8>> = None;
     let mut endpoint: Option<String> = None;
     let mut path = String::from("/.well-known/core");
 
@@ -149,6 +151,10 @@ fn run() -> Result<(), String> {
                 pin = Some(parse_pin(&v).map_err(|e| format!("--pin: {e}"))?);
             }
             "--self-signed" => self_signed = true,
+            "--cid" => {
+                let v = args.next().ok_or("--cid requires a value")?;
+                cid = Some(decode_hex(&v).map_err(|e| format!("--cid: {e}"))?);
+            }
             "-h" | "--help" => {
                 usage();
                 return Ok(());
@@ -188,13 +194,21 @@ fn run() -> Result<(), String> {
         transport,
         &strategy,
         None,
+        cid.as_deref(),
         &x25519_priv,
         &client_random,
         &mut flight_buf,
         &mut reasm_buf,
     )
     .map_err(|e| format!("handshake: {e:?}"))?;
-    log::info!("DTLS 1.3 handshake complete with {remote}");
+    log::info!(
+        "DTLS 1.3 handshake complete with {remote}{}",
+        if cid.is_some() {
+            " (CID advertised)"
+        } else {
+            ""
+        }
+    );
 
     coap_get(&mut stream, &path)
 }

@@ -68,6 +68,12 @@ pub(crate) struct DtlsClient<S: DtlsSuite> {
     /// drops to zero once any authenticated epoch-3 record confirms the server
     /// completed the handshake (so an injected epoch-2 header can't spin `recv`).
     fin_resends_left: u8,
+    /// Negotiated RFC 9146 connection ids. `recv_cid_len` is the length of our
+    /// own CID that inbound records carry (0 = not negotiated); `send_cid` /
+    /// `send_cid_len` is the peer's CID we stamp on records we send.
+    recv_cid_len: usize,
+    send_cid: [u8; MAX_CID_LEN],
+    send_cid_len: usize,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -100,6 +106,10 @@ pub enum DtlsClientError<E> {
 /// Total sends of a handshake flight before giving up (RFC 9147 §5.8): the
 /// initial transmission plus retransmissions on receive timeout.
 const MAX_FLIGHT_ATTEMPTS: u8 = 5;
+
+/// Largest peer connection id accepted (RFC 9146 permits up to 255; real CIDs
+/// are a handful of bytes, so this cap keeps the client's state small).
+const MAX_CID_LEN: usize = 20;
 
 /// Distinct handshake messages the server flight reassembler tracks at once
 /// (EncryptedExtensions, optional CertificateRequest, Certificate,
@@ -134,10 +144,12 @@ impl<S: DtlsSuite> DtlsClient<S> {
     /// and `reasm_buf` is scratch for the fragment bodies before reassembly; both
     /// must be large enough for the whole flight (a few KiB for a typical
     /// certificate chain).
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn connect<T, H, V, E, R, P, const MAX_CHAIN: usize>(
         transport: &mut T,
         strategy: &V,
         hostname: Option<&str>,
+        client_cid: Option<&[u8]>,
         x25519_priv: &[u8; 32],
         client_random: &[u8; 32],
         flight_buf: &mut [u8],
@@ -164,7 +176,7 @@ impl<S: DtlsSuite> DtlsClient<S> {
 
         // --- CH1 -> HelloRetryRequest ---
         let mut ch1 = [0u8; 512];
-        let ch1_len = write_client_hello(client_random, &pub_key, None, None, &mut ch1)
+        let ch1_len = write_client_hello(client_random, &pub_key, None, None, client_cid, &mut ch1)
             .map_err(|_| DtlsClientError::BufferTooSmall)?;
         let ch1_rec = build_client_hello_record(&ch1[..ch1_len], 0, 0, &mut ch_dgram)?;
         let hrr_len = send_flight_await_reply(transport, ch1_rec, &mut rbuf, MAX_FLIGHT_ATTEMPTS)?;
@@ -202,6 +214,7 @@ impl<S: DtlsSuite> DtlsClient<S> {
             &pub_key,
             None,
             Some(&cookie_buf.0[..cookie_buf.1]),
+            client_cid,
             &mut ch2,
         )
         .map_err(|_| DtlsClientError::BufferTooSmall)?;
@@ -209,16 +222,39 @@ impl<S: DtlsSuite> DtlsClient<S> {
         let sh_len = send_flight_await_reply(transport, ch2_rec, &mut rbuf, MAX_FLIGHT_ATTEMPTS)?;
         transcript.update(&transcript_msg_header(CLIENT_HELLO_MSG_TYPE, ch2_len));
         transcript.update(&ch2[..ch2_len]);
+        // Negotiated CID state, filled from the ServerHello. `recv_cid_len` is our
+        // own advertised CID's length (present on inbound records once the server
+        // agrees); `send_cid` is the server's CID we stamp on outbound records.
+        let mut recv_cid_len = 0usize;
+        let mut send_cid_buf = [0u8; MAX_CID_LEN];
+        let mut send_cid_len = 0usize;
         let (server_share, sh_seq, sh_trailing) = {
             let (sh_body, sh_seq, sh_trailing) = parse_hello_body::<T::Error>(&rbuf[..sh_len])?;
             transcript.update(&transcript_msg_header(2, sh_body.len()));
             transcript.update(sh_body);
             let share = match parse_server_hello(sh_body).map_err(|_| DtlsClientError::Handshake)? {
-                ServerHelloKind::Hello { server_key_share } => *server_key_share,
+                ServerHelloKind::Hello {
+                    server_key_share,
+                    server_cid,
+                } => {
+                    // CID is negotiated only if we advertised one AND the server
+                    // returned the extension. Then inbound records carry our CID,
+                    // and we send with the server's CID (empty = send none).
+                    if let (Some(our_cid), Some(their_cid)) = (client_cid, server_cid) {
+                        recv_cid_len = our_cid.len();
+                        if their_cid.len() > MAX_CID_LEN {
+                            return Err(DtlsClientError::Handshake);
+                        }
+                        send_cid_buf[..their_cid.len()].copy_from_slice(their_cid);
+                        send_cid_len = their_cid.len();
+                    }
+                    *server_key_share
+                }
                 ServerHelloKind::Retry { .. } => return Err(DtlsClientError::Handshake),
             };
             (share, sh_seq, sh_trailing)
         };
+        let send_cid: Option<&[u8]> = (send_cid_len > 0).then_some(&send_cid_buf[..send_cid_len]);
         // The encrypted flight's messages are numbered from one past ServerHello.
         let base_seq = sh_seq.wrapping_add(1);
 
@@ -235,6 +271,7 @@ impl<S: DtlsSuite> DtlsClient<S> {
             let start = sh_len - sh_trailing;
             feed_epoch2_records::<S, T::Error>(
                 &hk.server,
+                recv_cid_len,
                 &mut rbuf[start..sh_len],
                 &mut reasm,
                 reasm_buf,
@@ -251,6 +288,7 @@ impl<S: DtlsSuite> DtlsClient<S> {
             let n = recv_datagram(transport, &mut dg)?;
             feed_epoch2_records::<S, T::Error>(
                 &hk.server,
+                recv_cid_len,
                 &mut dg[..n],
                 &mut reasm,
                 reasm_buf,
@@ -325,7 +363,7 @@ impl<S: DtlsSuite> DtlsClient<S> {
                     epoch: 2,
                     seq: 0,
                     seq_len: SeqNumLen::Two,
-                    cid: None,
+                    cid: send_cid,
                 },
                 fin_msg,
                 CT_HANDSHAKE,
@@ -365,7 +403,7 @@ impl<S: DtlsSuite> DtlsClient<S> {
                     epoch: 2,
                     seq: 1,
                     seq_len: SeqNumLen::Two,
-                    cid: None,
+                    cid: send_cid,
                 },
                 &ack_body[..ack_len],
                 CT_ACK,
@@ -392,6 +430,9 @@ impl<S: DtlsSuite> DtlsClient<S> {
             fin_flight,
             fin_flight_len,
             fin_resends_left: MAX_FLIGHT_ATTEMPTS,
+            recv_cid_len,
+            send_cid: send_cid_buf,
+            send_cid_len,
         })
     }
 
@@ -405,6 +446,7 @@ impl<S: DtlsSuite> DtlsClient<S> {
     where
         T: DatagramTransport,
     {
+        let cid = (self.send_cid_len > 0).then_some(&self.send_cid[..self.send_cid_len]);
         let sealed = self
             .client_app
             .seal(
@@ -412,7 +454,7 @@ impl<S: DtlsSuite> DtlsClient<S> {
                     epoch: 3,
                     seq: self.send_seq,
                     seq_len: SeqNumLen::Two,
-                    cid: None,
+                    cid,
                 },
                 payload,
                 CT_APPLICATION_DATA,
@@ -466,7 +508,10 @@ impl<S: DtlsSuite> DtlsClient<S> {
                 }
                 continue;
             }
-            let Ok(opened) = self.server_app.open(0, self.recv_hint, &mut dg[..n]) else {
+            let Ok(opened) = self
+                .server_app
+                .open(self.recv_cid_len, self.recv_hint, &mut dg[..n])
+            else {
                 // Injected/garbage record: fails AEAD, skipped without touching
                 // the replay window or the reconstruction hint.
                 continue;
@@ -577,6 +622,7 @@ fn recv_datagram<T: DatagramTransport>(
 /// a coalesced epoch-0 retransmit or trailing padding).
 fn feed_epoch2_records<S: DtlsSuite, E>(
     server_keys: &EpochKeys<S>,
+    cid_len: usize,
     records: &mut [u8],
     reasm: &mut Reassembler<MAX_FLIGHT_MSGS, MAX_MSG_FRAGS>,
     reasm_buf: &mut [u8],
@@ -590,7 +636,7 @@ fn feed_epoch2_records<S: DtlsSuite, E>(
             break;
         }
         let opened = server_keys
-            .open(0, *srv_seq, &mut records[rec_pos..n])
+            .open(cid_len, *srv_seq, &mut records[rec_pos..n])
             .map_err(|_| DtlsClientError::Protocol)?;
         let record_len = opened.record_len;
         if record_len == 0 {
@@ -701,6 +747,7 @@ mod tests {
                 &mut transport,
                 &strategy,
                 None,
+                None,
                 &[0x42u8; 32],
                 &[0x77u8; 32],
                 &mut flight_buf,
@@ -717,6 +764,60 @@ mod tests {
         // server's application reply comes back on a single call. (The wolfSSL
         // example server sends a fixed reply, not an echo, so only the decrypt
         // is asserted, not the content.)
+        let mut buf = [0u8; 256];
+        let reply = client
+            .recv(&mut transport, &mut buf)
+            .expect("recv succeeds")
+            .expect("an application_data reply, not a timeout");
+        assert!(reply > 0, "decrypted a non-empty application_data reply");
+    }
+
+    /// The handshake negotiates an RFC 9146 connection id and the whole
+    /// encrypted exchange carries CIDs. Run the wolfSSL example server with
+    /// `--cid <str>` (needs `--enable-dtlscid`), then set `KRABITLS_DTLS_PORT`.
+    #[test]
+    #[ignore = "needs a CID-enabled wolfSSL DTLS 1.3 server (server --cid + KRABITLS_DTLS_PORT)"]
+    fn live_handshake_with_connection_id() {
+        use crate::aead::Aes128GcmSha256 as Suite;
+        use crate::backends::{DerCert, PinOrSelfSigned, PinnedPubkeyOwned, RustCrypto};
+        use crate::traits::verify_strategy::SafeStrategy;
+
+        let port: u16 = std::env::var("KRABITLS_DTLS_PORT")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let sock = UdpSocket::bind("127.0.0.1:0").unwrap();
+        sock.connect(("127.0.0.1", port)).unwrap();
+        sock.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        let mut transport = UdpTransport::new(sock);
+
+        let pin = PinnedPubkeyOwned::ed25519([
+            0x23, 0xaa, 0x4d, 0x60, 0x50, 0xe0, 0x13, 0xd3, 0x3a, 0xed, 0xab, 0xf6, 0xa9, 0xcc,
+            0x4a, 0xfe, 0xd7, 0x4d, 0x2f, 0xd2, 0x5b, 0x1a, 0x10, 0x05, 0xef, 0x5a, 0x41, 0x25,
+            0xce, 0x1b, 0x53, 0x78,
+        ]);
+        let strategy = SafeStrategy::<_, DerCert>::new(PinOrSelfSigned::pinned(pin));
+
+        let mut flight_buf = [0u8; 8192];
+        let mut reasm_buf = [0u8; 8192];
+        let mut client =
+            DtlsClient::<Suite>::connect::<_, RustCrypto, _, RustCrypto, RustCrypto, DerCert, 4>(
+                &mut transport,
+                &strategy,
+                None,
+                Some(b"cl01"),
+                &[0x42u8; 32],
+                &[0x77u8; 32],
+                &mut flight_buf,
+                &mut reasm_buf,
+            )
+            .expect("handshake completes with a negotiated connection id");
+
+        // Epoch-3 app data now rides CID-tagged records in both directions.
+        let mut out = [0u8; 128];
+        client
+            .send(&mut transport, b"hello over cid", &mut out)
+            .expect("app data sends");
         let mut buf = [0u8; 256];
         let reply = client
             .recv(&mut transport, &mut buf)
@@ -760,6 +861,7 @@ mod tests {
             DtlsClient::<Suite>::connect::<_, RustCrypto, _, RustCrypto, RustCrypto, DerCert, 4>(
                 &mut transport,
                 &strategy,
+                None,
                 None,
                 &[0x42u8; 32],
                 &[0x77u8; 32],
@@ -825,6 +927,9 @@ mod tests {
             fin_flight: [0u8; 128],
             fin_flight_len: 0,
             fin_resends_left: 0,
+            recv_cid_len: 0,
+            send_cid: [0u8; MAX_CID_LEN],
+            send_cid_len: 0,
         };
 
         // Seal one epoch-3 record with the server's app keys, then feed it twice.
@@ -965,6 +1070,7 @@ mod tests {
                 &mut transport,
                 &strategy,
                 None,
+                None,
                 &[0x42u8; 32],
                 &[0x77u8; 32],
                 &mut flight_buf,
@@ -1027,6 +1133,9 @@ mod tests {
             fin_flight,
             fin_flight_len: 3,
             fin_resends_left: MAX_FLIGHT_ATTEMPTS,
+            recv_cid_len: 0,
+            send_cid: [0u8; MAX_CID_LEN],
+            send_cid_len: 0,
         };
 
         // Seal a real epoch-3 application record to deliver after the retransmit.

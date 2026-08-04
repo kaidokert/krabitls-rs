@@ -21,6 +21,8 @@ const EXT_SIGNATURE_ALGORITHMS: u16 = 13;
 const EXT_SUPPORTED_VERSIONS: u16 = 43;
 const EXT_COOKIE: u16 = 44;
 const EXT_KEY_SHARE: u16 = 51;
+/// RFC 9146 connection_id extension.
+const EXT_CONNECTION_ID: u16 = 54;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, thiserror::Error)]
 pub(crate) enum ClientHelloError {
@@ -91,6 +93,7 @@ pub(crate) fn write_client_hello(
     x25519_pub: &[u8; 32],
     session_id: Option<&[u8; LEGACY_SESSION_ID_LEN]>,
     cookie: Option<&[u8]>,
+    client_cid: Option<&[u8]>,
     out: &mut [u8],
 ) -> Result<usize, ClientHelloError> {
     let mut c = Cursor::new(out);
@@ -154,6 +157,16 @@ pub(crate) fn write_client_hello(
     c.u16(32);
     c.put(x25519_pub);
 
+    // connection_id (RFC 9146): the CID we want the server to echo on records
+    // it sends to us. Advertising it negotiates CID for this connection; the
+    // server signals agreement by returning its own connection_id in ServerHello.
+    if let Some(cid) = client_cid {
+        c.u16(EXT_CONNECTION_ID);
+        c.u16((1 + cid.len()) as u16);
+        c.u8(cid.len() as u8);
+        c.put(cid);
+    }
+
     // cookie (only on the post-HRR ClientHello).
     if let Some(cookie) = cookie {
         c.u16(EXT_COOKIE);
@@ -198,8 +211,13 @@ pub(crate) enum ParseError {
 pub(crate) enum ServerHelloKind<'a> {
     /// HelloRetryRequest — resend the ClientHello echoing this cookie.
     Retry { cookie: &'a [u8] },
-    /// The real ServerHello, carrying the server's X25519 key share.
-    Hello { server_key_share: &'a [u8; 32] },
+    /// The real ServerHello, carrying the server's X25519 key share and, when
+    /// the server agreed to RFC 9146 CID, its connection_id (the CID the client
+    /// must put on records it sends; may be empty = server wants no CID inbound).
+    Hello {
+        server_key_share: &'a [u8; 32],
+        server_cid: Option<&'a [u8]>,
+    },
 }
 
 /// Parse a ServerHello *handshake-message body* (after the handshake header).
@@ -224,6 +242,7 @@ pub(crate) fn parse_server_hello(body: &[u8]) -> Result<ServerHelloKind<'_>, Par
 
     let mut cookie: Option<&[u8]> = None;
     let mut key_share: Option<&[u8; 32]> = None;
+    let mut server_cid: Option<&[u8]> = None;
     while i + 4 <= ext_end {
         let et = read_u16(body, i)?;
         let el = read_u16(body, i + 2)? as usize;
@@ -233,6 +252,11 @@ pub(crate) fn parse_server_hello(body: &[u8]) -> Result<ServerHelloKind<'_>, Par
                 // cookie<2..2^16-1>: 2-byte length then the cookie.
                 let clen = read_u16(data, 0)? as usize;
                 cookie = Some(data.get(2..2 + clen).ok_or(ParseError::Malformed)?);
+            }
+            EXT_CONNECTION_ID => {
+                // cid<0..2^8-1>: 1-byte length then the server's CID.
+                let clen = *data.first().ok_or(ParseError::Malformed)? as usize;
+                server_cid = Some(data.get(1..1 + clen).ok_or(ParseError::Malformed)?);
             }
             EXT_KEY_SHARE => {
                 // ServerHello key_share is a single KeyShareEntry: group(2) len(2) key.
@@ -256,6 +280,7 @@ pub(crate) fn parse_server_hello(body: &[u8]) -> Result<ServerHelloKind<'_>, Par
     } else {
         Ok(ServerHelloKind::Hello {
             server_key_share: key_share.ok_or(ParseError::MissingKeyShare)?,
+            server_cid,
         })
     }
 }
@@ -275,7 +300,7 @@ mod tests {
         let random = [0x11u8; 32];
         let pubkey = [0x22u8; 32];
         let mut body = [0u8; 256];
-        let n = write_client_hello(&random, &pubkey, None, None, &mut body).unwrap();
+        let n = write_client_hello(&random, &pubkey, None, None, None, &mut body).unwrap();
         let body = &body[..n];
 
         // legacy_version, random, empty session_id, empty cookie, then suites.
@@ -294,7 +319,7 @@ mod tests {
         let random = [0x33u8; 32];
         let pubkey = [0x44u8; 32];
         let mut body = [0u8; 256];
-        let n = write_client_hello(&random, &pubkey, None, None, &mut body).unwrap();
+        let n = write_client_hello(&random, &pubkey, None, None, None, &mut body).unwrap();
 
         // Wrap body in a 12-byte handshake header, then a DTLSPlaintext record.
         let mut msg = [0u8; 300];
@@ -330,8 +355,8 @@ mod tests {
         let cookie = [0xABu8; 20];
         let mut a = [0u8; 256];
         let mut b = [0u8; 256];
-        let na = write_client_hello(&random, &pubkey, None, None, &mut a).unwrap();
-        let nb = write_client_hello(&random, &pubkey, None, Some(&cookie), &mut b).unwrap();
+        let na = write_client_hello(&random, &pubkey, None, None, None, &mut a).unwrap();
+        let nb = write_client_hello(&random, &pubkey, None, Some(&cookie), None, &mut b).unwrap();
         assert_eq!(nb - na, 4 + 2 + cookie.len(), "cookie ext header + body");
         assert!(b[..nb].windows(cookie.len()).any(|w| w == cookie));
     }
@@ -367,7 +392,9 @@ mod tests {
     fn parses_server_hello_key_share() {
         let body = hello_body(SH);
         match parse_server_hello(&body).unwrap() {
-            ServerHelloKind::Hello { server_key_share } => {
+            ServerHelloKind::Hello {
+                server_key_share, ..
+            } => {
                 assert_eq!(server_key_share.len(), 32);
                 assert_eq!(server_key_share[0], 0xb7);
             }
@@ -386,7 +413,7 @@ mod tests {
     ) -> Vec<u8> {
         let random = [0x77u8; 32];
         let mut body = [0u8; 512];
-        let n = write_client_hello(&random, pubkey, None, cookie, &mut body).unwrap();
+        let n = write_client_hello(&random, pubkey, None, cookie, None, &mut body).unwrap();
         let mut msg = [0u8; 560];
         HandshakeHeader {
             msg_type: CLIENT_HELLO_MSG_TYPE,
@@ -450,7 +477,9 @@ mod tests {
         // CH2 echoing the cookie (message_seq=1, record seq=1) → real ServerHello.
         let reply = live_send_ch(&sock, &pubkey, Some(&cookie), 1, 1);
         match parse_server_hello(&hello_body_of(&reply)).unwrap() {
-            ServerHelloKind::Hello { server_key_share } => {
+            ServerHelloKind::Hello {
+                server_key_share, ..
+            } => {
                 assert_eq!(server_key_share.len(), 32)
             }
             ServerHelloKind::Retry { .. } => panic!("expected ServerHello after the cookie"),
@@ -535,7 +564,7 @@ mod tests {
         let random = [0x77u8; 32];
 
         let mut ch1 = [0u8; 512];
-        let ch1_len = write_client_hello(&random, &pub_key, None, None, &mut ch1).unwrap();
+        let ch1_len = write_client_hello(&random, &pub_key, None, None, None, &mut ch1).unwrap();
         send_ch_body(&sock, &ch1[..ch1_len], 0, 0);
         let hrr_body = hello_body_of(&recv_dgram(&sock));
         let cookie = match parse_server_hello(&hrr_body).unwrap() {
@@ -544,11 +573,14 @@ mod tests {
         };
 
         let mut ch2 = [0u8; 512];
-        let ch2_len = write_client_hello(&random, &pub_key, None, Some(&cookie), &mut ch2).unwrap();
+        let ch2_len =
+            write_client_hello(&random, &pub_key, None, Some(&cookie), None, &mut ch2).unwrap();
         send_ch_body(&sock, &ch2[..ch2_len], 1, 1);
         let sh_body = hello_body_of(&recv_dgram(&sock));
         let server_share = match parse_server_hello(&sh_body).unwrap() {
-            ServerHelloKind::Hello { server_key_share } => *server_key_share,
+            ServerHelloKind::Hello {
+                server_key_share, ..
+            } => *server_key_share,
             _ => panic!("expected ServerHello"),
         };
         let mut flight = recv_dgram(&sock);
@@ -604,7 +636,7 @@ mod tests {
         let (priv_key, pub_key) = x25519_keypair([0x42u8; 32]);
         let random = [0x77u8; 32];
         let mut ch1 = [0u8; 512];
-        let ch1_len = write_client_hello(&random, &pub_key, None, None, &mut ch1).unwrap();
+        let ch1_len = write_client_hello(&random, &pub_key, None, None, None, &mut ch1).unwrap();
         send_ch_body(&sock, &ch1[..ch1_len], 0, 0);
         let hrr_body = hello_body_of(&recv_dgram(&sock));
         let cookie = match parse_server_hello(&hrr_body).unwrap() {
@@ -612,11 +644,14 @@ mod tests {
             _ => panic!("expected HRR"),
         };
         let mut ch2 = [0u8; 512];
-        let ch2_len = write_client_hello(&random, &pub_key, None, Some(&cookie), &mut ch2).unwrap();
+        let ch2_len =
+            write_client_hello(&random, &pub_key, None, Some(&cookie), None, &mut ch2).unwrap();
         send_ch_body(&sock, &ch2[..ch2_len], 1, 1);
         let sh_body = hello_body_of(&recv_dgram(&sock));
         let server_share = match parse_server_hello(&sh_body).unwrap() {
-            ServerHelloKind::Hello { server_key_share } => *server_key_share,
+            ServerHelloKind::Hello {
+                server_key_share, ..
+            } => *server_key_share,
             _ => panic!("expected ServerHello"),
         };
 
@@ -708,7 +743,7 @@ mod tests {
         let (priv_key, pub_key) = x25519_keypair([0x42u8; 32]);
         let random = [0x77u8; 32];
         let mut ch1 = [0u8; 512];
-        let ch1_len = write_client_hello(&random, &pub_key, None, None, &mut ch1).unwrap();
+        let ch1_len = write_client_hello(&random, &pub_key, None, None, None, &mut ch1).unwrap();
         send_ch_body(&sock, &ch1[..ch1_len], 0, 0);
         let hrr_body = hello_body_of(&recv_dgram(&sock));
         let cookie = match parse_server_hello(&hrr_body).unwrap() {
@@ -716,11 +751,14 @@ mod tests {
             _ => panic!("HRR"),
         };
         let mut ch2 = [0u8; 512];
-        let ch2_len = write_client_hello(&random, &pub_key, None, Some(&cookie), &mut ch2).unwrap();
+        let ch2_len =
+            write_client_hello(&random, &pub_key, None, Some(&cookie), None, &mut ch2).unwrap();
         send_ch_body(&sock, &ch2[..ch2_len], 1, 1);
         let sh_body = hello_body_of(&recv_dgram(&sock));
         let server_share = match parse_server_hello(&sh_body).unwrap() {
-            ServerHelloKind::Hello { server_key_share } => *server_key_share,
+            ServerHelloKind::Hello {
+                server_key_share, ..
+            } => *server_key_share,
             _ => panic!("SH"),
         };
 

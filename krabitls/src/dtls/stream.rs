@@ -30,10 +30,14 @@ impl<T: DatagramTransport> DtlsStream<T> {
     /// `MAX_CHAIN` bounds the accepted certificate-chain length. `flight_buf`
     /// receives the reassembled server flight and `reasm_buf` is scratch for
     /// fragment reassembly; both must fit the whole flight.
+    /// `client_cid` (RFC 9146), when `Some`, is the connection id the client
+    /// advertises; if the server agrees, records carry connection ids afterward.
+    #[allow(clippy::too_many_arguments)]
     pub fn connect<V, const MAX_CHAIN: usize>(
         mut transport: T,
         strategy: &V,
         hostname: Option<&str>,
+        client_cid: Option<&[u8]>,
         x25519_priv: &[u8; 32],
         client_random: &[u8; 32],
         flight_buf: &mut [u8],
@@ -54,6 +58,7 @@ impl<T: DatagramTransport> DtlsStream<T> {
             &mut transport,
             strategy,
             hostname,
+            client_cid,
             x25519_priv,
             client_random,
             flight_buf,
