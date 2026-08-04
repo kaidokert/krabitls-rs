@@ -91,25 +91,50 @@ impl<S: UdpClientStack> Drop for NalDatagram<'_, S> {
     }
 }
 
-fn decode_hex_32(s: &str) -> Result<[u8; 32], String> {
+fn decode_hex(s: &str) -> Result<Vec<u8>, String> {
     let s = s.strip_prefix("0x").unwrap_or(s);
-    if s.len() != 64 {
-        return Err(format!("expected 64 hex chars (32 bytes), got {}", s.len()));
+    if !s.len().is_multiple_of(2) {
+        return Err("hex must have even length".into());
     }
-    let mut out = [0u8; 32];
-    for (i, slot) in out.iter_mut().enumerate() {
-        *slot = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16)
-            .map_err(|_| format!("bad hex byte at {}", i * 2))?;
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).map_err(|_| format!("bad hex byte at {i}")))
+        .collect()
+}
+
+/// Parse a `--pin` hex string into a pinned key, dispatching on length:
+/// 32 = Ed25519, 65/97 = ECDSA P-256/P-384, 128/256 = RSA modulus (exp 65537).
+/// Non-Ed25519 lengths require the matching build feature.
+fn parse_pin(hex: &str) -> Result<PinnedPubkeyOwned, String> {
+    let b = decode_hex(hex)?;
+    match b.len() {
+        32 => Ok(PinnedPubkeyOwned::ed25519(b.try_into().unwrap())),
+        #[cfg(feature = "ecdsa")]
+        65 => Ok(PinnedPubkeyOwned::ecdsa_p256(b.try_into().unwrap())),
+        #[cfg(feature = "ecdsa")]
+        97 => Ok(PinnedPubkeyOwned::ecdsa_p384(b.try_into().unwrap())),
+        #[cfg(feature = "rsa")]
+        128 | 256 | 384 | 512 => {
+            PinnedPubkeyOwned::rsa(&b, 65537).map_err(|_| "RSA modulus too long".to_string())
+        }
+        n => Err(format!(
+            "unexpected pin length {n} bytes (want 32 Ed25519; 65/97 ECDSA; 128/256 RSA, \
+             with the matching feature built)"
+        )),
     }
-    Ok(out)
 }
 
 fn usage() {
-    eprintln!("usage: krabidtls_connect --pin <hex-ed25519-pubkey> host:port [message]");
+    eprintln!(
+        "usage: krabidtls_connect {{--pin <hex> | --self-signed}} host:port [message]\n\
+         \x20 --pin <hex>    server pubkey to pin: 32 (Ed25519), 65/97 (ECDSA), 128/256 (RSA)\n\
+         \x20 --self-signed  trust any self-signed leaf (TOFU; dev only)"
+    );
 }
 
 fn run() -> Result<(), String> {
-    let mut pin: Option<[u8; 32]> = None;
+    let mut pin: Option<PinnedPubkeyOwned> = None;
+    let mut self_signed = false;
     let mut endpoint: Option<String> = None;
     let mut message = String::from("hello from krabitls");
 
@@ -118,8 +143,9 @@ fn run() -> Result<(), String> {
         match a.as_str() {
             "--pin" => {
                 let v = args.next().ok_or("--pin requires a value")?;
-                pin = Some(decode_hex_32(&v).map_err(|e| format!("--pin: {e}"))?);
+                pin = Some(parse_pin(&v).map_err(|e| format!("--pin: {e}"))?);
             }
+            "--self-signed" => self_signed = true,
             "-h" | "--help" => {
                 usage();
                 return Ok(());
@@ -129,7 +155,12 @@ fn run() -> Result<(), String> {
         }
     }
 
-    let pin = pin.ok_or("missing --pin <hex>")?;
+    let decision = match (self_signed, pin) {
+        (false, Some(p)) => PinOrSelfSigned::pinned(p),
+        (true, None) => PinOrSelfSigned::self_signed(),
+        (true, Some(_)) => return Err("--pin and --self-signed are mutually exclusive".into()),
+        (false, None) => return Err("need --pin <hex> or --self-signed".into()),
+    };
     let endpoint = endpoint.ok_or("missing host:port")?;
     let remote = endpoint
         .to_socket_addrs()
@@ -141,8 +172,7 @@ fn run() -> Result<(), String> {
     let transport =
         NalDatagram::open(&mut stack, remote).map_err(|e| format!("udp connect: {e}"))?;
 
-    let strategy =
-        SafeStrategy::<_, DerCert>::new(PinOrSelfSigned::pinned(PinnedPubkeyOwned::ed25519(pin)));
+    let strategy = SafeStrategy::<_, DerCert>::new(decision);
 
     let mut x25519_priv = [0u8; 32];
     let mut client_random = [0u8; 32];

@@ -6,10 +6,14 @@
 //! byte-identical. The TLS writer is tightly coupled to the TLS record shape,
 //! so the DTLS ClientHello is written here rather than by parameterising it.
 
+#[cfg(feature = "rsa")]
+use crate::consts::SIG_SCHEME_RSA_PSS_RSAE_SHA256;
 use crate::consts::{
     CIPHER_AES_128_GCM_SHA256, HS_CLIENT_HELLO, LEGACY_SESSION_ID_LEN, NAMED_GROUP_X25519,
     SIG_SCHEME_ED25519,
 };
+#[cfg(feature = "ecdsa")]
+use crate::consts::{SIG_SCHEME_ECDSA_P256, SIG_SCHEME_ECDSA_P384};
 use crate::dtls::framing::{DTLS_1_2_LEGACY_VERSION, DTLS_1_3_VERSION};
 
 const EXT_SUPPORTED_GROUPS: u16 = 10;
@@ -124,11 +128,23 @@ pub(crate) fn write_client_hello(
     c.u16(2);
     c.u16(NAMED_GROUP_X25519);
 
-    // signature_algorithms: Ed25519.
+    // signature_algorithms: Ed25519, plus ECDSA and RSA-PSS when built with
+    // those verify backends, so the server may present any of those leaf types.
     c.u16(EXT_SIGNATURE_ALGORITHMS);
-    c.u16(4);
-    c.u16(2);
+    let sa_ext_len_at = c.reserve_u16();
+    let sa_list_len_at = c.reserve_u16();
+    let sa_start = c.pos;
     c.u16(SIG_SCHEME_ED25519);
+    #[cfg(feature = "ecdsa")]
+    {
+        c.u16(SIG_SCHEME_ECDSA_P256);
+        c.u16(SIG_SCHEME_ECDSA_P384);
+    }
+    #[cfg(feature = "rsa")]
+    c.u16(SIG_SCHEME_RSA_PSS_RSAE_SHA256);
+    let sa_list_len = (c.pos - sa_start) as u16;
+    c.patch_u16(sa_list_len_at, sa_list_len);
+    c.patch_u16(sa_ext_len_at, sa_list_len + 2);
 
     // key_share: one X25519 KeyShareEntry.
     c.u16(EXT_KEY_SHARE);
