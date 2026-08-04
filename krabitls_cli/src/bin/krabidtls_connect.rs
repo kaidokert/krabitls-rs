@@ -1,13 +1,14 @@
-//! DTLS 1.3 (RFC 9147) UDP probe: complete a handshake against a datagram
-//! endpoint and exchange one application record.
+//! DTLS 1.3 (RFC 9147) CoAP probe: complete a handshake against a coaps://
+//! endpoint and GET one CoAP resource (coap-lite codec over the DTLS channel).
 //!
 //! Usage:
-//!     krabidtls_connect --pin <hex> host:port [message]
+//!     krabidtls_connect {--pin <hex> | --self-signed} host:port [coap-path]
 //!
-//! `--pin` is the server's 32-byte Ed25519 public key (hex, no `0x`); the trust
-//! decision is pin-based, so no SAN/hostname is required — matching test servers
-//! (e.g. the wolfSSL example server) whose certificates carry no SAN. `message`
-//! defaults to `hello from krabitls`.
+//! `--pin` is the server's public key (hex, no `0x`) — 32 B Ed25519, 65/97 B
+//! ECDSA, or 128/256 B RSA modulus; `--self-signed` trusts any self-signed leaf
+//! (TOFU). Trust is pin/TOFU-based, so no SAN/hostname is required — matching test
+//! servers whose certificates carry no SAN. The CoAP path defaults to
+//! `/.well-known/core`.
 //!
 //! The datagram transport is an [`embedded_nal::UdpClientStack`] socket
 //! (`std-embedded-nal` on the host), mirroring how the TLS binary drives a
@@ -19,6 +20,7 @@ use std::net::ToSocketAddrs;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
+use coap_lite::{CoapOption, MessageClass, MessageType, Packet, RequestType};
 use embedded_nal::{UdpClientStack, nb};
 use krabitls::backends::{DerCert, PinOrSelfSigned, PinnedPubkeyOwned};
 use krabitls::client::SafeStrategy;
@@ -126,9 +128,10 @@ fn parse_pin(hex: &str) -> Result<PinnedPubkeyOwned, String> {
 
 fn usage() {
     eprintln!(
-        "usage: krabidtls_connect {{--pin <hex> | --self-signed}} host:port [message]\n\
+        "usage: krabidtls_connect {{--pin <hex> | --self-signed}} host:port [coap-path]\n\
          \x20 --pin <hex>    server pubkey to pin: 32 (Ed25519), 65/97 (ECDSA), 128/256 (RSA)\n\
-         \x20 --self-signed  trust any self-signed leaf (TOFU; dev only)"
+         \x20 --self-signed  trust any self-signed leaf (TOFU; dev only)\n\
+         \x20 coap-path      CoAP resource to GET (default /.well-known/core)"
     );
 }
 
@@ -136,7 +139,7 @@ fn run() -> Result<(), String> {
     let mut pin: Option<PinnedPubkeyOwned> = None;
     let mut self_signed = false;
     let mut endpoint: Option<String> = None;
-    let mut message = String::from("hello from krabitls");
+    let mut path = String::from("/.well-known/core");
 
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -151,7 +154,7 @@ fn run() -> Result<(), String> {
                 return Ok(());
             }
             other if endpoint.is_none() => endpoint = Some(other.to_string()),
-            other => message = other.to_string(),
+            other => path = other.to_string(),
         }
     }
 
@@ -193,20 +196,54 @@ fn run() -> Result<(), String> {
     .map_err(|e| format!("handshake: {e:?}"))?;
     log::info!("DTLS 1.3 handshake complete with {remote}");
 
-    let mut out = [0u8; 512];
-    stream
-        .send(message.as_bytes(), &mut out)
-        .map_err(|e| format!("send: {e:?}"))?;
-    log::info!("sent {} bytes", message.len());
+    coap_get(&mut stream, &path)
+}
 
-    let mut buf = [0u8; 2048];
-    match stream.recv(&mut buf).map_err(|e| format!("recv: {e:?}"))? {
-        Some(n) => {
-            println!("reply ({n} bytes): {}", String::from_utf8_lossy(&buf[..n]));
-            Ok(())
-        }
-        None => Err("no reply before timeout".into()),
+/// Send a CoAP CON GET for `path` over the DTLS stream and print the response.
+/// The DTLS app-data channel is the transport; coap-lite is just the codec.
+fn coap_get<T: DatagramTransport>(stream: &mut DtlsStream<T>, path: &str) -> Result<(), String>
+where
+    T::Error: core::fmt::Debug,
+{
+    let mut req = Packet::new();
+    req.header.set_type(MessageType::Confirmable);
+    req.header.code = MessageClass::Request(RequestType::Get);
+    req.header.message_id = 0x4b54; // 'KT'
+    req.set_token(vec![0xde, 0xad, 0xbe, 0xef]);
+    for seg in path.split('/').filter(|s| !s.is_empty()) {
+        req.add_option(CoapOption::UriPath, seg.as_bytes().to_vec());
     }
+    let req_bytes = req.to_bytes().map_err(|e| format!("coap encode: {e:?}"))?;
+
+    let mut out = vec![0u8; req_bytes.len() + 64];
+    stream
+        .send(&req_bytes, &mut out)
+        .map_err(|e| format!("send: {e:?}"))?;
+    log::info!("sent CoAP GET {path} ({} bytes)", req_bytes.len());
+
+    // A CON request may get a piggybacked response, or an empty ACK followed by
+    // a separate response; skip a bare ACK and take the first real message.
+    let mut buf = [0u8; 2048];
+    for _ in 0..4 {
+        let n = stream
+            .recv(&mut buf)
+            .map_err(|e| format!("recv: {e:?}"))?
+            .ok_or("no CoAP response before timeout")?;
+        let resp = Packet::from_bytes(&buf[..n]).map_err(|e| format!("coap decode: {e:?}"))?;
+        if resp.header.code == MessageClass::Empty {
+            continue; // bare ACK; the response follows separately
+        }
+        let b = u8::from(resp.header.code);
+        println!(
+            "CoAP {}.{:02}  ({} B payload): {}",
+            b >> 5,
+            b & 0x1f,
+            resp.payload.len(),
+            String::from_utf8_lossy(&resp.payload)
+        );
+        return Ok(());
+    }
+    Err("only empty ACKs received".into())
 }
 
 fn main() -> ExitCode {
