@@ -1,6 +1,6 @@
 [package]
 name = "krabitls"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2024"
 rust-version = "1.87"
 readme = "../README.md"
@@ -141,7 +141,7 @@ thiserror = { version = "2", default-features = false }
 signature = { version = "3", default-features = false }
 rand_core = { version = "0.10", default-features = false }
 krabipqc = { version = "0.1.4", default-features = false, optional = true }
-krabiecdsa = { git = "https://github.com/kaidokert/krabiecdsa-rs.git", tag = "v0.4.0-alpha.1", default-features = false, optional = true }
+krabiecdsa = { version = "0.4.0", default-features = false, optional = true }
 
 # Deterministic SeededRng + CannedTransport for the host facade replay
 # tests. Dev-only so the seed-mode RNG (a `TryCryptoRng` that is NOT a
