@@ -43,10 +43,11 @@ impl EcdheP256 {
         Ok((Self { secret }, out))
     }
 
-    /// Agree on the shared secret `x(d·P)` from the server's SEC1 point. `None`
-    /// (mapped to `Err`) if the point is malformed, off-curve, or the identity.
+    /// Agree on the shared secret `x(d·P)` from the server's SEC1 point,
+    /// consuming the ephemeral (one-shot, matching krabiecdsa's `diffie_hellman`).
+    /// `None` (mapped to `Err`) if the point is malformed, off-curve, or identity.
     pub fn agree(
-        &self,
+        self,
         peer_share: &[u8; P256_SHARE_BYTES],
     ) -> Result<Zeroizing<[u8; P256_SS_BYTES]>, EcdheP256Error> {
         let ss = self
