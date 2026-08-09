@@ -72,6 +72,11 @@ mod carrier {
 ))]
 mod carrier {
     use fixed_bigint::HeaplessBigInt;
+    // The constant-time EC scalar carriers stay fixed exact-width even here:
+    // krabiecdsa's CT ladder (sign + ECDH) requires the backend width to equal
+    // the curve field, so the unified 2048-bit `HeaplessBigInt` can't back them.
+    #[cfg(any(feature = "ecdsa", feature = "p256-kx"))]
+    use fixed_bigint::FixedUInt;
 
     /// Unified vartime carrier — every Nct role. CAP follows the widest enabled
     /// RSA width so a 3072/4096-bit modulus still fits.
@@ -109,9 +114,9 @@ mod carrier {
     #[cfg(feature = "ecdsa")]
     pub(crate) type EcdsaP384Bn = UnifiedBn;
     #[cfg(any(feature = "ecdsa", feature = "p256-kx"))]
-    pub(crate) type EcdsaP256CtBn = UnifiedCtBn;
+    pub(crate) type EcdsaP256CtBn = FixedUInt<u32, 8, const_num_traits::Ct>;
     #[cfg(feature = "ecdsa")]
-    pub(crate) type EcdsaP384CtBn = UnifiedCtBn;
+    pub(crate) type EcdsaP384CtBn = FixedUInt<u32, 12, const_num_traits::Ct>;
 }
 
 // Test-only alternate carriers for the carrier-swap proof (see the submodule);

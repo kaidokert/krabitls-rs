@@ -58,7 +58,7 @@ jobs:
           - "cert-der,chacha20"                                    # ChaCha-only cipher
           - "cert-der,cipher-aes,mldsa,mlkem"
           - "cert-der,cipher-aes,rsa,ecdsa,mldsa,mlkem,chacha20,p256-kx"   # full — every sig algo + every KX group
-          - "cert-der,cipher-aes,rsa,ecdsa,backend-matrix"         # bnum/crypto-bigint carrier matrix
+          - "cert-der,cipher-aes,rsa,ecdsa,p256-kx,backend-matrix" # bnum/crypto-bigint carrier matrix (incl. ECDH KAT)
           - "cert-der,cipher-aes,rsa,rsa_pss_only"                 # PSS-only cert path
           - "cert-der,cipher-aes,jedisct"                          # jedisct HKDF backend
           - "cert-der,cipher-aes,ip-host"                          # IP-literal SAN matching
