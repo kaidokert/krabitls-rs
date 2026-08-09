@@ -15,7 +15,9 @@
     not(feature = "rsa"),
     not(feature = "mldsa"),
     not(feature = "ecdsa"),
-    not(feature = "mlkem")
+    not(feature = "mlkem"),
+    // X25519-only fixtures; p256-kx shifts the ClientHello transcript.
+    not(feature = "p256-kx")
 ))]
 
 use krabitls::client::{
