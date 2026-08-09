@@ -13,8 +13,13 @@ use {
         pss::GenericSigningKey,
         traits::FixedWidthUnsignedInt,
     },
-    sha2::{Digest, Sha256},
+    sha2::Sha256,
 };
+
+// `sha2::Digest` brings the prehash `.digest()` into scope for both the RSA and
+// ECDSA signers; shared so it isn't imported twice when both features are on.
+#[cfg(any(feature = "rsa", feature = "ecdsa"))]
+use sha2::Digest as _;
 
 use crate::bigint::Curve25519CtBn as Bn;
 #[cfg(feature = "rsa")]
@@ -34,10 +39,6 @@ use {
     krabiecdsa::{p256::P256, p384::P384, signing::PrehashSigningKey},
     sha2::{Sha256 as EcdsaSha256, Sha384 as EcdsaSha384},
 };
-// `sha2::Digest` for the prehash `.digest()` — pulled here only when `rsa` isn't
-// on, since its block already imports the same trait (importing both warns).
-#[cfg(all(feature = "ecdsa", not(feature = "rsa")))]
-use sha2::Digest as _;
 
 // P-256/P-384 deterministic signers, fully monomorphized: constant-time sign
 // backend, variable-time verify backend (named only for the RustCrypto keypair
