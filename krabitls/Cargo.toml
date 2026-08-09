@@ -1,6 +1,6 @@
 [package]
 name = "krabitls"
-version = "0.4.2"
+version = "0.4.3"
 edition = "2024"
 rust-version = "1.87"
 readme = "../README.md"
@@ -112,6 +112,13 @@ ecdsa = ["dep:krabiecdsa", "fixed-bigint/cios"]
 # downstream `--features ecdsa-sign` builds from 0.4.1 keep resolving without a
 # breaking (0.5.0) bump; remove at the next minor.
 ecdsa-sign = ["ecdsa"]
+# Classical secp256r1 (P-256) ECDHE key exchange (named group 0x0017), the
+# `key_share` side. Additive: advertised alongside the primary group (X25519, or
+# X25519MLKEM768 under `mlkem`) so a build can offer P-256 and the hybrid at once
+# — the server picks. Needed for gateways that refuse X25519 (e.g. Azure IoT).
+# Pulls krabiecdsa's constant-time `ecdh` primitive (shares the CT carrier with
+# the `ecdsa` verify path); orthogonal to `ecdsa` server-cert verification.
+p256-kx = ["dep:krabiecdsa", "fixed-bigint/cios"]
 
 [dependencies]
 embedded-io = { version = "0.7.1", default-features = false }
@@ -143,7 +150,7 @@ thiserror = { version = "2", default-features = false }
 signature = { version = "3", default-features = false }
 rand_core = { version = "0.10", default-features = false }
 krabipqc = { version = "0.1.4", default-features = false, optional = true }
-krabiecdsa = { version = "0.4.0", default-features = false, optional = true }
+krabiecdsa = { git = "https://github.com/kaidokert/krabiecdsa-rs.git", tag = "v0.5.0-alpha.1", default-features = false, optional = true }
 
 # Deterministic SeededRng + CannedTransport for the host facade replay
 # tests. Dev-only so the seed-mode RNG (a `TryCryptoRng` that is NOT a

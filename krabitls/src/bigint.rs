@@ -56,10 +56,11 @@ mod carrier {
     /// 384-bit vartime carrier for ECDSA P-384 *verification*.
     #[cfg(feature = "ecdsa")]
     pub(crate) type EcdsaP384Bn = FixedUInt<u32, 12>;
-    /// 256-/384-bit constant-time carriers for ECDSA *signing* (secret scalar +
-    /// RFC 6979 nonce), matching the widths krabiecdsa's Ct sign path expects.
-    #[cfg(feature = "ecdsa")]
+    /// 256-bit constant-time carrier for P-256 ECDSA *signing* and P-256 *ECDH*
+    /// (secret scalar / RFC 6979 nonce / `d·P`).
+    #[cfg(any(feature = "ecdsa", feature = "p256-kx"))]
     pub(crate) type EcdsaP256CtBn = FixedUInt<u32, 8, const_num_traits::Ct>;
+    /// 384-bit constant-time carrier for P-384 ECDSA signing.
     #[cfg(feature = "ecdsa")]
     pub(crate) type EcdsaP384CtBn = FixedUInt<u32, 12, const_num_traits::Ct>;
 }
@@ -107,7 +108,7 @@ mod carrier {
     pub(crate) type EcdsaP256Bn = UnifiedBn;
     #[cfg(feature = "ecdsa")]
     pub(crate) type EcdsaP384Bn = UnifiedBn;
-    #[cfg(feature = "ecdsa")]
+    #[cfg(any(feature = "ecdsa", feature = "p256-kx"))]
     pub(crate) type EcdsaP256CtBn = UnifiedCtBn;
     #[cfg(feature = "ecdsa")]
     pub(crate) type EcdsaP384CtBn = UnifiedCtBn;
