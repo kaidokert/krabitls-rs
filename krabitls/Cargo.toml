@@ -110,6 +110,10 @@ mlkem = ["dep:krabipqc"]
 # power/EM side channels are out of scope (network-attacker threat model, as with
 # the RSA signer and x25519 ladder).
 ecdsa = ["dep:krabiecdsa", "fixed-bigint/cios"]
+# Deprecated compat alias: signing folded into `ecdsa` (see above). Kept so
+# downstream `--features ecdsa-sign` builds from 0.4.1 keep resolving without a
+# breaking (0.5.0) bump; remove at the next minor.
+ecdsa-sign = ["ecdsa"]
 
 [dependencies]
 embedded-io = { version = "0.7.1", default-features = false }
