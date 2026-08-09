@@ -986,7 +986,3 @@ where
         self.state.server_pubkey.as_view()
     }
 }
-
-// The `decrypt_record` / `from_app_secrets` replay helpers used by the engine
-// and stream test modules moved to `connection.rs`'s always-compiled test block
-// (this fixtures module is gated off under `p256-kx`, but those helpers are not).
