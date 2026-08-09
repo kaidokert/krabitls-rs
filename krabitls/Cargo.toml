@@ -104,11 +104,9 @@ mlkem = ["dep:krabipqc"]
 # its `UnsignedModularInt` bound needs (modmath CIOS Montgomery mul). Covers
 # `ecdsa_secp256r1_sha256` + `ecdsa_secp384r1_sha384` server-cert verification
 # and, for mutual TLS, P-256/P-384 client-auth signing (`EcdsaClientAuth`, RFC
-# 6979 deterministic nonce). Signing links only when `EcdsaClientAuth` is
-# actually constructed — a verify-only build stays byte-identical, same as `rsa`.
-# The signer is constant-time (matching Ed25519/RSA) but has no base blinding, so
-# power/EM side channels are out of scope (network-attacker threat model, as with
-# the RSA signer and x25519 ladder).
+# 6979 deterministic nonce; constant-time — see its docs for the threat model).
+# Signing links only when `EcdsaClientAuth` is constructed, so a verify-only
+# build stays byte-identical, same as `rsa`.
 ecdsa = ["dep:krabiecdsa", "fixed-bigint/cios"]
 # Deprecated compat alias: signing folded into `ecdsa` (see above). Kept so
 # downstream `--features ecdsa-sign` builds from 0.4.1 keep resolving without a
