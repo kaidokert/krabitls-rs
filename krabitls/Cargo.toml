@@ -99,18 +99,17 @@ mldsa = ["dep:krabipqc"]
 # `X25519MLKEM768` hybrid TLS key exchange. Same krabipqc dependency as `mldsa`;
 # verification/handshake wiring is built on top in later steps.
 mlkem = ["dep:krabipqc"]
-# Optional ECDSA (P-256 + P-384) signature-verification backend, gated like
-# `rsa`/`mldsa`. Pulls in krabiecdsa (no_std, no-alloc, verify-only) and turns
-# on fixed-bigint's `cios` feature, which its `UnsignedModularInt` bound needs
-# (modmath CIOS Montgomery mul). Covers `ecdsa_secp256r1_sha256` +
-# `ecdsa_secp384r1_sha384`.
+# Optional ECDSA (P-256 + P-384) backend, gated like `rsa`/`mldsa`. Pulls in
+# krabiecdsa (no_std, no-alloc) and turns on fixed-bigint's `cios` feature, which
+# its `UnsignedModularInt` bound needs (modmath CIOS Montgomery mul). Covers
+# `ecdsa_secp256r1_sha256` + `ecdsa_secp384r1_sha384` server-cert verification
+# and, for mutual TLS, P-256/P-384 client-auth signing (`EcdsaClientAuth`, RFC
+# 6979 deterministic nonce). Signing links only when `EcdsaClientAuth` is
+# actually constructed — a verify-only build stays byte-identical, same as `rsa`.
+# The signer is constant-time (matching Ed25519/RSA) but has no base blinding, so
+# power/EM side channels are out of scope (network-attacker threat model, as with
+# the RSA signer and x25519 ladder).
 ecdsa = ["dep:krabiecdsa", "fixed-bigint/cios"]
-# EXPERIMENTAL, off by default: ECDSA (P-256/P-384) *client-auth signing* for
-# mutual TLS, on top of `ecdsa`. Gates krabiecdsa's constant-time sign path
-# (RFC 6979 deterministic nonce) in `client_auth`; the RFC 6979 HMAC-DRBG and
-# the prehash both ride the crate's own `sha2 0.11` / `hmac 0.13` (digest 0.11),
-# so no extra deps. Not for production keys until krabiecdsa's signer is audited.
-ecdsa-sign = ["ecdsa"]
 
 [dependencies]
 embedded-io = { version = "0.7.1", default-features = false }

@@ -34,7 +34,7 @@ pub(crate) mod tlv;
 #[cfg(not(feature = "cert-der"))]
 pub(crate) mod tlv_cert;
 
-#[cfg(feature = "ecdsa-sign")]
+#[cfg(feature = "ecdsa")]
 pub use client_auth::EcdsaClientAuth;
 pub use client_auth::Ed25519ClientAuth;
 #[cfg(feature = "rsa")]

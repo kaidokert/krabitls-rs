@@ -4,7 +4,7 @@ use heapless::Vec;
 
 /// Largest client-auth signature krabitls buffers. RSA-PSS is modulus-width, so
 /// this tracks the widest enabled RSA width (512 for 4096, 384 for 3072, 256 for
-/// 2048); an `ecdsa-sign` build needs 104 for a DER-encoded P-384 `ECDSA-Sig-Value`
+/// 2048); an `ecdsa` build needs 104 for a DER-encoded P-384 `ECDSA-Sig-Value`
 /// (SEQUENCE of two ≤49-byte INTEGERs); with both off only Ed25519 (64 B) signs.
 pub const MAX_CLIENT_SIG_LEN: usize = if cfg!(feature = "rsa-4096") {
     512
@@ -12,7 +12,7 @@ pub const MAX_CLIENT_SIG_LEN: usize = if cfg!(feature = "rsa-4096") {
     384
 } else if cfg!(feature = "rsa") {
     256
-} else if cfg!(feature = "ecdsa-sign") {
+} else if cfg!(feature = "ecdsa") {
     112
 } else {
     64

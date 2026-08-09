@@ -26,7 +26,7 @@ use crate::traits::client_auth::{ClientAuth, ClientAuthError, ClientSignature};
 // both ride the crate's own `sha2 0.11` / `hmac 0.13` (digest 0.11). `Sha256`/
 // `Sha384` are aliased so they don't collide with the `rsa` block's `Sha256`
 // import when both features are on.
-#[cfg(feature = "ecdsa-sign")]
+#[cfg(feature = "ecdsa")]
 use {
     crate::bigint::{EcdsaP256Bn, EcdsaP256CtBn, EcdsaP384Bn, EcdsaP384CtBn},
     crate::consts::{SIG_SCHEME_ECDSA_P256, SIG_SCHEME_ECDSA_P384},
@@ -36,15 +36,15 @@ use {
 };
 // `sha2::Digest` for the prehash `.digest()` — pulled here only when `rsa` isn't
 // on, since its block already imports the same trait (importing both warns).
-#[cfg(all(feature = "ecdsa-sign", not(feature = "rsa")))]
+#[cfg(all(feature = "ecdsa", not(feature = "rsa")))]
 use sha2::Digest as _;
 
 // P-256/P-384 deterministic signers, fully monomorphized: constant-time sign
 // backend, variable-time verify backend (named only for the RustCrypto keypair
 // bound), and the RFC 6979 HMAC.
-#[cfg(feature = "ecdsa-sign")]
+#[cfg(feature = "ecdsa")]
 type P256Signer = PrehashSigningKey<P256, EcdsaP256CtBn, EcdsaP256Bn, Hmac<EcdsaSha256>>;
-#[cfg(feature = "ecdsa-sign")]
+#[cfg(feature = "ecdsa")]
 type P384Signer = PrehashSigningKey<P384, EcdsaP384CtBn, EcdsaP384Bn, Hmac<EcdsaSha384>>;
 
 /// Ed25519 client authenticator: a seed-derived signing key (long-term
@@ -186,21 +186,23 @@ impl ClientAuth for RsaClientAuth<'_> {
 /// ECDSA client authenticator (P-256 / P-384) producing DER `ECDSA-Sig-Value`
 /// `CertificateVerify` signatures with an RFC 6979 deterministic nonce.
 ///
-/// **Experimental** (`feature = "ecdsa-sign"`): krabiecdsa's sign path is
-/// constant-time but unaudited — do not use it on keys you care about. The
-/// secret scalar wipes on drop inside the signing key.
-#[cfg(feature = "ecdsa-sign")]
+/// The signing scalar and nonce are constant-time (krabiecdsa's Ct path, held to
+/// the same bar as the Ed25519 and RSA signers), and the secret scalar wipes on
+/// drop inside the signing key. Base-point blinding is not implemented, so
+/// power/EM side channels are out of scope — the same network-attacker threat
+/// model as the RSA signer and the x25519 ladder.
+#[cfg(feature = "ecdsa")]
 pub struct EcdsaClientAuth<'a>(EcdsaKey<'a>);
 
 /// Curve-tagged key + leaf, kept private so callers can't destructure the
 /// public authenticator and move the secret signing key out of it.
-#[cfg(feature = "ecdsa-sign")]
+#[cfg(feature = "ecdsa")]
 enum EcdsaKey<'a> {
     P256 { key: P256Signer, cert_der: &'a [u8] },
     P384 { key: P384Signer, cert_der: &'a [u8] },
 }
 
-#[cfg(feature = "ecdsa-sign")]
+#[cfg(feature = "ecdsa")]
 impl<'a> EcdsaClientAuth<'a> {
     /// Build from a 32-byte big-endian P-256 private scalar and the DER leaf
     /// certifying the matching public key. Zeroize the caller's copy after.
@@ -234,7 +236,7 @@ impl<'a> EcdsaClientAuth<'a> {
 }
 
 /// Append `bytes` (a big-endian scalar half) as a minimal DER INTEGER.
-#[cfg(feature = "ecdsa-sign")]
+#[cfg(feature = "ecdsa")]
 fn der_int(bytes: &[u8], out: &mut ClientSignature) -> Result<(), ClientAuthError> {
     let mut v = bytes;
     while v.len() > 1 && v[0] == 0 {
@@ -256,7 +258,7 @@ fn der_int(bytes: &[u8], out: &mut ClientSignature) -> Result<(), ClientAuthErro
 /// DER `ECDSA-Sig-Value ::= SEQUENCE { r INTEGER, s INTEGER }` from the P1363
 /// halves. P-256/P-384 bodies stay < 128 bytes, so the SEQUENCE length is one
 /// byte.
-#[cfg(feature = "ecdsa-sign")]
+#[cfg(feature = "ecdsa")]
 fn der_ecdsa_sig(r: &[u8], s: &[u8]) -> Result<ClientSignature, ClientAuthError> {
     let mut body = ClientSignature::new();
     der_int(r, &mut body)?;
@@ -268,7 +270,7 @@ fn der_ecdsa_sig(r: &[u8], s: &[u8]) -> Result<ClientSignature, ClientAuthError>
     Ok(out)
 }
 
-#[cfg(feature = "ecdsa-sign")]
+#[cfg(feature = "ecdsa")]
 impl ClientAuth for EcdsaClientAuth<'_> {
     fn cert_der(&self) -> &[u8] {
         match &self.0 {
@@ -314,7 +316,7 @@ impl ClientAuth for EcdsaClientAuth<'_> {
     }
 }
 
-#[cfg(all(test, feature = "ecdsa-sign"))]
+#[cfg(all(test, feature = "ecdsa"))]
 mod ecdsa_sign_tests {
     use super::*;
     use crate::backends::ecdsa_verify::{verify_p256, verify_p384};
