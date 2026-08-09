@@ -106,13 +106,11 @@ mlkem = ["dep:krabipqc"]
 # `ecdsa_secp384r1_sha384`.
 ecdsa = ["dep:krabiecdsa", "fixed-bigint/cios"]
 # EXPERIMENTAL, off by default: ECDSA (P-256/P-384) *client-auth signing* for
-# mutual TLS, on top of `ecdsa`. Turns on krabiecdsa's `experimental-signing`
-# (its constant-time RCB sign path, RFC 6979 deterministic nonce), which drives
-# RFC 6979's HMAC-DRBG through the `digest 0.10` line — so this pulls a gated
-# `sha2 0.10` / `hmac 0.12` purely to name `Hmac<Sha256/384>` for that bound,
-# distinct from the crate's `sha2 0.11` prehash. Not for production keys until
-# krabiecdsa's signer is audited (see its `dangerous` module).
-ecdsa-sign = ["ecdsa", "krabiecdsa/experimental-signing", "dep:sha2_v10", "dep:hmac_v10"]
+# mutual TLS, on top of `ecdsa`. Gates krabiecdsa's constant-time sign path
+# (RFC 6979 deterministic nonce) in `client_auth`; the RFC 6979 HMAC-DRBG and
+# the prehash both ride the crate's own `sha2 0.11` / `hmac 0.13` (digest 0.11),
+# so no extra deps. Not for production keys until krabiecdsa's signer is audited.
+ecdsa-sign = ["ecdsa"]
 
 [dependencies]
 embedded-io = { version = "0.7.1", default-features = false }
@@ -144,12 +142,7 @@ thiserror = { version = "2", default-features = false }
 signature = { version = "3", default-features = false }
 rand_core = { version = "0.10", default-features = false }
 krabipqc = { version = "0.1.4", default-features = false, optional = true }
-krabiecdsa = { version = "0.3.0", default-features = false, optional = true }
-# ECDSA-sign only: RFC 6979's HMAC-DRBG in krabiecdsa 0.3.0 is on the `digest 0.10`
-# line, so `Hmac<Sha256/384>` for that bound must come from the matching 0.10/0.12
-# crates rather than the crate's `sha2 0.11`.
-sha2_v10 = { package = "sha2", version = "0.10", default-features = false, optional = true }
-hmac_v10 = { package = "hmac", version = "0.12", default-features = false, optional = true }
+krabiecdsa = { git = "https://github.com/kaidokert/krabiecdsa-rs.git", tag = "v0.4.0-alpha.1", default-features = false, optional = true }
 
 # Deterministic SeededRng + CannedTransport for the host facade replay
 # tests. Dev-only so the seed-mode RNG (a `TryCryptoRng` that is NOT a

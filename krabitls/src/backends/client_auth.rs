@@ -22,19 +22,30 @@ use crate::bigint::RsaSignBn as SignBn;
 use crate::consts::SIG_SCHEME_ED25519;
 use crate::traits::client_auth::{ClientAuth, ClientAuthError, ClientSignature};
 
-// ECDSA client-auth signing draws RFC 6979's HMAC-DRBG through krabiecdsa's
-// `digest 0.10`-line bound, so `Hmac<Sha256/384>` here is the 0.10/0.12 crates;
-// the prehash uses the crate's own `sha2 0.11`. `Digest as _` pulls the trait
-// method without a name that could clash with the `rsa` block's import.
+// ECDSA client-auth signing: the RFC 6979 HMAC-DRBG and the message prehash
+// both ride the crate's own `sha2 0.11` / `hmac 0.13` (digest 0.11). `Sha256`/
+// `Sha384` are aliased so they don't collide with the `rsa` block's `Sha256`
+// import when both features are on.
 #[cfg(feature = "ecdsa-sign")]
 use {
-    crate::bigint::{EcdsaP256CtBn, EcdsaP384CtBn},
+    crate::bigint::{EcdsaP256Bn, EcdsaP256CtBn, EcdsaP384Bn, EcdsaP384CtBn},
     crate::consts::{SIG_SCHEME_ECDSA_P256, SIG_SCHEME_ECDSA_P384},
-    hmac_v10::Hmac,
-    krabiecdsa::{dangerous::SigningKey as EcdsaSigningKey, p256::P256, p384::P384},
-    sha2::{Digest as _, Sha256 as Sha256v11, Sha384 as Sha384v11},
-    sha2_v10::{Sha256 as Sha256v10, Sha384 as Sha384v10},
+    hmac::Hmac,
+    krabiecdsa::{p256::P256, p384::P384, signing::PrehashSigningKey},
+    sha2::{Sha256 as EcdsaSha256, Sha384 as EcdsaSha384},
 };
+// `sha2::Digest` for the prehash `.digest()` — pulled here only when `rsa` isn't
+// on, since its block already imports the same trait (importing both warns).
+#[cfg(all(feature = "ecdsa-sign", not(feature = "rsa")))]
+use sha2::Digest as _;
+
+// P-256/P-384 deterministic signers, fully monomorphized: constant-time sign
+// backend, variable-time verify backend (named only for the RustCrypto keypair
+// bound), and the RFC 6979 HMAC.
+#[cfg(feature = "ecdsa-sign")]
+type P256Signer = PrehashSigningKey<P256, EcdsaP256CtBn, EcdsaP256Bn, Hmac<EcdsaSha256>>;
+#[cfg(feature = "ecdsa-sign")]
+type P384Signer = PrehashSigningKey<P384, EcdsaP384CtBn, EcdsaP384Bn, Hmac<EcdsaSha384>>;
 
 /// Ed25519 client authenticator: a seed-derived signing key (long-term
 /// secret wiped on drop inside [`SigningKey`]) paired with the leaf
@@ -177,22 +188,16 @@ impl ClientAuth for RsaClientAuth<'_> {
 ///
 /// **Experimental** (`feature = "ecdsa-sign"`): krabiecdsa's sign path is
 /// constant-time but unaudited — do not use it on keys you care about. The
-/// secret scalar wipes on drop inside the [`SigningKey`].
+/// secret scalar wipes on drop inside the signing key.
 #[cfg(feature = "ecdsa-sign")]
 pub struct EcdsaClientAuth<'a>(EcdsaKey<'a>);
 
 /// Curve-tagged key + leaf, kept private so callers can't destructure the
-/// public authenticator and move the secret [`EcdsaSigningKey`] out of it.
+/// public authenticator and move the secret signing key out of it.
 #[cfg(feature = "ecdsa-sign")]
 enum EcdsaKey<'a> {
-    P256 {
-        key: EcdsaSigningKey<P256>,
-        cert_der: &'a [u8],
-    },
-    P384 {
-        key: EcdsaSigningKey<P384>,
-        cert_der: &'a [u8],
-    },
+    P256 { key: P256Signer, cert_der: &'a [u8] },
+    P384 { key: P384Signer, cert_der: &'a [u8] },
 }
 
 #[cfg(feature = "ecdsa-sign")]
@@ -203,7 +208,7 @@ impl<'a> EcdsaClientAuth<'a> {
         scalar: &[u8; 32],
         cert_der: &'a [u8],
     ) -> Result<Self, ClientAuthError> {
-        let key = EcdsaSigningKey::<P256>::from_bytes(scalar).ok_or(ClientAuthError)?;
+        let key = P256Signer::from_bytes(scalar).ok_or(ClientAuthError)?;
         Ok(Self(EcdsaKey::P256 { key, cert_der }))
     }
 
@@ -212,7 +217,7 @@ impl<'a> EcdsaClientAuth<'a> {
         scalar: &[u8; 48],
         cert_der: &'a [u8],
     ) -> Result<Self, ClientAuthError> {
-        let key = EcdsaSigningKey::<P384>::from_bytes(scalar).ok_or(ClientAuthError)?;
+        let key = P384Signer::from_bytes(scalar).ok_or(ClientAuthError)?;
         Ok(Self(EcdsaKey::P384 { key, cert_der }))
     }
 
@@ -221,8 +226,8 @@ impl<'a> EcdsaClientAuth<'a> {
     /// (P-256) or 97 (P-384) bytes.
     pub fn public_key_sec1(&self, out: &mut [u8]) -> Result<(), ClientAuthError> {
         let ok = match &self.0 {
-            EcdsaKey::P256 { key, .. } => key.verifying_key_sec1::<EcdsaP256CtBn>(out),
-            EcdsaKey::P384 { key, .. } => key.verifying_key_sec1::<EcdsaP384CtBn>(out),
+            EcdsaKey::P256 { key, .. } => key.verifying_key_sec1(out),
+            EcdsaKey::P384 { key, .. } => key.verifying_key_sec1(out),
         };
         if ok { Ok(()) } else { Err(ClientAuthError) }
     }
@@ -290,25 +295,17 @@ impl ClientAuth for EcdsaClientAuth<'_> {
     ) -> Result<ClientSignature, ClientAuthError> {
         match &self.0 {
             EcdsaKey::P256 { key, .. } => {
-                let digest = Sha256v11::digest(content);
+                let digest = EcdsaSha256::digest(content);
                 let (mut r, mut s) = ([0u8; 32], [0u8; 32]);
-                if !key.sign_prehashed::<EcdsaP256CtBn, Hmac<Sha256v10>>(
-                    digest.as_slice(),
-                    &mut r,
-                    &mut s,
-                ) {
+                if !key.sign_prehashed(digest.as_slice(), &mut r, &mut s) {
                     return Err(ClientAuthError);
                 }
                 der_ecdsa_sig(&r, &s)
             }
             EcdsaKey::P384 { key, .. } => {
-                let digest = Sha384v11::digest(content);
+                let digest = EcdsaSha384::digest(content);
                 let (mut r, mut s) = ([0u8; 48], [0u8; 48]);
-                if !key.sign_prehashed::<EcdsaP384CtBn, Hmac<Sha384v10>>(
-                    digest.as_slice(),
-                    &mut r,
-                    &mut s,
-                ) {
+                if !key.sign_prehashed(digest.as_slice(), &mut r, &mut s) {
                     return Err(ClientAuthError);
                 }
                 der_ecdsa_sig(&r, &s)
@@ -330,10 +327,10 @@ mod ecdsa_sign_tests {
         let mut pk = [0u8; 65];
         auth.public_key_sec1(&mut pk).unwrap();
         let der = auth.sign(CONTENT, &[0u8; 32]).unwrap();
-        let prehash = Sha256v11::digest(CONTENT);
+        let prehash = EcdsaSha256::digest(CONTENT);
         assert!(verify_p256(&pk, prehash.as_slice(), &der).is_ok());
         // A signature over one content must not verify against another's digest.
-        let other = Sha256v11::digest(b"tampered");
+        let other = EcdsaSha256::digest(b"tampered");
         assert!(verify_p256(&pk, other.as_slice(), &der).is_err());
     }
 
@@ -343,7 +340,7 @@ mod ecdsa_sign_tests {
         let mut pk = [0u8; 97];
         auth.public_key_sec1(&mut pk).unwrap();
         let der = auth.sign(CONTENT, &[0u8; 32]).unwrap();
-        let prehash = Sha384v11::digest(CONTENT);
+        let prehash = EcdsaSha384::digest(CONTENT);
         assert!(verify_p384(&pk, prehash.as_slice(), &der).is_ok());
     }
 
