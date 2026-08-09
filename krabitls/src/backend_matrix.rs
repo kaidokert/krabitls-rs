@@ -10,6 +10,9 @@
 //! carrier trait bounds spelled out; `try_from_be_bytes_vartime` is the one
 //! uniform constructor every carrier implements.
 
+#[cfg(feature = "ecdsa")]
+use signature::hazmat::PrehashVerifier;
+
 // ── KAT vectors ────────────────────────────────────────────────────────────
 
 #[cfg(feature = "rsa")]
@@ -143,20 +146,13 @@ macro_rules! p256_verify_row {
     ($name:ident, $t:ty) => {
         #[test]
         fn $name() {
-            assert!(krabiecdsa::p256::verify_prehashed::<$t>(
-                &p256_kat::PUB,
-                &p256_kat::DIGEST,
-                &p256_kat::R,
-                &p256_kat::S,
-            ));
-            let mut bad_r = p256_kat::R;
-            bad_r[0] ^= 1;
-            assert!(!krabiecdsa::p256::verify_prehashed::<$t>(
-                &p256_kat::PUB,
-                &p256_kat::DIGEST,
-                &bad_r,
-                &p256_kat::S,
-            ));
+            let mut sig = [0u8; 64];
+            sig[..32].copy_from_slice(&p256_kat::R);
+            sig[32..].copy_from_slice(&p256_kat::S);
+            let vk = krabiecdsa::p256::VerifyingKey::<$t>::from_sec1_bytes(p256_kat::PUB);
+            assert!(vk.verify_prehash(&p256_kat::DIGEST, &sig).is_ok());
+            sig[0] ^= 1;
+            assert!(vk.verify_prehash(&p256_kat::DIGEST, &sig).is_err());
         }
     };
 }
