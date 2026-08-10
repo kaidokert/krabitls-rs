@@ -334,13 +334,15 @@ impl<S: DtlsSuite> DtlsClient<S> {
             )?;
         }
         let mut datagrams = 0usize;
-        let mut resends_left = MAX_FLIGHT_ATTEMPTS;
+        // CH2 was already sent once (it drew the ServerHello), so the flight's
+        // remaining sends toward MAX_FLIGHT_ATTEMPTS total are one fewer.
+        let mut resends_left = MAX_FLIGHT_ATTEMPTS - 1;
+        let mut dg = [0u8; MAX_DATAGRAM];
         while !reasm.flight_complete(base_seq, HS_FINISHED) {
             if datagrams >= MAX_FLIGHT_DATAGRAMS {
                 return Err(DtlsClientError::Timeout);
             }
             datagrams += 1;
-            let mut dg = [0u8; MAX_DATAGRAM];
             let n = match transport
                 .recv(&mut dg)
                 .map_err(DtlsClientError::Transport)?
@@ -366,7 +368,7 @@ impl<S: DtlsSuite> DtlsClient<S> {
             // trailing records; an unparseable (injected) datagram is ignored
             // rather than aborting the handshake.
             let start = match dg.first() {
-                Some(&b) if b & 0xE0 == 0x20 => 0,
+                Some(&b) if is_ciphertext_record(b) => 0,
                 _ => match parse_hello_body::<T::Error>(&dg[..n]) {
                     Ok((_, _, trailing)) => n - trailing,
                     Err(_) => continue,
@@ -597,7 +599,7 @@ impl<S: DtlsSuite> DtlsClient<S> {
             while pos < n {
                 let first = dg[pos];
                 // Only unified-header (epoch >0) records belong here.
-                if first & 0xE0 != 0x20 {
+                if !is_ciphertext_record(first) {
                     break;
                 }
                 // A leading epoch-2 record (0b10, no decrypt needed) means the
@@ -724,6 +726,13 @@ fn parse_hello_body<E>(datagram: &[u8]) -> Result<(&[u8], u16, usize), DtlsClien
     Ok((body, hh.message_seq, datagram.len() - consumed))
 }
 
+/// Whether `first` is the first byte of a DTLS 1.3 ciphertext (unified-header)
+/// record — top three bits `0b001` (RFC 9147 §4). Distinguishes an encrypted
+/// epoch-2/3 record from an epoch-0 plaintext handshake record.
+fn is_ciphertext_record(first: u8) -> bool {
+    first & 0xE0 == 0x20
+}
+
 /// Decrypt the epoch-2 records packed in `records` (one datagram, possibly
 /// several coalesced records) and feed each handshake fragment to `reasm`.
 /// `next_seq` seeds sequence-number reconstruction (the expected next in-order
@@ -744,12 +753,15 @@ fn feed_epoch2_records<S: DtlsSuite, E>(
     let mut rec_pos = 0usize;
     while rec_pos < n {
         // Only DTLS 1.3 ciphertext (unified-header) records belong to the flight.
-        if records[rec_pos] & 0xE0 != 0x20 {
+        if !is_ciphertext_record(records[rec_pos]) {
             break;
         }
-        let opened = server_keys
-            .open(cid_len, *next_seq, &mut records[rec_pos..n])
-            .map_err(|_| DtlsClientError::Protocol)?;
+        let Ok(opened) = server_keys.open(cid_len, *next_seq, &mut records[rec_pos..n]) else {
+            // A record that fails to decrypt — injected junk, or a corrupt or
+            // truncated coalesced tail — is not fatal: stop walking this datagram
+            // and let the caller wait for or retransmit the flight.
+            break;
+        };
         let record_len = opened.record_len;
         if record_len == 0 {
             break;
@@ -1432,7 +1444,7 @@ mod tests {
             let got = self.inner.recv(buf)?;
             if self.armed
                 && matches!(got, Some(n) if n > 0)
-                && buf.first().is_some_and(|&b| b & 0xE0 == 0x20)
+                && buf.first().is_some_and(|&b| is_ciphertext_record(b))
             {
                 self.armed = false;
                 return Ok(None); // simulate the epoch-2 datagram being lost
