@@ -715,6 +715,7 @@ mod tests {
     /// application-data round trip. Same peer contract as the handshake-module
     /// live tests: server on `KRABITLS_DTLS_PORT`, run with `-d` (no client auth)
     /// and an Ed25519 certificate.
+    #[cfg(feature = "cipher-aes")]
     #[test]
     #[ignore = "needs a live wolfSSL DTLS 1.3 server (set KRABITLS_DTLS_PORT)"]
     fn live_client_round_trips_app_data() {
@@ -775,6 +776,7 @@ mod tests {
     /// The handshake negotiates an RFC 9146 connection id and the whole
     /// encrypted exchange carries CIDs. Run the wolfSSL example server with
     /// `--cid <str>` (needs `--enable-dtlscid`), then set `KRABITLS_DTLS_PORT`.
+    #[cfg(feature = "cipher-aes")]
     #[test]
     #[ignore = "needs a CID-enabled wolfSSL DTLS 1.3 server (server --cid + KRABITLS_DTLS_PORT)"]
     fn live_handshake_with_connection_id() {
@@ -832,6 +834,7 @@ mod tests {
     /// ServerHello datagram. Run the wolfSSL example server with a small MTU:
     /// `KRABITLS_DTLS_MTU=512 ./examples/server/server -v 4 -u -d …` (needs
     /// `--enable-dtls-mtu`), then set `KRABITLS_DTLS_PORT`.
+    #[cfg(feature = "cipher-aes")]
     #[test]
     #[ignore = "needs a small-MTU wolfSSL DTLS 1.3 server (KRABITLS_DTLS_PORT + server MTU)"]
     fn live_handshake_over_fragmented_flight() {
@@ -1036,6 +1039,7 @@ mod tests {
     /// the client retransmits CH1 after the receive timeout. Uses a short socket
     /// timeout so the single retransmit is quick. Same wolfSSL contract as
     /// [`live_client_round_trips_app_data`].
+    #[cfg(feature = "cipher-aes")]
     #[test]
     #[ignore = "needs a live wolfSSL DTLS 1.3 server (set KRABITLS_DTLS_PORT)"]
     fn live_handshake_survives_first_flight_loss() {

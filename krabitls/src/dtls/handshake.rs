@@ -541,6 +541,7 @@ mod tests {
     /// transcript, derive the handshake-epoch keys (DTLS `"dtls13"` schedule),
     /// and decrypt the server's first epoch-2 record — proving the key schedule
     /// and protected record layer interoperate with a real DTLS 1.3 peer.
+    #[cfg(feature = "cipher-aes")]
     #[test]
     #[ignore = "needs a live wolfSSL DTLS 1.3 server (set KRABITLS_DTLS_PORT)"]
     fn live_derives_keys_and_decrypts_encrypted_extensions() {
@@ -613,6 +614,7 @@ mod tests {
     /// loopback), reassemble it into the TLS 4-byte-header form, and confirm the
     /// existing `parse_server_flight` accepts it — validating the flight-verify
     /// reuse path against a real DTLS 1.3 peer.
+    #[cfg(feature = "cipher-aes")]
     #[test]
     #[ignore = "needs a live wolfSSL DTLS 1.3 server (set KRABITLS_DTLS_PORT)"]
     fn live_decrypts_and_parses_full_server_flight() {
@@ -716,6 +718,7 @@ mod tests {
 
     /// The end-to-end goal: complete the full DTLS 1.3 handshake against wolfSSL
     /// (client Certificate + Finished) and round-trip application data.
+    #[cfg(feature = "cipher-aes")]
     #[test]
     #[ignore = "needs a live wolfSSL DTLS 1.3 server (set KRABITLS_DTLS_PORT)"]
     fn live_full_handshake_and_app_data_round_trip() {
