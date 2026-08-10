@@ -1,5 +1,11 @@
 #[cfg(any(
-    all(not(feature = "rsa"), not(feature = "chacha20")),
+    all(
+        not(feature = "rsa"),
+        not(feature = "chacha20"),
+        not(feature = "mldsa"),
+        not(feature = "ecdsa"),
+        not(feature = "mlkem")
+    ),
     all(feature = "cipher-aes", feature = "chacha20", not(feature = "mlkem"))
 ))]
 use super::*;
