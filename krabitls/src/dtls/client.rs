@@ -181,8 +181,16 @@ impl<S: DtlsSuite> DtlsClient<S> {
 
         // --- CH1 -> HelloRetryRequest ---
         let mut ch1 = [0u8; 512];
-        let ch1_len = write_client_hello(client_random, &pub_key, None, None, client_cid, &mut ch1)
-            .map_err(|_| DtlsClientError::BufferTooSmall)?;
+        let ch1_len = write_client_hello(
+            client_random,
+            &pub_key,
+            S::CIPHER_SUITE_ID,
+            None,
+            None,
+            client_cid,
+            &mut ch1,
+        )
+        .map_err(|_| DtlsClientError::BufferTooSmall)?;
         let ch1_rec = build_client_hello_record(&ch1[..ch1_len], 0, 0, &mut ch_dgram)?;
         let hrr_len = send_flight_await_reply(transport, ch1_rec, &mut rbuf, MAX_FLIGHT_ATTEMPTS)?;
         let cookie_buf = {
@@ -202,7 +210,18 @@ impl<S: DtlsSuite> DtlsClient<S> {
             let mut cb = [0u8; 256];
             let cookie =
                 match parse_server_hello(hrr_body).map_err(|_| DtlsClientError::Handshake)? {
-                    ServerHelloKind::Retry { cookie } => cookie,
+                    ServerHelloKind::Retry {
+                        selected_suite,
+                        cookie,
+                    } => {
+                        // RFC 8446 §4.1.4: reject an HRR naming a suite we did not
+                        // offer; the later ServerHello suite check then enforces
+                        // HRR↔ServerHello consistency (both must equal our suite).
+                        if selected_suite != S::CIPHER_SUITE_ID {
+                            return Err(DtlsClientError::Handshake);
+                        }
+                        cookie
+                    }
                     ServerHelloKind::Hello { .. } => return Err(DtlsClientError::Handshake),
                 };
             let n = cookie.len();
@@ -217,6 +236,7 @@ impl<S: DtlsSuite> DtlsClient<S> {
         let ch2_len = write_client_hello(
             client_random,
             &pub_key,
+            S::CIPHER_SUITE_ID,
             None,
             Some(&cookie_buf.0[..cookie_buf.1]),
             client_cid,
@@ -239,9 +259,13 @@ impl<S: DtlsSuite> DtlsClient<S> {
             transcript.update(sh_body);
             let share = match parse_server_hello(sh_body).map_err(|_| DtlsClientError::Handshake)? {
                 ServerHelloKind::Hello {
+                    selected_suite,
                     server_key_share,
                     server_cid,
                 } => {
+                    if selected_suite != S::CIPHER_SUITE_ID {
+                        return Err(DtlsClientError::Handshake);
+                    }
                     // CID is negotiated only if we advertised one AND the server
                     // returned the extension. Then inbound records carry our CID,
                     // and we send with the server's CID (empty = send none).
@@ -784,6 +808,42 @@ mod tests {
             .expect("recv succeeds")
             .expect("an application_data reply, not a timeout");
         assert!(reply > 0, "decrypted a non-empty application_data reply");
+    }
+
+    /// Complete a full DTLS 1.3 handshake over ChaCha20-Poly1305 against a live
+    /// server — proving the suite-generic ClientHello advertisement, the
+    /// ServerHello suite check, and ChaCha decryption of the epoch-2 flight.
+    /// Trust is TOFU self-signed. Set `KRABITLS_DTLS_ADDR=host:port` to a DTLS
+    /// 1.3 server offering an Ed25519 (or other self-signed) leaf.
+    #[cfg(feature = "chacha20")]
+    #[test]
+    #[ignore = "needs a live DTLS 1.3 server (set KRABITLS_DTLS_ADDR=host:port)"]
+    fn live_handshake_chacha() {
+        use crate::aead::ChaCha20Poly1305Sha256 as Suite;
+        use crate::backends::{DerCert, PinOrSelfSigned, RustCrypto};
+        use crate::traits::verify_strategy::SafeStrategy;
+
+        let addr = std::env::var("KRABITLS_DTLS_ADDR").unwrap();
+        let sock = UdpSocket::bind("0.0.0.0:0").unwrap();
+        sock.connect(&*addr).unwrap();
+        sock.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        let mut transport = UdpTransport::new(sock);
+
+        let strategy = SafeStrategy::<_, DerCert>::new(PinOrSelfSigned::self_signed());
+
+        let mut flight_buf = [0u8; 4096];
+        let mut reasm_buf = [0u8; 4096];
+        DtlsClient::<Suite>::connect::<_, RustCrypto, _, RustCrypto, RustCrypto, DerCert, 4>(
+            &mut transport,
+            &strategy,
+            None,
+            None,
+            &[0x42u8; 32],
+            &[0x77u8; 32],
+            &mut flight_buf,
+            &mut reasm_buf,
+        )
+        .expect("ChaCha20-Poly1305 DTLS 1.3 handshake completes");
     }
 
     /// The handshake negotiates an RFC 9146 connection id and the whole
