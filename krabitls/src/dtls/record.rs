@@ -26,7 +26,7 @@ const HDR_EPOCH_LOW2: u8 = 0b0000_0011;
 /// record-number-encryption sample also needs at least this many ciphertext
 /// bytes (RFC 9147 §4.2.3), which every sealed record satisfies (min body =
 /// 1 inner-type byte + tag).
-const TAG_LEN: usize = 16;
+pub(crate) const TAG_LEN: usize = 16;
 const SN_SAMPLE_LEN: usize = 16;
 
 /// On-wire sequence-number width, the `S` header bit (RFC 9147 §4).
