@@ -40,12 +40,12 @@ pub(crate) mod reassembly;
 pub(crate) mod record;
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod replay;
-#[cfg(feature = "cipher-aes")]
+#[cfg(any(feature = "cipher-aes", feature = "chacha20"))]
 pub(crate) mod stream;
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod transport;
 
 pub use client::DtlsClientError;
-#[cfg(feature = "cipher-aes")]
+#[cfg(any(feature = "cipher-aes", feature = "chacha20"))]
 pub use stream::DtlsStream;
 pub use transport::DatagramTransport;
