@@ -43,6 +43,9 @@
 //! `TcpStream` wrapper); `rng` is any [`rand_core::TryCryptoRng`].
 
 #![cfg_attr(not(test), no_std)]
+// This crate contains no `unsafe` — a compile-time guarantee, not a convention.
+// (Dependencies may use `unsafe` internally; this only governs krabitls itself.)
+#![forbid(unsafe_code)]
 
 pub(crate) mod aead;
 pub mod backends;
@@ -50,6 +53,8 @@ pub(crate) mod bigint;
 pub mod client;
 pub(crate) mod client_flight;
 pub(crate) mod connection;
+#[cfg(feature = "dtls")]
+pub mod dtls;
 pub(crate) mod errors;
 pub(crate) mod hkdf;
 pub(crate) mod identity;
@@ -125,6 +130,9 @@ pub(crate) mod consts {
     pub const CT_HANDSHAKE: u8 = 22;
     pub const CT_APPLICATION_DATA: u8 = 23;
     pub const CT_ALERT: u8 = 21;
+    /// DTLS 1.3 ACK record content type (RFC 9147 §7).
+    #[cfg(feature = "dtls")]
+    pub const CT_ACK: u8 = 26;
     /// Middlebox-compat ChangeCipherSpec — accepted and dropped without
     /// bumping `seq_in` in TLS 1.3.
     pub const CT_CHANGE_CIPHER_SPEC: u8 = 0x14;

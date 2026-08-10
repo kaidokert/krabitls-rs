@@ -53,6 +53,9 @@ jobs:
           - "cert-der,cipher-aes,rsa,rsa-3072"                     # +3072 (heapless CAP-96)
           - "cert-der,cipher-aes,rsa,rsa-3072,rsa-4096"            # +4096 (heapless CAP-128)
           - "cert-der,cipher-aes,ecdsa"
+          - "cert-der,cipher-aes,dtls"                             # DTLS 1.3 (AES record layer + reliability + CID)
+          - "cert-der,cipher-aes,chacha20,dtls"                    # DTLS 1.3 with the ChaCha20 record-number mask
+          - "cert-der,cipher-aes,rsa,ecdsa,dtls"                   # DTLS 1.3 over the ECDSA/RSA server-cert verify surface
           - "cert-der,cipher-aes,p256-kx"                          # P-256 ECDHE key exchange
           - "cert-der,cipher-aes,p256-kx,ecdsa,rsa"                # Azure-shaped: P-256 KX + ECDSA verify + RSA client-auth
           - "cert-der,chacha20"                                    # ChaCha-only cipher
@@ -111,7 +114,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        features: ["", "rsa", "chacha20", "rsa,chacha20", "ecdsa,rsa", "p256-kx,ecdsa,rsa"]
+        features: ["", "rsa", "chacha20", "rsa,chacha20", "ecdsa,rsa", "p256-kx,ecdsa,rsa", "dtls"]
     steps:
     - uses: actions/checkout@v4
       with:
