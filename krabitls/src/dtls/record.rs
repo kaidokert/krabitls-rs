@@ -7,10 +7,6 @@
 //! sequence number XOR the write IV, identical to TLS 1.3, so
 //! [`RecordKeys::seal_in_place`] / [`RecordKeys::open_in_place`] are reused
 //! verbatim.
-//!
-//! Not RFC-interop-verified yet: encode/decode is proven self-consistent by
-//! round-trip and the AES mask by a known-answer test; interop against a DTLS
-//! 1.3 peer lands with the handshake.
 
 use crate::aead::{CipherSuite, RecordKeys, split_inner_plaintext};
 use crate::hkdf::HkdfLabelError;

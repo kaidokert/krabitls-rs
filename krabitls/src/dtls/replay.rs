@@ -4,9 +4,7 @@
 //!
 //! Reconstruction and enforcement are separate concerns: the record layer
 //! reconstructs a full sequence number to open a record; this window then
-//! decides whether that number is acceptable. Enforcement is wired into the
-//! receive path in a later phase — the struct lands here with the record layer
-//! so the two are designed together.
+//! decides whether that number is acceptable.
 
 /// A 64-entry sliding window. `highest` is the largest accepted sequence number
 /// (its bit is the top of the window); `bitmap` bit `i` marks

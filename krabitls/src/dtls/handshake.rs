@@ -537,7 +537,7 @@ mod tests {
         resp
     }
 
-    /// The end-to-end milestone: after the plaintext handshake, build the HRR
+    /// After the plaintext handshake, build the HRR
     /// transcript, derive the handshake-epoch keys (DTLS `"dtls13"` schedule),
     /// and decrypt the server's first epoch-2 record — proving the key schedule
     /// and protected record layer interoperate with a real DTLS 1.3 peer.
@@ -716,7 +716,7 @@ mod tests {
         v
     }
 
-    /// The end-to-end goal: complete the full DTLS 1.3 handshake against a live server
+    /// Complete the full DTLS 1.3 handshake against a live server
     /// (client Certificate + Finished) and round-trip application data.
     #[cfg(feature = "cipher-aes")]
     #[test]

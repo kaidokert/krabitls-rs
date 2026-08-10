@@ -3,7 +3,7 @@
 //! Identical math to TLS 1.3 (RFC 8446 §7): X25519 ECDHE → `handshake_secret`
 //! → client/server handshake traffic secrets → per-suite AEAD + record-number
 //! keys. Only the record framing that consumes these keys is DTLS-specific, so
-//! everything here is reused from [`crate::hkdf`] and PR1's [`EpochKeys`].
+//! everything here is reused from [`crate::hkdf`] and [`EpochKeys`].
 
 use crate::bigint::Curve25519CtBn as Bn;
 use crate::dtls::record::{DtlsSuite, EpochKeys};
