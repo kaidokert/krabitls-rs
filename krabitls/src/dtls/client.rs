@@ -799,59 +799,41 @@ mod tests {
         assert!(reply > 0, "decrypted a non-empty application_data reply");
     }
 
-    /// Same round-trip over ChaCha20-Poly1305 — proves the suite-generic
-    /// ClientHello advertisement and the ServerHello suite check. Run the DTLS
-    /// 1.3 server with `-l TLS13-CHACHA20-POLY1305-SHA256`, then set
-    /// `KRABITLS_DTLS_PORT`.
+    /// Complete a full DTLS 1.3 handshake over ChaCha20-Poly1305 against a live
+    /// server — proving the suite-generic ClientHello advertisement, the
+    /// ServerHello suite check, and ChaCha decryption of the epoch-2 flight (the
+    /// handshake is independent of any CoAP layer above it). Trust is TOFU
+    /// self-signed, matching the public `coaps-*.ssltest.coapbin.org` peers. Set
+    /// `KRABITLS_DTLS_ADDR=host:port`, e.g. `coaps-ed25519.ssltest.coapbin.org:5686`.
     #[cfg(feature = "chacha20")]
     #[test]
-    #[ignore = "needs a ChaCha DTLS 1.3 server (server -l TLS13-CHACHA20... + KRABITLS_DTLS_PORT)"]
-    fn live_client_round_trips_app_data_chacha() {
+    #[ignore = "needs a live DTLS 1.3 server (set KRABITLS_DTLS_ADDR=host:port)"]
+    fn live_handshake_chacha() {
         use crate::aead::ChaCha20Poly1305Sha256 as Suite;
-        use crate::backends::{DerCert, PinOrSelfSigned, PinnedPubkeyOwned, RustCrypto};
+        use crate::backends::{DerCert, PinOrSelfSigned, RustCrypto};
         use crate::traits::verify_strategy::SafeStrategy;
 
-        let port: u16 = std::env::var("KRABITLS_DTLS_PORT")
-            .unwrap()
-            .parse()
-            .unwrap();
-        let sock = UdpSocket::bind("127.0.0.1:0").unwrap();
-        sock.connect(("127.0.0.1", port)).unwrap();
+        let addr = std::env::var("KRABITLS_DTLS_ADDR").unwrap();
+        let sock = UdpSocket::bind("0.0.0.0:0").unwrap();
+        sock.connect(&*addr).unwrap();
         sock.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
         let mut transport = UdpTransport::new(sock);
 
-        let pin = PinnedPubkeyOwned::ed25519([
-            0x23, 0xaa, 0x4d, 0x60, 0x50, 0xe0, 0x13, 0xd3, 0x3a, 0xed, 0xab, 0xf6, 0xa9, 0xcc,
-            0x4a, 0xfe, 0xd7, 0x4d, 0x2f, 0xd2, 0x5b, 0x1a, 0x10, 0x05, 0xef, 0x5a, 0x41, 0x25,
-            0xce, 0x1b, 0x53, 0x78,
-        ]);
-        let strategy = SafeStrategy::<_, DerCert>::new(PinOrSelfSigned::pinned(pin));
+        let strategy = SafeStrategy::<_, DerCert>::new(PinOrSelfSigned::self_signed());
 
         let mut flight_buf = [0u8; 4096];
         let mut reasm_buf = [0u8; 4096];
-        let mut client =
-            DtlsClient::<Suite>::connect::<_, RustCrypto, _, RustCrypto, RustCrypto, DerCert, 4>(
-                &mut transport,
-                &strategy,
-                None,
-                None,
-                &[0x42u8; 32],
-                &[0x77u8; 32],
-                &mut flight_buf,
-                &mut reasm_buf,
-            )
-            .expect("handshake completes");
-
-        let mut out = [0u8; 128];
-        client
-            .send(&mut transport, b"hello from krabitls", &mut out)
-            .expect("app data sends");
-        let mut buf = [0u8; 256];
-        let reply = client
-            .recv(&mut transport, &mut buf)
-            .expect("recv succeeds")
-            .expect("an application_data reply, not a timeout");
-        assert!(reply > 0, "decrypted a non-empty application_data reply");
+        DtlsClient::<Suite>::connect::<_, RustCrypto, _, RustCrypto, RustCrypto, DerCert, 4>(
+            &mut transport,
+            &strategy,
+            None,
+            None,
+            &[0x42u8; 32],
+            &[0x77u8; 32],
+            &mut flight_buf,
+            &mut reasm_buf,
+        )
+        .expect("ChaCha20-Poly1305 DTLS 1.3 handshake completes");
     }
 
     /// The handshake negotiates an RFC 9146 connection id and the whole
