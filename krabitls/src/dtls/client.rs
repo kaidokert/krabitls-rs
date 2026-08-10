@@ -210,7 +210,18 @@ impl<S: DtlsSuite> DtlsClient<S> {
             let mut cb = [0u8; 256];
             let cookie =
                 match parse_server_hello(hrr_body).map_err(|_| DtlsClientError::Handshake)? {
-                    ServerHelloKind::Retry { cookie } => cookie,
+                    ServerHelloKind::Retry {
+                        selected_suite,
+                        cookie,
+                    } => {
+                        // RFC 8446 §4.1.4: reject an HRR naming a suite we did not
+                        // offer; the later ServerHello suite check then enforces
+                        // HRR↔ServerHello consistency (both must equal our suite).
+                        if selected_suite != S::CIPHER_SUITE_ID {
+                            return Err(DtlsClientError::Handshake);
+                        }
+                        cookie
+                    }
                     ServerHelloKind::Hello { .. } => return Err(DtlsClientError::Handshake),
                 };
             let n = cookie.len();

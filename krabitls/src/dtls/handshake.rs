@@ -215,8 +215,13 @@ pub(crate) enum ParseError {
 
 /// A parsed ServerHello handshake-message body.
 pub(crate) enum ServerHelloKind<'a> {
-    /// HelloRetryRequest — resend the ClientHello echoing this cookie.
-    Retry { cookie: &'a [u8] },
+    /// HelloRetryRequest — resend the ClientHello echoing this cookie. Carries
+    /// the selected suite so the client can reject an HRR that names a suite it
+    /// did not offer (RFC 8446 §4.1.4).
+    Retry {
+        selected_suite: u16,
+        cookie: &'a [u8],
+    },
     /// The real ServerHello, carrying the server's X25519 key share and, when
     /// the server agreed to RFC 9146 CID, its connection_id (the CID the client
     /// must put on records it sends; may be empty = server wants no CID inbound).
@@ -283,6 +288,7 @@ pub(crate) fn parse_server_hello(body: &[u8]) -> Result<ServerHelloKind<'_>, Par
 
     if is_retry {
         Ok(ServerHelloKind::Retry {
+            selected_suite,
             cookie: cookie.ok_or(ParseError::MissingCookie)?,
         })
     } else {
@@ -447,7 +453,41 @@ mod tests {
     fn parses_hello_retry_request_cookie() {
         let body = hello_body(HRR);
         match parse_server_hello(&body).unwrap() {
-            ServerHelloKind::Retry { cookie } => assert_eq!(cookie.len(), 67),
+            ServerHelloKind::Retry { cookie, .. } => assert_eq!(cookie.len(), 67),
+            ServerHelloKind::Hello { .. } => panic!("expected a retry"),
+        }
+    }
+
+    #[test]
+    fn hrr_surfaces_its_cipher_suite_for_the_mismatch_check() {
+        use crate::consts::CIPHER_CHACHA20_POLY1305_SHA256;
+        // A minimal HRR naming ChaCha: a client that offered only AES compares
+        // this against `S::CIPHER_SUITE_ID` and rejects (RFC 8446 §4.1.4).
+        let cookie = [0xABu8, 0xCD];
+        let mut exts = Vec::new();
+        exts.extend_from_slice(&EXT_COOKIE.to_be_bytes());
+        exts.extend_from_slice(&((2 + cookie.len()) as u16).to_be_bytes());
+        exts.extend_from_slice(&(cookie.len() as u16).to_be_bytes());
+        exts.extend_from_slice(&cookie);
+
+        let mut body = Vec::new();
+        body.extend_from_slice(&DTLS_1_2_LEGACY_VERSION.to_be_bytes());
+        body.extend_from_slice(&HRR_RANDOM);
+        body.push(0); // empty session_id
+        body.extend_from_slice(&CIPHER_CHACHA20_POLY1305_SHA256.to_be_bytes());
+        body.push(0); // null compression
+        body.extend_from_slice(&(exts.len() as u16).to_be_bytes());
+        body.extend_from_slice(&exts);
+
+        match parse_server_hello(&body).unwrap() {
+            ServerHelloKind::Retry {
+                selected_suite,
+                cookie,
+            } => {
+                assert_eq!(selected_suite, CIPHER_CHACHA20_POLY1305_SHA256);
+                assert_ne!(selected_suite, CIPHER_AES_128_GCM_SHA256);
+                assert_eq!(cookie, &[0xAB, 0xCD]);
+            }
             ServerHelloKind::Hello { .. } => panic!("expected a retry"),
         }
     }
@@ -543,7 +583,7 @@ mod tests {
         // CH1 → HelloRetryRequest with a cookie.
         let reply = live_send_ch(&sock, &pubkey, None, 0, 0);
         let cookie = match parse_server_hello(&hello_body_of(&reply)).unwrap() {
-            ServerHelloKind::Retry { cookie } => cookie.to_vec(),
+            ServerHelloKind::Retry { cookie, .. } => cookie.to_vec(),
             ServerHelloKind::Hello { .. } => panic!("expected HelloRetryRequest first"),
         };
 
@@ -651,7 +691,7 @@ mod tests {
         send_ch_body(&sock, &ch1[..ch1_len], 0, 0);
         let hrr_body = hello_body_of(&recv_dgram(&sock));
         let cookie = match parse_server_hello(&hrr_body).unwrap() {
-            ServerHelloKind::Retry { cookie } => cookie.to_vec(),
+            ServerHelloKind::Retry { cookie, .. } => cookie.to_vec(),
             _ => panic!("expected HRR"),
         };
 
@@ -741,7 +781,7 @@ mod tests {
         send_ch_body(&sock, &ch1[..ch1_len], 0, 0);
         let hrr_body = hello_body_of(&recv_dgram(&sock));
         let cookie = match parse_server_hello(&hrr_body).unwrap() {
-            ServerHelloKind::Retry { cookie } => cookie.to_vec(),
+            ServerHelloKind::Retry { cookie, .. } => cookie.to_vec(),
             _ => panic!("expected HRR"),
         };
         let mut ch2 = [0u8; 512];
@@ -866,7 +906,7 @@ mod tests {
         send_ch_body(&sock, &ch1[..ch1_len], 0, 0);
         let hrr_body = hello_body_of(&recv_dgram(&sock));
         let cookie = match parse_server_hello(&hrr_body).unwrap() {
-            ServerHelloKind::Retry { cookie } => cookie.to_vec(),
+            ServerHelloKind::Retry { cookie, .. } => cookie.to_vec(),
             _ => panic!("HRR"),
         };
         let mut ch2 = [0u8; 512];
