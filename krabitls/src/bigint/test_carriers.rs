@@ -45,6 +45,10 @@ mod carrier {
     pub(crate) type EcdsaP256Bn = cb::U256;
     #[cfg(feature = "ecdsa")]
     pub(crate) type EcdsaP384Bn = cb::U384;
+    #[cfg(feature = "ecdsa")]
+    pub(crate) type EcdsaP256CtBn = cb::Ct<cb::U256>;
+    #[cfg(feature = "ecdsa")]
+    pub(crate) type EcdsaP384CtBn = cb::Ct<cb::U384>;
 }
 
 // bnum ships only power-of-two widths, so P-384 and RSA-3072 (no bnum type) are

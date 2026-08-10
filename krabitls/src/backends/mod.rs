@@ -18,6 +18,8 @@
 pub(crate) mod client_auth;
 #[cfg(feature = "cert-der")]
 pub(crate) mod der_cert;
+#[cfg(feature = "p256-kx")]
+pub(crate) mod ecdhe;
 #[cfg(feature = "ecdsa")]
 pub(crate) mod ecdsa_verify;
 #[cfg(feature = "jedisct")]
@@ -34,7 +36,7 @@ pub(crate) mod tlv;
 #[cfg(not(feature = "cert-der"))]
 pub(crate) mod tlv_cert;
 
-#[cfg(feature = "ecdsa-sign")]
+#[cfg(feature = "ecdsa")]
 pub use client_auth::EcdsaClientAuth;
 pub use client_auth::Ed25519ClientAuth;
 #[cfg(feature = "rsa")]

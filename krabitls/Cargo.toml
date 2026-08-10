@@ -1,6 +1,6 @@
 [package]
 name = "krabitls"
-version = "0.4.1"
+version = "0.4.3"
 edition = "2024"
 rust-version = "1.87"
 readme = "../README.md"
@@ -31,8 +31,9 @@ dev-utils = []
 # Compile the cfg(test) backend carrier matrix (`src/backend_matrix.rs`), which
 # references the git-only `_patched` dev-deps. Off by default so `cargo test` on
 # the published crate — where cargo strips those git deps — still compiles; CI
-# turns it on explicitly.
-backend-matrix = []
+# turns it on explicitly. Enables krabiecdsa's `test-vectors` (only if krabiecdsa
+# is already pulled) for the raw-scalar ECDH known-answer rows.
+backend-matrix = ["krabiecdsa?/test-vectors"]
 # Test-only carrier-swap proof — recompile the stack on bnum / crypto-bigint.
 # See `src/bigint/test_carriers.rs`. Enable one at a time.
 carrier-bnum = []
@@ -107,20 +108,26 @@ mldsa = ["dep:krabipqc"]
 # `X25519MLKEM768` hybrid TLS key exchange. Same krabipqc dependency as `mldsa`;
 # verification/handshake wiring is built on top in later steps.
 mlkem = ["dep:krabipqc"]
-# Optional ECDSA (P-256 + P-384) signature-verification backend, gated like
-# `rsa`/`mldsa`. Pulls in krabiecdsa (no_std, no-alloc, verify-only) and turns
-# on fixed-bigint's `cios` feature, which its `UnsignedModularInt` bound needs
-# (modmath CIOS Montgomery mul). Covers `ecdsa_secp256r1_sha256` +
-# `ecdsa_secp384r1_sha384`.
+# Optional ECDSA (P-256 + P-384) backend, gated like `rsa`/`mldsa`. Pulls in
+# krabiecdsa (no_std, no-alloc) and turns on fixed-bigint's `cios` feature, which
+# its `UnsignedModularInt` bound needs (modmath CIOS Montgomery mul). Covers
+# `ecdsa_secp256r1_sha256` + `ecdsa_secp384r1_sha384` server-cert verification
+# and, for mutual TLS, P-256/P-384 client-auth signing (`EcdsaClientAuth`, RFC
+# 6979 deterministic nonce; constant-time — see its docs for the threat model).
+# Signing links only when `EcdsaClientAuth` is constructed, so a verify-only
+# build stays byte-identical, same as `rsa`.
 ecdsa = ["dep:krabiecdsa", "fixed-bigint/cios"]
-# EXPERIMENTAL, off by default: ECDSA (P-256/P-384) *client-auth signing* for
-# mutual TLS, on top of `ecdsa`. Turns on krabiecdsa's `experimental-signing`
-# (its constant-time RCB sign path, RFC 6979 deterministic nonce), which drives
-# RFC 6979's HMAC-DRBG through the `digest 0.10` line — so this pulls a gated
-# `sha2 0.10` / `hmac 0.12` purely to name `Hmac<Sha256/384>` for that bound,
-# distinct from the crate's `sha2 0.11` prehash. Not for production keys until
-# krabiecdsa's signer is audited (see its `dangerous` module).
-ecdsa-sign = ["ecdsa", "krabiecdsa/experimental-signing", "dep:sha2_v10", "dep:hmac_v10"]
+# Deprecated compat alias: signing folded into `ecdsa` (see above). Kept so
+# downstream `--features ecdsa-sign` builds from 0.4.1 keep resolving without a
+# breaking (0.5.0) bump; remove at the next minor.
+ecdsa-sign = ["ecdsa"]
+# Classical secp256r1 (P-256) ECDHE key exchange (named group 0x0017), the
+# `key_share` side. Additive: advertised alongside the primary group (X25519, or
+# X25519MLKEM768 under `mlkem`) so a build can offer P-256 and the hybrid at once
+# — the server picks. Needed for gateways that refuse X25519 (e.g. Azure IoT).
+# Pulls krabiecdsa's constant-time `ecdh` primitive (shares the CT carrier with
+# the `ecdsa` verify path); orthogonal to `ecdsa` server-cert verification.
+p256-kx = ["dep:krabiecdsa", "fixed-bigint/cios"]
 
 [dependencies]
 embedded-io = { version = "0.7.1", default-features = false }
@@ -145,7 +152,7 @@ digest = { version = "0.11", default-features = false }
 hmac = { version = "0.13", default-features = false }
 hkdf = { version = "0.13", default-features = false }
 ed25519_heapless = { version = "0.5.0", default-features = false, features = ["sha512-sha2"] }
-fixed-bigint = { version = "0.6.0", default-features = false, features = ["use-unsafe", "zeroize", "cios"] }
+fixed-bigint = { version = "0.6", default-features = false, features = ["use-unsafe", "zeroize", "cios"] }
 const-num-traits = { version = "0.2.1", default-features = false, features = ["ct"] }
 der = { version = "0.8.0", default-features = false, features = ["oid"], optional = true }
 zeroize = { version = "1.8", default-features = false, features = ["derive"] }
@@ -155,12 +162,7 @@ thiserror = { version = "2", default-features = false }
 signature = { version = "3", default-features = false }
 rand_core = { version = "0.10", default-features = false }
 krabipqc = { version = "0.1.4", default-features = false, optional = true }
-krabiecdsa = { version = "0.3.0", default-features = false, optional = true }
-# ECDSA-sign only: RFC 6979's HMAC-DRBG in krabiecdsa 0.3.0 is on the `digest 0.10`
-# line, so `Hmac<Sha256/384>` for that bound must come from the matching 0.10/0.12
-# crates rather than the crate's `sha2 0.11`.
-sha2_v10 = { package = "sha2", version = "0.10", default-features = false, optional = true }
-hmac_v10 = { package = "hmac", version = "0.12", default-features = false, optional = true }
+krabiecdsa = { version = "0.5.0", default-features = false, optional = true }
 
 # Deterministic SeededRng + CannedTransport for the host facade replay
 # tests. Dev-only so the seed-mode RNG (a `TryCryptoRng` that is NOT a
