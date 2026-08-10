@@ -28,6 +28,8 @@ const EXT_CONNECTION_ID: u16 = 54;
 pub(crate) enum ClientHelloError {
     #[error("output buffer too small for the ClientHello")]
     BufferTooSmall,
+    #[error("connection ID exceeds the RFC 9146 single-byte length")]
+    CidTooLong,
 }
 
 /// A minimal fallible cursor over a byte buffer. Every write is bounds-checked;
@@ -161,6 +163,10 @@ pub(crate) fn write_client_hello(
     // it sends to us. Advertising it negotiates CID for this connection; the
     // server signals agreement by returning its own connection_id in ServerHello.
     if let Some(cid) = client_cid {
+        // RFC 9146 §4: the cid length prefix is a single byte.
+        if cid.len() > u8::MAX as usize {
+            return Err(ClientHelloError::CidTooLong);
+        }
         c.u16(EXT_CONNECTION_ID);
         c.u16((1 + cid.len()) as u16);
         c.u8(cid.len() as u8);
@@ -312,6 +318,16 @@ mod tests {
         assert_eq!(&body[38..40], &CIPHER_AES_128_GCM_SHA256.to_be_bytes());
         // The X25519 public key appears verbatim in the key_share.
         assert!(body.windows(32).any(|w| w == pubkey));
+    }
+
+    #[test]
+    fn over_long_cid_is_rejected_not_truncated() {
+        let random = [0x11u8; 32];
+        let pubkey = [0x22u8; 32];
+        let cid = [0xABu8; 256];
+        let mut body = [0u8; 512];
+        let err = write_client_hello(&random, &pubkey, None, None, Some(&cid), &mut body);
+        assert_eq!(err, Err(ClientHelloError::CidTooLong));
     }
 
     #[test]
