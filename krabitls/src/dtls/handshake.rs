@@ -319,22 +319,34 @@ pub(crate) fn parse_server_hello(body: &[u8]) -> Result<ServerHelloKind<'_>, Par
 }
 
 /// The server's `record_size_limit` (RFC 8449) from an EncryptedExtensions
-/// message body, if it sent one — the largest TLSInnerPlaintext the client may
-/// send. `None` when absent (no limit to enforce).
-pub(crate) fn parse_ee_record_size_limit(ee_body: &[u8]) -> Option<u16> {
-    let ext_len = u16::from_be_bytes([*ee_body.first()?, *ee_body.get(1)?]) as usize;
-    let exts = ee_body.get(2..2 + ext_len)?;
+/// message body — the largest TLSInnerPlaintext the client may send.
+/// `Ok(None)` when absent (no limit to enforce); `Err` when the extension is
+/// present but malformed or below the RFC 8449 §4 floor of 64, which the peer
+/// MUST NOT send and the client MUST treat as fatal.
+pub(crate) fn parse_ee_record_size_limit(ee_body: &[u8]) -> Result<Option<u16>, ParseError> {
+    let ext_len = u16::from_be_bytes([
+        *ee_body.first().ok_or(ParseError::Malformed)?,
+        *ee_body.get(1).ok_or(ParseError::Malformed)?,
+    ]) as usize;
+    let exts = ee_body.get(2..2 + ext_len).ok_or(ParseError::Malformed)?;
     let mut i = 0;
     while i + 4 <= exts.len() {
         let et = u16::from_be_bytes([exts[i], exts[i + 1]]);
         let el = u16::from_be_bytes([exts[i + 2], exts[i + 3]]) as usize;
-        let data = exts.get(i + 4..i + 4 + el)?;
-        if et == EXT_RECORD_SIZE_LIMIT && data.len() == 2 {
-            return Some(u16::from_be_bytes([data[0], data[1]]));
+        let data = exts.get(i + 4..i + 4 + el).ok_or(ParseError::Malformed)?;
+        if et == EXT_RECORD_SIZE_LIMIT {
+            if data.len() != 2 {
+                return Err(ParseError::Malformed);
+            }
+            let limit = u16::from_be_bytes([data[0], data[1]]);
+            if limit < 64 {
+                return Err(ParseError::Malformed);
+            }
+            return Ok(Some(limit));
         }
         i += 4 + el;
     }
-    None
+    Ok(None)
 }
 
 fn read_u16(b: &[u8], at: usize) -> Result<u16, ParseError> {
@@ -505,9 +517,21 @@ mod tests {
     fn parses_peer_record_size_limit_from_encrypted_extensions() {
         // EE body: extensions<len=6> = one record_size_limit(0x001C) = 512.
         let ee = [0x00, 0x06, 0x00, 0x1C, 0x00, 0x02, 0x02, 0x00];
-        assert_eq!(parse_ee_record_size_limit(&ee), Some(512));
+        assert_eq!(parse_ee_record_size_limit(&ee), Ok(Some(512)));
         // No extensions → nothing to enforce.
-        assert_eq!(parse_ee_record_size_limit(&[0x00, 0x00]), None);
+        assert_eq!(parse_ee_record_size_limit(&[0x00, 0x00]), Ok(None));
+        // A value below the RFC 8449 §4 floor of 64 is fatal.
+        let ee_zero = [0x00, 0x06, 0x00, 0x1C, 0x00, 0x02, 0x00, 0x00];
+        assert_eq!(
+            parse_ee_record_size_limit(&ee_zero),
+            Err(ParseError::Malformed)
+        );
+        // Wrong extension length is malformed.
+        let ee_bad = [0x00, 0x05, 0x00, 0x1C, 0x00, 0x01, 0x40];
+        assert_eq!(
+            parse_ee_record_size_limit(&ee_bad),
+            Err(ParseError::Malformed)
+        );
     }
 
     #[test]

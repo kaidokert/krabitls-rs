@@ -125,9 +125,12 @@ const MAX_FLIGHT_ATTEMPTS: u8 = 5;
 /// bounds the inbound record header for the advertised record size limit).
 pub(crate) const MAX_CID_LEN: usize = 20;
 
-/// Receive buffer for one inbound datagram, and the advertised record size
-/// limit is derived from it (RFC 8449) so a peer never sends a record this
-/// buffer can't hold.
+/// Receive buffer for one inbound UDP datagram. This bounds the whole datagram,
+/// not a single record: a peer may coalesce several records into one datagram
+/// (RFC 9147 §4.3), and a datagram exceeding this is truncated by the socket
+/// read. The advertised record_size_limit (RFC 8449) is a per-record bound
+/// derived from this so any one conforming record fits; it does not constrain
+/// the datagram total, which stays PMTU-bounded in practice.
 pub(crate) const MAX_DATAGRAM: usize = 2048;
 
 /// Worst-case bytes [`EpochKeys::seal`] adds around an ACK body: the unified
@@ -359,8 +362,10 @@ impl<S: DtlsSuite> DtlsClient<S> {
         let flight_plaintext = &flight_buf[..flight_len];
         let flight_view =
             parse_server_flight(flight_plaintext).map_err(|_| DtlsClientError::Protocol)?;
-        // Honor the peer's record_size_limit (RFC 8449) when it answers ours.
-        let peer_record_limit = parse_ee_record_size_limit(flight_view.ee_body);
+        // Honor the peer's record_size_limit (RFC 8449) when it answers ours; a
+        // malformed or below-64 value is fatal (§4).
+        let peer_record_limit = parse_ee_record_size_limit(flight_view.ee_body)
+            .map_err(|_| DtlsClientError::Handshake)?;
         let chain = extract_chain::<MAX_CHAIN>(flight_view.cert_body)
             .map_err(|_| DtlsClientError::Protocol)?;
         let mut slot: Option<PreparedVerifier<E, R>> = None;
