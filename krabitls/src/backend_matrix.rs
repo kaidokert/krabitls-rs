@@ -10,6 +10,8 @@
 //! carrier trait bounds spelled out; `try_from_be_bytes_vartime` is the one
 //! uniform constructor every carrier implements.
 
+#[cfg(any(feature = "ecdsa", feature = "p256-kx"))]
+use krabiecdsa::{p256::P256, signing::ecdh_diffie_hellman_ct};
 #[cfg(feature = "ecdsa")]
 use signature::hazmat::PrehashVerifier;
 
@@ -161,6 +163,73 @@ macro_rules! p256_verify_row {
 p256_verify_row!(p256_verify_bnum, bnum_patched::types::U256);
 #[cfg(feature = "ecdsa")]
 p256_verify_row!(p256_verify_crypto_bigint, crypto_bigint_patched::U256);
+
+// ── P-256 ECDH (constant-time) — openssl cross-impl KAT ─────────────────────
+// A round-trip proves self-consistency; this proves the shared X matches an
+// independent implementation. Runs on the shipped `FixedUInt` carrier plus the
+// bnum / crypto-bigint swap carriers.
+
+#[cfg(any(feature = "ecdsa", feature = "p256-kx"))]
+mod p256_ecdh_kat {
+    use crate::hex_decode;
+    // openssl-generated: keypairs A (DA/QA) and B (DB/QB); the agreed X-coord
+    // SS = x(DA·QB) = x(DB·QA).
+    pub const DA: [u8; 32] =
+        hex_decode("c26b0c364a9d457187ffc1dc59d6297aef409dd51712ae87594cfb8834333480");
+    pub const QA: [u8; 65] = hex_decode(
+        "04fe1343c5e53259e920618e27d777fd12dee919ad865bb28facc228736a4d29d3\
+         8e24b4f1108c86cc5a2367ebd5a858767bc5f1d637afc32d658e8f91432beedc",
+    );
+    pub const DB: [u8; 32] =
+        hex_decode("26ce969067fe08d6e16b9e3478c7f58fdf20d677e19ed8c6aea6698e1132e327");
+    pub const QB: [u8; 65] = hex_decode(
+        "04861d21678f063c10cc6b8421c8e740028018e2342ecd021baba0d00cc5878b5e\
+         a2f5b8ed1d0982af31a2064f846de9df54207b1cb03b730a16ebb2761bf6fa57",
+    );
+    pub const SS: [u8; 32] =
+        hex_decode("4b74c350da2837c76bd594bf4887be6d8aaa4665ccc6daf8912d87b571bc7f0a");
+}
+
+#[cfg(any(feature = "ecdsa", feature = "p256-kx"))]
+macro_rules! p256_ecdh_row {
+    ($name:ident, $t:ty) => {
+        #[test]
+        fn $name() {
+            let mut out = [0u8; 32];
+            assert!(ecdh_diffie_hellman_ct::<P256, $t>(
+                &p256_ecdh_kat::DA,
+                &p256_ecdh_kat::QB,
+                &mut out
+            ));
+            assert_eq!(out, p256_ecdh_kat::SS, "x(DA·QB) != openssl SS");
+            out = [0u8; 32];
+            assert!(ecdh_diffie_hellman_ct::<P256, $t>(
+                &p256_ecdh_kat::DB,
+                &p256_ecdh_kat::QA,
+                &mut out
+            ));
+            assert_eq!(out, p256_ecdh_kat::SS, "x(DB·QA) != openssl SS");
+            // Off-curve peer (corrupted Y) is rejected.
+            let mut bad = p256_ecdh_kat::QB;
+            bad[40] ^= 1;
+            assert!(!ecdh_diffie_hellman_ct::<P256, $t>(
+                &p256_ecdh_kat::DA,
+                &bad,
+                &mut out
+            ));
+        }
+    };
+}
+
+#[cfg(any(feature = "ecdsa", feature = "p256-kx"))]
+p256_ecdh_row!(p256_ecdh_fixeduint, crate::bigint::EcdsaP256CtBn);
+#[cfg(any(feature = "ecdsa", feature = "p256-kx"))]
+p256_ecdh_row!(p256_ecdh_bnum, bnum_patched::types::U256);
+#[cfg(any(feature = "ecdsa", feature = "p256-kx"))]
+p256_ecdh_row!(
+    p256_ecdh_crypto_bigint,
+    crypto_bigint_patched::Ct<crypto_bigint_patched::U256>
+);
 
 // ── X25519 (constant-time) — Copy carriers only ────────────────────────────
 

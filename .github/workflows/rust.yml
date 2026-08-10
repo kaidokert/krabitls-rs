@@ -53,10 +53,12 @@ jobs:
           - "cert-der,cipher-aes,rsa,rsa-3072"                     # +3072 (heapless CAP-96)
           - "cert-der,cipher-aes,rsa,rsa-3072,rsa-4096"            # +4096 (heapless CAP-128)
           - "cert-der,cipher-aes,ecdsa"
+          - "cert-der,cipher-aes,p256-kx"                          # P-256 ECDHE key exchange
+          - "cert-der,cipher-aes,p256-kx,ecdsa,rsa"                # Azure-shaped: P-256 KX + ECDSA verify + RSA client-auth
           - "cert-der,chacha20"                                    # ChaCha-only cipher
           - "cert-der,cipher-aes,mldsa,mlkem"
-          - "cert-der,cipher-aes,rsa,ecdsa,mldsa,mlkem,chacha20"   # full
-          - "cert-der,cipher-aes,rsa,ecdsa,backend-matrix"         # bnum/crypto-bigint carrier matrix
+          - "cert-der,cipher-aes,rsa,ecdsa,mldsa,mlkem,chacha20,p256-kx"   # full — every sig algo + every KX group
+          - "cert-der,cipher-aes,rsa,ecdsa,p256-kx,backend-matrix" # bnum/crypto-bigint carrier matrix (incl. ECDH KAT)
           - "cert-der,cipher-aes,rsa,rsa_pss_only"                 # PSS-only cert path
           - "cert-der,cipher-aes,jedisct"                          # jedisct HKDF backend
           - "cert-der,cipher-aes,ip-host"                          # IP-literal SAN matching
@@ -85,7 +87,7 @@ jobs:
       matrix:
         include:
           - carrier: crypto-bigint
-            features: "cert-der,cipher-aes,rsa,rsa-1024,rsa-3072,rsa-4096,ecdsa,carrier-crypto-bigint"
+            features: "cert-der,cipher-aes,rsa,rsa-1024,rsa-3072,rsa-4096,ecdsa,p256-kx,carrier-crypto-bigint"
           - carrier: bnum
             features: "cert-der,cipher-aes,rsa,rsa-1024,rsa-4096,carrier-bnum"
     steps:
@@ -109,7 +111,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        features: ["", "rsa", "chacha20", "rsa,chacha20", "ecdsa,rsa"]
+        features: ["", "rsa", "chacha20", "rsa,chacha20", "ecdsa,rsa", "p256-kx,ecdsa,rsa"]
     steps:
     - uses: actions/checkout@v4
       with:

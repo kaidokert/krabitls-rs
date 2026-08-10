@@ -250,6 +250,10 @@ pub struct Init {
     /// from ClientHello until the server's ciphertext arrives in ServerHello.
     #[cfg(feature = "mlkem")]
     pub(crate) mlkem: crate::backends::mlkem::MlKem768,
+    /// Ephemeral secp256r1 ECDHE secret, held from ClientHello until the
+    /// server's P-256 share arrives (if it selects secp256r1).
+    #[cfg(feature = "p256-kx")]
+    pub(crate) ecdhe: crate::backends::ecdhe::EcdheP256,
 }
 
 pub struct WaitServerHello {
@@ -259,6 +263,8 @@ pub struct WaitServerHello {
     pub(crate) x25519_priv: ZeroBuf<32>,
     #[cfg(feature = "mlkem")]
     pub(crate) mlkem: crate::backends::mlkem::MlKem768,
+    #[cfg(feature = "p256-kx")]
+    pub(crate) ecdhe: crate::backends::ecdhe::EcdheP256,
     /// Cipher suites we advertised in the ClientHello. `read_server_hello`
     /// rejects a selected suite that wasn't on this list. Only consulted
     /// under `feature = "chacha20"` — without it, AES is the only suite.
@@ -405,6 +411,7 @@ where
         client_random: [u8; 32],
         x25519_priv: ZeroBuf<32>,
         #[cfg(feature = "mlkem")] mlkem: crate::backends::mlkem::MlKem768,
+        #[cfg(feature = "p256-kx")] ecdhe: crate::backends::ecdhe::EcdheP256,
     ) -> Self {
         Self {
             transcript: TranscriptHash::<H>::new(),
@@ -413,6 +420,8 @@ where
                 x25519_priv,
                 #[cfg(feature = "mlkem")]
                 mlkem,
+                #[cfg(feature = "p256-kx")]
+                ecdhe,
             },
         }
     }
@@ -452,6 +461,10 @@ where
             ClientHelloError::MissingMlKemKeyShare => {
                 ConnectionError::ClientHello(ClientHelloError::MissingMlKemKeyShare)
             }
+            #[cfg(feature = "p256-kx")]
+            ClientHelloError::MissingP256KeyShare => {
+                ConnectionError::ClientHello(ClientHelloError::MissingP256KeyShare)
+            }
         })?;
         let ch_bytes = &scratch[..n];
 
@@ -468,6 +481,8 @@ where
                 x25519_priv: self.state.x25519_priv,
                 #[cfg(feature = "mlkem")]
                 mlkem: self.state.mlkem,
+                #[cfg(feature = "p256-kx")]
+                ecdhe: self.state.ecdhe,
                 advertised: opts.suites,
             },
         })
@@ -517,7 +532,8 @@ where
         not(feature = "rsa"),
         not(feature = "mldsa"),
         not(feature = "ecdsa"),
-        not(feature = "mlkem")
+        not(feature = "mlkem"),
+        not(feature = "p256-kx")
     ))]
     pub fn assume_aes_128_gcm(
         self,
@@ -579,39 +595,81 @@ where
             });
         }
 
-        // `CurveSetupError` is unreachable on the ≥256-bit carrier — fail closed
-        // into the same X25519 DH abort as the low-order-point check below.
-        let x25519_ss = zeroize::Zeroizing::new(
-            ed25519_heapless::x25519::<Bn>(&self.state.x25519_priv, sh.x25519_share)
+        // ECDHE input keying material for whichever group the server selected.
+        // Buffer holds up to the 64-byte X25519MLKEM768 IKM; `dhe_len` marks the
+        // used prefix (32 for X25519 or P-256, 64 for the hybrid).
+        let mut dhe = zeroize::Zeroizing::new([0u8; 64]);
+        let dhe_len: usize;
+        #[cfg(feature = "p256-kx")]
+        let p256_selected = sh.selected_group == crate::NAMED_GROUP_SECP256R1;
+        #[cfg(not(feature = "p256-kx"))]
+        let p256_selected = false;
+
+        if p256_selected {
+            #[cfg(feature = "p256-kx")]
+            {
+                // krabiecdsa validates the peer point (on-curve, not identity)
+                // and returns `Err` — the P-256 analogue of the X25519 all-zero
+                // low-order abort below.
+                let ss = self
+                    .state
+                    .ecdhe
+                    .agree(
+                        sh.p256_share
+                            .ok_or(ConnectionError::Parse(ParseError::BadKeyShare))?,
+                    )
+                    .map_err(|_| ConnectionError::Parse(ParseError::DhAllZero))?;
+                dhe[..32].copy_from_slice(&ss[..]);
+                dhe_len = 32;
+            }
+            #[cfg(not(feature = "p256-kx"))]
+            {
+                dhe_len = 0; // unreachable: p256_selected is always false here
+            }
+        } else {
+            // `CurveSetupError` is unreachable on the ≥256-bit carrier — fail
+            // closed into the same abort as the low-order-point check below.
+            let x25519_ss = zeroize::Zeroizing::new(
+                ed25519_heapless::x25519::<Bn>(
+                    &self.state.x25519_priv,
+                    sh.x25519_share
+                        .ok_or(ConnectionError::Parse(ParseError::BadKeyShare))?,
+                )
                 .map_err(|_| ConnectionError::Parse(ParseError::DhAllZero))?,
-        );
-        // RFC 8446 §7.4.2.1: all-zero X25519 output (low-order server share)
-        // MUST abort with `illegal_parameter`. ML-KEM has no equivalent — its
-        // implicit rejection always yields a deterministic-looking secret.
-        if bool::from(x25519_ss.ct_eq(&[0u8; 32])) {
-            return Err(ConnectionError::Parse(ParseError::DhAllZero));
+            );
+            // RFC 8446 §7.4.2.1: all-zero X25519 output (low-order server share)
+            // MUST abort with `illegal_parameter`. ML-KEM has no equivalent — its
+            // implicit rejection always yields a deterministic-looking secret.
+            if bool::from(x25519_ss.ct_eq(&[0u8; 32])) {
+                return Err(ConnectionError::Parse(ParseError::DhAllZero));
+            }
+            // X25519MLKEM768 IKM (draft-ietf-tls-ecdhe-mlkem): ML-KEM ss || X25519 ss.
+            #[cfg(feature = "mlkem")]
+            {
+                let mlkem_ss = self
+                    .state
+                    .mlkem
+                    .decapsulate(
+                        sh.mlkem_ct
+                            .ok_or(ConnectionError::Parse(ParseError::BadKeyShare))?,
+                    )
+                    .map_err(|_| ConnectionError::MlKemDecapsulation)?;
+                dhe[..32].copy_from_slice(&mlkem_ss[..]);
+                dhe[32..64].copy_from_slice(&x25519_ss[..]);
+                dhe_len = 64;
+            }
+            #[cfg(not(feature = "mlkem"))]
+            {
+                dhe[..32].copy_from_slice(&x25519_ss[..]);
+                dhe_len = 32;
+            }
         }
-        // X25519MLKEM768 IKM (draft-ietf-tls-ecdhe-mlkem): ML-KEM ss || X25519 ss.
-        #[cfg(feature = "mlkem")]
-        let dhe = {
-            let mlkem_ss = self
-                .state
-                .mlkem
-                .decapsulate(sh.mlkem_ct)
-                .map_err(|_| ConnectionError::MlKemDecapsulation)?;
-            let mut combined = zeroize::Zeroizing::new([0u8; 64]);
-            combined[..32].copy_from_slice(&mlkem_ss[..]);
-            combined[32..].copy_from_slice(&x25519_ss[..]);
-            combined
-        };
-        #[cfg(not(feature = "mlkem"))]
-        let dhe = x25519_ss;
 
         // handshake_traffic_secrets needs H(CH‖SH).
         self.transcript.update_record(sh_record)?;
         let th_ch_sh = self.transcript.snapshot();
 
-        let hs = handshake_secret::<H>(&dhe[..])?;
+        let hs = handshake_secret::<H>(&dhe[..dhe_len])?;
         let (c_hs_ts, s_hs_ts) = handshake_traffic_secrets::<H>(&hs, &th_ch_sh)?;
 
         match sh.cipher_suite {
@@ -1022,5 +1080,79 @@ where
 // Tests
 // ============================================================================
 
-#[cfg(test)]
+// Replay helpers shared by the engine/stream test modules. Kept here (not in the
+// `tests` fixtures module) so they stay available under `p256-kx`, where the
+// fixtures are gated off.
+#[cfg(all(test, not(feature = "chacha20"), not(feature = "rsa")))]
+impl<S, H> TlsConnection<AppData<S>, H>
+where
+    S: crate::aead::CipherSuite,
+    H: crate::traits::HkdfSha256,
+{
+    pub(crate) fn decrypt_record<'a>(
+        &mut self,
+        record: &[u8],
+        scratch: &'a mut [u8],
+    ) -> Result<(&'a [u8], u8), ConnectionError> {
+        let inner = self
+            .state
+            .s_ap_keys
+            .decrypt_record(record, self.state.seq_in, scratch)?;
+        let (content_len, ct) = {
+            let (content, ct) = crate::aead::split_inner_plaintext(inner)?;
+            (content.len(), ct)
+        };
+        self.state.seq_in += 1;
+        Ok((&scratch[..content_len], ct))
+    }
+
+    #[cfg(all(
+        not(feature = "mldsa"),
+        not(feature = "ecdsa"),
+        not(feature = "mlkem"),
+        not(feature = "p256-kx")
+    ))]
+    pub(crate) fn close_notify(mut self, out_buf: &mut [u8]) -> Result<&[u8], ConnectionError> {
+        self.encrypt_record(
+            &crate::consts::CLOSE_NOTIFY_ALERT,
+            crate::consts::CT_ALERT,
+            out_buf,
+        )
+    }
+}
+
+#[cfg(all(test, feature = "cipher-aes"))]
+impl<S, H> TlsConnection<AppData<S>, H>
+where
+    S: crate::aead::CipherSuite,
+    H: crate::traits::HkdfSha256,
+{
+    pub(crate) fn from_app_secrets(
+        c_ap_ts: crate::newtype::Secret,
+        s_ap_ts: crate::newtype::Secret,
+        seq_out: u64,
+        seq_in: u64,
+    ) -> Result<Self, ConnectionError> {
+        let c_ap_keys = crate::aead::RecordKeys::<S>::derive::<H>(&c_ap_ts)?;
+        let s_ap_keys = crate::aead::RecordKeys::<S>::derive::<H>(&s_ap_ts)?;
+        Ok(Self {
+            transcript: crate::hkdf::TranscriptHash::<H>::new(),
+            state: AppData {
+                c_ap_keys,
+                s_ap_keys,
+                c_ap_ts,
+                s_ap_ts,
+                seq_out,
+                seq_in,
+            },
+        })
+    }
+}
+
+// Byte-golden ClientHello + canned-handshake replays keyed to the default
+// (single primary group) key_share layout. `p256-kx` adds a second key_share
+// entry, shifting the ClientHello bytes and every transcript derived from them,
+// so the fixtures don't apply — gated off there, same as the ML-KEM path. The
+// P-256 key exchange is covered by the `ecdhe` round-trip test and live interop.
+#[cfg(all(test, not(feature = "p256-kx")))]
 mod tests;

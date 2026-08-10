@@ -11,7 +11,10 @@
     not(feature = "chacha20"),
     not(feature = "mldsa"),
     not(feature = "ecdsa"),
-    not(feature = "mlkem")
+    not(feature = "mlkem"),
+    // p256-kx adds a second key_share, shifting the ClientHello transcript away
+    // from these X25519-only fixtures — the P-256 path has its own canned test.
+    not(feature = "p256-kx")
 ))]
 
 use krabitls::client::{ClientParams, DefaultScratch, DefaultStream, RuntimeSuitePolicy};

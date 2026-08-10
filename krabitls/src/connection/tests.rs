@@ -1,5 +1,11 @@
 #[cfg(any(
-    all(not(feature = "rsa"), not(feature = "chacha20")),
+    all(
+        not(feature = "rsa"),
+        not(feature = "chacha20"),
+        not(feature = "mldsa"),
+        not(feature = "ecdsa"),
+        not(feature = "mlkem")
+    ),
     all(feature = "cipher-aes", feature = "chacha20", not(feature = "mlkem"))
 ))]
 use super::*;
@@ -14,15 +20,6 @@ use super::*;
     all(feature = "cipher-aes", feature = "chacha20", not(feature = "mlkem"))
 ))]
 use crate::backends::RustCrypto;
-// `close_notify` (moved here) is the sole consumer; gate matches it.
-#[cfg(all(
-    not(feature = "chacha20"),
-    not(feature = "rsa"),
-    not(feature = "mldsa"),
-    not(feature = "ecdsa"),
-    not(feature = "mlkem")
-))]
-use crate::consts::{CLOSE_NOTIFY_ALERT, CT_ALERT};
 
 // Seed-0 fixtures duplicated from `lib.rs` — keep in sync.
 #[cfg(any(
@@ -993,73 +990,5 @@ where
 {
     pub(crate) fn server_pubkey(&self) -> ServerPubkey<'_> {
         self.state.server_pubkey.as_view()
-    }
-}
-
-#[cfg(all(not(feature = "chacha20"), not(feature = "rsa")))]
-impl<S, H> TlsConnection<AppData<S>, H>
-where
-    S: CipherSuite,
-    H: HkdfSha256,
-{
-    pub(crate) fn decrypt_record<'a>(
-        &mut self,
-        record: &[u8],
-        scratch: &'a mut [u8],
-    ) -> Result<(&'a [u8], u8), ConnectionError> {
-        let inner = self
-            .state
-            .s_ap_keys
-            .decrypt_record(record, self.state.seq_in, scratch)?;
-        let (content_len, ct) = {
-            let (content, ct) = split_inner_plaintext(inner)?;
-            (content.len(), ct)
-        };
-        self.state.seq_in += 1;
-        Ok((&scratch[..content_len], ct))
-    }
-
-    // Only the seed-0 AES fixture test uses this; share the impl block with
-    // `decrypt_record` (which engine/stream tests need under `mldsa`) but gate
-    // the method itself out where the fixtures don't apply.
-    #[cfg(all(
-        not(feature = "chacha20"),
-        not(feature = "rsa"),
-        not(feature = "mldsa"),
-        not(feature = "ecdsa"),
-        not(feature = "mlkem")
-    ))]
-    pub(crate) fn close_notify(mut self, out_buf: &mut [u8]) -> Result<&[u8], ConnectionError> {
-        self.encrypt_record(&CLOSE_NOTIFY_ALERT, CT_ALERT, out_buf)
-    }
-}
-
-// Replay/fixture entry, bypasses the handshake. Fully-qualified paths so it is
-// independent of this file's feature-gated `use super::*`.
-#[cfg(feature = "cipher-aes")]
-impl<S, H> super::TlsConnection<super::AppData<S>, H>
-where
-    S: crate::aead::CipherSuite,
-    H: crate::traits::HkdfSha256,
-{
-    pub(crate) fn from_app_secrets(
-        c_ap_ts: crate::newtype::Secret,
-        s_ap_ts: crate::newtype::Secret,
-        seq_out: u64,
-        seq_in: u64,
-    ) -> Result<Self, super::ConnectionError> {
-        let c_ap_keys = crate::aead::RecordKeys::<S>::derive::<H>(&c_ap_ts)?;
-        let s_ap_keys = crate::aead::RecordKeys::<S>::derive::<H>(&s_ap_ts)?;
-        Ok(Self {
-            transcript: crate::hkdf::TranscriptHash::<H>::new(),
-            state: super::AppData {
-                c_ap_keys,
-                s_ap_keys,
-                c_ap_ts,
-                s_ap_ts,
-                seq_out,
-                seq_in,
-            },
-        })
     }
 }

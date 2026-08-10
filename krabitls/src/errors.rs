@@ -57,6 +57,11 @@ pub enum ClientHelloError<E> {
     /// unreachable (the connection always sets it); propagated, not panicked.
     #[cfg(feature = "mlkem")]
     MissingMlKemKeyShare,
+    /// `p256-kx` is on but the connection layer didn't supply the secp256r1
+    /// SEC1 public point for the P-256 key_share. Structurally unreachable
+    /// (the connection always sets it); propagated, not panicked.
+    #[cfg(feature = "p256-kx")]
+    MissingP256KeyShare,
     /// The underlying writer returned an error.
     Write(E),
 }
@@ -80,6 +85,8 @@ impl<E> ClientHelloError<E> {
             Self::AlpnNameLen => ClientHelloError::AlpnNameLen,
             #[cfg(feature = "mlkem")]
             Self::MissingMlKemKeyShare => ClientHelloError::MissingMlKemKeyShare,
+            #[cfg(feature = "p256-kx")]
+            Self::MissingP256KeyShare => ClientHelloError::MissingP256KeyShare,
             Self::Write(e) => ClientHelloError::Write(f(e)),
         }
     }
@@ -114,6 +121,10 @@ impl<E: core::fmt::Display> core::fmt::Display for ClientHelloError<E> {
             Self::MissingMlKemKeyShare => {
                 f.write_str("ML-KEM encapsulation key was not supplied for the key_share")
             }
+            #[cfg(feature = "p256-kx")]
+            Self::MissingP256KeyShare => {
+                f.write_str("P-256 public point was not supplied for the key_share")
+            }
             Self::Write(e) => write!(f, "writer error: {e}"),
         }
     }
@@ -130,6 +141,8 @@ impl<E: core::error::Error + 'static> core::error::Error for ClientHelloError<E>
             | Self::AlpnNameLen => None,
             #[cfg(feature = "mlkem")]
             Self::MissingMlKemKeyShare => None,
+            #[cfg(feature = "p256-kx")]
+            Self::MissingP256KeyShare => None,
         }
     }
 }

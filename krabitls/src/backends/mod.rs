@@ -18,6 +18,8 @@
 pub(crate) mod client_auth;
 #[cfg(feature = "cert-der")]
 pub(crate) mod der_cert;
+#[cfg(feature = "p256-kx")]
+pub(crate) mod ecdhe;
 #[cfg(feature = "ecdsa")]
 pub(crate) mod ecdsa_verify;
 #[cfg(feature = "jedisct")]

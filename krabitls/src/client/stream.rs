@@ -131,6 +131,13 @@ where
         let (mlkem, mlkem_ek) =
             crate::backends::mlkem::MlKem768::generate(rng).map_err(|_| HandshakeError::Rng)?;
 
+        // Ephemeral secp256r1 keypair for the P-256 key_share: the secret moves
+        // into the connection state, the SEC1 point borrows into the options.
+        // Drawn after the ML-KEM keypair so existing entropy streams stay stable.
+        #[cfg(feature = "p256-kx")]
+        let (ecdhe, p256_pub) =
+            crate::backends::ecdhe::EcdheP256::generate(rng).map_err(|_| HandshakeError::Rng)?;
+
         let our_recv_limit =
             TlsEngine::<'_, C, FLIGHT, RECV, SEND, MAX_CHAIN>::default_our_recv_limit();
         let suites = effective_suite_list::<C>(params.suite_policy);
@@ -139,6 +146,8 @@ where
             x25519_priv,
             #[cfg(feature = "mlkem")]
             mlkem,
+            #[cfg(feature = "p256-kx")]
+            ecdhe,
         );
 
         let opts = crate::ClientHelloOptions {
@@ -149,6 +158,8 @@ where
             suites,
             #[cfg(feature = "mlkem")]
             mlkem_ek: Some(&mlkem_ek),
+            #[cfg(feature = "p256-kx")]
+            p256_pub: Some(&p256_pub),
         };
         let (ch_len, wait_sh) = init
             .write_client_hello_to_slice_with(&mut scratch.ch, &x25519_pub, &opts)

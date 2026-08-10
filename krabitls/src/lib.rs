@@ -161,6 +161,10 @@ pub(crate) mod consts {
     pub const CIPHER_AES_128_GCM_SHA256: u16 = 0x1301;
     pub const CIPHER_CHACHA20_POLY1305_SHA256: u16 = 0x1303;
     pub const NAMED_GROUP_X25519: u16 = 0x001D;
+    /// secp256r1 (NIST P-256) classical ECDHE group. Advertised as a second
+    /// group alongside the primary under `feature = "p256-kx"`.
+    #[cfg(feature = "p256-kx")]
+    pub const NAMED_GROUP_SECP256R1: u16 = 0x0017;
     /// `X25519MLKEM768` hybrid group (draft-ietf-tls-ecdhe-mlkem). Unconditional
     /// so the key-share writer can name it from a `cfg!(feature = "mlkem")`-false
     /// branch; only advertised when the feature is on.
@@ -216,7 +220,10 @@ pub(crate) mod consts {
 use consts::*;
 
 const EXT_SUPPORTED_VERSIONS_TOTAL: u16 = 4 + 3;
-const EXT_SUPPORTED_GROUPS_TOTAL: u16 = 4 + 4;
+// supported_groups: the primary group, plus secp256r1 under `p256-kx`.
+const SUPPORTED_GROUPS_COUNT: u16 = 1 + cfg!(feature = "p256-kx") as u16;
+// ext header (4) + list_len (2) + 2 bytes per group.
+const EXT_SUPPORTED_GROUPS_TOTAL: u16 = 4 + 2 + 2 * SUPPORTED_GROUPS_COUNT;
 // Schemes advertised in signature_algorithms: ed25519 always, rsa_pss when
 // `rsa` is on, the three ML-DSA schemes when `mldsa` is on. Single source for
 // both the ext sizing and the writer below.
@@ -244,9 +251,18 @@ const KEY_SHARE_KEY_LEN: usize = 32;
 // u16 would silently truncate the length prefixes derived from it.
 const _: () = assert!(KEY_SHARE_KEY_LEN <= u16::MAX as usize);
 const KEY_SHARE_KEY_LEN_U16: u16 = KEY_SHARE_KEY_LEN as u16;
-// client_shares entry: group (2) + key_len (2) + key.
-const KEY_SHARE_LIST_LEN: u16 = 4 + KEY_SHARE_KEY_LEN_U16;
-// key_share extension_data: client_shares list_len (2) + the single entry.
+// Primary client_shares entry: group (2) + key_len (2) + key.
+const PRIMARY_KEY_SHARE_ENTRY: u16 = 4 + KEY_SHARE_KEY_LEN_U16;
+// secp256r1 entry (p256-kx): group (2) + key_len (2) + SEC1 point (65).
+#[cfg(feature = "p256-kx")]
+const P256_KX_ENTRY_LEN: u16 = 4 + 65;
+#[cfg(not(feature = "p256-kx"))]
+const P256_KX_ENTRY_LEN: u16 = 0;
+#[cfg(feature = "p256-kx")]
+const _: () = assert!(backends::ecdhe::P256_SHARE_BYTES == 65);
+// client_shares list: the primary entry, plus the secp256r1 entry under p256-kx.
+const KEY_SHARE_LIST_LEN: u16 = PRIMARY_KEY_SHARE_ENTRY + P256_KX_ENTRY_LEN;
+// key_share extension_data: client_shares list_len (2) + the entries.
 const KEY_SHARE_EXT_DATA_LEN: u16 = 2 + KEY_SHARE_LIST_LEN;
 // ext header (4) + extension_data.
 const EXT_KEY_SHARE_TOTAL: u16 = 4 + KEY_SHARE_EXT_DATA_LEN;
@@ -308,6 +324,11 @@ pub(crate) struct ClientHelloOptions<'a> {
     /// `mlkem` (the writer errors rather than emit a short key_share).
     #[cfg(feature = "mlkem")]
     pub mlkem_ek: Option<&'a [u8; backends::mlkem::MLKEM768_EK_BYTES]>,
+    /// secp256r1 SEC1 public point for the P-256 `key_share` entry. Set by the
+    /// connection layer from the generated ephemeral; `None` is a bug under
+    /// `p256-kx` (the writer errors rather than emit a short key_share).
+    #[cfg(feature = "p256-kx")]
+    pub p256_pub: Option<&'a [u8; backends::ecdhe::P256_SHARE_BYTES]>,
 }
 
 /// Fixed-extension total when the caller supplies no SNI.
@@ -463,6 +484,10 @@ const _: () = assert!(
             + 2 * (SIG_SCHEME_COUNT as usize - 1)
             // key_share grows from the 32-byte X25519 baseline by the ML-KEM ek.
             + (KEY_SHARE_KEY_LEN - 32)
+            // p256-kx adds a supported_groups entry (2) and a full secp256r1
+            // key_share entry (group+len+point = P256_KX_ENTRY_LEN).
+            + P256_KX_ENTRY_LEN as usize
+            + 2 * cfg!(feature = "p256-kx") as usize
 );
 
 /// Big-endian byte-emission helpers layered on top of [`embedded_io::Write`].
@@ -601,9 +626,11 @@ pub(crate) fn write_client_hello_with<W: Write>(
     out.write_u16(TLS_1_3)?;
 
     out.write_u16(EXT_SUPPORTED_GROUPS)?;
-    out.write_u16(4)?;
-    out.write_u16(2)?;
+    out.write_u16(2 + 2 * SUPPORTED_GROUPS_COUNT)?; // ext_data: list_len (2) + groups
+    out.write_u16(2 * SUPPORTED_GROUPS_COUNT)?; // named_group_list len
     out.write_u16(KEY_SHARE_GROUP)?;
+    #[cfg(feature = "p256-kx")]
+    out.write_u16(NAMED_GROUP_SECP256R1)?;
 
     out.write_u16(EXT_SIGNATURE_ALGORITHMS)?;
     out.write_u16(2 + 2 * SIG_SCHEME_COUNT)?; // ext_data: list_len field (2) + schemes
@@ -666,6 +693,14 @@ pub(crate) fn write_client_hello_with<W: Write>(
             .ok_or(ClientHelloError::MissingMlKemKeyShare)?,
     )?;
     out.write_all(x25519_pub)?;
+    // Second key_share entry: the secp256r1 SEC1 point (RFC 8446 orders entries
+    // by client preference; the server picks whichever group it supports).
+    #[cfg(feature = "p256-kx")]
+    {
+        out.write_u16(NAMED_GROUP_SECP256R1)?;
+        out.write_u16(backends::ecdhe::P256_SHARE_BYTES as u16)?;
+        out.write_all(opts.p256_pub.ok_or(ClientHelloError::MissingP256KeyShare)?)?;
+    }
 
     Ok(total_len)
 }
@@ -688,13 +723,22 @@ pub(crate) struct ServerHelloView<'a> {
     pub cipher_suite: u16,
     /// Selected TLS version (from `supported_versions`). Validated to be `0x0304`.
     pub selected_version: u16,
-    /// Server's ephemeral X25519 public key (32 bytes). Under `mlkem` this is
-    /// the trailing 32 bytes of the `X25519MLKEM768` server key_share.
-    pub x25519_share: &'a [u8; 32],
-    /// ML-KEM-768 ciphertext from the `X25519MLKEM768` server key_share, to
-    /// decapsulate against our ephemeral KEM keypair.
+    /// The named group the server selected in its key_share — the primary
+    /// (`KEY_SHARE_GROUP`) or, under `p256-kx`, `NAMED_GROUP_SECP256R1`. The DH
+    /// path dispatches on it.
+    pub selected_group: u16,
+    /// Server's ephemeral X25519 public key (32 bytes) — `Some` iff the server
+    /// selected the primary group (under `mlkem`, the trailing 32 bytes of the
+    /// `X25519MLKEM768` share). `None` when it selected secp256r1.
+    pub x25519_share: Option<&'a [u8; 32]>,
+    /// ML-KEM-768 ciphertext from the `X25519MLKEM768` server key_share, `Some`
+    /// iff the hybrid group was selected.
     #[cfg(feature = "mlkem")]
-    pub mlkem_ct: &'a [u8; backends::mlkem::MLKEM768_CT_BYTES],
+    pub mlkem_ct: Option<&'a [u8; backends::mlkem::MLKEM768_CT_BYTES]>,
+    /// Server's secp256r1 SEC1 point (65 bytes), `Some` iff the server selected
+    /// secp256r1.
+    #[cfg(feature = "p256-kx")]
+    pub p256_share: Option<&'a [u8; backends::ecdhe::P256_SHARE_BYTES]>,
 }
 
 /// Parse a complete TLS record carrying a `server_hello` handshake message.
@@ -773,9 +817,12 @@ pub(crate) fn parse_server_hello(input: &[u8]) -> Result<ServerHelloView<'_>, Pa
     }
 
     let mut selected_version: Option<u16> = None;
+    let mut selected_group: Option<u16> = None;
     let mut x25519_share: Option<&[u8; 32]> = None;
     #[cfg(feature = "mlkem")]
     let mut mlkem_ct: Option<&[u8; backends::mlkem::MLKEM768_CT_BYTES]> = None;
+    #[cfg(feature = "p256-kx")]
+    let mut p256_share: Option<&[u8; backends::ecdhe::P256_SHARE_BYTES]> = None;
 
     let mut e = Reader::new(ext_body);
     while !e.at_end() {
@@ -797,32 +844,42 @@ pub(crate) fn parse_server_hello(input: &[u8]) -> Result<ServerHelloView<'_>, Pa
                 selected_version = Some(v);
             }
             EXT_KEY_SHARE => {
-                if x25519_share.is_some() {
+                if selected_group.is_some() {
                     return Err(ParseError::DuplicateExtension(ext_type));
                 }
                 // ServerHello key_share: single KeyShareEntry = group(u16) + key(u16-len-prefixed).
                 let mut kr = Reader::new(ext_data);
                 let group = kr.u16()?;
-                if group != KEY_SHARE_GROUP {
-                    return Err(ParseError::BadKeyShare);
-                }
                 let key = kr.vec_u16()?;
                 if !kr.at_end() {
                     return Err(ParseError::BadKeyShare);
                 }
-                // Under `mlkem` the key is `ML-KEM-768 ct (1088) || X25519 (32)`.
-                #[cfg(feature = "mlkem")]
-                {
-                    let (ct, x) = key
-                        .split_at_checked(backends::mlkem::MLKEM768_CT_BYTES)
-                        .ok_or(ParseError::BadKeyShare)?;
-                    mlkem_ct = Some(ct.try_into().map_err(|_| ParseError::BadKeyShare)?);
-                    x25519_share = Some(x.try_into().map_err(|_| ParseError::BadKeyShare)?);
+                if group == KEY_SHARE_GROUP {
+                    // Under `mlkem` the key is `ML-KEM-768 ct (1088) || X25519 (32)`.
+                    #[cfg(feature = "mlkem")]
+                    {
+                        let (ct, x) = key
+                            .split_at_checked(backends::mlkem::MLKEM768_CT_BYTES)
+                            .ok_or(ParseError::BadKeyShare)?;
+                        mlkem_ct = Some(ct.try_into().map_err(|_| ParseError::BadKeyShare)?);
+                        x25519_share = Some(x.try_into().map_err(|_| ParseError::BadKeyShare)?);
+                    }
+                    #[cfg(not(feature = "mlkem"))]
+                    {
+                        x25519_share = Some(key.try_into().map_err(|_| ParseError::BadKeyShare)?);
+                    }
+                } else {
+                    // The only other group we can have advertised is secp256r1.
+                    #[cfg(feature = "p256-kx")]
+                    if group == NAMED_GROUP_SECP256R1 {
+                        p256_share = Some(key.try_into().map_err(|_| ParseError::BadKeyShare)?);
+                    } else {
+                        return Err(ParseError::BadKeyShare);
+                    }
+                    #[cfg(not(feature = "p256-kx"))]
+                    return Err(ParseError::BadKeyShare);
                 }
-                #[cfg(not(feature = "mlkem"))]
-                {
-                    x25519_share = Some(key.try_into().map_err(|_| ParseError::BadKeyShare)?);
-                }
+                selected_group = Some(group);
             }
             // RFC 8446 §4.1.4: a client that receives an unrecognized extension
             // in ServerHello MUST abort with `illegal_parameter`. We didn't ask
@@ -831,14 +888,23 @@ pub(crate) fn parse_server_hello(input: &[u8]) -> Result<ServerHelloView<'_>, Pa
         }
     }
 
+    let selected_group = selected_group.ok_or(ParseError::BadKeyShare)?;
+    // The selected group's share must be present (the primary path also requires
+    // the X25519 component; the ML-KEM ciphertext is checked at decapsulation).
+    if selected_group == KEY_SHARE_GROUP && x25519_share.is_none() {
+        return Err(ParseError::BadKeyShare);
+    }
     Ok(ServerHelloView {
         random,
         session_id_echo,
         cipher_suite,
         selected_version: selected_version.ok_or(ParseError::BadSupportedVersions)?,
-        x25519_share: x25519_share.ok_or(ParseError::BadKeyShare)?,
+        selected_group,
+        x25519_share,
         #[cfg(feature = "mlkem")]
-        mlkem_ct: mlkem_ct.ok_or(ParseError::BadKeyShare)?,
+        mlkem_ct,
+        #[cfg(feature = "p256-kx")]
+        p256_share,
     })
 }
 

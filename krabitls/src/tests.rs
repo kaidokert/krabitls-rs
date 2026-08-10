@@ -28,9 +28,19 @@ impl ClientHelloOptions<'_> {
             suites: SuiteList::Default,
             #[cfg(feature = "mlkem")]
             mlkem_ek: None,
+            #[cfg(feature = "p256-kx")]
+            p256_pub: Some(&FIXTURE_P256_PUB),
         }
     }
 }
+
+/// A valid secp256r1 SEC1 point (openssl-generated) for the P-256 key_share in
+/// tests that build a ClientHello under `p256-kx`.
+#[cfg(feature = "p256-kx")]
+const FIXTURE_P256_PUB: [u8; 65] = crate::hex_decode(
+    "04fe1343c5e53259e920618e27d777fd12dee919ad865bb28facc228736a4d29d3\
+     8e24b4f1108c86cc5a2367ebd5a858767bc5f1d637afc32d658e8f91432beedc",
+);
 
 // Captured from tls_fixture/packets/001_c2s_ClientHello.bin (seed 0).
 const FIXTURE_RANDOM: [u8; 32] = [
@@ -91,7 +101,8 @@ fn write_into(buf: &mut [u8]) -> Result<&mut [u8], ClientHelloError<SliceWriteEr
     not(feature = "chacha20"),
     not(feature = "mldsa"),
     not(feature = "ecdsa"),
-    not(feature = "mlkem")
+    not(feature = "mlkem"),
+    not(feature = "p256-kx")
 ))]
 #[test]
 fn matches_python_fixture() {
@@ -258,6 +269,8 @@ fn client_hello_len_with_agrees_with_legacy_for_default_opts() {
             suites: SuiteList::Default,
             #[cfg(feature = "mlkem")]
             mlkem_ek: None,
+            #[cfg(feature = "p256-kx")]
+            p256_pub: Some(&FIXTURE_P256_PUB),
         };
         assert_eq!(
             client_hello_len_with(&opts),
@@ -433,7 +446,7 @@ fn random_appears_at_correct_offset() {
     assert_eq!(&buf[11..11 + 32], &random);
 }
 
-#[cfg(not(feature = "mlkem"))]
+#[cfg(all(not(feature = "mlkem"), not(feature = "p256-kx")))]
 #[test]
 fn x25519_pub_appears_at_correct_offset() {
     let mut pub_key = [0u8; 32];
@@ -482,7 +495,7 @@ fn parses_python_fixture_server_hello() {
     assert_eq!(v.session_id_echo, &[][..]);
     assert_eq!(v.cipher_suite, CIPHER_AES_128_GCM_SHA256);
     assert_eq!(v.selected_version, TLS_1_3);
-    assert_eq!(v.x25519_share, &FIXTURE_SERVER_X25519);
+    assert_eq!(v.x25519_share, Some(&FIXTURE_SERVER_X25519));
 }
 
 #[test]
@@ -2429,6 +2442,8 @@ mod mlkem_keyshare {
             alpn: None,
             suites: SuiteList::Default,
             mlkem_ek: Some(&ek),
+            #[cfg(feature = "p256-kx")]
+            p256_pub: Some(&FIXTURE_P256_PUB),
         };
         let mut buf = [0u8; 2048];
         let mut cursor: &mut [u8] = &mut buf;
@@ -2470,6 +2485,8 @@ mod mlkem_keyshare {
             alpn: None,
             suites: SuiteList::Default,
             mlkem_ek: Some(&ek),
+            #[cfg(feature = "p256-kx")]
+            p256_pub: Some(&FIXTURE_P256_PUB),
         };
 
         let mut exact = [0u8; CLIENT_HELLO_LEN];
@@ -2530,11 +2547,13 @@ mod mlkem_keyshare {
         let sh = hybrid_server_hello(&ct, &x25519);
         let v = parse_server_hello(&sh).expect("parse hybrid ServerHello");
         assert_eq!(
-            v.mlkem_ct, &ct,
+            v.mlkem_ct,
+            Some(&ct),
             "ML-KEM ciphertext is the leading 1088 bytes"
         );
         assert_eq!(
-            v.x25519_share, &x25519,
+            v.x25519_share,
+            Some(&x25519),
             "X25519 share is the trailing 32 bytes"
         );
     }

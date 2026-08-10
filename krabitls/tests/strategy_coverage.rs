@@ -24,7 +24,9 @@
     not(feature = "chacha20"),
     not(feature = "mldsa"),
     not(feature = "ecdsa"),
-    not(feature = "mlkem")
+    not(feature = "mlkem"),
+    // Replays the X25519 seed-0 fixtures; p256-kx shifts the ClientHello.
+    not(feature = "p256-kx")
 ))]
 
 use std::sync::Arc;
