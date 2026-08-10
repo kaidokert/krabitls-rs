@@ -27,7 +27,8 @@ use crate::consts::{CT_ACK, CT_APPLICATION_DATA, CT_HANDSHAKE, HS_FINISHED};
 use crate::dtls::ack::{MAX_ACK_BODY_LEN, MAX_ACK_RECORDS, write_ack_bitmap};
 use crate::dtls::framing::{HS_HEADER_LEN, HandshakeHeader, PlaintextRecord};
 use crate::dtls::handshake::{
-    CLIENT_HELLO_MSG_TYPE, ServerHelloKind, parse_server_hello, write_client_hello,
+    CLIENT_HELLO_MSG_TYPE, ServerHelloKind, parse_ee_record_size_limit, parse_server_hello,
+    write_client_hello,
 };
 use crate::dtls::keys::derive_handshake_keys;
 use crate::dtls::reassembly::Reassembler;
@@ -80,6 +81,9 @@ pub(crate) struct DtlsClient<S: DtlsSuite> {
     /// datagram (RFC 9147 §4.3). `recv_stash_len` == 0 means empty.
     recv_stash: [u8; MAX_DATAGRAM],
     recv_stash_len: usize,
+    /// The peer's advertised `record_size_limit` (RFC 8449), if it sent one:
+    /// the largest TLSInnerPlaintext we may send. `None` = no limit to enforce.
+    peer_record_limit: Option<u16>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -107,20 +111,24 @@ pub enum DtlsClientError<E> {
     HostnameMismatch,
     /// CertificateVerify signature or the server Finished MAC failed.
     CertVerify,
+    /// The application payload exceeds the peer's advertised record_size_limit
+    /// (RFC 8449) — sending it would violate the negotiated limit.
+    RecordSizeLimit,
 }
 
 /// Total sends of a handshake flight before giving up (RFC 9147 §5.8): the
 /// initial transmission plus retransmissions on receive timeout.
 const MAX_FLIGHT_ATTEMPTS: u8 = 5;
 
-/// Largest peer connection id accepted (RFC 9146 permits up to 255; real CIDs
-/// are a handful of bytes, so this cap keeps the client's state small).
-const MAX_CID_LEN: usize = 20;
+/// Largest connection id, in either direction (RFC 9146 permits up to 255; real
+/// CIDs are a handful of bytes, so this cap keeps the client's state small and
+/// bounds the inbound record header for the advertised record size limit).
+pub(crate) const MAX_CID_LEN: usize = 20;
 
 /// Receive buffer for one inbound datagram, and the advertised record size
 /// limit is derived from it (RFC 8449) so a peer never sends a record this
 /// buffer can't hold.
-const MAX_DATAGRAM: usize = 2048;
+pub(crate) const MAX_DATAGRAM: usize = 2048;
 
 /// Worst-case bytes [`EpochKeys::seal`] adds around an ACK body: the unified
 /// header (1 flags byte, a full-length connection id, a 2-byte sequence number,
@@ -351,6 +359,8 @@ impl<S: DtlsSuite> DtlsClient<S> {
         let flight_plaintext = &flight_buf[..flight_len];
         let flight_view =
             parse_server_flight(flight_plaintext).map_err(|_| DtlsClientError::Protocol)?;
+        // Honor the peer's record_size_limit (RFC 8449) when it answers ours.
+        let peer_record_limit = parse_ee_record_size_limit(flight_view.ee_body);
         let chain = extract_chain::<MAX_CHAIN>(flight_view.cert_body)
             .map_err(|_| DtlsClientError::Protocol)?;
         let mut slot: Option<PreparedVerifier<E, R>> = None;
@@ -471,6 +481,7 @@ impl<S: DtlsSuite> DtlsClient<S> {
             send_cid_len,
             recv_stash: [0u8; MAX_DATAGRAM],
             recv_stash_len: 0,
+            peer_record_limit,
         })
     }
 
@@ -484,6 +495,13 @@ impl<S: DtlsSuite> DtlsClient<S> {
     where
         T: DatagramTransport,
     {
+        // RFC 8449: never send a record whose TLSInnerPlaintext (payload + the
+        // content-type byte) exceeds the peer's advertised record_size_limit.
+        if let Some(limit) = self.peer_record_limit {
+            if payload.len() + 1 > limit as usize {
+                return Err(DtlsClientError::RecordSizeLimit);
+            }
+        }
         let cid = (self.send_cid_len > 0).then_some(&self.send_cid[..self.send_cid_len]);
         let sealed = self
             .client_app
@@ -548,11 +566,12 @@ impl<S: DtlsSuite> DtlsClient<S> {
                 // A leading epoch-2 record (0b10, no decrypt needed) means the
                 // server missed our Finished, so resend it (RFC 9147 §5.8) and
                 // keep waiting. Budget-capped since the test is unauthenticated;
-                // it stops once an epoch-3 record confirms the handshake. Epoch-2
-                // can't be decrypted post-handshake, so this only fires at the
-                // datagram head. (Only epochs 2 and 3 exist without KeyUpdate; a
-                // future epoch 6 would also be `0b10` and need the full epoch.)
-                if first & 0b11 == 0b10 {
+                // it stops once an epoch-3 record confirms the handshake. Only at
+                // the datagram head: a mid-datagram epoch-2 record can't be
+                // decrypted post-handshake, so it falls through to `open` and ends
+                // the walk. (Only epochs 2 and 3 exist without KeyUpdate; a future
+                // epoch 6 would also be `0b10` and need the full epoch.)
+                if pos == 0 && first & 0b11 == 0b10 {
                     if self.fin_resends_left > 0 {
                         self.fin_resends_left -= 1;
                         transport
@@ -561,36 +580,23 @@ impl<S: DtlsSuite> DtlsClient<S> {
                     }
                     break;
                 }
-                let record_len;
-                let seq;
-                let app_len;
-                {
-                    let Ok(opened) =
-                        self.server_app
-                            .open(self.recv_cid_len, self.recv_hint, &mut dg[pos..n])
-                    else {
-                        // Injected/garbage record: its length is unknown, so stop
-                        // walking this datagram.
-                        break;
-                    };
-                    record_len = opened.record_len;
-                    seq = opened.seq;
-                    if opened.content_type == CT_APPLICATION_DATA {
-                        let len = opened.content.len();
-                        buf.get_mut(..len)
-                            .ok_or(DtlsClientError::BufferTooSmall)?
-                            .copy_from_slice(opened.content);
-                        app_len = Some(len);
-                    } else {
-                        app_len = None;
-                    }
-                }
+                let Ok(opened) =
+                    self.server_app
+                        .open(self.recv_cid_len, self.recv_hint, &mut dg[pos..n])
+                else {
+                    // Injected/garbage record: its length is unknown, so stop
+                    // walking this datagram.
+                    break;
+                };
+                let record_len = opened.record_len;
+                let seq = opened.seq;
+                let is_app = opened.content_type == CT_APPLICATION_DATA;
                 if record_len == 0 {
                     break;
                 }
-                // Anti-replay over the epoch-3 sequence space, marked only after
-                // the AEAD tag verifies (RFC 9147 §4.5.1) — a replayed record
-                // (application or NewSessionTicket/ACK) is dropped.
+                // Anti-replay over the epoch-3 sequence space, decided before any
+                // application-buffer handling so a replay never touches `buf`
+                // (RFC 9147 §4.5.1). Marked only after the AEAD tag verifies.
                 if !self.server_replay.accepts(seq) {
                     pos += record_len;
                     continue;
@@ -600,7 +606,11 @@ impl<S: DtlsSuite> DtlsClient<S> {
                 // An authenticated epoch-3 record proves the server derived
                 // epoch-3 keys, i.e. it received our Finished — stop resending it.
                 self.fin_resends_left = 0;
-                if let Some(len) = app_len {
+                if is_app {
+                    let len = opened.content.len();
+                    buf.get_mut(..len)
+                        .ok_or(DtlsClientError::BufferTooSmall)?
+                        .copy_from_slice(opened.content);
                     // Hold any records coalesced after this one for the next call.
                     let rest = pos + record_len;
                     if rest < n {
@@ -1058,6 +1068,7 @@ mod tests {
             send_cid_len: 0,
             recv_stash: [0u8; MAX_DATAGRAM],
             recv_stash_len: 0,
+            peer_record_limit: None,
         };
 
         // Seal one epoch-3 record with the server's app keys, then feed it twice.
@@ -1089,6 +1100,46 @@ mod tests {
         assert_eq!(client.recv(&mut transport, &mut buf).unwrap(), None);
     }
 
+    /// A payload whose TLSInnerPlaintext exceeds the peer's advertised
+    /// record_size_limit (RFC 8449) is refused before sending.
+    #[cfg(feature = "cipher-aes")]
+    #[test]
+    fn send_refuses_payload_over_peer_record_limit() {
+        use crate::aead::Aes128GcmSha256 as Suite;
+        use crate::backends::RustCrypto;
+        use crate::newtype::Secret;
+        use zeroize::Zeroizing;
+
+        let key = Secret::new(Zeroizing::new([0x3cu8; 32]));
+        let mut client = DtlsClient::<Suite> {
+            client_app: EpochKeys::<Suite>::derive::<RustCrypto>(&key).unwrap(),
+            server_app: EpochKeys::<Suite>::derive::<RustCrypto>(&key).unwrap(),
+            send_seq: 0,
+            recv_hint: 0,
+            server_replay: ReplayWindow::new(),
+            fin_flight: [0u8; 128],
+            fin_flight_len: 0,
+            fin_resends_left: 0,
+            recv_cid_len: 0,
+            send_cid: [0u8; MAX_CID_LEN],
+            send_cid_len: 0,
+            recv_stash: [0u8; MAX_DATAGRAM],
+            recv_stash_len: 0,
+            peer_record_limit: Some(16),
+        };
+        let mut transport = QueueTransport {
+            inbound: Default::default(),
+        };
+        let mut out = [0u8; 128];
+        // 15 payload + 1 content-type byte == the 16-byte limit: allowed.
+        assert!(client.send(&mut transport, &[0u8; 15], &mut out).is_ok());
+        // 16 payload + 1 == 17 > 16: refused before sealing.
+        assert_eq!(
+            client.send(&mut transport, &[0u8; 16], &mut out),
+            Err(DtlsClientError::RecordSizeLimit)
+        );
+    }
+
     /// A control record coalesced before application data in one datagram must
     /// not hide it, and two application records in one datagram must both be
     /// delivered (the second from the stash), never dropped (RFC 9147 §4.3).
@@ -1118,6 +1169,7 @@ mod tests {
             send_cid_len: 0,
             recv_stash: [0u8; MAX_DATAGRAM],
             recv_stash_len: 0,
+            peer_record_limit: None,
         };
 
         let sealer = EpochKeys::<Suite>::derive::<RustCrypto>(&s_ap).unwrap();
@@ -1395,6 +1447,7 @@ mod tests {
             send_cid_len: 0,
             recv_stash: [0u8; MAX_DATAGRAM],
             recv_stash_len: 0,
+            peer_record_limit: None,
         };
 
         // Seal a real epoch-3 application record to deliver after the retransmit.

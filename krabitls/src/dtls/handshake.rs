@@ -13,7 +13,9 @@ use crate::consts::{
 };
 #[cfg(feature = "ecdsa")]
 use crate::consts::{SIG_SCHEME_ECDSA_P256, SIG_SCHEME_ECDSA_P384};
+use crate::dtls::client::{MAX_CID_LEN, MAX_DATAGRAM};
 use crate::dtls::framing::{DTLS_1_2_LEGACY_VERSION, DTLS_1_3_VERSION};
+use crate::dtls::record::TAG_LEN;
 
 const EXT_SUPPORTED_GROUPS: u16 = 10;
 const EXT_SIGNATURE_ALGORITHMS: u16 = 13;
@@ -25,9 +27,12 @@ const EXT_KEY_SHARE: u16 = 51;
 const EXT_CONNECTION_ID: u16 = 54;
 
 /// Advertised inbound record size limit (RFC 8449): the largest TLSInnerPlaintext
-/// the client will accept. Kept comfortably under the client's 2048-byte datagram
-/// buffer so a conforming record — header, ciphertext, and tag — always fits.
-const RECORD_SIZE_LIMIT: u16 = 1984;
+/// the client will accept. Derived so a conforming record always fits the
+/// datagram buffer — the widest unified header (flags + a full-length connection
+/// id + a 2-byte sequence number + the 2-byte length) plus the AEAD tag around
+/// this many plaintext bytes must not exceed [`MAX_DATAGRAM`].
+const MAX_INBOUND_HEADER: usize = 1 + MAX_CID_LEN + 2 + 2;
+const RECORD_SIZE_LIMIT: u16 = (MAX_DATAGRAM - MAX_INBOUND_HEADER - TAG_LEN) as u16;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, thiserror::Error)]
 pub(crate) enum ClientHelloError {
@@ -174,8 +179,10 @@ pub(crate) fn write_client_hello(
     // it sends to us. Advertising it negotiates CID for this connection; the
     // server signals agreement by returning its own connection_id in ServerHello.
     if let Some(cid) = client_cid {
-        // RFC 9146 §4: the cid length prefix is a single byte.
-        if cid.len() > u8::MAX as usize {
+        // Bounded by MAX_CID_LEN (< the RFC 9146 §4 single-byte prefix limit) so
+        // the advertised record_size_limit's header budget holds for inbound
+        // records, which carry this cid.
+        if cid.len() > MAX_CID_LEN {
             return Err(ClientHelloError::CidTooLong);
         }
         c.u16(EXT_CONNECTION_ID);
@@ -311,6 +318,25 @@ pub(crate) fn parse_server_hello(body: &[u8]) -> Result<ServerHelloKind<'_>, Par
     }
 }
 
+/// The server's `record_size_limit` (RFC 8449) from an EncryptedExtensions
+/// message body, if it sent one — the largest TLSInnerPlaintext the client may
+/// send. `None` when absent (no limit to enforce).
+pub(crate) fn parse_ee_record_size_limit(ee_body: &[u8]) -> Option<u16> {
+    let ext_len = u16::from_be_bytes([*ee_body.first()?, *ee_body.get(1)?]) as usize;
+    let exts = ee_body.get(2..2 + ext_len)?;
+    let mut i = 0;
+    while i + 4 <= exts.len() {
+        let et = u16::from_be_bytes([exts[i], exts[i + 1]]);
+        let el = u16::from_be_bytes([exts[i + 2], exts[i + 3]]) as usize;
+        let data = exts.get(i + 4..i + 4 + el)?;
+        if et == EXT_RECORD_SIZE_LIMIT && data.len() == 2 {
+            return Some(u16::from_be_bytes([data[0], data[1]]));
+        }
+        i += 4 + el;
+    }
+    None
+}
+
 fn read_u16(b: &[u8], at: usize) -> Result<u16, ParseError> {
     let bytes = b.get(at..at + 2).ok_or(ParseError::Malformed)?;
     Ok(u16::from_be_bytes([bytes[0], bytes[1]]))
@@ -348,10 +374,10 @@ mod tests {
         assert_eq!(&body[38..40], &CIPHER_AES_128_GCM_SHA256.to_be_bytes());
         // The X25519 public key appears verbatim in the key_share.
         assert!(body.windows(32).any(|w| w == pubkey));
-        // record_size_limit (RFC 8449): ext 0x001C, length 2, value 1984 (0x07C0).
+        // record_size_limit (RFC 8449): ext 0x001C, length 2, value 2007 (0x07D7).
         assert!(
             body.windows(6)
-                .any(|w| w == [0x00, 0x1C, 0x00, 0x02, 0x07, 0xC0]),
+                .any(|w| w == [0x00, 0x1C, 0x00, 0x02, 0x07, 0xD7]),
             "record_size_limit extension advertised"
         );
     }
@@ -473,6 +499,15 @@ mod tests {
             ServerHelloKind::Retry { cookie, .. } => assert_eq!(cookie.len(), 67),
             ServerHelloKind::Hello { .. } => panic!("expected a retry"),
         }
+    }
+
+    #[test]
+    fn parses_peer_record_size_limit_from_encrypted_extensions() {
+        // EE body: extensions<len=6> = one record_size_limit(0x001C) = 512.
+        let ee = [0x00, 0x06, 0x00, 0x1C, 0x00, 0x02, 0x02, 0x00];
+        assert_eq!(parse_ee_record_size_limit(&ee), Some(512));
+        // No extensions → nothing to enforce.
+        assert_eq!(parse_ee_record_size_limit(&[0x00, 0x00]), None);
     }
 
     #[test]
