@@ -42,6 +42,29 @@ pub(crate) fn write_ack(records: &[(u64, u64)], out: &mut [u8]) -> Result<usize,
     Ok(total)
 }
 
+/// Serialize an ACK body from a received-record bitmap: bit `i` of `seqs` set
+/// means sequence number `i` at `epoch` was received. Records are emitted in
+/// ascending sequence order. A bitmap deduplicates retransmits for free and
+/// bounds the ACK to the 64 lowest sequence numbers of the epoch.
+pub(crate) fn write_ack_bitmap(epoch: u64, seqs: u64, out: &mut [u8]) -> Result<usize, AckError> {
+    let list_len = seqs.count_ones() as usize * RECORD_NUMBER_LEN;
+    let total = 2 + list_len;
+    if out.len() < total {
+        return Err(AckError::BufferTooSmall);
+    }
+    out[..2].copy_from_slice(&(list_len as u16).to_be_bytes());
+    let mut p = 2;
+    let mut bits = seqs;
+    while bits != 0 {
+        let seq = bits.trailing_zeros() as u64;
+        bits &= bits - 1;
+        out[p..p + 8].copy_from_slice(&epoch.to_be_bytes());
+        out[p + 8..p + 16].copy_from_slice(&seq.to_be_bytes());
+        p += RECORD_NUMBER_LEN;
+    }
+    Ok(total)
+}
+
 /// Iterate the `(epoch, sequence_number)` pairs of a received ACK body.
 pub(crate) fn parse_ack(body: &[u8]) -> Result<AckRecords<'_>, AckError> {
     let len_bytes = body.get(..2).ok_or(AckError::Malformed)?;
@@ -96,6 +119,23 @@ mod tests {
         let n = write_ack(&[], &mut out).unwrap();
         assert_eq!(&out[..n], &[0x00, 0x00]);
         assert_eq!(parse_ack(&out[..n]).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn bitmap_emits_set_seqs_in_order_and_dedups() {
+        // Bits 0, 1, 3 set (a retransmit of an already-seen seq is just the same
+        // bit) → three records, ascending, no duplicates.
+        let mut out = [0u8; 2 + 64 * 16];
+        let n = write_ack_bitmap(2, 0b1011, &mut out).unwrap();
+        let parsed: heapless::Vec<(u64, u64), 8> = parse_ack(&out[..n]).unwrap().collect();
+        assert_eq!(&parsed[..], &[(2, 0), (2, 1), (2, 3)]);
+    }
+
+    #[test]
+    fn bitmap_empty_is_a_bare_zero_length() {
+        let mut out = [0u8; 8];
+        let n = write_ack_bitmap(2, 0, &mut out).unwrap();
+        assert_eq!(&out[..n], &[0x00, 0x00]);
     }
 
     #[test]
