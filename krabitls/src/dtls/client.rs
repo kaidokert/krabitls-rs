@@ -74,6 +74,12 @@ pub(crate) struct DtlsClient<S: DtlsSuite> {
     recv_cid_len: usize,
     send_cid: [u8; MAX_CID_LEN],
     send_cid_len: usize,
+    /// Records coalesced after a delivered application_data record in one
+    /// datagram, held (as a suffix from offset 0) so the next `recv` drains them
+    /// before reading a new datagram — a peer may pack several records per UDP
+    /// datagram (RFC 9147 §4.3). `recv_stash_len` == 0 means empty.
+    recv_stash: [u8; MAX_DATAGRAM],
+    recv_stash_len: usize,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -110,6 +116,11 @@ const MAX_FLIGHT_ATTEMPTS: u8 = 5;
 /// Largest peer connection id accepted (RFC 9146 permits up to 255; real CIDs
 /// are a handful of bytes, so this cap keeps the client's state small).
 const MAX_CID_LEN: usize = 20;
+
+/// Receive buffer for one inbound datagram, and the advertised record size
+/// limit is derived from it (RFC 8449) so a peer never sends a record this
+/// buffer can't hold.
+const MAX_DATAGRAM: usize = 2048;
 
 /// Worst-case bytes [`EpochKeys::seal`] adds around an ACK body: the unified
 /// header (1 flags byte, a full-length connection id, a 2-byte sequence number,
@@ -458,6 +469,8 @@ impl<S: DtlsSuite> DtlsClient<S> {
             recv_cid_len,
             send_cid: send_cid_buf,
             send_cid_len,
+            recv_stash: [0u8; MAX_DATAGRAM],
+            recv_stash_len: 0,
         })
     }
 
@@ -492,9 +505,12 @@ impl<S: DtlsSuite> DtlsClient<S> {
     }
 
     /// Receive and decrypt the next epoch-3 application_data record into `buf`,
-    /// returning the plaintext length. Non-application records (the server's
-    /// post-handshake NewSessionTicket/ACK) are skipped. `Ok(None)` on timeout.
-    /// Duplicates and records older than the anti-replay window are dropped.
+    /// returning the plaintext length. Every record in a datagram is processed —
+    /// non-application records (the server's post-handshake NewSessionTicket/ACK)
+    /// are skipped, and records coalesced after the delivered one are stashed for
+    /// the next call, so a control record ahead of application data never hides
+    /// it. `Ok(None)` on timeout. Duplicates and records older than the
+    /// anti-replay window are dropped.
     pub(crate) fn recv<T>(
         &mut self,
         transport: &mut T,
@@ -503,64 +519,98 @@ impl<S: DtlsSuite> DtlsClient<S> {
     where
         T: DatagramTransport,
     {
-        let mut dg = [0u8; 2048];
+        let mut dg = [0u8; MAX_DATAGRAM];
         loop {
-            let n = match transport
-                .recv(&mut dg)
-                .map_err(DtlsClientError::Transport)?
-            {
-                Some(n) => n,
-                None => return Ok(None),
-            };
-            // Only unified-header (epoch >0) records reach here.
-            let Some(&first) = dg[..n].first().filter(|&&b| b & 0xE0 == 0x20) else {
-                continue;
-            };
-            // The low two epoch bits distinguish a retransmitted epoch-2 server
-            // flight (0b10) from epoch-3 application data (0b11) without a
-            // decrypt: an epoch-2 record here means the server did not get our
-            // Finished, so resend it (RFC 9147 §5.8) and keep waiting. This test
-            // is unauthenticated, so the resend is budget-capped and stops once
-            // an epoch-3 record has confirmed the handshake (below). (Only
-            // epochs 2 and 3 exist without KeyUpdate; a future epoch 6 would also
-            // be `0b10` and this discriminator would need the full epoch.)
-            if first & 0b11 == 0b10 {
-                if self.fin_resends_left > 0 {
-                    self.fin_resends_left -= 1;
-                    transport
-                        .send(&self.fin_flight[..self.fin_flight_len])
-                        .map_err(DtlsClientError::Transport)?;
+            // Drain records stashed from a previously coalesced datagram before
+            // reading a new one.
+            let n = if self.recv_stash_len > 0 {
+                let len = self.recv_stash_len;
+                dg[..len].copy_from_slice(&self.recv_stash[..len]);
+                self.recv_stash_len = 0;
+                len
+            } else {
+                match transport
+                    .recv(&mut dg)
+                    .map_err(DtlsClientError::Transport)?
+                {
+                    Some(n) => n,
+                    None => return Ok(None),
                 }
-                continue;
-            }
-            let Ok(opened) = self
-                .server_app
-                .open(self.recv_cid_len, self.recv_hint, &mut dg[..n])
-            else {
-                // Injected/garbage record: fails AEAD, skipped without touching
-                // the replay window or the reconstruction hint.
-                continue;
             };
-            // Anti-replay over the epoch-3 sequence space, marked only after the
-            // AEAD tag verifies (RFC 9147 §4.5.1). Applies to every authenticated
-            // record, so a replayed NewSessionTicket/ACK is dropped too.
-            if !self.server_replay.accepts(opened.seq) {
-                continue;
+
+            let mut pos = 0;
+            while pos < n {
+                let first = dg[pos];
+                // Only unified-header (epoch >0) records belong here.
+                if first & 0xE0 != 0x20 {
+                    break;
+                }
+                // A leading epoch-2 record (0b10, no decrypt needed) means the
+                // server missed our Finished, so resend it (RFC 9147 §5.8) and
+                // keep waiting. Budget-capped since the test is unauthenticated;
+                // it stops once an epoch-3 record confirms the handshake. Epoch-2
+                // can't be decrypted post-handshake, so this only fires at the
+                // datagram head. (Only epochs 2 and 3 exist without KeyUpdate; a
+                // future epoch 6 would also be `0b10` and need the full epoch.)
+                if first & 0b11 == 0b10 {
+                    if self.fin_resends_left > 0 {
+                        self.fin_resends_left -= 1;
+                        transport
+                            .send(&self.fin_flight[..self.fin_flight_len])
+                            .map_err(DtlsClientError::Transport)?;
+                    }
+                    break;
+                }
+                let record_len;
+                let seq;
+                let app_len;
+                {
+                    let Ok(opened) =
+                        self.server_app
+                            .open(self.recv_cid_len, self.recv_hint, &mut dg[pos..n])
+                    else {
+                        // Injected/garbage record: its length is unknown, so stop
+                        // walking this datagram.
+                        break;
+                    };
+                    record_len = opened.record_len;
+                    seq = opened.seq;
+                    if opened.content_type == CT_APPLICATION_DATA {
+                        let len = opened.content.len();
+                        buf.get_mut(..len)
+                            .ok_or(DtlsClientError::BufferTooSmall)?
+                            .copy_from_slice(opened.content);
+                        app_len = Some(len);
+                    } else {
+                        app_len = None;
+                    }
+                }
+                if record_len == 0 {
+                    break;
+                }
+                // Anti-replay over the epoch-3 sequence space, marked only after
+                // the AEAD tag verifies (RFC 9147 §4.5.1) — a replayed record
+                // (application or NewSessionTicket/ACK) is dropped.
+                if !self.server_replay.accepts(seq) {
+                    pos += record_len;
+                    continue;
+                }
+                self.server_replay.mark(seq);
+                self.recv_hint = self.recv_hint.max(seq + 1);
+                // An authenticated epoch-3 record proves the server derived
+                // epoch-3 keys, i.e. it received our Finished — stop resending it.
+                self.fin_resends_left = 0;
+                if let Some(len) = app_len {
+                    // Hold any records coalesced after this one for the next call.
+                    let rest = pos + record_len;
+                    if rest < n {
+                        self.recv_stash[..n - rest].copy_from_slice(&dg[rest..n]);
+                        self.recv_stash_len = n - rest;
+                    }
+                    return Ok(Some(len));
+                }
+                pos += record_len;
             }
-            self.server_replay.mark(opened.seq);
-            self.recv_hint = self.recv_hint.max(opened.seq + 1);
-            // An authenticated epoch-3 record proves the server derived epoch-3
-            // keys, i.e. it received our Finished — stop resending it.
-            self.fin_resends_left = 0;
-            if opened.content_type == CT_APPLICATION_DATA {
-                let len = opened.content.len();
-                buf.get_mut(..len)
-                    .ok_or(DtlsClientError::BufferTooSmall)?
-                    .copy_from_slice(opened.content);
-                return Ok(Some(len));
-            }
-            // Authenticated non-application record (handshake/ACK): counted for
-            // replay, not delivered to the caller.
         }
     }
 }
@@ -1006,6 +1056,8 @@ mod tests {
             recv_cid_len: 0,
             send_cid: [0u8; MAX_CID_LEN],
             send_cid_len: 0,
+            recv_stash: [0u8; MAX_DATAGRAM],
+            recv_stash_len: 0,
         };
 
         // Seal one epoch-3 record with the server's app keys, then feed it twice.
@@ -1034,6 +1086,77 @@ mod tests {
         assert_eq!(&buf[..7], b"payload");
         // Second copy authenticates but is a replay → dropped; the queue then
         // drains to a timeout (`Ok(None)`).
+        assert_eq!(client.recv(&mut transport, &mut buf).unwrap(), None);
+    }
+
+    /// A control record coalesced before application data in one datagram must
+    /// not hide it, and two application records in one datagram must both be
+    /// delivered (the second from the stash), never dropped (RFC 9147 §4.3).
+    #[cfg(feature = "cipher-aes")]
+    #[test]
+    fn recv_processes_records_coalesced_in_one_datagram() {
+        use crate::aead::Aes128GcmSha256 as Suite;
+        use crate::backends::RustCrypto;
+        use crate::newtype::Secret;
+        use zeroize::Zeroizing;
+
+        let s_ap = Secret::new(Zeroizing::new([0x5au8; 32]));
+        let mut client = DtlsClient::<Suite> {
+            client_app: EpochKeys::<Suite>::derive::<RustCrypto>(&Secret::new(Zeroizing::new(
+                [0xc1u8; 32],
+            )))
+            .unwrap(),
+            server_app: EpochKeys::<Suite>::derive::<RustCrypto>(&s_ap).unwrap(),
+            send_seq: 0,
+            recv_hint: 0,
+            server_replay: ReplayWindow::new(),
+            fin_flight: [0u8; 128],
+            fin_flight_len: 0,
+            fin_resends_left: 0,
+            recv_cid_len: 0,
+            send_cid: [0u8; MAX_CID_LEN],
+            send_cid_len: 0,
+            recv_stash: [0u8; MAX_DATAGRAM],
+            recv_stash_len: 0,
+        };
+
+        let sealer = EpochKeys::<Suite>::derive::<RustCrypto>(&s_ap).unwrap();
+        let seal = |seq: u64, ct: u8, payload: &[u8]| {
+            let mut rec = [0u8; 128];
+            sealer
+                .seal(
+                    SealHeader {
+                        epoch: 3,
+                        seq,
+                        seq_len: SeqNumLen::Two,
+                        cid: None,
+                    },
+                    payload,
+                    ct,
+                    &mut rec,
+                )
+                .unwrap()
+                .to_vec()
+        };
+
+        // Datagram A: an ACK (control) ahead of application data.
+        let mut dgram_a = seal(0, CT_ACK, b"ack");
+        dgram_a.extend_from_slice(&seal(1, CT_APPLICATION_DATA, b"first"));
+        // Datagram B: two application records coalesced.
+        let mut dgram_b = seal(2, CT_APPLICATION_DATA, b"second");
+        dgram_b.extend_from_slice(&seal(3, CT_APPLICATION_DATA, b"third"));
+
+        let mut transport = QueueTransport {
+            inbound: [dgram_a, dgram_b].into(),
+        };
+
+        let mut buf = [0u8; 64];
+        assert_eq!(client.recv(&mut transport, &mut buf).unwrap(), Some(5));
+        assert_eq!(&buf[..5], b"first");
+        assert_eq!(client.recv(&mut transport, &mut buf).unwrap(), Some(6));
+        assert_eq!(&buf[..6], b"second");
+        assert_eq!(client.recv(&mut transport, &mut buf).unwrap(), Some(5));
+        assert_eq!(&buf[..5], b"third");
         assert_eq!(client.recv(&mut transport, &mut buf).unwrap(), None);
     }
 
@@ -1270,6 +1393,8 @@ mod tests {
             recv_cid_len: 0,
             send_cid: [0u8; MAX_CID_LEN],
             send_cid_len: 0,
+            recv_stash: [0u8; MAX_DATAGRAM],
+            recv_stash_len: 0,
         };
 
         // Seal a real epoch-3 application record to deliver after the retransmit.

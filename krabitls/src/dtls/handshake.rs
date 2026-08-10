@@ -17,11 +17,17 @@ use crate::dtls::framing::{DTLS_1_2_LEGACY_VERSION, DTLS_1_3_VERSION};
 
 const EXT_SUPPORTED_GROUPS: u16 = 10;
 const EXT_SIGNATURE_ALGORITHMS: u16 = 13;
+const EXT_RECORD_SIZE_LIMIT: u16 = 28;
 const EXT_SUPPORTED_VERSIONS: u16 = 43;
 const EXT_COOKIE: u16 = 44;
 const EXT_KEY_SHARE: u16 = 51;
 /// RFC 9146 connection_id extension.
 const EXT_CONNECTION_ID: u16 = 54;
+
+/// Advertised inbound record size limit (RFC 8449): the largest TLSInnerPlaintext
+/// the client will accept. Kept comfortably under the client's 2048-byte datagram
+/// buffer so a conforming record — header, ciphertext, and tag — always fits.
+const RECORD_SIZE_LIMIT: u16 = 1984;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, thiserror::Error)]
 pub(crate) enum ClientHelloError {
@@ -132,6 +138,11 @@ pub(crate) fn write_client_hello(
     c.u16(4);
     c.u16(2);
     c.u16(NAMED_GROUP_X25519);
+
+    // record_size_limit (RFC 8449): bound inbound records to our receive buffer.
+    c.u16(EXT_RECORD_SIZE_LIMIT);
+    c.u16(2);
+    c.u16(RECORD_SIZE_LIMIT);
 
     // signature_algorithms: Ed25519, plus ECDSA and RSA-PSS when built with
     // those verify backends, so the server may present any of those leaf types.
@@ -337,6 +348,12 @@ mod tests {
         assert_eq!(&body[38..40], &CIPHER_AES_128_GCM_SHA256.to_be_bytes());
         // The X25519 public key appears verbatim in the key_share.
         assert!(body.windows(32).any(|w| w == pubkey));
+        // record_size_limit (RFC 8449): ext 0x001C, length 2, value 1984 (0x07C0).
+        assert!(
+            body.windows(6)
+                .any(|w| w == [0x00, 0x1C, 0x00, 0x02, 0x07, 0xC0]),
+            "record_size_limit extension advertised"
+        );
     }
 
     #[test]
