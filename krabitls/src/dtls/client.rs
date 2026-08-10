@@ -24,14 +24,14 @@
 
 use crate::bigint::Curve25519CtBn as Bn;
 use crate::consts::{CT_ACK, CT_APPLICATION_DATA, CT_HANDSHAKE, HS_FINISHED};
-use crate::dtls::ack::write_ack_bitmap;
+use crate::dtls::ack::{MAX_ACK_BODY_LEN, MAX_ACK_RECORDS, write_ack_bitmap};
 use crate::dtls::framing::{HS_HEADER_LEN, HandshakeHeader, PlaintextRecord};
 use crate::dtls::handshake::{
     CLIENT_HELLO_MSG_TYPE, ServerHelloKind, parse_server_hello, write_client_hello,
 };
 use crate::dtls::keys::derive_handshake_keys;
 use crate::dtls::reassembly::Reassembler;
-use crate::dtls::record::{DtlsSuite, EpochKeys, SealHeader, SeqNumLen};
+use crate::dtls::record::{DtlsSuite, EpochKeys, SealHeader, SeqNumLen, TAG_LEN};
 use crate::dtls::replay::ReplayWindow;
 use crate::dtls::transport::DatagramTransport;
 use crate::hkdf::{
@@ -110,6 +110,11 @@ const MAX_FLIGHT_ATTEMPTS: u8 = 5;
 /// Largest peer connection id accepted (RFC 9146 permits up to 255; real CIDs
 /// are a handful of bytes, so this cap keeps the client's state small).
 const MAX_CID_LEN: usize = 20;
+
+/// Worst-case bytes [`EpochKeys::seal`] adds around an ACK body: the unified
+/// header (1 flags byte, a full-length connection id, a 2-byte sequence number,
+/// the 2-byte length) plus the inner content-type byte and the AEAD tag.
+const MAX_ACK_SEAL_OVERHEAD: usize = 1 + MAX_CID_LEN + 2 + 2 + 1 + TAG_LEN;
 
 /// Distinct handshake messages the server flight reassembler tracks at once
 /// (EncryptedExtensions, optional CertificateRequest, Certificate,
@@ -266,7 +271,7 @@ impl<S: DtlsSuite> DtlsClient<S> {
         let mut reasm = Reassembler::<MAX_FLIGHT_MSGS, MAX_MSG_FRAGS>::new();
         let mut srv_seq = 0u64;
         // Bitmap of epoch-2 record sequence numbers actually received, for the ACK.
-        let mut acked_seqs = 0u64;
+        let mut acked_seqs = 0u128;
         // The server may coalesce EncryptedExtensions (epoch 2) into the tail of
         // the ServerHello (epoch 0) datagram; feed those records before reading on.
         if sh_trailing > 0 {
@@ -388,11 +393,10 @@ impl<S: DtlsSuite> DtlsClient<S> {
         // epoch-2 record that authenticated is acknowledged by its real sequence
         // number, so retransmits and reordering can't skew the list. The ACK rides
         // epoch 2 at the next sequence number after the Finished.
-        // 16 bytes per RecordNumber (epoch u64 + seq u64) + the 2-byte list length.
-        let mut ack_body = [0u8; 2 + u64::BITS as usize * 16];
+        let mut ack_body = [0u8; MAX_ACK_BODY_LEN];
         let ack_len = write_ack_bitmap(2, acked_seqs, &mut ack_body)
             .map_err(|_| DtlsClientError::BufferTooSmall)?;
-        let mut ack_rec = [0u8; 2 + u64::BITS as usize * 16 + 32];
+        let mut ack_rec = [0u8; MAX_ACK_BODY_LEN + MAX_ACK_SEAL_OVERHEAD];
         let ack_sealed = hk
             .client
             .seal(
@@ -627,7 +631,7 @@ fn feed_epoch2_records<S: DtlsSuite, E>(
     reasm: &mut Reassembler<MAX_FLIGHT_MSGS, MAX_MSG_FRAGS>,
     reasm_buf: &mut [u8],
     next_seq: &mut u64,
-    acked: &mut u64,
+    acked: &mut u128,
 ) -> Result<(), DtlsClientError<E>> {
     let n = records.len();
     let mut rec_pos = 0usize;
@@ -643,11 +647,13 @@ fn feed_epoch2_records<S: DtlsSuite, E>(
         if record_len == 0 {
             break;
         }
-        // Epoch-2 record sequence numbers start at 0; the bitmap covers the 64
-        // lowest, which spans any realistic handshake flight. A record numbered
-        // beyond that goes unacked and is recovered by the server's retransmit.
-        if opened.seq < u64::BITS as u64 {
-            *acked |= 1 << opened.seq;
+        // Epoch-2 record sequence numbers start at 0; the bitmap covers the
+        // MAX_ACK_RECORDS lowest, matching the reassembler's fragment ceiling so
+        // every record a conforming flight produces is ackable. A record numbered
+        // beyond that goes unacked, but the client Finished (which requires the
+        // whole flight) already tells the server everything arrived.
+        if (opened.seq as usize) < MAX_ACK_RECORDS {
+            *acked |= 1u128 << opened.seq;
         }
         if opened.content_type == CT_HANDSHAKE {
             // A record may carry several coalesced handshake fragments.
@@ -975,7 +981,7 @@ mod tests {
     fn epoch2_ack_covers_real_seqs_dedups_and_exceeds_eight() {
         use crate::aead::Aes128GcmSha256 as Suite;
         use crate::backends::RustCrypto;
-        use crate::dtls::ack::parse_ack;
+        use crate::dtls::ack::{MAX_ACK_BODY_LEN, parse_ack};
         use crate::newtype::Secret;
         use zeroize::Zeroizing;
 
@@ -1006,7 +1012,7 @@ mod tests {
         let mut reasm = Reassembler::<MAX_FLIGHT_MSGS, MAX_MSG_FRAGS>::new();
         let mut reasm_buf = [0u8; 512];
         let mut next_seq = 0u64;
-        let mut acked = 0u64;
+        let mut acked = 0u128;
         feed_epoch2_records::<Suite, ()>(
             &server_keys,
             0,
@@ -1021,7 +1027,7 @@ mod tests {
         // Every distinct seq acknowledged by its real number; the retransmit of 3
         // folds into the same bit (no inflation, no cap at 8).
         assert_eq!(acked, 0b11_1111_1111);
-        let mut ack_body = [0u8; 2 + 64 * 16];
+        let mut ack_body = [0u8; MAX_ACK_BODY_LEN];
         let n = write_ack_bitmap(2, acked, &mut ack_body).unwrap();
         let records: heapless::Vec<(u64, u64), 16> = parse_ack(&ack_body[..n]).unwrap().collect();
         assert_eq!(records.len(), 10);

@@ -15,8 +15,17 @@ pub(crate) enum AckError {
     Malformed,
 }
 
-/// One acknowledged record: its epoch and sequence number.
-const RECORD_NUMBER_LEN: usize = 16;
+/// One acknowledged record on the wire: its epoch and sequence number.
+pub(crate) const RECORD_NUMBER_LEN: usize = 16;
+
+/// Records one bitmap ACK carries at most — the width of the received-record
+/// bitmap ([`write_ack_bitmap`]). 128 = `MAX_FLIGHT_MSGS × MAX_MSG_FRAGS`, the
+/// most records a conforming handshake flight can fragment into, so every record
+/// the flight reassembler accepts is acknowledgeable.
+pub(crate) const MAX_ACK_RECORDS: usize = u128::BITS as usize;
+
+/// Largest ACK body [`write_ack_bitmap`] can produce.
+pub(crate) const MAX_ACK_BODY_LEN: usize = 2 + MAX_ACK_RECORDS * RECORD_NUMBER_LEN;
 
 /// Serialize an ACK body into `out`, returning its length. `records` are the
 /// `(epoch, sequence_number)` pairs being acknowledged.
@@ -46,7 +55,7 @@ pub(crate) fn write_ack(records: &[(u64, u64)], out: &mut [u8]) -> Result<usize,
 /// means sequence number `i` at `epoch` was received. Records are emitted in
 /// ascending sequence order. A bitmap deduplicates retransmits for free and
 /// bounds the ACK to the 64 lowest sequence numbers of the epoch.
-pub(crate) fn write_ack_bitmap(epoch: u64, seqs: u64, out: &mut [u8]) -> Result<usize, AckError> {
+pub(crate) fn write_ack_bitmap(epoch: u64, seqs: u128, out: &mut [u8]) -> Result<usize, AckError> {
     let list_len = seqs.count_ones() as usize * RECORD_NUMBER_LEN;
     let total = 2 + list_len;
     if out.len() < total {
@@ -125,10 +134,19 @@ mod tests {
     fn bitmap_emits_set_seqs_in_order_and_dedups() {
         // Bits 0, 1, 3 set (a retransmit of an already-seen seq is just the same
         // bit) → three records, ascending, no duplicates.
-        let mut out = [0u8; 2 + 64 * 16];
+        let mut out = [0u8; MAX_ACK_BODY_LEN];
         let n = write_ack_bitmap(2, 0b1011, &mut out).unwrap();
         let parsed: heapless::Vec<(u64, u64), 8> = parse_ack(&out[..n]).unwrap().collect();
         assert_eq!(&parsed[..], &[(2, 0), (2, 1), (2, 3)]);
+    }
+
+    #[test]
+    fn bitmap_emits_the_top_bit() {
+        // The highest bit of the u128 window is record 127.
+        let mut out = [0u8; MAX_ACK_BODY_LEN];
+        let n = write_ack_bitmap(2, 1u128 << 127, &mut out).unwrap();
+        let parsed: heapless::Vec<(u64, u64), 4> = parse_ack(&out[..n]).unwrap().collect();
+        assert_eq!(&parsed[..], &[(2, 127)]);
     }
 
     #[test]
