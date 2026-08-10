@@ -16,11 +16,12 @@
 //!
 //! Reliability (RFC 9147 §5.8, §7): each ClientHello flight is buffered and
 //! retransmitted on a receive timeout, up to [`MAX_FLIGHT_ATTEMPTS`] sends, so an
-//! early lost datagram no longer aborts the handshake; after the client Finished
-//! an ACK of the server flight is sent so the peer stops retransmitting; and a
-//! lost Finished is recovered — a retransmitted epoch-2 server flight (detected
-//! by the record's epoch bits, no decrypt) triggers a resend of the buffered
-//! Finished.
+//! early lost datagram no longer aborts the handshake; a timeout while awaiting
+//! the encrypted epoch-2 flight likewise retransmits CH2 to prompt the server to
+//! resend it; after the client Finished an ACK of the server flight is sent so
+//! the peer stops retransmitting; and a lost Finished is recovered — a
+//! retransmitted epoch-2 server flight (detected by the record's epoch bits, no
+//! decrypt) triggers a resend of the buffered Finished.
 
 use crate::bigint::Curve25519CtBn as Bn;
 use crate::consts::{CT_ACK, CT_APPLICATION_DATA, CT_HANDSHAKE, HS_FINISHED};
@@ -90,8 +91,8 @@ pub(crate) struct DtlsClient<S: DtlsSuite> {
 pub enum DtlsClientError<E> {
     /// The transport surfaced an error.
     Transport(E),
-    /// No reply arrived after exhausting a flight's retransmissions, or an
-    /// encrypted flight (which is not yet retransmitted) timed out.
+    /// No reply arrived after exhausting a flight's retransmissions (a
+    /// ClientHello flight or the encrypted epoch-2 flight it drives).
     Timeout,
     /// A received datagram was not a well-formed DTLS record for this phase.
     Protocol,
@@ -333,17 +334,48 @@ impl<S: DtlsSuite> DtlsClient<S> {
             )?;
         }
         let mut datagrams = 0usize;
+        let mut resends_left = MAX_FLIGHT_ATTEMPTS;
         while !reasm.flight_complete(base_seq, HS_FINISHED) {
             if datagrams >= MAX_FLIGHT_DATAGRAMS {
                 return Err(DtlsClientError::Timeout);
             }
             datagrams += 1;
-            let mut dg = [0u8; 2048];
-            let n = recv_datagram(transport, &mut dg)?;
+            let mut dg = [0u8; MAX_DATAGRAM];
+            let n = match transport
+                .recv(&mut dg)
+                .map_err(DtlsClientError::Transport)?
+            {
+                Some(n) => n,
+                None => {
+                    // A datagram of the encrypted flight was lost. Retransmit CH2
+                    // so the server resends the flight (RFC 9147 §5.8), up to a
+                    // budget, rather than aborting the handshake.
+                    if resends_left == 0 {
+                        return Err(DtlsClientError::Timeout);
+                    }
+                    resends_left -= 1;
+                    transport
+                        .send(ch2_rec)
+                        .map_err(DtlsClientError::Transport)?;
+                    continue;
+                }
+            };
+            // A retransmitted flight re-sends the ServerHello (epoch-0 plaintext),
+            // possibly with epoch-2 records coalesced in its tail. The SH is
+            // already in the transcript, so skip past it and feed only the
+            // trailing epoch-2 records; a pure epoch-2 datagram starts at 0, and
+            // an unparseable (injected) datagram is ignored.
+            let start = match dg.first() {
+                Some(&b) if b & 0xE0 == 0x20 => 0,
+                _ => match parse_hello_body::<T::Error>(&dg[..n]) {
+                    Ok((_, _, trailing)) => n - trailing,
+                    Err(_) => continue,
+                },
+            };
             feed_epoch2_records::<S, T::Error>(
                 &hk.server,
                 recv_cid_len,
-                &mut dg[..n],
+                &mut dg[start..n],
                 &mut reasm,
                 reasm_buf,
                 &mut srv_seq,
@@ -690,20 +722,6 @@ fn parse_hello_body<E>(datagram: &[u8]) -> Result<(&[u8], u16, usize), DtlsClien
         .get(HS_HEADER_LEN..HS_HEADER_LEN + hh.fragment_length as usize)
         .ok_or(DtlsClientError::Protocol)?;
     Ok((body, hh.message_seq, datagram.len() - consumed))
-}
-
-/// Receive one datagram, mapping a timeout (`Ok(None)`) to a terminal
-/// [`DtlsClientError::Timeout`]. Used for the encrypted epoch-2 flight, whose
-/// inbound retransmit recovery is not implemented, so a timeout there is final
-/// (unlike the ClientHello flights, which retransmit).
-fn recv_datagram<T: DatagramTransport>(
-    transport: &mut T,
-    buf: &mut [u8],
-) -> Result<usize, DtlsClientError<T::Error>> {
-    transport
-        .recv(buf)
-        .map_err(DtlsClientError::Transport)?
-        .ok_or(DtlsClientError::Timeout)
 }
 
 /// Decrypt the epoch-2 records packed in `records` (one datagram, possibly
@@ -1396,6 +1414,68 @@ mod tests {
         client
             .send(&mut transport, b"hello from krabitls", &mut out)
             .expect("app data sends");
+    }
+
+    /// Drops the first inbound epoch-2 (unified-header) datagram, returning a
+    /// timeout instead, to exercise the encrypted-flight retransmit.
+    struct DropFirstEpoch2Recv<T> {
+        inner: T,
+        armed: bool,
+    }
+
+    impl<T: DatagramTransport> DatagramTransport for DropFirstEpoch2Recv<T> {
+        type Error = T::Error;
+        fn send(&mut self, datagram: &[u8]) -> Result<(), T::Error> {
+            self.inner.send(datagram)
+        }
+        fn recv(&mut self, buf: &mut [u8]) -> Result<Option<usize>, T::Error> {
+            let got = self.inner.recv(buf)?;
+            if self.armed
+                && matches!(got, Some(n) if n > 0)
+                && buf.first().is_some_and(|&b| b & 0xE0 == 0x20)
+            {
+                self.armed = false;
+                return Ok(None); // simulate the epoch-2 datagram being lost
+            }
+            Ok(got)
+        }
+    }
+
+    /// A datagram of the encrypted epoch-2 flight is lost; the client retransmits
+    /// CH2 on the receive timeout and still completes the handshake (RFC 9147
+    /// §5.8). Set `KRABITLS_DTLS_ADDR=host:port`.
+    #[cfg(feature = "cipher-aes")]
+    #[test]
+    #[ignore = "needs a live DTLS 1.3 server (set KRABITLS_DTLS_ADDR=host:port)"]
+    fn live_handshake_recovers_from_epoch2_flight_loss() {
+        use crate::aead::Aes128GcmSha256 as Suite;
+        use crate::backends::{DerCert, PinOrSelfSigned, RustCrypto};
+        use crate::traits::verify_strategy::SafeStrategy;
+
+        let addr = std::env::var("KRABITLS_DTLS_ADDR").unwrap();
+        let sock = UdpSocket::bind("0.0.0.0:0").unwrap();
+        sock.connect(&*addr).unwrap();
+        sock.set_read_timeout(Some(Duration::from_millis(800)))
+            .unwrap();
+        let mut transport = DropFirstEpoch2Recv {
+            inner: UdpTransport::new(sock),
+            armed: true,
+        };
+        let strategy = SafeStrategy::<_, DerCert>::new(PinOrSelfSigned::self_signed());
+
+        let mut flight_buf = [0u8; 4096];
+        let mut reasm_buf = [0u8; 4096];
+        DtlsClient::<Suite>::connect::<_, RustCrypto, _, RustCrypto, RustCrypto, DerCert, 4>(
+            &mut transport,
+            &strategy,
+            None,
+            None,
+            &[0x42u8; 32],
+            &[0x77u8; 32],
+            &mut flight_buf,
+            &mut reasm_buf,
+        )
+        .expect("handshake completes despite the dropped epoch-2 datagram");
     }
 
     /// Records every outbound datagram and serves queued inbound ones.
