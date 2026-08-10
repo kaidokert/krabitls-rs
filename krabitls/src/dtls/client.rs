@@ -181,8 +181,16 @@ impl<S: DtlsSuite> DtlsClient<S> {
 
         // --- CH1 -> HelloRetryRequest ---
         let mut ch1 = [0u8; 512];
-        let ch1_len = write_client_hello(client_random, &pub_key, None, None, client_cid, &mut ch1)
-            .map_err(|_| DtlsClientError::BufferTooSmall)?;
+        let ch1_len = write_client_hello(
+            client_random,
+            &pub_key,
+            S::CIPHER_SUITE_ID,
+            None,
+            None,
+            client_cid,
+            &mut ch1,
+        )
+        .map_err(|_| DtlsClientError::BufferTooSmall)?;
         let ch1_rec = build_client_hello_record(&ch1[..ch1_len], 0, 0, &mut ch_dgram)?;
         let hrr_len = send_flight_await_reply(transport, ch1_rec, &mut rbuf, MAX_FLIGHT_ATTEMPTS)?;
         let cookie_buf = {
@@ -217,6 +225,7 @@ impl<S: DtlsSuite> DtlsClient<S> {
         let ch2_len = write_client_hello(
             client_random,
             &pub_key,
+            S::CIPHER_SUITE_ID,
             None,
             Some(&cookie_buf.0[..cookie_buf.1]),
             client_cid,
@@ -239,9 +248,13 @@ impl<S: DtlsSuite> DtlsClient<S> {
             transcript.update(sh_body);
             let share = match parse_server_hello(sh_body).map_err(|_| DtlsClientError::Handshake)? {
                 ServerHelloKind::Hello {
+                    selected_suite,
                     server_key_share,
                     server_cid,
                 } => {
+                    if selected_suite != S::CIPHER_SUITE_ID {
+                        return Err(DtlsClientError::Handshake);
+                    }
                     // CID is negotiated only if we advertised one AND the server
                     // returned the extension. Then inbound records carry our CID,
                     // and we send with the server's CID (empty = send none).
@@ -778,6 +791,61 @@ mod tests {
         // server's application reply comes back on a single call. (The
         // example server sends a fixed reply, not an echo, so only the decrypt
         // is asserted, not the content.)
+        let mut buf = [0u8; 256];
+        let reply = client
+            .recv(&mut transport, &mut buf)
+            .expect("recv succeeds")
+            .expect("an application_data reply, not a timeout");
+        assert!(reply > 0, "decrypted a non-empty application_data reply");
+    }
+
+    /// Same round-trip over ChaCha20-Poly1305 — proves the suite-generic
+    /// ClientHello advertisement and the ServerHello suite check. Run the DTLS
+    /// 1.3 server with `-l TLS13-CHACHA20-POLY1305-SHA256`, then set
+    /// `KRABITLS_DTLS_PORT`.
+    #[cfg(feature = "chacha20")]
+    #[test]
+    #[ignore = "needs a ChaCha DTLS 1.3 server (server -l TLS13-CHACHA20... + KRABITLS_DTLS_PORT)"]
+    fn live_client_round_trips_app_data_chacha() {
+        use crate::aead::ChaCha20Poly1305Sha256 as Suite;
+        use crate::backends::{DerCert, PinOrSelfSigned, PinnedPubkeyOwned, RustCrypto};
+        use crate::traits::verify_strategy::SafeStrategy;
+
+        let port: u16 = std::env::var("KRABITLS_DTLS_PORT")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let sock = UdpSocket::bind("127.0.0.1:0").unwrap();
+        sock.connect(("127.0.0.1", port)).unwrap();
+        sock.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        let mut transport = UdpTransport::new(sock);
+
+        let pin = PinnedPubkeyOwned::ed25519([
+            0x23, 0xaa, 0x4d, 0x60, 0x50, 0xe0, 0x13, 0xd3, 0x3a, 0xed, 0xab, 0xf6, 0xa9, 0xcc,
+            0x4a, 0xfe, 0xd7, 0x4d, 0x2f, 0xd2, 0x5b, 0x1a, 0x10, 0x05, 0xef, 0x5a, 0x41, 0x25,
+            0xce, 0x1b, 0x53, 0x78,
+        ]);
+        let strategy = SafeStrategy::<_, DerCert>::new(PinOrSelfSigned::pinned(pin));
+
+        let mut flight_buf = [0u8; 4096];
+        let mut reasm_buf = [0u8; 4096];
+        let mut client =
+            DtlsClient::<Suite>::connect::<_, RustCrypto, _, RustCrypto, RustCrypto, DerCert, 4>(
+                &mut transport,
+                &strategy,
+                None,
+                None,
+                &[0x42u8; 32],
+                &[0x77u8; 32],
+                &mut flight_buf,
+                &mut reasm_buf,
+            )
+            .expect("handshake completes");
+
+        let mut out = [0u8; 128];
+        client
+            .send(&mut transport, b"hello from krabitls", &mut out)
+            .expect("app data sends");
         let mut buf = [0u8; 256];
         let reply = client
             .recv(&mut transport, &mut buf)

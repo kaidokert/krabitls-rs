@@ -9,8 +9,7 @@
 #[cfg(feature = "rsa")]
 use crate::consts::SIG_SCHEME_RSA_PSS_RSAE_SHA256;
 use crate::consts::{
-    CIPHER_AES_128_GCM_SHA256, HS_CLIENT_HELLO, LEGACY_SESSION_ID_LEN, NAMED_GROUP_X25519,
-    SIG_SCHEME_ED25519,
+    HS_CLIENT_HELLO, LEGACY_SESSION_ID_LEN, NAMED_GROUP_X25519, SIG_SCHEME_ED25519,
 };
 #[cfg(feature = "ecdsa")]
 use crate::consts::{SIG_SCHEME_ECDSA_P256, SIG_SCHEME_ECDSA_P384};
@@ -93,6 +92,7 @@ impl<'a> Cursor<'a> {
 pub(crate) fn write_client_hello(
     random: &[u8; 32],
     x25519_pub: &[u8; 32],
+    cipher_suite: u16,
     session_id: Option<&[u8; LEGACY_SESSION_ID_LEN]>,
     cookie: Option<&[u8]>,
     client_cid: Option<&[u8]>,
@@ -111,9 +111,9 @@ pub(crate) fn write_client_hello(
     }
     // legacy_cookie: always empty in DTLS 1.3.
     c.u8(0);
-    // cipher_suites: AES-128-GCM-SHA256 only for the initial datagram client.
+    // cipher_suites: the single suite this client was built to speak.
     c.u16(2);
-    c.u16(CIPHER_AES_128_GCM_SHA256);
+    c.u16(cipher_suite);
     // legacy_compression_methods: just null.
     c.u8(1);
     c.u8(0);
@@ -221,6 +221,7 @@ pub(crate) enum ServerHelloKind<'a> {
     /// the server agreed to RFC 9146 CID, its connection_id (the CID the client
     /// must put on records it sends; may be empty = server wants no CID inbound).
     Hello {
+        selected_suite: u16,
         server_key_share: &'a [u8; 32],
         server_cid: Option<&'a [u8]>,
     },
@@ -238,6 +239,7 @@ pub(crate) fn parse_server_hello(body: &[u8]) -> Result<ServerHelloKind<'_>, Par
     i += 32;
     let sid_len = *body.get(i).ok_or(ParseError::Malformed)? as usize;
     i += 1 + sid_len;
+    let selected_suite = read_u16(body, i)?;
     i += 2 + 1; // cipher_suite + compression
     let ext_len = read_u16(body, i)? as usize;
     i += 2;
@@ -285,6 +287,7 @@ pub(crate) fn parse_server_hello(body: &[u8]) -> Result<ServerHelloKind<'_>, Par
         })
     } else {
         Ok(ServerHelloKind::Hello {
+            selected_suite,
             server_key_share: key_share.ok_or(ParseError::MissingKeyShare)?,
             server_cid,
         })
@@ -299,6 +302,7 @@ fn read_u16(b: &[u8], at: usize) -> Result<u16, ParseError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::consts::CIPHER_AES_128_GCM_SHA256;
     use crate::dtls::framing::{HS_HEADER_LEN, HandshakeHeader, PlaintextRecord};
 
     #[test]
@@ -306,7 +310,16 @@ mod tests {
         let random = [0x11u8; 32];
         let pubkey = [0x22u8; 32];
         let mut body = [0u8; 256];
-        let n = write_client_hello(&random, &pubkey, None, None, None, &mut body).unwrap();
+        let n = write_client_hello(
+            &random,
+            &pubkey,
+            CIPHER_AES_128_GCM_SHA256,
+            None,
+            None,
+            None,
+            &mut body,
+        )
+        .unwrap();
         let body = &body[..n];
 
         // legacy_version, random, empty session_id, empty cookie, then suites.
@@ -326,7 +339,15 @@ mod tests {
         let pubkey = [0x22u8; 32];
         let cid = [0xABu8; 256];
         let mut body = [0u8; 512];
-        let err = write_client_hello(&random, &pubkey, None, None, Some(&cid), &mut body);
+        let err = write_client_hello(
+            &random,
+            &pubkey,
+            CIPHER_AES_128_GCM_SHA256,
+            None,
+            None,
+            Some(&cid),
+            &mut body,
+        );
         assert_eq!(err, Err(ClientHelloError::CidTooLong));
     }
 
@@ -335,7 +356,16 @@ mod tests {
         let random = [0x33u8; 32];
         let pubkey = [0x44u8; 32];
         let mut body = [0u8; 256];
-        let n = write_client_hello(&random, &pubkey, None, None, None, &mut body).unwrap();
+        let n = write_client_hello(
+            &random,
+            &pubkey,
+            CIPHER_AES_128_GCM_SHA256,
+            None,
+            None,
+            None,
+            &mut body,
+        )
+        .unwrap();
 
         // Wrap body in a 12-byte handshake header, then a DTLSPlaintext record.
         let mut msg = [0u8; 300];
@@ -371,8 +401,26 @@ mod tests {
         let cookie = [0xABu8; 20];
         let mut a = [0u8; 256];
         let mut b = [0u8; 256];
-        let na = write_client_hello(&random, &pubkey, None, None, None, &mut a).unwrap();
-        let nb = write_client_hello(&random, &pubkey, None, Some(&cookie), None, &mut b).unwrap();
+        let na = write_client_hello(
+            &random,
+            &pubkey,
+            CIPHER_AES_128_GCM_SHA256,
+            None,
+            None,
+            None,
+            &mut a,
+        )
+        .unwrap();
+        let nb = write_client_hello(
+            &random,
+            &pubkey,
+            CIPHER_AES_128_GCM_SHA256,
+            None,
+            Some(&cookie),
+            None,
+            &mut b,
+        )
+        .unwrap();
         assert_eq!(nb - na, 4 + 2 + cookie.len(), "cookie ext header + body");
         assert!(b[..nb].windows(cookie.len()).any(|w| w == cookie));
     }
@@ -429,7 +477,16 @@ mod tests {
     ) -> Vec<u8> {
         let random = [0x77u8; 32];
         let mut body = [0u8; 512];
-        let n = write_client_hello(&random, pubkey, None, cookie, None, &mut body).unwrap();
+        let n = write_client_hello(
+            &random,
+            pubkey,
+            CIPHER_AES_128_GCM_SHA256,
+            None,
+            cookie,
+            None,
+            &mut body,
+        )
+        .unwrap();
         let mut msg = [0u8; 560];
         HandshakeHeader {
             msg_type: CLIENT_HELLO_MSG_TYPE,
@@ -581,7 +638,16 @@ mod tests {
         let random = [0x77u8; 32];
 
         let mut ch1 = [0u8; 512];
-        let ch1_len = write_client_hello(&random, &pub_key, None, None, None, &mut ch1).unwrap();
+        let ch1_len = write_client_hello(
+            &random,
+            &pub_key,
+            CIPHER_AES_128_GCM_SHA256,
+            None,
+            None,
+            None,
+            &mut ch1,
+        )
+        .unwrap();
         send_ch_body(&sock, &ch1[..ch1_len], 0, 0);
         let hrr_body = hello_body_of(&recv_dgram(&sock));
         let cookie = match parse_server_hello(&hrr_body).unwrap() {
@@ -590,8 +656,16 @@ mod tests {
         };
 
         let mut ch2 = [0u8; 512];
-        let ch2_len =
-            write_client_hello(&random, &pub_key, None, Some(&cookie), None, &mut ch2).unwrap();
+        let ch2_len = write_client_hello(
+            &random,
+            &pub_key,
+            CIPHER_AES_128_GCM_SHA256,
+            None,
+            Some(&cookie),
+            None,
+            &mut ch2,
+        )
+        .unwrap();
         send_ch_body(&sock, &ch2[..ch2_len], 1, 1);
         let sh_body = hello_body_of(&recv_dgram(&sock));
         let server_share = match parse_server_hello(&sh_body).unwrap() {
@@ -654,7 +728,16 @@ mod tests {
         let (priv_key, pub_key) = x25519_keypair([0x42u8; 32]);
         let random = [0x77u8; 32];
         let mut ch1 = [0u8; 512];
-        let ch1_len = write_client_hello(&random, &pub_key, None, None, None, &mut ch1).unwrap();
+        let ch1_len = write_client_hello(
+            &random,
+            &pub_key,
+            CIPHER_AES_128_GCM_SHA256,
+            None,
+            None,
+            None,
+            &mut ch1,
+        )
+        .unwrap();
         send_ch_body(&sock, &ch1[..ch1_len], 0, 0);
         let hrr_body = hello_body_of(&recv_dgram(&sock));
         let cookie = match parse_server_hello(&hrr_body).unwrap() {
@@ -662,8 +745,16 @@ mod tests {
             _ => panic!("expected HRR"),
         };
         let mut ch2 = [0u8; 512];
-        let ch2_len =
-            write_client_hello(&random, &pub_key, None, Some(&cookie), None, &mut ch2).unwrap();
+        let ch2_len = write_client_hello(
+            &random,
+            &pub_key,
+            CIPHER_AES_128_GCM_SHA256,
+            None,
+            Some(&cookie),
+            None,
+            &mut ch2,
+        )
+        .unwrap();
         send_ch_body(&sock, &ch2[..ch2_len], 1, 1);
         let sh_body = hello_body_of(&recv_dgram(&sock));
         let server_share = match parse_server_hello(&sh_body).unwrap() {
@@ -762,7 +853,16 @@ mod tests {
         let (priv_key, pub_key) = x25519_keypair([0x42u8; 32]);
         let random = [0x77u8; 32];
         let mut ch1 = [0u8; 512];
-        let ch1_len = write_client_hello(&random, &pub_key, None, None, None, &mut ch1).unwrap();
+        let ch1_len = write_client_hello(
+            &random,
+            &pub_key,
+            CIPHER_AES_128_GCM_SHA256,
+            None,
+            None,
+            None,
+            &mut ch1,
+        )
+        .unwrap();
         send_ch_body(&sock, &ch1[..ch1_len], 0, 0);
         let hrr_body = hello_body_of(&recv_dgram(&sock));
         let cookie = match parse_server_hello(&hrr_body).unwrap() {
@@ -770,8 +870,16 @@ mod tests {
             _ => panic!("HRR"),
         };
         let mut ch2 = [0u8; 512];
-        let ch2_len =
-            write_client_hello(&random, &pub_key, None, Some(&cookie), None, &mut ch2).unwrap();
+        let ch2_len = write_client_hello(
+            &random,
+            &pub_key,
+            CIPHER_AES_128_GCM_SHA256,
+            None,
+            Some(&cookie),
+            None,
+            &mut ch2,
+        )
+        .unwrap();
         send_ch_body(&sock, &ch2[..ch2_len], 1, 1);
         let sh_body = hello_body_of(&recv_dgram(&sock));
         let server_share = match parse_server_hello(&sh_body).unwrap() {

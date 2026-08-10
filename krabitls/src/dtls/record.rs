@@ -310,6 +310,9 @@ fn reconstruct_seq(wire_low: u64, bits: u32, expected: u64) -> u64 {
 /// A cipher suite's DTLS record-number protection (RFC 9147 §4.2.3). Sealed
 /// through the supertrait: [`CipherSuite`] admits only the two in-tree suites.
 pub(crate) trait DtlsSuite: CipherSuite {
+    /// This suite's TLS cipher-suite code, advertised in the ClientHello and
+    /// checked against the server's selection.
+    const CIPHER_SUITE_ID: u16;
     type Masker;
     /// Derive this suite's AEAD `RecordKeys` from a traffic secret using the
     /// DTLS `"dtls13"` label prefix (not the TLS `RecordKeys::derive`).
@@ -334,6 +337,7 @@ mod aes_mask {
     use aes_gcm::aes::cipher::{Array, BlockCipherEncrypt, KeyInit};
 
     impl DtlsSuite for Aes128GcmSha256 {
+        const CIPHER_SUITE_ID: u16 = crate::consts::CIPHER_AES_128_GCM_SHA256;
         type Masker = Aes128;
 
         fn derive_record_keys<H: HkdfSha256>(
@@ -375,6 +379,7 @@ mod chacha_mask {
     use chacha20::{ChaCha20, Key};
 
     impl DtlsSuite for ChaCha20Poly1305Sha256 {
+        const CIPHER_SUITE_ID: u16 = crate::consts::CIPHER_CHACHA20_POLY1305_SHA256;
         type Masker = ZeroBuf<32>;
 
         fn derive_record_keys<H: HkdfSha256>(
