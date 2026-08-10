@@ -710,14 +710,14 @@ mod tests {
     use std::net::UdpSocket;
     use std::time::Duration;
 
-    /// Drive the production [`DtlsClient`] against a live wolfSSL DTLS 1.3 server
+    /// Drive the production [`DtlsClient`] against a live DTLS 1.3 server
     /// over the real [`DatagramTransport`], completing the handshake and an
     /// application-data round trip. Same peer contract as the handshake-module
     /// live tests: server on `KRABITLS_DTLS_PORT`, run with `-d` (no client auth)
     /// and an Ed25519 certificate.
     #[cfg(feature = "cipher-aes")]
     #[test]
-    #[ignore = "needs a live wolfSSL DTLS 1.3 server (set KRABITLS_DTLS_PORT)"]
+    #[ignore = "needs a live DTLS 1.3 server (set KRABITLS_DTLS_PORT)"]
     fn live_client_round_trips_app_data() {
         use crate::aead::Aes128GcmSha256 as Suite;
         use crate::backends::{DerCert, PinOrSelfSigned, PinnedPubkeyOwned, RustCrypto};
@@ -732,7 +732,7 @@ mod tests {
         sock.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
         let mut transport = UdpTransport::new(sock);
 
-        // Pin the wolfSSL server-ed25519.pem leaf key (the cert carries no SAN,
+        // Pin the server-ed25519.pem leaf key (the cert carries no SAN,
         // so hostname matching is skipped and the pin is the identity binding).
         let pin = PinnedPubkeyOwned::ed25519([
             0x23, 0xaa, 0x4d, 0x60, 0x50, 0xe0, 0x13, 0xd3, 0x3a, 0xed, 0xab, 0xf6, 0xa9, 0xcc,
@@ -762,7 +762,7 @@ mod tests {
             .expect("app data sends");
 
         // `recv` skips the server's post-handshake records internally, so the
-        // server's application reply comes back on a single call. (The wolfSSL
+        // server's application reply comes back on a single call. (The
         // example server sends a fixed reply, not an echo, so only the decrypt
         // is asserted, not the content.)
         let mut buf = [0u8; 256];
@@ -774,11 +774,11 @@ mod tests {
     }
 
     /// The handshake negotiates an RFC 9146 connection id and the whole
-    /// encrypted exchange carries CIDs. Run the wolfSSL example server with
+    /// encrypted exchange carries CIDs. Run a DTLS 1.3 server with
     /// `--cid <str>` (needs `--enable-dtlscid`), then set `KRABITLS_DTLS_PORT`.
     #[cfg(feature = "cipher-aes")]
     #[test]
-    #[ignore = "needs a CID-enabled wolfSSL DTLS 1.3 server (server --cid + KRABITLS_DTLS_PORT)"]
+    #[ignore = "needs a CID-enabled DTLS 1.3 server (server --cid + KRABITLS_DTLS_PORT)"]
     fn live_handshake_with_connection_id() {
         use crate::aead::Aes128GcmSha256 as Suite;
         use crate::backends::{DerCert, PinOrSelfSigned, PinnedPubkeyOwned, RustCrypto};
@@ -831,12 +831,12 @@ mod tests {
     /// The handshake completes when the server fragments its flight across the
     /// path MTU — the Certificate arrives as several offset-indexed fragments the
     /// client reassembles, and EncryptedExtensions rides the tail of the
-    /// ServerHello datagram. Run the wolfSSL example server with a small MTU:
+    /// ServerHello datagram. Run a DTLS 1.3 server with a small MTU:
     /// `KRABITLS_DTLS_MTU=512 ./examples/server/server -v 4 -u -d …` (needs
     /// `--enable-dtls-mtu`), then set `KRABITLS_DTLS_PORT`.
     #[cfg(feature = "cipher-aes")]
     #[test]
-    #[ignore = "needs a small-MTU wolfSSL DTLS 1.3 server (KRABITLS_DTLS_PORT + server MTU)"]
+    #[ignore = "needs a small-MTU DTLS 1.3 server (KRABITLS_DTLS_PORT + server MTU)"]
     fn live_handshake_over_fragmented_flight() {
         use crate::aead::Aes128GcmSha256 as Suite;
         use crate::backends::{DerCert, PinOrSelfSigned, PinnedPubkeyOwned, RustCrypto};
@@ -1037,11 +1037,11 @@ mod tests {
 
     /// The handshake still completes when the first ClientHello datagram is lost:
     /// the client retransmits CH1 after the receive timeout. Uses a short socket
-    /// timeout so the single retransmit is quick. Same wolfSSL contract as
+    /// timeout so the single retransmit is quick. Same server contract as
     /// [`live_client_round_trips_app_data`].
     #[cfg(feature = "cipher-aes")]
     #[test]
-    #[ignore = "needs a live wolfSSL DTLS 1.3 server (set KRABITLS_DTLS_PORT)"]
+    #[ignore = "needs a live DTLS 1.3 server (set KRABITLS_DTLS_PORT)"]
     fn live_handshake_survives_first_flight_loss() {
         use crate::aead::Aes128GcmSha256 as Suite;
         use crate::backends::{DerCert, PinOrSelfSigned, PinnedPubkeyOwned, RustCrypto};

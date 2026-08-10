@@ -368,7 +368,7 @@ mod tests {
             .collect()
     }
 
-    // Captured wolfSSL HelloRetryRequest and real ServerHello (testdata/dtls/).
+    // Captured HelloRetryRequest and real ServerHello (testdata/dtls/).
     const HRR: &str = "16fefd00000000000000000083020000770000000000000077fefdcf21ad74e59a6111be1d8c021e65b891c2a211167abb8c5e079e09e2c8a8339c00130100004f002b0002fefc002c0045004320e33ec347cc57f35d058d68cba061f15deb179939f01fc2cdcbed463b284063891301a8a3d91799f0bbbd8c869def24e56b09b8148fd752a866cafd3e4a458bf1918e";
     const SH: &str = "16fefd00000000000000010062020000560001000000000056fefd24ed4dc49e4a797e5705a6434a563d1c04569128adcef7d4e79b5c88e235ee2300130100002e00330024001d0020b748adf1b22ecfdc07de16ac75c0f8e90d8c6b7215cf67edd9096a12e39b4f0f002b0002fefc";
 
@@ -448,12 +448,12 @@ mod tests {
         rec.fragment[HS_HEADER_LEN..HS_HEADER_LEN + hh.fragment_length as usize].to_vec()
     }
 
-    /// Live check against a running wolfSSL DTLS 1.3 server: the full plaintext
+    /// Live check against a running DTLS 1.3 server: the full plaintext
     /// exchange CH1 → HelloRetryRequest → CH2(+cookie) → ServerHello. Proves the
     /// record/handshake framing, extensions, and cookie echo are accepted by a
     /// real peer. Requires `KRABITLS_DTLS_PORT`; ignored so CI needs no peer.
     #[test]
-    #[ignore = "needs a live wolfSSL DTLS 1.3 server (set KRABITLS_DTLS_PORT)"]
+    #[ignore = "needs a live DTLS 1.3 server (set KRABITLS_DTLS_PORT)"]
     fn live_handshake_reaches_server_hello() {
         use std::net::UdpSocket;
         use std::time::Duration;
@@ -543,7 +543,7 @@ mod tests {
     /// and protected record layer interoperate with a real DTLS 1.3 peer.
     #[cfg(feature = "cipher-aes")]
     #[test]
-    #[ignore = "needs a live wolfSSL DTLS 1.3 server (set KRABITLS_DTLS_PORT)"]
+    #[ignore = "needs a live DTLS 1.3 server (set KRABITLS_DTLS_PORT)"]
     fn live_derives_keys_and_decrypts_encrypted_extensions() {
         use crate::aead::Aes128GcmSha256 as Suite;
         use crate::backends::RustCrypto;
@@ -616,7 +616,7 @@ mod tests {
     /// reuse path against a real DTLS 1.3 peer.
     #[cfg(feature = "cipher-aes")]
     #[test]
-    #[ignore = "needs a live wolfSSL DTLS 1.3 server (set KRABITLS_DTLS_PORT)"]
+    #[ignore = "needs a live DTLS 1.3 server (set KRABITLS_DTLS_PORT)"]
     fn live_decrypts_and_parses_full_server_flight() {
         use crate::aead::Aes128GcmSha256 as Suite;
         use crate::backends::RustCrypto;
@@ -716,11 +716,11 @@ mod tests {
         v
     }
 
-    /// The end-to-end goal: complete the full DTLS 1.3 handshake against wolfSSL
+    /// The end-to-end goal: complete the full DTLS 1.3 handshake against a live server
     /// (client Certificate + Finished) and round-trip application data.
     #[cfg(feature = "cipher-aes")]
     #[test]
-    #[ignore = "needs a live wolfSSL DTLS 1.3 server (set KRABITLS_DTLS_PORT)"]
+    #[ignore = "needs a live DTLS 1.3 server (set KRABITLS_DTLS_PORT)"]
     fn live_full_handshake_and_app_data_round_trip() {
         use crate::aead::Aes128GcmSha256 as Suite;
         use crate::backends::RustCrypto;
