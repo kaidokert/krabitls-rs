@@ -812,10 +812,9 @@ mod tests {
 
     /// Complete a full DTLS 1.3 handshake over ChaCha20-Poly1305 against a live
     /// server — proving the suite-generic ClientHello advertisement, the
-    /// ServerHello suite check, and ChaCha decryption of the epoch-2 flight (the
-    /// handshake is independent of any CoAP layer above it). Trust is TOFU
-    /// self-signed, matching the public `coaps-*.ssltest.coapbin.org` peers. Set
-    /// `KRABITLS_DTLS_ADDR=host:port`, e.g. `coaps-ed25519.ssltest.coapbin.org:5686`.
+    /// ServerHello suite check, and ChaCha decryption of the epoch-2 flight.
+    /// Trust is TOFU self-signed. Set `KRABITLS_DTLS_ADDR=host:port` to a DTLS
+    /// 1.3 server offering an Ed25519 (or other self-signed) leaf.
     #[cfg(feature = "chacha20")]
     #[test]
     #[ignore = "needs a live DTLS 1.3 server (set KRABITLS_DTLS_ADDR=host:port)"]
