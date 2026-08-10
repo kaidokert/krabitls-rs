@@ -363,8 +363,8 @@ impl<S: DtlsSuite> DtlsClient<S> {
             // A retransmitted flight re-sends the ServerHello (epoch-0 plaintext),
             // possibly with epoch-2 records coalesced in its tail. The SH is
             // already in the transcript, so skip past it and feed only the
-            // trailing epoch-2 records; a pure epoch-2 datagram starts at 0, and
-            // an unparseable (injected) datagram is ignored.
+            // trailing records; an unparseable (injected) datagram is ignored
+            // rather than aborting the handshake.
             let start = match dg.first() {
                 Some(&b) if b & 0xE0 == 0x20 => 0,
                 _ => match parse_hello_body::<T::Error>(&dg[..n]) {
