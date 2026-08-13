@@ -40,7 +40,8 @@ pub use crate::backends::Ed25519ClientAuth;
 #[cfg(feature = "rsa")]
 pub use crate::backends::RsaClientAuth;
 pub use crate::client_flight::{
-    ClientAuthPolicy, DeclineClientAuth, MAX_CLIENT_CERT_DER, NoClientAuth, WithClientAuth,
+    ClientAuthPolicy, ClientAuthSign, DeclineClientAuth, MAX_CLIENT_CERT_DER, NoClientAuth,
+    WithClientAuth,
 };
 pub use crate::traits::{ClientAuth, ClientAuthError};
 

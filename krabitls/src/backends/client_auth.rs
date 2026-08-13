@@ -2,6 +2,7 @@
 //! [`ClientAuth`] implementations for mutual TLS.
 
 use ed25519_heapless::SigningKey;
+use rand_core::TryCryptoRng;
 
 #[cfg(feature = "rsa")]
 use {
@@ -36,17 +37,19 @@ use {
     crate::bigint::{EcdsaP256Bn, EcdsaP256CtBn, EcdsaP384Bn, EcdsaP384CtBn},
     crate::consts::{SIG_SCHEME_ECDSA_P256, SIG_SCHEME_ECDSA_P384},
     hmac::Hmac,
-    krabiecdsa::{p256::P256, p384::P384, signing::PrehashSigningKey},
+    krabiecdsa::{p256::P256, p384::P384, signing::RandomizedSigningKey},
     sha2::{Sha256 as EcdsaSha256, Sha384 as EcdsaSha384},
+    signature::hazmat::RandomizedPrehashSigner,
 };
 
-// P-256/P-384 deterministic signers, fully monomorphized: constant-time sign
-// backend, variable-time verify backend (named only for the RustCrypto keypair
-// bound), and the RFC 6979 HMAC.
+// P-256/P-384 hedged signers, fully monomorphized: constant-time sign backend,
+// variable-time verify backend (the RustCrypto keypair bound, and the
+// verify-after-sign fault check), and the RFC 6979 HMAC hedged per §3.6. The
+// nonce hedge plus scalar/coordinate blinding are drawn from the connection RNG.
 #[cfg(feature = "ecdsa")]
-type P256Signer = PrehashSigningKey<P256, EcdsaP256CtBn, EcdsaP256Bn, Hmac<EcdsaSha256>>;
+type P256Signer = RandomizedSigningKey<P256, EcdsaP256CtBn, EcdsaP256Bn, Hmac<EcdsaSha256>>;
 #[cfg(feature = "ecdsa")]
-type P384Signer = PrehashSigningKey<P384, EcdsaP384CtBn, EcdsaP384Bn, Hmac<EcdsaSha384>>;
+type P384Signer = RandomizedSigningKey<P384, EcdsaP384CtBn, EcdsaP384Bn, Hmac<EcdsaSha384>>;
 
 /// Ed25519 client authenticator: a seed-derived signing key (long-term
 /// secret wiped on drop inside [`SigningKey`]) paired with the leaf
@@ -75,7 +78,7 @@ impl<'a> Ed25519ClientAuth<'a> {
     }
 }
 
-impl ClientAuth for Ed25519ClientAuth<'_> {
+impl<R: TryCryptoRng + ?Sized> ClientAuth<R> for Ed25519ClientAuth<'_> {
     fn cert_der(&self) -> &[u8] {
         self.cert_der
     }
@@ -84,16 +87,8 @@ impl ClientAuth for Ed25519ClientAuth<'_> {
         SIG_SCHEME_ED25519
     }
 
-    // Ed25519 is deterministic (RFC 8032) — no draw, no entropy dependence.
-    fn needs_entropy(&self) -> bool {
-        false
-    }
-
-    fn sign(
-        &self,
-        content: &[u8],
-        _entropy: &[u8; 32],
-    ) -> Result<ClientSignature, ClientAuthError> {
+    // Ed25519 is deterministic (RFC 8032) — no draw, ignores `rng`.
+    fn sign(&self, content: &[u8], _rng: &mut R) -> Result<ClientSignature, ClientAuthError> {
         let sig =
             ed25519_heapless::sign(&self.signing_key, content).map_err(|_| ClientAuthError)?;
         let mut out = ClientSignature::new();
@@ -110,9 +105,9 @@ impl ClientAuth for Ed25519ClientAuth<'_> {
 /// (Verify uses a per-width enum instead — exact-width carriers matter on the
 /// hot server-cert path; signing is rare enough that the one-carrier trade wins.)
 ///
-/// Unblinded modexp: the exponentiation is constant-time in `d`, but there
-/// is no base blinding, so power/EM side channels are out of scope (same
-/// threat-model line as the x25519 ladder — network attackers only).
+/// The modexp is constant-time in `d` and base-blinded: a random `r` drawn from
+/// the connection RNG masks the base (`(m·rᵉ)ᵈ·r⁻¹`), with a verify-after-sign
+/// fault check, so it resists the power/EM DPA the unblinded ladder can't.
 #[cfg(feature = "rsa")]
 pub struct RsaClientAuth<'a> {
     signing_key: GenericSigningKey<Sha256, SignBn, ModMathParams<SignBn, const_num_traits::Ct>>,
@@ -158,7 +153,7 @@ impl<'a> RsaClientAuth<'a> {
 }
 
 #[cfg(feature = "rsa")]
-impl ClientAuth for RsaClientAuth<'_> {
+impl<R: TryCryptoRng + ?Sized> ClientAuth<R> for RsaClientAuth<'_> {
     fn cert_der(&self) -> &[u8] {
         self.cert_der
     }
@@ -167,15 +162,18 @@ impl ClientAuth for RsaClientAuth<'_> {
         SIG_SCHEME_RSA_PSS_RSAE_SHA256
     }
 
-    fn sign(&self, content: &[u8], entropy: &[u8; 32]) -> Result<ClientSignature, ClientAuthError> {
+    fn sign(&self, content: &[u8], rng: &mut R) -> Result<ClientSignature, ClientAuthError> {
         let prehash = Sha256::digest(content);
         // EM scratch + signature output; both public once the signature is
-        // released, no wipe needed.
+        // released, no wipe needed. `salt` holds the 32-byte PSS salt drawn from
+        // `rng` (saltLen == hashLen); the base-blinding factor is drawn from the
+        // same rng inside the signer.
         let mut em = [0u8; MAX_CLIENT_SIG_LEN];
         let mut sig = [0u8; MAX_CLIENT_SIG_LEN];
+        let mut salt = [0u8; 32];
         let sig_slice = self
             .signing_key
-            .try_sign_prehash_with_salt_into(&prehash, entropy, &mut em, &mut sig)
+            .try_sign_prehash_with_rng_into(rng, &prehash, &mut em, &mut sig, &mut salt)
             .map_err(|_| ClientAuthError)?;
         let mut out = ClientSignature::new();
         out.extend_from_slice(sig_slice)
@@ -185,13 +183,14 @@ impl ClientAuth for RsaClientAuth<'_> {
 }
 
 /// ECDSA client authenticator (P-256 / P-384) producing DER `ECDSA-Sig-Value`
-/// `CertificateVerify` signatures with an RFC 6979 deterministic nonce.
+/// `CertificateVerify` signatures.
 ///
-/// The signing scalar and nonce are constant-time (krabiecdsa's Ct path, held to
-/// the same bar as the Ed25519 and RSA signers), and the secret scalar wipes on
-/// drop inside the signing key. Base-point blinding is not implemented, so
-/// power/EM side channels are out of scope — the same network-attacker threat
-/// model as the RSA signer and the x25519 ladder.
+/// The nonce is RFC 6979 hedged with fresh connection-RNG entropy (§3.6), and
+/// the `k·G` multiply is scalar- (`k + r·n`) and coordinate- (λ) blinded from
+/// the same rng, with a verify-after-sign fault check. The signing scalar and
+/// nonce math are constant-time (krabiecdsa's Ct path), and the secret scalar
+/// wipes on drop inside the signing key. A weak rng draw degrades to plain
+/// RFC 6979 determinism, never to nonce reuse.
 #[cfg(feature = "ecdsa")]
 pub struct EcdsaClientAuth<'a>(EcdsaKey<'a>);
 
@@ -272,7 +271,7 @@ fn der_ecdsa_sig(r: &[u8], s: &[u8]) -> Result<ClientSignature, ClientAuthError>
 }
 
 #[cfg(feature = "ecdsa")]
-impl ClientAuth for EcdsaClientAuth<'_> {
+impl<R: TryCryptoRng + ?Sized> ClientAuth<R> for EcdsaClientAuth<'_> {
     fn cert_der(&self) -> &[u8] {
         match &self.0 {
             EcdsaKey::P256 { cert_der, .. } | EcdsaKey::P384 { cert_der, .. } => cert_der,
@@ -286,32 +285,26 @@ impl ClientAuth for EcdsaClientAuth<'_> {
         }
     }
 
-    // RFC 6979 deterministic nonce — no entropy draw.
-    fn needs_entropy(&self) -> bool {
-        false
-    }
-
-    fn sign(
-        &self,
-        content: &[u8],
-        _entropy: &[u8; 32],
-    ) -> Result<ClientSignature, ClientAuthError> {
+    fn sign(&self, content: &[u8], rng: &mut R) -> Result<ClientSignature, ClientAuthError> {
+        // `sign_prehash_with_rng` returns the fixed-width P1363 `r || s`; split
+        // at the element width and re-encode as the DER `ECDSA-Sig-Value` TLS
+        // wants.
         match &self.0 {
             EcdsaKey::P256 { key, .. } => {
                 let digest = EcdsaSha256::digest(content);
-                let (mut r, mut s) = ([0u8; 32], [0u8; 32]);
-                if !key.sign_prehashed(digest.as_slice(), &mut r, &mut s) {
-                    return Err(ClientAuthError);
-                }
-                der_ecdsa_sig(&r, &s)
+                let sig = key
+                    .sign_prehash_with_rng(rng, digest.as_slice())
+                    .map_err(|_| ClientAuthError)?;
+                let (r, s) = sig.split_at(32);
+                der_ecdsa_sig(r, s)
             }
             EcdsaKey::P384 { key, .. } => {
                 let digest = EcdsaSha384::digest(content);
-                let (mut r, mut s) = ([0u8; 48], [0u8; 48]);
-                if !key.sign_prehashed(digest.as_slice(), &mut r, &mut s) {
-                    return Err(ClientAuthError);
-                }
-                der_ecdsa_sig(&r, &s)
+                let sig = key
+                    .sign_prehash_with_rng(rng, digest.as_slice())
+                    .map_err(|_| ClientAuthError)?;
+                let (r, s) = sig.split_at(48);
+                der_ecdsa_sig(r, s)
             }
         }
     }
@@ -321,15 +314,34 @@ impl ClientAuth for EcdsaClientAuth<'_> {
 mod ecdsa_sign_tests {
     use super::*;
     use crate::backends::ecdsa_verify::{verify_p256, verify_p384};
+    use core::convert::Infallible;
 
     const CONTENT: &[u8] = b"TLS 1.3, client CertificateVerify\x00<transcript-hash>";
+
+    /// Constant-fill test RNG: a fixed byte is a valid hedge/blind draw, so the
+    /// signer accepts it and the output is reproducible per byte. Not a CSPRNG.
+    struct FixedRng(u8);
+    impl rand_core::TryRng for FixedRng {
+        type Error = Infallible;
+        fn try_next_u32(&mut self) -> Result<u32, Infallible> {
+            Ok(u32::from_le_bytes([self.0; 4]))
+        }
+        fn try_next_u64(&mut self) -> Result<u64, Infallible> {
+            Ok(u64::from_le_bytes([self.0; 8]))
+        }
+        fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), Infallible> {
+            dst.fill(self.0);
+            Ok(())
+        }
+    }
+    impl rand_core::TryCryptoRng for FixedRng {}
 
     #[test]
     fn p256_sign_round_trips_through_own_verifier() {
         let auth = EcdsaClientAuth::p256_from_scalar(&[0x11u8; 32], b"leaf-der").unwrap();
         let mut pk = [0u8; 65];
         auth.public_key_sec1(&mut pk).unwrap();
-        let der = auth.sign(CONTENT, &[0u8; 32]).unwrap();
+        let der = auth.sign(CONTENT, &mut FixedRng(0x42)).unwrap();
         let prehash = EcdsaSha256::digest(CONTENT);
         assert!(verify_p256(&pk, prehash.as_slice(), &der).is_ok());
         // A signature over one content must not verify against another's digest.
@@ -342,19 +354,24 @@ mod ecdsa_sign_tests {
         let auth = EcdsaClientAuth::p384_from_scalar(&[0x22u8; 48], b"leaf-der").unwrap();
         let mut pk = [0u8; 97];
         auth.public_key_sec1(&mut pk).unwrap();
-        let der = auth.sign(CONTENT, &[0u8; 32]).unwrap();
+        let der = auth.sign(CONTENT, &mut FixedRng(0x42)).unwrap();
         let prehash = EcdsaSha384::digest(CONTENT);
         assert!(verify_p384(&pk, prehash.as_slice(), &der).is_ok());
     }
 
     #[test]
-    fn scheme_and_rfc6979_determinism() {
+    fn scheme_and_hedged_nonce() {
         let auth = EcdsaClientAuth::p256_from_scalar(&[0x11u8; 32], b"c").unwrap();
-        assert_eq!(auth.scheme(), SIG_SCHEME_ECDSA_P256);
-        assert!(!auth.needs_entropy());
-        // RFC 6979: deterministic — the (ignored) entropy can't change the output.
-        let a = auth.sign(CONTENT, &[0u8; 32]).unwrap();
-        let b = auth.sign(CONTENT, &[0xffu8; 32]).unwrap();
-        assert_eq!(a, b);
+        assert_eq!(ClientAuth::<FixedRng>::scheme(&auth), SIG_SCHEME_ECDSA_P256);
+        let mut pk = [0u8; 65];
+        auth.public_key_sec1(&mut pk).unwrap();
+        let prehash = EcdsaSha256::digest(CONTENT);
+        // Hedged (RFC 6979 §3.6): distinct rng streams yield distinct signatures
+        // over the same content, both valid.
+        let a = auth.sign(CONTENT, &mut FixedRng(0x01)).unwrap();
+        let b = auth.sign(CONTENT, &mut FixedRng(0x02)).unwrap();
+        assert_ne!(a, b);
+        assert!(verify_p256(&pk, prehash.as_slice(), &a).is_ok());
+        assert!(verify_p256(&pk, prehash.as_slice(), &b).is_ok());
     }
 }

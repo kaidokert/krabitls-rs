@@ -20,7 +20,7 @@ use getrandom::SysRng;
 #[cfg(feature = "rsa")]
 use krabitls::client::RsaClientAuth;
 use krabitls::client::{
-    ClientAuthPolicy, ClientParams, ClockedVerify, DefaultScratch, Ed25519ClientAuth,
+    ClientAuthSign, ClientParams, ClockedVerify, DefaultScratch, Ed25519ClientAuth,
     MAX_CLIENT_CERT_DER, PinnedPubkey, RuntimeSuitePolicy, TimeSource,
 };
 use krabitls_cli::{connect, http, mqtt, resolve};
@@ -413,7 +413,7 @@ fn drive<A>(
     probe: Probe,
 ) -> Result<()>
 where
-    A: ClientAuthPolicy,
+    A: ClientAuthSign<SysRng>,
 {
     let mut scratch = DefaultScratch::new();
     let mut rng = SysRng;

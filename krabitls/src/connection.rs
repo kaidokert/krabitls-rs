@@ -14,7 +14,7 @@ use crate::aead::split_inner_plaintext;
 use crate::aead::{CipherSuite, RecordKeys};
 use crate::aead::{DecryptError, EncryptError};
 use crate::backends::RustCrypto;
-use crate::client_flight::{ClientAuthFlightError, ClientAuthPolicy, ClientFinishedError};
+use crate::client_flight::{ClientAuthFlightError, ClientAuthSign, ClientFinishedError};
 #[cfg(feature = "cipher-aes")]
 use crate::consts::CIPHER_AES_128_GCM_SHA256;
 #[cfg(feature = "chacha20")]
@@ -38,6 +38,7 @@ use crate::server_flight::ServerPubkey;
 use crate::server_flight::verify_server_flight;
 use crate::traits::verify_strategy::PreparedVerifier;
 use crate::traits::{CertView, Ed25519VerifierProvider, HkdfSha256, RsaVerifierProvider};
+use rand_core::TryCryptoRng;
 #[cfg(feature = "x25519-kx")]
 use subtle::ConstantTimeEq;
 
@@ -929,11 +930,11 @@ where
     }
 
     /// Respond to a server `CertificateRequest` (RFC 8446 §4.4.2) under the
-    /// caller's compile-time [`ClientAuthPolicy`]: emit the client second
+    /// caller's compile-time [`ClientAuthPolicy`](crate::client_flight::ClientAuthPolicy): emit the client second
     /// flight the policy builds (real `Certificate` + `CertificateVerify`,
     /// an empty certificate, or an abort) coalesced into one handshake
     /// record. `cert_request_context` echoes the context from the server's
-    /// request. `entropy` is fresh connection-RNG output for randomized
+    /// request. `rng` is the live connection RNG for randomized / blinded
     /// `CertificateVerify` schemes (see [`ClientAuth::sign`]).
     ///
     /// Generic over `A`, so a binary that only ever instantiates
@@ -946,12 +947,12 @@ where
     // is a distinct borrowed resource — a params struct would only rename the
     // eight-ness.
     #[allow(clippy::too_many_arguments)]
-    pub fn finish_handshake_with_policy<'a, A: ClientAuthPolicy>(
+    pub fn finish_handshake_with_policy<'a, R: TryCryptoRng + ?Sized, A: ClientAuthSign<R>>(
         mut self,
         policy: &A,
         cert_request_context: &[u8],
         cert_request_sig_algs: &[u8],
-        entropy: &[u8; 32],
+        rng: &mut R,
         peer_record_size_limit: u16,
         flight_scratch: &mut [u8],
         out_buf: &'a mut [u8],
@@ -967,7 +968,7 @@ where
         let plaintext = policy.build_flight::<H>(
             cert_request_context,
             cert_request_sig_algs,
-            entropy,
+            rng,
             &self.state.c_hs_ts,
             &mut self.transcript,
             flight_scratch,

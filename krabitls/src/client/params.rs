@@ -3,7 +3,6 @@
 use crate::backends::{DerCert, PinOrSelfSigned, PinnedPubkeyOwnedError};
 use crate::client_flight::{DeclineClientAuth, NoClientAuth, WithClientAuth};
 use crate::identity::PinnedPubkey;
-use crate::traits::client_auth::ClientAuth;
 #[cfg(feature = "cert-der")]
 use crate::traits::time::TimeSource;
 #[cfg(feature = "cert-der")]
@@ -163,7 +162,8 @@ impl<'a, V, A> ClientParams<'a, V, A> {
 
     /// Switch on mutual TLS: when the server sends a `CertificateRequest`,
     /// answer with a client `Certificate` + `CertificateVerify` signed by
-    /// `auth` (the private key stays inside the caller's [`ClientAuth`] impl).
+    /// `auth` (the private key stays inside the caller's
+    /// [`ClientAuth`](crate::client::ClientAuth) impl).
     /// Changes the params' policy type to
     /// [`WithClientAuth`](crate::client::WithClientAuth) — name it via the
     /// stream's `A` parameter if you need to spell the resulting type.
@@ -171,12 +171,15 @@ impl<'a, V, A> ClientParams<'a, V, A> {
     /// Only Ed25519 client certificates are supported today. krabitls inspects
     /// the server's `CertificateRequest.signature_algorithms` and declines the
     /// request (no `Certificate`/`CertificateVerify`) when the signer's
-    /// [`scheme`](ClientAuth::scheme) isn't among those advertised, rather than
+    /// [`scheme`](crate::client::ClientAuth::scheme) isn't among those advertised, rather than
     /// sending a flight the server rejects with an opaque `handshake_failure`.
     ///
     /// The signer's lifetime is independent of the hostname's, so a
     /// shorter-lived signer is fine.
-    pub fn with_client_auth<'b, T: ClientAuth + ?Sized>(
+    // The signer type is only wrapped here; that it implements
+    // `ClientAuth<R>` for the connection RNG is enforced at `connect`, where
+    // `R` is known (`WithClientAuth<T>: ClientAuthSign<R>` requires it).
+    pub fn with_client_auth<'b, T: ?Sized>(
         self,
         auth: &'b T,
     ) -> ClientParams<'a, V, WithClientAuth<'b, T>> {

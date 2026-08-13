@@ -11,7 +11,7 @@ use super::{ClientConfig, ClientParams, Scratch};
 use crate::aead::Aes128GcmSha256;
 #[cfg(feature = "chacha20")]
 use crate::aead::ChaCha20Poly1305Sha256;
-use crate::client_flight::ClientAuthPolicy;
+use crate::client_flight::ClientAuthSign;
 use crate::connection::{
     AppData, FlightStep, NegotiatedSuite, ServerFlightDone, WaitServerFlight, WaitServerHello,
 };
@@ -26,6 +26,7 @@ use crate::server_flight::{
 };
 use crate::traits::CertParser;
 use crate::traits::verify_strategy::{CertChainView, PreparedVerifier, VerifyStrategy};
+use rand_core::TryCryptoRng;
 
 /// Recv-buffer cursor state.
 ///
@@ -160,12 +161,6 @@ pub(crate) struct TlsEngine<
     /// Reassembly state for post-handshake handshake messages fragmented
     /// across records (RFC 8446 §5.1).
     pub(crate) ph: PostHandshakeReasm,
-
-    /// Fresh RNG output drawn at `connect()` for the client
-    /// `CertificateVerify` (randomized schemes use it as signing entropy —
-    /// RSA-PSS salt). All-zero when the policy never signs
-    /// (`!A::ACCEPT_CERT_REQUEST`); consumed at most once per connection.
-    pub(crate) cv_entropy: [u8; 32],
 }
 
 impl<
@@ -182,7 +177,6 @@ impl<
         init_state: EngineState<C>,
         our_recv_limit: RecordSizeLimit,
         peer_recv_limit: RecordSizeLimit,
-        cv_entropy: [u8; 32],
     ) -> Self {
         // A reused static `Scratch` may still hold the previous connection's
         // reassembled flight; start each handshake with an empty reassembler so
@@ -201,7 +195,6 @@ impl<
             our_recv_limit,
             peer_recv_limit,
             ph: PostHandshakeReasm::default(),
-            cv_entropy,
         }
     }
 
@@ -239,13 +232,15 @@ impl<
 
     /// Drive the handshake phase one event. Priority:
     /// `Send > HandshakeDone > AppData > Closed > Recv`. Loop, never recursion.
-    pub(crate) fn step_handshake<V, A>(
+    pub(crate) fn step_handshake<V, A, R>(
         &mut self,
         params: &ClientParams<'_, V, A>,
+        rng: &mut R,
     ) -> Result<EngineEvent, HandshakeError>
     where
         V: VerifyStrategy<C::Ed25519, C::Rsa>,
-        A: ClientAuthPolicy,
+        A: ClientAuthSign<R>,
+        R: TryCryptoRng + ?Sized,
     {
         loop {
             if self.is_send_pending() {
@@ -277,7 +272,7 @@ impl<
                     outer_type,
                     ..
                 } => {
-                    self.dispatch_handshake_record(start, end, outer_type, params)?;
+                    self.dispatch_handshake_record(start, end, outer_type, params, rng)?;
                 }
             }
         }
@@ -391,16 +386,18 @@ impl<
         })
     }
 
-    fn dispatch_handshake_record<V, A>(
+    fn dispatch_handshake_record<V, A, R>(
         &mut self,
         start: usize,
         end: usize,
         outer_type: u8,
         params: &ClientParams<'_, V, A>,
+        rng: &mut R,
     ) -> Result<(), HandshakeError>
     where
         V: VerifyStrategy<C::Ed25519, C::Rsa>,
-        A: ClientAuthPolicy,
+        A: ClientAuthSign<R>,
+        R: TryCryptoRng + ?Sized,
     {
         match &self.state {
             EngineState::WaitServerHello(_) => {
@@ -408,11 +405,11 @@ impl<
             }
             #[cfg(feature = "cipher-aes")]
             EngineState::WaitFlightAes(_) => {
-                self.handle_flight_record(start, end, params)?;
+                self.handle_flight_record(start, end, params, rng)?;
             }
             #[cfg(feature = "chacha20")]
             EngineState::WaitFlightChaCha(_) => {
-                self.handle_flight_record(start, end, params)?;
+                self.handle_flight_record(start, end, params, rng)?;
             }
             #[cfg(feature = "cipher-aes")]
             EngineState::AppAes(_) => {
@@ -482,15 +479,17 @@ impl<
 
     /// In-place feed of a flight record. On `FlightStep::Ready`, drives
     /// the strategy → identity → finalize → finish transition.
-    fn handle_flight_record<V, A>(
+    fn handle_flight_record<V, A, R>(
         &mut self,
         start: usize,
         end: usize,
         params: &ClientParams<'_, V, A>,
+        rng: &mut R,
     ) -> Result<(), HandshakeError>
     where
         V: VerifyStrategy<C::Ed25519, C::Rsa>,
-        A: ClientAuthPolicy,
+        A: ClientAuthSign<R>,
+        R: TryCryptoRng + ?Sized,
     {
         // RFC 8449 limit applies to protected records only; CCS is
         // handled by `feed_server_record_inplace` without decryption.
@@ -526,20 +525,22 @@ impl<
         .map_err(HandshakeError::Connection)?;
 
         if matches!(step, FlightStep::Ready) {
-            self.finalize_and_finish(params)?;
+            self.finalize_and_finish(params, rng)?;
         }
         Ok(())
     }
 
     /// Consume `WaitFlight*` → strategy + identity → finalize → finish,
     /// installing `App*` with the Client Finished queued for send.
-    fn finalize_and_finish<V, A>(
+    fn finalize_and_finish<V, A, R>(
         &mut self,
         params: &ClientParams<'_, V, A>,
+        rng: &mut R,
     ) -> Result<(), HandshakeError>
     where
         V: VerifyStrategy<C::Ed25519, C::Rsa>,
-        A: ClientAuthPolicy,
+        A: ClientAuthSign<R>,
+        R: TryCryptoRng + ?Sized,
     {
         if let Some(peer_limit) = self
             .scratch
@@ -655,7 +656,6 @@ impl<
         // a ~1.6 KB stack frame. `recv_record` and `send_record` are disjoint
         // `scratch` fields, so the borrows don't conflict.
         let peer_limit = self.peer_recv_limit.get();
-        let cv_entropy = self.cv_entropy;
         let cf_len = match done {
             #[cfg(feature = "cipher-aes")]
             FlightDone::Aes(d) => {
@@ -664,7 +664,7 @@ impl<
                         &params.client_auth,
                         ctx,
                         sig_algs,
-                        &cv_entropy,
+                        rng,
                         peer_limit,
                         &mut self.scratch.recv_record,
                         &mut self.scratch.send_record,
@@ -683,7 +683,7 @@ impl<
                         &params.client_auth,
                         ctx,
                         sig_algs,
-                        &cv_entropy,
+                        rng,
                         peer_limit,
                         &mut self.scratch.recv_record,
                         &mut self.scratch.send_record,
@@ -1229,6 +1229,24 @@ mod tests {
     /// construction. Sufficient for any test that only exercises the
     /// scratch / cursor / flag fields and doesn't dispatch through a
     /// live typestate.
+    /// Null test RNG — the priority-ladder cases never reach signing, so its
+    /// output is irrelevant; it only gives `step_handshake` a concrete `R`.
+    struct TestRng;
+    impl rand_core::TryRng for TestRng {
+        type Error = core::convert::Infallible;
+        fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
+            Ok(0)
+        }
+        fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
+            Ok(0)
+        }
+        fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), Self::Error> {
+            dst.fill(0);
+            Ok(())
+        }
+    }
+    impl rand_core::TryCryptoRng for TestRng {}
+
     fn closed_engine(
         scratch: &mut DefaultScratch,
     ) -> TlsEngine<'_, DefaultConfig, 16384, 16645, 4096, 8> {
@@ -1237,7 +1255,6 @@ mod tests {
             EngineState::Closed,
             RecordSizeLimit::from_clamped(16384),
             RecordSizeLimit::from_clamped(16384),
-            [0u8; 32],
         )
     }
 
@@ -1463,7 +1480,12 @@ mod tests {
             if c.parked {
                 e.recv.plain_end = 10;
             }
-            assert_eq!(e.step_handshake(&params).unwrap(), c.expect, "{}", c.name);
+            assert_eq!(
+                e.step_handshake(&params, &mut TestRng).unwrap(),
+                c.expect,
+                "{}",
+                c.name
+            );
         }
     }
 
@@ -1763,7 +1785,6 @@ mod tests {
                 EngineState::AppAes(conn),
                 RecordSizeLimit::from_clamped(16384),
                 RecordSizeLimit::from_clamped(16384),
-                [0u8; 32],
             )
         }
 
@@ -1865,7 +1886,6 @@ mod tests {
                 EngineState::AppAes(conn),
                 RecordSizeLimit::from_clamped(16384),
                 RecordSizeLimit::from_clamped(16384),
-                [0u8; 32],
             )
         }
 

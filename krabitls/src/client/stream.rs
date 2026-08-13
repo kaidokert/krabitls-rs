@@ -1,7 +1,7 @@
 //! Blocking TLS 1.3 client handle. Sans-randomness — caller supplies the RNG.
 
 use crate::ClientHelloError;
-use crate::client_flight::ClientAuthPolicy;
+use crate::client_flight::{ClientAuthPolicy, ClientAuthSign};
 use crate::connection::ConnectionError;
 use crate::connection::Init;
 use crate::connection::TlsConnection;
@@ -87,7 +87,7 @@ where
     where
         R: rand_core::TryCryptoRng,
         V: VerifyStrategy<C::Ed25519, C::Rsa>,
-        A: ClientAuthPolicy,
+        A: ClientAuthSign<R>,
     {
         validate_construction::<_, _, RECV, SEND>(params)?;
 
@@ -114,17 +114,6 @@ where
         } else {
             None
         };
-
-        // Signing entropy for a randomized client CertificateVerify (RSA-PSS
-        // salt), drawn up front because the RNG borrow ends when `connect`
-        // returns. Gated on the signer's declared need so no-auth, decline,
-        // and deterministic-scheme (ed25519) connections draw nothing — a
-        // failed draw can't abort a handshake that would never consume it.
-        let mut cv_entropy = [0u8; 32];
-        if params.client_auth.needs_signing_entropy() {
-            rng.try_fill_bytes(&mut cv_entropy)
-                .map_err(|_| HandshakeError::Rng)?;
-        }
 
         // `CurveSetupError` is unreachable on the ≥256-bit carrier — fail closed,
         // matching the adjacent ephemeral-keygen error.
@@ -194,9 +183,8 @@ where
             EngineState::WaitServerHello(wait_sh),
             our_recv_limit,
             RecordSizeLimit::DEFAULT,
-            cv_entropy,
         );
-        drive_handshake(&mut engine, &mut transport, params)?;
+        drive_handshake(&mut engine, &mut transport, params, rng)?;
 
         Ok(Self {
             engine,
@@ -429,6 +417,7 @@ fn drive_handshake<
     T,
     V,
     A,
+    R,
     const FLIGHT: usize,
     const RECV: usize,
     const SEND: usize,
@@ -437,15 +426,17 @@ fn drive_handshake<
     engine: &mut TlsEngine<'_, C, FLIGHT, RECV, SEND, MAX_CHAIN>,
     transport: &mut T,
     params: &ClientParams<'_, V, A>,
+    rng: &mut R,
 ) -> Result<(), ConnectError<T::Error>>
 where
     T: Transport,
     C: ClientConfig,
     V: VerifyStrategy<C::Ed25519, C::Rsa>,
-    A: ClientAuthPolicy,
+    A: ClientAuthSign<R>,
+    R: rand_core::TryCryptoRng + ?Sized,
 {
     loop {
-        match engine.step_handshake(params)? {
+        match engine.step_handshake(params, rng)? {
             EngineEvent::HandshakeDone => return Ok(()),
             EngineEvent::Send(_n) => {
                 let bytes = engine.send_bytes();
@@ -751,7 +742,6 @@ mod tests {
             EngineState::<DefaultConfig>::AppAes(app_conn(0x42, 0x43)),
             RecordSizeLimit::from_clamped(16384),
             RecordSizeLimit::from_clamped(16384),
-            [0u8; 32],
         );
         let mut tls: Stream<'_> = TlsStream {
             engine,
