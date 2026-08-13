@@ -127,7 +127,7 @@ ecdsa-sign = ["ecdsa"]
 # — the server picks. Needed for gateways that refuse X25519 (e.g. Azure IoT).
 # Pulls krabiecdsa's constant-time `ecdh` primitive (shares the CT carrier with
 # the `ecdsa` verify path); orthogonal to `ecdsa` server-cert verification.
-p256-kx = ["dep:krabiecdsa", "fixed-bigint/cios"]
+p256-kx = ["dep:krabiecdsa", "krabiecdsa/ecdh", "dep:kem", "fixed-bigint/cios"]
 
 [dependencies]
 embedded-io = { version = "0.7.1", default-features = false }
@@ -162,7 +162,10 @@ thiserror = { version = "2", default-features = false }
 signature = { version = "3", default-features = false }
 rand_core = { version = "0.10", default-features = false }
 krabipqc = { version = "0.1.4", default-features = false, optional = true }
-krabiecdsa = { version = "0.5.0", default-features = false, optional = true }
+krabiecdsa = { version = "0.6.0", default-features = false, optional = true }
+# ECDH-as-KEM types (Ciphertext/SharedKey/Array + traits) for the blinded P-256
+# key exchange; krabiecdsa 0.6.0 exposes ECDH only through the `kem` traits.
+kem = { version = "0.3", default-features = false, optional = true }
 
 # Deterministic SeededRng + CannedTransport for the host facade replay
 # tests. Dev-only so the seed-mode RNG (a `TryCryptoRng` that is NOT a

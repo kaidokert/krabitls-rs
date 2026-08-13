@@ -1,13 +1,19 @@
 //! Classical secp256r1 (P-256) ECDHE for the TLS 1.3 `key_share`: generate an
 //! ephemeral keypair, advertise the SEC1 public point, and agree on the shared
-//! secret against the server's point. Wraps krabiecdsa's constant-time `ecdh`
-//! primitive over the shared CT carrier.
+//! secret against the server's point. Wraps krabiecdsa's constant-time ECDH,
+//! which 0.6.0 exposes as a `kem` KEM whose `d·P` multiply is scalar- and
+//! coordinate-blinded (the blinder is drawn from the generation RNG and spent
+//! once in `try_decapsulate`).
 
 use crate::bigint::EcdsaP256CtBn;
-use krabiecdsa::ecdh::EphemeralSecret;
+use kem::common::array::Array;
+use kem::{Ciphertext, Decapsulator, Generate, KeyExport, TryDecapsulate};
+use krabiecdsa::ecdh::{DecapsulationKey, EcdhKem};
 use krabiecdsa::p256::P256;
 use rand_core::TryCryptoRng;
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
+
+type P256Kem = EcdhKem<P256, EcdsaP256CtBn>;
 
 /// SEC1-uncompressed public point (`0x04 || X || Y`) sent in the key_share, and
 /// the length of the server's P-256 share.
@@ -20,46 +26,52 @@ pub const P256_SS_BYTES: usize = 32;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EcdheP256Error;
 
-/// Client-side P-256 ECDHE ephemeral: holds the secret scalar (zeroized on drop
-/// inside the krabiecdsa secret) until the server's share arrives.
+/// Client-side P-256 ECDHE ephemeral: holds the blinded decapsulation key (the
+/// secret scalar plus its generation-time blinder, zeroized on drop inside the
+/// krabiecdsa secret) until the server's share arrives.
 pub struct EcdheP256 {
-    secret: EphemeralSecret<P256, EcdsaP256CtBn>,
+    secret: DecapsulationKey<P256, EcdsaP256CtBn>,
 }
 
 impl EcdheP256 {
-    /// Generate an ephemeral keypair. Returns the secret holder plus the
-    /// SEC1-uncompressed public point (`d·G`) to advertise in the key_share.
+    /// Generate an ephemeral keypair, drawing the scalar and the DPA blinder
+    /// from `rng`. Returns the secret holder plus the SEC1-uncompressed public
+    /// point (`d·G`) to advertise in the key_share.
     pub fn generate<R: TryCryptoRng + ?Sized>(
         rng: &mut R,
     ) -> Result<(Self, [u8; P256_SHARE_BYTES]), EcdheP256Error> {
-        let secret = EphemeralSecret::random(rng).map_err(|_| EcdheP256Error)?;
-        let pk = secret.public_key().ok_or(EcdheP256Error)?;
-        let sec1 = pk.as_sec1_bytes();
+        let secret = DecapsulationKey::<P256, EcdsaP256CtBn>::try_generate_from_rng(rng)
+            .map_err(|_| EcdheP256Error)?;
+        let sec1 = secret.encapsulation_key().to_bytes();
         if sec1.len() != P256_SHARE_BYTES {
             return Err(EcdheP256Error);
         }
         let mut out = [0u8; P256_SHARE_BYTES];
-        out.copy_from_slice(sec1);
+        out.copy_from_slice(sec1.as_slice());
         Ok((Self { secret }, out))
     }
 
-    /// Agree on the shared secret `x(d·P)` from the server's SEC1 point,
-    /// consuming the ephemeral (one-shot, matching krabiecdsa's `diffie_hellman`).
-    /// `None` (mapped to `Err`) if the point is malformed, off-curve, or identity.
+    /// Agree on the shared secret `x(d·P)` from the server's SEC1 point. One-shot
+    /// (a second call fails closed, since the generation-time blinder can only be
+    /// spent once). `Err` if the point is malformed, off-curve, or identity.
     pub fn agree(
         self,
         peer_share: &[u8; P256_SHARE_BYTES],
     ) -> Result<Zeroizing<[u8; P256_SS_BYTES]>, EcdheP256Error> {
-        let ss = self
+        let ct: Ciphertext<P256Kem> =
+            Array::try_from(&peer_share[..]).map_err(|_| EcdheP256Error)?;
+        let mut shared = self
             .secret
-            .diffie_hellman(peer_share)
-            .ok_or(EcdheP256Error)?;
-        let bytes = ss.as_bytes();
-        if bytes.len() != P256_SS_BYTES {
+            .try_decapsulate(&ct)
+            .map_err(|_| EcdheP256Error)?;
+        if shared.len() != P256_SS_BYTES {
+            shared.zeroize();
             return Err(EcdheP256Error);
         }
         let mut out = Zeroizing::new([0u8; P256_SS_BYTES]);
-        out.copy_from_slice(bytes);
+        out.copy_from_slice(shared.as_slice());
+        // The `kem` SharedKey is a plain array (not Zeroizing) — wipe it.
+        shared.zeroize();
         Ok(out)
     }
 }
