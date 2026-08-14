@@ -262,7 +262,7 @@ const KEY_SHARE_KEY_LEN: usize = backends::mlkem::MLKEM768_EK_BYTES + 32;
 #[cfg(all(not(feature = "mlkem"), feature = "x25519-kx"))]
 const KEY_SHARE_KEY_LEN: usize = 32;
 #[cfg(all(not(feature = "mlkem"), not(feature = "x25519-kx")))]
-const KEY_SHARE_KEY_LEN: usize = 65;
+const KEY_SHARE_KEY_LEN: usize = backends::ecdhe::P256_SHARE_BYTES;
 // key_exchange is a u16-prefixed wire field; a future KEM whose key overflowed
 // u16 would silently truncate the length prefixes derived from it.
 const _: () = assert!(KEY_SHARE_KEY_LEN <= u16::MAX as usize);

@@ -12,20 +12,22 @@ publish = false
 # `rand_core::TryCryptoRng` but is NOT a CSPRNG — can never be reached from a
 # real krabitls build.
 
-# krabitls's lib doesn't compile without a cipher suite, so forward one.
-# The fixtures code itself is cipher-independent (only `Transport` + SHA-256);
-# these flags exist purely to let the underlying krabitls build resolve. The
-# consumer (footprint) forwards whichever cipher it measures.
+# krabitls's lib doesn't compile without a cipher suite *and* a key-exchange
+# group, so forward one of each. The fixtures code itself is cipher/KX-independent
+# (only `Transport` + SHA-256); these flags exist purely to let a *standalone*
+# krabitls_fixtures build resolve its underlying krabitls. Forwarded via the
+# *default* (not the dependency's `features`) so that when krabitls dev-deps this
+# crate, `default-features = false` forwards nothing and the fixtures inherit
+# krabitls's actual per-test config through feature unification — which keeps a
+# P-256-only (`x25519-kx` off) krabitls testable rather than pinning X25519 on.
 [features]
-default = ["cipher-aes"]
+default = ["cipher-aes", "x25519-kx"]
 cipher-aes = ["krabitls/cipher-aes"]
 chacha20 = ["krabitls/chacha20"]
+x25519-kx = ["krabitls/x25519-kx"]
 
 [dependencies]
-# `x25519-kx`: the SeededRng entropy layout and the canned fixtures are
-# X25519-shaped (they draw `client_x25519`), so the fixtures crate always builds
-# krabitls with the X25519 key exchange.
-krabitls = { path = "../krabitls", default-features = false, features = ["x25519-kx"] }
+krabitls = { path = "../krabitls", default-features = false }
 sha2 = { version = "0.11", default-features = false }
 rand_core = { version = "0.10", default-features = false }
 zeroize = { version = "1.8", default-features = false }
