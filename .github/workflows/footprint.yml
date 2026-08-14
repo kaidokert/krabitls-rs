@@ -63,7 +63,7 @@ jobs:
 
     - name: cortex-m / krabitls_chacha
       working-directory: footprint/cortex-m
-      run: timeout 180 cargo run --release --example krabitls_chacha --target thumbv7m-none-eabi --no-default-features --features chacha20,cert-der,canned-replay
+      run: timeout 180 cargo run --release --example krabitls_chacha --target thumbv7m-none-eabi --no-default-features --features chacha20,cert-der,canned-replay,x25519-kx
 
     - name: cortex-m / krabitls_rsa
       working-directory: footprint/cortex-m
@@ -83,7 +83,7 @@ jobs:
 
     - name: risc-v / krabitls_chacha
       working-directory: footprint/risc-v
-      run: timeout 180 cargo run --release --example krabitls_chacha --target riscv32imac-unknown-none-elf --no-default-features --features chacha20,cert-der,canned-replay
+      run: timeout 180 cargo run --release --example krabitls_chacha --target riscv32imac-unknown-none-elf --no-default-features --features chacha20,cert-der,canned-replay,x25519-kx
 
     - name: risc-v / krabitls_rsa
       working-directory: footprint/risc-v

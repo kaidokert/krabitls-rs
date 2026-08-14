@@ -46,25 +46,25 @@ jobs:
       matrix:
         carrier: ["", ",bigint-heapless"]
         profile:
-          - "cert-der,cipher-aes"                                  # default
-          - "cipher-aes"                                           # TLV parser (no der)
-          - "cert-der,cipher-aes,rsa"
-          - "cert-der,cipher-aes,rsa,rsa-1024"                     # +1024 (legacy)
-          - "cert-der,cipher-aes,rsa,rsa-3072"                     # +3072 (heapless CAP-96)
-          - "cert-der,cipher-aes,rsa,rsa-3072,rsa-4096"            # +4096 (heapless CAP-128)
-          - "cert-der,cipher-aes,ecdsa"
+          - "cert-der,cipher-aes,x25519-kx"                                  # default
+          - "cipher-aes,x25519-kx"                                           # TLV parser (no der)
+          - "cert-der,cipher-aes,rsa,x25519-kx"
+          - "cert-der,cipher-aes,rsa,rsa-1024,x25519-kx"                     # +1024 (legacy)
+          - "cert-der,cipher-aes,rsa,rsa-3072,x25519-kx"                     # +3072 (heapless CAP-96)
+          - "cert-der,cipher-aes,rsa,rsa-3072,rsa-4096,x25519-kx"            # +4096 (heapless CAP-128)
+          - "cert-der,cipher-aes,ecdsa,x25519-kx"
           - "cert-der,cipher-aes,dtls"                             # DTLS 1.3 (AES record layer + reliability + CID)
           - "cert-der,cipher-aes,chacha20,dtls"                    # DTLS 1.3 with the ChaCha20 record-number mask
           - "cert-der,cipher-aes,rsa,ecdsa,dtls"                   # DTLS 1.3 over the ECDSA/RSA server-cert verify surface
           - "cert-der,cipher-aes,p256-kx"                          # P-256 ECDHE key exchange
           - "cert-der,cipher-aes,p256-kx,ecdsa,rsa"                # Azure-shaped: P-256 KX + ECDSA verify + RSA client-auth
-          - "cert-der,chacha20"                                    # ChaCha-only cipher
+          - "cert-der,chacha20,x25519-kx"                                    # ChaCha-only cipher
           - "cert-der,cipher-aes,mldsa,mlkem"
           - "cert-der,cipher-aes,rsa,ecdsa,mldsa,mlkem,chacha20,p256-kx"   # full — every sig algo + every KX group
           - "cert-der,cipher-aes,rsa,ecdsa,p256-kx,backend-matrix" # bnum/crypto-bigint carrier matrix (incl. ECDH KAT)
-          - "cert-der,cipher-aes,rsa,rsa_pss_only"                 # PSS-only cert path
-          - "cert-der,cipher-aes,jedisct"                          # jedisct HKDF backend
-          - "cert-der,cipher-aes,ip-host"                          # IP-literal SAN matching
+          - "cert-der,cipher-aes,rsa,rsa_pss_only,x25519-kx"                 # PSS-only cert path
+          - "cert-der,cipher-aes,jedisct,x25519-kx"                          # jedisct HKDF backend
+          - "cert-der,cipher-aes,ip-host,x25519-kx"                          # IP-literal SAN matching
     steps:
     - uses: actions/checkout@v4
       with:
@@ -92,7 +92,7 @@ jobs:
           - carrier: crypto-bigint
             features: "cert-der,cipher-aes,rsa,rsa-1024,rsa-3072,rsa-4096,ecdsa,p256-kx,carrier-crypto-bigint"
           - carrier: bnum
-            features: "cert-der,cipher-aes,rsa,rsa-1024,rsa-4096,carrier-bnum"
+            features: "cert-der,cipher-aes,rsa,rsa-1024,rsa-4096,carrier-bnum,x25519-kx"
     steps:
     - uses: actions/checkout@v4
       with:

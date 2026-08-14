@@ -41,7 +41,7 @@ jobs:
         run: |
           cargo llvm-cov --no-report
           cargo llvm-cov --no-report --features rsa
-          cargo llvm-cov --no-report --no-default-features --features chacha20
+          cargo llvm-cov --no-report --no-default-features --features chacha20,x25519-kx
           cargo llvm-cov report --lcov --output-path lcov.info
 
       - name: Coveralls GitHub Action

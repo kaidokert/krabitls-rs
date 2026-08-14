@@ -10,6 +10,9 @@
 #![cfg(all(
     feature = "cipher-aes",
     feature = "p256-kx",
+    // The capture is a P-256-*secondary* handshake (client offered X25519 + P-256,
+    // server picked P-256); it needs X25519 in the ClientHello to reproduce.
+    feature = "x25519-kx",
     not(feature = "chacha20"),
     not(feature = "rsa"),
     not(feature = "mldsa"),
