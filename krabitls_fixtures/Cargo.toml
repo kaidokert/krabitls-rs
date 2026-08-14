@@ -22,7 +22,10 @@ cipher-aes = ["krabitls/cipher-aes"]
 chacha20 = ["krabitls/chacha20"]
 
 [dependencies]
-krabitls = { path = "../krabitls", default-features = false }
+# `x25519-kx`: the SeededRng entropy layout and the canned fixtures are
+# X25519-shaped (they draw `client_x25519`), so the fixtures crate always builds
+# krabitls with the X25519 key exchange.
+krabitls = { path = "../krabitls", default-features = false, features = ["x25519-kx"] }
 sha2 = { version = "0.11", default-features = false }
 rand_core = { version = "0.10", default-features = false }
 zeroize = { version = "1.8", default-features = false }

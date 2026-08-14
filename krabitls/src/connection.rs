@@ -28,7 +28,9 @@ use crate::hkdf::{
     HkdfLabelError, TranscriptError, TranscriptHash, application_traffic_secrets, handshake_secret,
     handshake_traffic_secrets, master_secret, next_application_traffic_secret,
 };
-use crate::newtype::{Secret, ZeroBuf};
+use crate::newtype::Secret;
+#[cfg(feature = "x25519-kx")]
+use crate::newtype::ZeroBuf;
 use crate::parse_server_hello;
 use crate::reassembler::{ReassemblyError, ServerFlightReassembler};
 use crate::server_flight::FlightError;
@@ -36,8 +38,10 @@ use crate::server_flight::ServerPubkey;
 use crate::server_flight::verify_server_flight;
 use crate::traits::verify_strategy::PreparedVerifier;
 use crate::traits::{CertView, Ed25519VerifierProvider, HkdfSha256, RsaVerifierProvider};
+#[cfg(feature = "x25519-kx")]
 use subtle::ConstantTimeEq;
 
+#[cfg(feature = "x25519-kx")]
 use crate::bigint::Curve25519CtBn as Bn;
 
 /// Internal scratch for the outgoing ClientHello before it's forwarded to the
@@ -245,6 +249,7 @@ impl<E: core::error::Error + 'static> core::error::Error for ConnectionError<E> 
 
 pub struct Init {
     pub(crate) client_random: [u8; 32],
+    #[cfg(feature = "x25519-kx")]
     pub(crate) x25519_priv: ZeroBuf<32>,
     /// Ephemeral ML-KEM-768 decapsulator for the `X25519MLKEM768` hybrid; held
     /// from ClientHello until the server's ciphertext arrives in ServerHello.
@@ -260,6 +265,7 @@ pub struct WaitServerHello {
     /// `legacy_session_id` we sent (`None` = empty), retained to verify the
     /// ServerHello echoes it back verbatim (RFC 8446 §4.1.3).
     pub(crate) session_id: Option<[u8; LEGACY_SESSION_ID_LEN]>,
+    #[cfg(feature = "x25519-kx")]
     pub(crate) x25519_priv: ZeroBuf<32>,
     #[cfg(feature = "mlkem")]
     pub(crate) mlkem: crate::backends::mlkem::MlKem768,
@@ -409,7 +415,7 @@ where
 {
     pub fn new(
         client_random: [u8; 32],
-        x25519_priv: ZeroBuf<32>,
+        #[cfg(feature = "x25519-kx")] x25519_priv: ZeroBuf<32>,
         #[cfg(feature = "mlkem")] mlkem: crate::backends::mlkem::MlKem768,
         #[cfg(feature = "p256-kx")] ecdhe: crate::backends::ecdhe::EcdheP256,
     ) -> Self {
@@ -417,6 +423,7 @@ where
             transcript: TranscriptHash::<H>::new(),
             state: Init {
                 client_random,
+                #[cfg(feature = "x25519-kx")]
                 x25519_priv,
                 #[cfg(feature = "mlkem")]
                 mlkem,
@@ -429,7 +436,7 @@ where
     pub fn write_client_hello_with<W: Write>(
         mut self,
         out: &mut W,
-        x25519_pub: &[u8; 32],
+        primary_pub: &[u8],
         opts: &crate::ClientHelloOptions<'_>,
     ) -> Result<TlsConnection<WaitServerHello, H>, ConnectionError<W::Error>> {
         // Scratch first so the transcript sees the exact wire bytes.
@@ -438,7 +445,7 @@ where
         let n = crate::write_client_hello_with(
             &mut cursor,
             &self.state.client_random,
-            x25519_pub,
+            primary_pub,
             opts,
         )
         .map_err(|e| match e {
@@ -478,6 +485,7 @@ where
             transcript: self.transcript,
             state: WaitServerHello {
                 session_id: opts.session_id.copied(),
+                #[cfg(feature = "x25519-kx")]
                 x25519_priv: self.state.x25519_priv,
                 #[cfg(feature = "mlkem")]
                 mlkem: self.state.mlkem,
@@ -491,12 +499,12 @@ where
     pub fn write_client_hello_to_slice_with(
         self,
         buf: &mut [u8],
-        x25519_pub: &[u8; 32],
+        primary_pub: &[u8],
         opts: &crate::ClientHelloOptions<'_>,
     ) -> WriteClientHelloToSliceWithResult<H> {
         let total = buf.len();
         let mut cursor = &mut *buf;
-        let next = self.write_client_hello_with(&mut cursor, x25519_pub, opts)?;
+        let next = self.write_client_hello_with(&mut cursor, primary_pub, opts)?;
         let written = total - cursor.len();
         Ok((written, next))
     }
@@ -627,41 +635,51 @@ where
                 dhe_len = 0; // unreachable: p256_selected is always false here
             }
         } else {
-            // `CurveSetupError` is unreachable on the ≥256-bit carrier — fail
-            // closed into the same abort as the low-order-point check below.
-            let x25519_ss = zeroize::Zeroizing::new(
-                ed25519_heapless::x25519::<Bn>(
-                    &self.state.x25519_priv,
-                    sh.x25519_share
-                        .ok_or(ConnectionError::Parse(ParseError::BadKeyShare))?,
-                )
-                .map_err(|_| ConnectionError::Parse(ParseError::DhAllZero))?,
-            );
-            // RFC 8446 §7.4.2.1: all-zero X25519 output (low-order server share)
-            // MUST abort with `illegal_parameter`. ML-KEM has no equivalent — its
-            // implicit rejection always yields a deterministic-looking secret.
-            if bool::from(x25519_ss.ct_eq(&[0u8; 32])) {
-                return Err(ConnectionError::Parse(ParseError::DhAllZero));
-            }
-            // X25519MLKEM768 IKM (draft-ietf-tls-ecdhe-mlkem): ML-KEM ss || X25519 ss.
-            #[cfg(feature = "mlkem")]
+            // X25519 (or the X25519MLKEM768 hybrid) primary path. With `x25519-kx`
+            // off, secp256r1 is the only group, so `p256_selected` is always true
+            // and this arm is unreachable — fail closed rather than link X25519.
+            #[cfg(not(feature = "x25519-kx"))]
             {
-                let mlkem_ss = self
-                    .state
-                    .mlkem
-                    .decapsulate(
-                        sh.mlkem_ct
+                return Err(ConnectionError::Parse(ParseError::BadKeyShare));
+            }
+            #[cfg(feature = "x25519-kx")]
+            {
+                // `CurveSetupError` is unreachable on the ≥256-bit carrier — fail
+                // closed into the same abort as the low-order-point check below.
+                let x25519_ss = zeroize::Zeroizing::new(
+                    ed25519_heapless::x25519::<Bn>(
+                        &self.state.x25519_priv,
+                        sh.x25519_share
                             .ok_or(ConnectionError::Parse(ParseError::BadKeyShare))?,
                     )
-                    .map_err(|_| ConnectionError::MlKemDecapsulation)?;
-                dhe[..32].copy_from_slice(&mlkem_ss[..]);
-                dhe[32..64].copy_from_slice(&x25519_ss[..]);
-                dhe_len = 64;
-            }
-            #[cfg(not(feature = "mlkem"))]
-            {
-                dhe[..32].copy_from_slice(&x25519_ss[..]);
-                dhe_len = 32;
+                    .map_err(|_| ConnectionError::Parse(ParseError::DhAllZero))?,
+                );
+                // RFC 8446 §7.4.2.1: all-zero X25519 output (low-order server
+                // share) MUST abort with `illegal_parameter`. ML-KEM has no
+                // equivalent — implicit rejection yields a deterministic secret.
+                if bool::from(x25519_ss.ct_eq(&[0u8; 32])) {
+                    return Err(ConnectionError::Parse(ParseError::DhAllZero));
+                }
+                // X25519MLKEM768 IKM (draft-ietf-tls-ecdhe-mlkem): ML-KEM ss || X25519 ss.
+                #[cfg(feature = "mlkem")]
+                {
+                    let mlkem_ss = self
+                        .state
+                        .mlkem
+                        .decapsulate(
+                            sh.mlkem_ct
+                                .ok_or(ConnectionError::Parse(ParseError::BadKeyShare))?,
+                        )
+                        .map_err(|_| ConnectionError::MlKemDecapsulation)?;
+                    dhe[..32].copy_from_slice(&mlkem_ss[..]);
+                    dhe[32..64].copy_from_slice(&x25519_ss[..]);
+                    dhe_len = 64;
+                }
+                #[cfg(not(feature = "mlkem"))]
+                {
+                    dhe[..32].copy_from_slice(&x25519_ss[..]);
+                    dhe_len = 32;
+                }
             }
         }
 
@@ -1155,4 +1173,7 @@ where
 // so the fixtures don't apply — gated off there, same as the ML-KEM path. The
 // P-256 key exchange is covered by the `ecdhe` round-trip test and live interop.
 #[cfg(all(test, not(feature = "p256-kx")))]
+// These are all X25519-primary ClientHello byte-golden writer tests; they don't
+// apply to a P-256-primary build.
+#[cfg(feature = "x25519-kx")]
 mod tests;

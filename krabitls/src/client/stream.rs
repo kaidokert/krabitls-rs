@@ -14,6 +14,7 @@ use super::scratch::{
     client_auth_send_floor,
 };
 use super::{ClientConfig, ClientParams, ConfigSuitePolicy, RuntimeSuitePolicy, Transport};
+#[cfg(feature = "x25519-kx")]
 use crate::bigint::Curve25519CtBn as X25519Bn;
 
 /// TLS 1.3 client handle.
@@ -91,11 +92,17 @@ where
         validate_construction::<_, _, RECV, SEND>(params)?;
 
         let mut client_random = [0u8; 32];
-        let mut x25519_priv = crate::newtype::ZeroBuf::<32>::new([0u8; 32]);
         rng.try_fill_bytes(&mut client_random)
             .map_err(|_| HandshakeError::Rng)?;
-        rng.try_fill_bytes(&mut *x25519_priv)
-            .map_err(|_| HandshakeError::Rng)?;
+        // X25519 ephemeral private key. Skipped entirely (no draw, no ladder) in a
+        // P-256-primary build (`x25519-kx` off) — see the `p256-kx` keygen below.
+        #[cfg(feature = "x25519-kx")]
+        let x25519_priv = {
+            let mut x25519_priv = crate::newtype::ZeroBuf::<32>::new([0u8; 32]);
+            rng.try_fill_bytes(&mut *x25519_priv)
+                .map_err(|_| HandshakeError::Rng)?;
+            x25519_priv
+        };
         // 32-byte legacy_session_id for middlebox-compatibility mode (RFC 8446
         // §D.4), only when opted in. Drawn after the always-present keys so the
         // deterministic fixture entropy stream stays a stable prefix.
@@ -121,6 +128,7 @@ where
 
         // `CurveSetupError` is unreachable on the ≥256-bit carrier — fail closed,
         // matching the adjacent ephemeral-keygen error.
+        #[cfg(feature = "x25519-kx")]
         let x25519_pub = ed25519_heapless::x25519_base::<X25519Bn>(&x25519_priv)
             .map_err(|_| HandshakeError::Rng)?;
 
@@ -143,6 +151,7 @@ where
         let suites = effective_suite_list::<C>(params.suite_policy);
         let init = TlsConnection::<Init, C::Hkdf>::new(
             client_random,
+            #[cfg(feature = "x25519-kx")]
             x25519_priv,
             #[cfg(feature = "mlkem")]
             mlkem,
@@ -158,11 +167,20 @@ where
             suites,
             #[cfg(feature = "mlkem")]
             mlkem_ek: Some(&mlkem_ek),
-            #[cfg(feature = "p256-kx")]
+            // P-256 rides as a *second* key_share only when X25519 is primary;
+            // when it IS the primary group it's passed as `primary_pub` instead
+            // (and the `p256_pub` field doesn't exist in that config).
+            #[cfg(all(feature = "p256-kx", feature = "x25519-kx"))]
             p256_pub: Some(&p256_pub),
         };
+        // Primary key_share DH public: X25519 (32 B) by default, else the P-256
+        // SEC1 point (65 B) in a P-256-primary build.
+        #[cfg(feature = "x25519-kx")]
+        let primary_pub: &[u8] = &x25519_pub;
+        #[cfg(not(feature = "x25519-kx"))]
+        let primary_pub: &[u8] = &p256_pub;
         let (ch_len, wait_sh) = init
-            .write_client_hello_to_slice_with(&mut scratch.ch, &x25519_pub, &opts)
+            .write_client_hello_to_slice_with(&mut scratch.ch, primary_pub, &opts)
             .map_err(map_client_hello_error)?;
 
         // Direct transmit because the Send-event path only carries protected records.
