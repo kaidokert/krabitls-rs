@@ -97,9 +97,8 @@ where
         // the deterministic fixture entropy stream keeps its stable prefix — the
         // unblinded personality draws exactly the 32-byte scalar, as before.
         #[cfg(feature = "x25519-kx")]
-        let (x25519_ecdhe, x25519_pub) =
-            crate::backends::ecdhe_x25519::EcdheX25519::generate(rng)
-                .map_err(|_| HandshakeError::Rng)?;
+        let (x25519_ecdhe, x25519_pub) = crate::backends::ecdhe_x25519::EcdheX25519::generate(rng)
+            .map_err(|_| HandshakeError::Rng)?;
         // 32-byte legacy_session_id for middlebox-compatibility mode (RFC 8446
         // §D.4), only when opted in. Drawn after the always-present keys so the
         // deterministic fixture entropy stream stays a stable prefix.

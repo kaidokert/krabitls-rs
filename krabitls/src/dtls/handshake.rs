@@ -689,7 +689,8 @@ mod tests {
         let mut base = [0u8; 32];
         base[0] = 9;
         let public =
-            ed25519_heapless::hazmat::x25519::<crate::bigint::Curve25519CtBn>(&seed, &base).unwrap();
+            ed25519_heapless::hazmat::x25519::<crate::bigint::Curve25519CtBn>(&seed, &base)
+                .unwrap();
         (seed, public)
     }
 

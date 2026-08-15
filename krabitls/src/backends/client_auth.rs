@@ -44,10 +44,10 @@ use {
     krabiecdsa::{p256::P256, p384::P384},
     sha2::{Sha256 as EcdsaSha256, Sha384 as EcdsaSha384},
 };
-#[cfg(all(feature = "ecdsa", feature = "blinding"))]
-use {krabiecdsa::signing::RandomizedSigningKey, signature::hazmat::RandomizedPrehashSigner};
 #[cfg(all(feature = "ecdsa", not(feature = "blinding")))]
 use {krabiecdsa::signing::PrehashSigningKey, signature::hazmat::PrehashSigner};
+#[cfg(all(feature = "ecdsa", feature = "blinding"))]
+use {krabiecdsa::signing::RandomizedSigningKey, signature::hazmat::RandomizedPrehashSigner};
 
 // P-256/P-384 signers, fully monomorphized (constant-time sign backend,
 // variable-time verify backend for the verify-after-sign fault check). With
@@ -115,7 +115,10 @@ impl<R: TryCryptoRng + ?Sized> ClientAuth<R> for Ed25519ClientAuth<'_> {
 
     #[cfg(not(feature = "blinding"))]
     fn sign(&self, content: &[u8], _rng: &mut R) -> Result<ClientSignature, ClientAuthError> {
-        let sig = self.signing_key.try_sign(content).map_err(|_| ClientAuthError)?;
+        let sig = self
+            .signing_key
+            .try_sign(content)
+            .map_err(|_| ClientAuthError)?;
         let mut out = ClientSignature::new();
         out.extend_from_slice(&sig).map_err(|_| ClientAuthError)?;
         Ok(out)
@@ -349,13 +352,17 @@ impl<R: TryCryptoRng + ?Sized> ClientAuth<R> for EcdsaClientAuth<'_> {
         match &self.0 {
             EcdsaKey::P256 { key, .. } => {
                 let digest = EcdsaSha256::digest(content);
-                let sig = key.sign_prehash(digest.as_slice()).map_err(|_| ClientAuthError)?;
+                let sig = key
+                    .sign_prehash(digest.as_slice())
+                    .map_err(|_| ClientAuthError)?;
                 let (r, s) = sig.split_at(32);
                 der_ecdsa_sig(r, s)
             }
             EcdsaKey::P384 { key, .. } => {
                 let digest = EcdsaSha384::digest(content);
-                let sig = key.sign_prehash(digest.as_slice()).map_err(|_| ClientAuthError)?;
+                let sig = key
+                    .sign_prehash(digest.as_slice())
+                    .map_err(|_| ClientAuthError)?;
                 let (r, s) = sig.split_at(48);
                 der_ecdsa_sig(r, s)
             }

@@ -231,7 +231,8 @@ macro_rules! x25519_row {
     ($name:ident, $t:ty) => {
         #[test]
         fn $name() {
-            let got = ed25519_heapless::hazmat::x25519::<$t>(&x_kat::SCALAR, &x_kat::U).expect("x25519");
+            let got =
+                ed25519_heapless::hazmat::x25519::<$t>(&x_kat::SCALAR, &x_kat::U).expect("x25519");
             assert_eq!(got, x_kat::OUT);
         }
     };
