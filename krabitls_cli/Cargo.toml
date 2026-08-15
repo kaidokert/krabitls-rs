@@ -13,6 +13,8 @@ default = ["host"]
 # false`, pulling none of these std-only crates.
 host = ["dep:std-embedded-nal", "dep:env_logger", "dep:getrandom", "dep:log", "dep:zeroize"]
 rsa = ["krabitls/rsa"]
+# Opt-in power/EM-DPA blinding for the key exchange + client-auth signing.
+blinding = ["krabitls/blinding"]
 # ECDSA P-256/P-384 server-cert verification.
 ecdsa = ["krabitls/ecdsa"]
 # secp256r1 (P-256) ECDHE key exchange, advertised alongside X25519.
