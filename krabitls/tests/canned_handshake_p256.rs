@@ -17,7 +17,10 @@
     not(feature = "rsa"),
     not(feature = "mldsa"),
     not(feature = "ecdsa"),
-    not(feature = "mlkem")
+    not(feature = "mlkem"),
+    // Blinding draws extra keygen entropy, shifting the seed-0 wire bytes off the
+    // capture; this byte-golden fixture only reproduces with blinding off.
+    not(feature = "blinding")
 ))]
 
 mod common;

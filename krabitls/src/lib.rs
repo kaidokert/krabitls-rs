@@ -9,8 +9,9 @@
 //!
 //! A hobby project — don't use it for anything you care about. The crypto is
 //! hand-rolled and unaudited. The primitives are constant-time; power/EM-DPA
-//! blinding (key exchange + signing) is an opt-in behind the `blinding` feature,
-//! best-effort and not leakage-lab-validated. The
+//! blinding (TLS key exchange + signing) is an opt-in behind the `blinding`
+//! feature, best-effort and not leakage-lab-validated — DTLS's X25519 key
+//! exchange is not yet blinded. The
 //! bundled trust is pin-a-pubkey or trust-SAN — no CA bundle or chain walking —
 //! but verification is a pluggable `VerifyStrategy`, so a caller can
 //! supply their own. See the README for the full threat model.

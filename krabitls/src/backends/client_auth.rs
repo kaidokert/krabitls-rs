@@ -133,9 +133,11 @@ impl<R: TryCryptoRng + ?Sized> ClientAuth<R> for Ed25519ClientAuth<'_> {
 /// (Verify uses a per-width enum instead — exact-width carriers matter on the
 /// hot server-cert path; signing is rare enough that the one-carrier trade wins.)
 ///
-/// The modexp is constant-time in `d` and base-blinded: a random `r` drawn from
-/// the connection RNG masks the base (`(m·rᵉ)ᵈ·r⁻¹`), with a verify-after-sign
-/// fault check, so it resists the power/EM DPA the unblinded ladder can't.
+/// The modexp is always constant-time in `d`. Under `blinding` it is
+/// additionally base-blinded — a random `r` from the connection RNG masks the
+/// base (`(m·rᵉ)ᵈ·r⁻¹`), with a verify-after-sign fault check, resisting the
+/// power/EM DPA the plain path can't; without `blinding` the default build signs
+/// salt-only (same signature bytes, no base masking).
 #[cfg(feature = "rsa")]
 pub struct RsaClientAuth<'a> {
     signing_key: GenericSigningKey<Sha256, SignBn, ModMathParams<SignBn, const_num_traits::Ct>>,
@@ -222,12 +224,13 @@ impl<R: TryCryptoRng + ?Sized> ClientAuth<R> for RsaClientAuth<'_> {
 /// ECDSA client authenticator (P-256 / P-384) producing DER `ECDSA-Sig-Value`
 /// `CertificateVerify` signatures.
 ///
-/// The nonce is RFC 6979 hedged with fresh connection-RNG entropy (§3.6), and
-/// the `k·G` multiply is scalar- (`k + r·n`) and coordinate- (λ) blinded from
-/// the same rng, with a verify-after-sign fault check. The signing scalar and
-/// nonce math are constant-time (krabiecdsa's Ct path), and the secret scalar
-/// wipes on drop inside the signing key. A weak rng draw degrades to plain
-/// RFC 6979 determinism, never to nonce reuse.
+/// The signing scalar and nonce math are always constant-time (krabiecdsa's Ct
+/// path), and the secret scalar wipes on drop. Under `blinding` the nonce is
+/// additionally RFC 6979 hedged with connection-RNG entropy (§3.6) and the `k·G`
+/// multiply is scalar- (`k + r·n`) and coordinate- (λ) blinded from the same rng,
+/// with a verify-after-sign fault check (a weak draw degrades to plain RFC 6979
+/// determinism, never nonce reuse); the default build signs plain deterministic
+/// RFC 6979, no hedge or blinding.
 #[cfg(feature = "ecdsa")]
 pub struct EcdsaClientAuth<'a>(EcdsaKey<'a>);
 
