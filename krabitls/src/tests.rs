@@ -28,15 +28,16 @@ impl ClientHelloOptions<'_> {
             suites: SuiteList::Default,
             #[cfg(feature = "mlkem")]
             mlkem_ek: None,
-            #[cfg(feature = "p256-kx")]
+            #[cfg(all(feature = "p256-kx", feature = "x25519-kx"))]
             p256_pub: Some(&FIXTURE_P256_PUB),
         }
     }
 }
 
 /// A valid secp256r1 SEC1 point (openssl-generated) for the P-256 key_share in
-/// tests that build a ClientHello under `p256-kx`.
-#[cfg(feature = "p256-kx")]
+/// tests that build a ClientHello under `p256-kx` (only as a *second* group —
+/// when P-256 is primary the writer takes `FIXTURE_PRIMARY_PUB` instead).
+#[cfg(all(feature = "p256-kx", feature = "x25519-kx"))]
 const FIXTURE_P256_PUB: [u8; 65] = crate::hex_decode(
     "04fe1343c5e53259e920618e27d777fd12dee919ad865bb28facc228736a4d29d3\
      8e24b4f1108c86cc5a2367ebd5a858767bc5f1d637afc32d658e8f91432beedc",
@@ -47,10 +48,23 @@ const FIXTURE_RANDOM: [u8; 32] = [
     0xed, 0xe5, 0x7b, 0xa2, 0x43, 0x3a, 0xd5, 0xa3, 0x4d, 0x05, 0x50, 0x3a, 0xfe, 0x4f, 0xc2, 0x89,
     0xdf, 0xd9, 0xe9, 0x53, 0x57, 0xd8, 0x16, 0x36, 0x80, 0x24, 0xe7, 0x3f, 0xbf, 0xa6, 0xfa, 0xf5,
 ];
+#[cfg(feature = "x25519-kx")]
 const FIXTURE_X25519_PUB: [u8; 32] = [
     0x82, 0x46, 0xe7, 0x35, 0x8f, 0x0a, 0xf7, 0xf3, 0x31, 0x7d, 0xca, 0xf6, 0x88, 0xd0, 0x34, 0xc9,
     0x5d, 0x5a, 0x2b, 0x54, 0xbf, 0x66, 0xc8, 0x95, 0x0e, 0xb8, 0x7a, 0x5f, 0x47, 0x93, 0x96, 0x0d,
 ];
+/// The primary key_share DH public the generic writer/parser tests hand the
+/// ClientHello writer: the 32-byte X25519 pub by default, or a placeholder
+/// 65-byte SEC1-tagged point in a P-256-primary build (the writer emits it
+/// verbatim; these tests don't do ECDH, so the point needn't be on-curve).
+#[cfg(feature = "x25519-kx")]
+const FIXTURE_PRIMARY_PUB: [u8; 32] = FIXTURE_X25519_PUB;
+#[cfg(not(feature = "x25519-kx"))]
+const FIXTURE_PRIMARY_PUB: [u8; 65] = {
+    let mut p = [0x11u8; 65];
+    p[0] = 0x04;
+    p
+};
 /// Seed-0 ed25519-mode ClientHello from the Python fixture
 /// (`packets/001_c2s_ClientHello.bin`), **149 bytes**.
 ///
@@ -86,7 +100,7 @@ fn write_into(buf: &mut [u8]) -> Result<&mut [u8], ClientHelloError<SliceWriteEr
     write_client_hello_with(
         &mut cursor,
         &FIXTURE_RANDOM,
-        &FIXTURE_X25519_PUB,
+        &FIXTURE_PRIMARY_PUB,
         &ClientHelloOptions::legacy(),
     )?;
     Ok(cursor)
@@ -119,9 +133,45 @@ fn matches_python_fixture() {
         ..ClientHelloOptions::legacy()
     };
     let n =
-        write_client_hello_with(&mut cursor, &FIXTURE_RANDOM, &FIXTURE_X25519_PUB, &opts).unwrap();
+        write_client_hello_with(&mut cursor, &FIXTURE_RANDOM, &FIXTURE_PRIMARY_PUB, &opts).unwrap();
     assert_eq!(n, FIXTURE_CLIENT_HELLO.len());
     assert_eq!(&buf[..n], &FIXTURE_CLIENT_HELLO);
+}
+
+/// P-256-primary build (`x25519-kx` off): the ClientHello must offer secp256r1
+/// as the sole key-exchange group — no X25519 anywhere, a single 65-byte SEC1
+/// key_share — and still match the computed `CLIENT_HELLO_LEN`.
+#[cfg(all(feature = "p256-kx", not(feature = "x25519-kx")))]
+#[test]
+fn p256_primary_client_hello_offers_only_secp256r1() {
+    let mut buf = [0u8; 512];
+    let mut cursor: &mut [u8] = &mut buf;
+    let n = write_client_hello_with(
+        &mut cursor,
+        &FIXTURE_RANDOM,
+        &FIXTURE_PRIMARY_PUB,
+        &ClientHelloOptions::legacy(),
+    )
+    .unwrap();
+    let ch = &buf[..n];
+    // Sizing agrees with the const the buffer floor is derived from.
+    assert_eq!(n, CLIENT_HELLO_LEN);
+    // No X25519 group id (0x001d) — supported_groups nor key_share (the fixed
+    // FIXTURE_RANDOM / FIXTURE_PRIMARY_PUB contain no stray 0x00,0x1d pair).
+    assert!(
+        !ch.windows(2).any(|w| w == [0x00, 0x1d]),
+        "X25519 (0x001d) must not appear in a P-256-primary ClientHello"
+    );
+    // secp256r1 (0x0017) appears twice: supported_groups entry + key_share group.
+    assert_eq!(
+        ch.windows(2).filter(|w| *w == [0x00, 0x17]).count(),
+        2,
+        "secp256r1 in supported_groups and key_share"
+    );
+    assert!(
+        ch.windows(65).any(|w| w == FIXTURE_PRIMARY_PUB),
+        "the P-256 key_share point must be present"
+    );
 }
 
 #[cfg(all(
@@ -161,7 +211,7 @@ fn rejects_oversize_hostname() {
     let err = write_client_hello_with(
         &mut cursor,
         &FIXTURE_RANDOM,
-        &FIXTURE_X25519_PUB,
+        &FIXTURE_PRIMARY_PUB,
         &ClientHelloOptions {
             hostname: Some(&huge),
             ..ClientHelloOptions::legacy()
@@ -180,7 +230,7 @@ fn rejects_oversize_record() {
     let err = write_client_hello_with(
         &mut cursor,
         &FIXTURE_RANDOM,
-        &FIXTURE_X25519_PUB,
+        &FIXTURE_PRIMARY_PUB,
         &ClientHelloOptions {
             hostname: Some(&big),
             ..ClientHelloOptions::legacy()
@@ -201,7 +251,7 @@ fn rejects_hostname_near_u16_max_without_wrap() {
     let err = write_client_hello_with(
         &mut cursor,
         &FIXTURE_RANDOM,
-        &FIXTURE_X25519_PUB,
+        &FIXTURE_PRIMARY_PUB,
         &ClientHelloOptions {
             hostname: Some(&host),
             ..ClientHelloOptions::legacy()
@@ -221,7 +271,7 @@ fn rejects_record_size_limit_out_of_rfc8449_range() {
         let err = write_client_hello_with(
             &mut cursor,
             &FIXTURE_RANDOM,
-            &FIXTURE_X25519_PUB,
+            &FIXTURE_PRIMARY_PUB,
             &ClientHelloOptions {
                 record_size_limit: Some(rsl),
                 ..ClientHelloOptions::legacy()
@@ -239,7 +289,7 @@ fn rejects_record_size_limit_out_of_rfc8449_range() {
         write_client_hello_with(
             &mut cursor,
             &FIXTURE_RANDOM,
-            &FIXTURE_X25519_PUB,
+            &FIXTURE_PRIMARY_PUB,
             &ClientHelloOptions {
                 record_size_limit: Some(rsl),
                 ..ClientHelloOptions::legacy()
@@ -269,7 +319,7 @@ fn client_hello_len_with_agrees_with_legacy_for_default_opts() {
             suites: SuiteList::Default,
             #[cfg(feature = "mlkem")]
             mlkem_ek: None,
-            #[cfg(feature = "p256-kx")]
+            #[cfg(all(feature = "p256-kx", feature = "x25519-kx"))]
             p256_pub: Some(&FIXTURE_P256_PUB),
         };
         assert_eq!(
@@ -312,7 +362,7 @@ fn writer_emits_exactly_client_hello_len_with_bytes() {
         let expected = client_hello_len_with(&opts);
         let mut buf = [0u8; 512];
         let mut cursor: &mut [u8] = &mut buf;
-        let n = write_client_hello_with(&mut cursor, &FIXTURE_RANDOM, &FIXTURE_X25519_PUB, &opts)
+        let n = write_client_hello_with(&mut cursor, &FIXTURE_RANDOM, &FIXTURE_PRIMARY_PUB, &opts)
             .unwrap();
         assert_eq!(n, expected, "opts={opts:?}");
     }
@@ -439,7 +489,7 @@ fn random_appears_at_correct_offset() {
     write_client_hello_with(
         &mut cursor,
         &random,
-        &FIXTURE_X25519_PUB,
+        &FIXTURE_PRIMARY_PUB,
         &ClientHelloOptions::legacy(),
     )
     .unwrap();
@@ -476,18 +526,18 @@ const FIXTURE_SERVER_HELLO: [u8; 95] = [
 ];
 const SH_CIPHER_SUITE_OFFSET: usize = 44;
 
-#[cfg(not(feature = "mlkem"))]
+#[cfg(all(not(feature = "mlkem"), feature = "x25519-kx"))]
 const FIXTURE_SERVER_RANDOM: [u8; 32] = [
     0x64, 0x1c, 0x5b, 0xd9, 0x34, 0xab, 0xe1, 0xc5, 0x98, 0xa9, 0xc9, 0x61, 0xf7, 0xcb, 0x1e, 0x06,
     0x28, 0x0b, 0x4a, 0x5e, 0x88, 0x0c, 0x1c, 0x19, 0xd2, 0xfe, 0x9e, 0xef, 0x33, 0x48, 0x0c, 0xae,
 ];
-#[cfg(not(feature = "mlkem"))]
+#[cfg(all(not(feature = "mlkem"), feature = "x25519-kx"))]
 const FIXTURE_SERVER_X25519: [u8; 32] = [
     0x60, 0x4d, 0x7a, 0x17, 0x18, 0x38, 0xbd, 0xa2, 0x15, 0xd2, 0xb5, 0x4a, 0x24, 0xfb, 0x7d, 0x3a,
     0x88, 0x8d, 0xa5, 0xac, 0x36, 0x72, 0x72, 0x6d, 0x20, 0x06, 0x44, 0x04, 0xf7, 0x06, 0xdb, 0x7e,
 ];
 
-#[cfg(not(feature = "mlkem"))]
+#[cfg(all(not(feature = "mlkem"), feature = "x25519-kx"))]
 #[test]
 fn parses_python_fixture_server_hello() {
     let v = parse_server_hello(&FIXTURE_SERVER_HELLO).unwrap();
@@ -607,7 +657,7 @@ fn server_hello_with_session_id_echo(id_len: usize) -> Vec<u8> {
     out
 }
 
-#[cfg(not(feature = "mlkem"))]
+#[cfg(all(not(feature = "mlkem"), feature = "x25519-kx"))]
 #[test]
 fn parse_surfaces_session_id_echo_up_to_32() {
     // The exact-match against what we sent is the caller's job now; the parser
@@ -639,7 +689,7 @@ fn empty_alpn_list_rejected() {
         alpn: Some(&empty),
         ..ClientHelloOptions::legacy()
     };
-    let err = write_client_hello_with(&mut cursor, &FIXTURE_RANDOM, &FIXTURE_X25519_PUB, &opts)
+    let err = write_client_hello_with(&mut cursor, &FIXTURE_RANDOM, &FIXTURE_PRIMARY_PUB, &opts)
         .unwrap_err();
     assert_eq!(err, ClientHelloError::AlpnNameLen);
 }
@@ -654,12 +704,12 @@ fn oversize_alpn_name_rejected() {
         alpn: Some(&names),
         ..ClientHelloOptions::legacy()
     };
-    let err = write_client_hello_with(&mut cursor, &FIXTURE_RANDOM, &FIXTURE_X25519_PUB, &opts)
+    let err = write_client_hello_with(&mut cursor, &FIXTURE_RANDOM, &FIXTURE_PRIMARY_PUB, &opts)
         .unwrap_err();
     assert_eq!(err, ClientHelloError::AlpnNameLen);
 }
 
-#[cfg(not(feature = "mlkem"))]
+#[cfg(all(not(feature = "mlkem"), feature = "x25519-kx"))]
 #[test]
 fn unknown_extension_rejected() {
     let mut buf = [0u8; FIXTURE_SERVER_HELLO.len() + 7];
@@ -675,7 +725,7 @@ fn unknown_extension_rejected() {
     );
 }
 
-#[cfg(not(feature = "mlkem"))]
+#[cfg(all(not(feature = "mlkem"), feature = "x25519-kx"))]
 #[test]
 fn duplicate_extension_rejected() {
     let mut buf = [0u8; FIXTURE_SERVER_HELLO.len() + 6];
@@ -2442,7 +2492,7 @@ mod mlkem_keyshare {
             alpn: None,
             suites: SuiteList::Default,
             mlkem_ek: Some(&ek),
-            #[cfg(feature = "p256-kx")]
+            #[cfg(all(feature = "p256-kx", feature = "x25519-kx"))]
             p256_pub: Some(&FIXTURE_P256_PUB),
         };
         let mut buf = [0u8; 2048];
@@ -2485,7 +2535,7 @@ mod mlkem_keyshare {
             alpn: None,
             suites: SuiteList::Default,
             mlkem_ek: Some(&ek),
-            #[cfg(feature = "p256-kx")]
+            #[cfg(all(feature = "p256-kx", feature = "x25519-kx"))]
             p256_pub: Some(&FIXTURE_P256_PUB),
         };
 

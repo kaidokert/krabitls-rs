@@ -45,7 +45,12 @@ jobs:
     - name: Build (feature = rsa)
       run: cargo build --manifest-path=krabitls/Cargo.toml --features rsa --verbose
     - name: Build (no-default, TLV cert parser)
-      run: cargo build --manifest-path=krabitls/Cargo.toml --no-default-features --features cipher-aes --verbose
+      run: cargo build --manifest-path=krabitls/Cargo.toml --no-default-features --features cipher-aes,x25519-kx --verbose
+    # P-256-primary (x25519-kx off): the mandatory-baseline KX profile. Must be a
+    # plain `cargo build` (no dev-deps) — a `cargo test` build unifies `x25519-kx`
+    # in via the `krabitls_fixtures` dev-dep, which would mask this config.
+    - name: Build (P-256-only, no X25519)
+      run: cargo build --manifest-path=krabitls/Cargo.toml --no-default-features --features cipher-aes,cert-der,ecdsa,p256-kx --verbose
     - name: Build (feature = chacha20)
       run: cargo build --manifest-path=krabitls/Cargo.toml --features chacha20 --verbose
 
@@ -54,7 +59,7 @@ jobs:
     - name: Test (feature = rsa)
       run: cargo test --manifest-path=krabitls/Cargo.toml --features rsa --verbose
     - name: Test (no-default, TLV cert parser)
-      run: cargo test --manifest-path=krabitls/Cargo.toml --no-default-features --features cipher-aes --verbose
+      run: cargo test --manifest-path=krabitls/Cargo.toml --no-default-features --features cipher-aes,x25519-kx --verbose
     - name: Test (feature = chacha20)
       run: cargo test --manifest-path=krabitls/Cargo.toml --features chacha20 --verbose
 

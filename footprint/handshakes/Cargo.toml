@@ -48,7 +48,9 @@ canned-replay = ["dep:krabitls_fixtures"]
 ip-host = ["krabitls/ip-host"]
 
 [dependencies]
-krabitls = { path = "../../krabitls", default-features = false, features = ["dev-utils"] }
+# The canned footprint handshakes are all X25519 captures, so build krabitls with
+# the X25519 key exchange. (A P-256-only footprint example: see #141.)
+krabitls = { path = "../../krabitls", default-features = false, features = ["dev-utils", "x25519-kx"] }
 krabitls_fixtures = { path = "../../krabitls_fixtures", default-features = false, optional = true }
 critical-section = "1"
 

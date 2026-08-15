@@ -25,7 +25,7 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
-default = ["cert-der", "cipher-aes"]
+default = ["cert-der", "cipher-aes", "x25519-kx"]
 # Expose internal helpers that aren't part of the TLS 1.3 API
 dev-utils = []
 # Compile the cfg(test) backend carrier matrix (`src/backend_matrix.rs`), which
@@ -74,7 +74,10 @@ chacha20 = ["dep:chacha20poly1305", "dep:chacha20"]
 # modules under `src/dtls/`, reusing the TLS 1.3 key schedule, cipher suites, and
 # verify path unchanged. A cipher (`cipher-aes` and/or `chacha20`) is required as
 # for TLS.
-dtls = ["cert-der"]
+# The DTLS 1.3 record/handshake path is X25519-only (it emits an X25519
+# key_share and runs the ladder unconditionally), so it requires `x25519-kx`.
+# P-256 DTLS key exchange is a separate future effort.
+dtls = ["cert-der", "x25519-kx"]
 # TLS_AES_128_GCM_SHA256 cipher suite. Default ON. Disable with
 # `--no-default-features --features chacha20,...` for a ChaCha-only build
 # (drops `aes-gcm` + `aes` + `ghash` deps). At least one of `cipher-aes`
@@ -107,7 +110,7 @@ mldsa = ["dep:krabipqc"]
 # Optional ML-KEM-768 (FIPS 203) key encapsulation, the client side of an
 # `X25519MLKEM768` hybrid TLS key exchange. Same krabipqc dependency as `mldsa`;
 # verification/handshake wiring is built on top in later steps.
-mlkem = ["dep:krabipqc"]
+mlkem = ["dep:krabipqc", "x25519-kx"]
 # Optional ECDSA (P-256 + P-384) backend, gated like `rsa`/`mldsa`. Pulls in
 # krabiecdsa (no_std, no-alloc) and turns on fixed-bigint's `cios` feature, which
 # its `UnsignedModularInt` bound needs (modmath CIOS Montgomery mul). Covers
@@ -128,6 +131,13 @@ ecdsa-sign = ["ecdsa"]
 # Pulls krabiecdsa's constant-time `ecdh` primitive (shares the CT carrier with
 # the `ecdsa` verify path); orthogonal to `ecdsa` server-cert verification.
 p256-kx = ["dep:krabiecdsa", "fixed-bigint/cios"]
+# X25519 (named group 0x001D) key exchange — the classical primary group.
+# Default ON. Turn it OFF (`--no-default-features`) together with `p256-kx` to
+# build a client that offers *only* secp256r1 ECDHE — no X25519 key_share, no
+# Curve25519 ladder in the KX path — for an all-ECDSA/P-256 profile (e.g. AWS
+# IoT). At least one key-exchange group (`x25519-kx` or `p256-kx`) must be on.
+# `mlkem` (X25519MLKEM768) is a hybrid built on X25519, so it requires this.
+x25519-kx = []
 
 [dependencies]
 embedded-io = { version = "0.7.1", default-features = false }
