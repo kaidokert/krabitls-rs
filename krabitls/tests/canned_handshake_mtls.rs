@@ -17,7 +17,10 @@
     not(feature = "ecdsa"),
     not(feature = "mlkem"),
     // X25519-only fixtures; p256-kx shifts the ClientHello transcript.
-    not(feature = "p256-kx")
+    not(feature = "p256-kx"),
+    // The captured CertificateVerify is deterministic Ed25519; `blinding` hedges
+    // it (non-deterministic), so this byte-golden only holds with blinding off.
+    not(feature = "blinding")
 ))]
 
 use krabitls::client::{

@@ -3,6 +3,7 @@
 
 use ed25519_heapless::SigningKey;
 use rand_core::TryCryptoRng;
+#[cfg(feature = "blinding")]
 use signature::RandomizedSigner;
 
 #[cfg(feature = "rsa")]
@@ -38,19 +39,27 @@ use {
     crate::bigint::{EcdsaP256Bn, EcdsaP256CtBn, EcdsaP384Bn, EcdsaP384CtBn},
     crate::consts::{SIG_SCHEME_ECDSA_P256, SIG_SCHEME_ECDSA_P384},
     hmac::Hmac,
-    krabiecdsa::{p256::P256, p384::P384, signing::RandomizedSigningKey},
+    krabiecdsa::{p256::P256, p384::P384},
     sha2::{Sha256 as EcdsaSha256, Sha384 as EcdsaSha384},
-    signature::hazmat::RandomizedPrehashSigner,
 };
+#[cfg(all(feature = "ecdsa", feature = "blinding"))]
+use {krabiecdsa::signing::RandomizedSigningKey, signature::hazmat::RandomizedPrehashSigner};
+#[cfg(all(feature = "ecdsa", not(feature = "blinding")))]
+use {krabiecdsa::signing::PrehashSigningKey, signature::hazmat::PrehashSigner};
 
-// P-256/P-384 hedged signers, fully monomorphized: constant-time sign backend,
-// variable-time verify backend (the RustCrypto keypair bound, and the
-// verify-after-sign fault check), and the RFC 6979 HMAC hedged per §3.6. The
-// nonce hedge plus scalar/coordinate blinding are drawn from the connection RNG.
-#[cfg(feature = "ecdsa")]
+// P-256/P-384 signers, fully monomorphized (constant-time sign backend,
+// variable-time verify backend for the verify-after-sign fault check). With
+// `blinding` on, the RFC 6979 nonce is hedged (§3.6) and `k·G` is scalar/
+// coordinate-blinded from the connection RNG; off, it's plain deterministic
+// RFC 6979.
+#[cfg(all(feature = "ecdsa", feature = "blinding"))]
 type P256Signer = RandomizedSigningKey<P256, EcdsaP256CtBn, EcdsaP256Bn, Hmac<EcdsaSha256>>;
-#[cfg(feature = "ecdsa")]
+#[cfg(all(feature = "ecdsa", feature = "blinding"))]
 type P384Signer = RandomizedSigningKey<P384, EcdsaP384CtBn, EcdsaP384Bn, Hmac<EcdsaSha384>>;
+#[cfg(all(feature = "ecdsa", not(feature = "blinding")))]
+type P256Signer = PrehashSigningKey<P256, EcdsaP256CtBn, EcdsaP256Bn, Hmac<EcdsaSha256>>;
+#[cfg(all(feature = "ecdsa", not(feature = "blinding")))]
+type P384Signer = PrehashSigningKey<P384, EcdsaP384CtBn, EcdsaP384Bn, Hmac<EcdsaSha384>>;
 
 /// Ed25519 client authenticator: a seed-derived signing key (long-term
 /// secret wiped on drop inside [`SigningKey`]) paired with the leaf
@@ -88,14 +97,24 @@ impl<R: TryCryptoRng + ?Sized> ClientAuth<R> for Ed25519ClientAuth<'_> {
         SIG_SCHEME_ED25519
     }
 
-    // Hedged + blinded (RandomizedSigner): `rng` drives the nonce hedge and the
-    // scalar/coordinate blinding. Output is non-deterministic but a standard RFC
-    // 8032 signature any verifier accepts.
+    // `blinding` on: hedged + blinded (RandomizedSigner) — `rng` drives the nonce
+    // hedge and the scalar/coordinate blinding; output is non-deterministic.
+    // Off: plain deterministic RFC 8032. Either way a standard signature.
+    #[cfg(feature = "blinding")]
     fn sign(&self, content: &[u8], rng: &mut R) -> Result<ClientSignature, ClientAuthError> {
         let sig = self
             .signing_key
             .try_sign_with_rng(rng, content)
             .map_err(|_| ClientAuthError)?;
+        let mut out = ClientSignature::new();
+        out.extend_from_slice(&sig).map_err(|_| ClientAuthError)?;
+        Ok(out)
+    }
+
+    #[cfg(not(feature = "blinding"))]
+    fn sign(&self, content: &[u8], _rng: &mut R) -> Result<ClientSignature, ClientAuthError> {
+        let sig =
+            ed25519_heapless::sign(&self.signing_key, content).map_err(|_| ClientAuthError)?;
         let mut out = ClientSignature::new();
         out.extend_from_slice(&sig).map_err(|_| ClientAuthError)?;
         Ok(out)
@@ -169,17 +188,26 @@ impl<R: TryCryptoRng + ?Sized> ClientAuth<R> for RsaClientAuth<'_> {
 
     fn sign(&self, content: &[u8], rng: &mut R) -> Result<ClientSignature, ClientAuthError> {
         let prehash = Sha256::digest(content);
-        // EM scratch + signature output; both public once the signature is
-        // released, no wipe needed. `salt` holds the 32-byte PSS salt drawn from
-        // `rng` (saltLen == hashLen); the base-blinding factor is drawn from the
-        // same rng inside the signer.
+        // EM scratch + signature output; both public once released, no wipe.
+        // `salt` is the 32-byte PSS salt (saltLen == hashLen), drawn from `rng`
+        // either way. `blinding` on additionally masks the modexp base from the
+        // same rng — the signature bytes are identical, only the side channel
+        // differs.
         let mut em = [0u8; MAX_CLIENT_SIG_LEN];
         let mut sig = [0u8; MAX_CLIENT_SIG_LEN];
         let mut salt = [0u8; 32];
+        #[cfg(feature = "blinding")]
         let sig_slice = self
             .signing_key
             .try_sign_prehash_with_rng_into(rng, &prehash, &mut em, &mut sig, &mut salt)
             .map_err(|_| ClientAuthError)?;
+        #[cfg(not(feature = "blinding"))]
+        let sig_slice = {
+            rng.try_fill_bytes(&mut salt).map_err(|_| ClientAuthError)?;
+            self.signing_key
+                .try_sign_prehash_with_salt_into(&prehash, &salt, &mut em, &mut sig)
+                .map_err(|_| ClientAuthError)?
+        };
         let mut out = ClientSignature::new();
         out.extend_from_slice(sig_slice)
             .map_err(|_| ClientAuthError)?;
@@ -290,10 +318,11 @@ impl<R: TryCryptoRng + ?Sized> ClientAuth<R> for EcdsaClientAuth<'_> {
         }
     }
 
+    // The signer returns the fixed-width P1363 `r || s`; split at the element
+    // width and re-encode as the DER `ECDSA-Sig-Value` TLS wants. `blinding` on
+    // hedges the nonce from `rng`; off is plain deterministic RFC 6979.
+    #[cfg(feature = "blinding")]
     fn sign(&self, content: &[u8], rng: &mut R) -> Result<ClientSignature, ClientAuthError> {
-        // `sign_prehash_with_rng` returns the fixed-width P1363 `r || s`; split
-        // at the element width and re-encode as the DER `ECDSA-Sig-Value` TLS
-        // wants.
         match &self.0 {
             EcdsaKey::P256 { key, .. } => {
                 let digest = EcdsaSha256::digest(content);
@@ -308,6 +337,24 @@ impl<R: TryCryptoRng + ?Sized> ClientAuth<R> for EcdsaClientAuth<'_> {
                 let sig = key
                     .sign_prehash_with_rng(rng, digest.as_slice())
                     .map_err(|_| ClientAuthError)?;
+                let (r, s) = sig.split_at(48);
+                der_ecdsa_sig(r, s)
+            }
+        }
+    }
+
+    #[cfg(not(feature = "blinding"))]
+    fn sign(&self, content: &[u8], _rng: &mut R) -> Result<ClientSignature, ClientAuthError> {
+        match &self.0 {
+            EcdsaKey::P256 { key, .. } => {
+                let digest = EcdsaSha256::digest(content);
+                let sig = key.sign_prehash(digest.as_slice()).map_err(|_| ClientAuthError)?;
+                let (r, s) = sig.split_at(32);
+                der_ecdsa_sig(r, s)
+            }
+            EcdsaKey::P384 { key, .. } => {
+                let digest = EcdsaSha384::digest(content);
+                let sig = key.sign_prehash(digest.as_slice()).map_err(|_| ClientAuthError)?;
                 let (r, s) = sig.split_at(48);
                 der_ecdsa_sig(r, s)
             }
