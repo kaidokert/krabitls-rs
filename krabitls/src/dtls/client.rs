@@ -191,7 +191,7 @@ impl<S: DtlsSuite> DtlsClient<S> {
         R: RsaVerifierProvider,
         P: CertParser,
     {
-        let pub_key = ed25519_heapless::x25519::<Bn>(x25519_priv, &X25519_BASEPOINT)
+        let pub_key = ed25519_heapless::hazmat::x25519::<Bn>(x25519_priv, &X25519_BASEPOINT)
             .map_err(|_| DtlsClientError::KeySchedule)?;
 
         // A single reused receive buffer + a reused flight buffer carry both

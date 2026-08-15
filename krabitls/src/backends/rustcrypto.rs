@@ -51,7 +51,7 @@ impl Verifier<[u8; 64]> for PreparedEd25519 {
         let Some(field) = self.field.as_ref() else {
             return Err(signature::Error::new());
         };
-        if ed25519_heapless::verify_with_field(field, self.pubkey, msg, *signature) {
+        if ed25519_heapless::hazmat::verify_with_field(field, self.pubkey, msg, *signature) {
             Ok(())
         } else {
             Err(signature::Error::new())

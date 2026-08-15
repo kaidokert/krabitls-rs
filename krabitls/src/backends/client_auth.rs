@@ -5,6 +5,8 @@ use ed25519_heapless::SigningKey;
 use rand_core::TryCryptoRng;
 #[cfg(feature = "blinding")]
 use signature::RandomizedSigner;
+#[cfg(not(feature = "blinding"))]
+use signature::Signer;
 
 #[cfg(feature = "rsa")]
 use {
@@ -113,8 +115,7 @@ impl<R: TryCryptoRng + ?Sized> ClientAuth<R> for Ed25519ClientAuth<'_> {
 
     #[cfg(not(feature = "blinding"))]
     fn sign(&self, content: &[u8], _rng: &mut R) -> Result<ClientSignature, ClientAuthError> {
-        let sig =
-            ed25519_heapless::sign(&self.signing_key, content).map_err(|_| ClientAuthError)?;
+        let sig = self.signing_key.try_sign(content).map_err(|_| ClientAuthError)?;
         let mut out = ClientSignature::new();
         out.extend_from_slice(&sig).map_err(|_| ClientAuthError)?;
         Ok(out)
@@ -418,11 +419,14 @@ mod ecdsa_sign_tests {
         let mut pk = [0u8; 65];
         auth.public_key_sec1(&mut pk).unwrap();
         let prehash = EcdsaSha256::digest(CONTENT);
-        // Hedged (RFC 6979 §3.6): distinct rng streams yield distinct signatures
-        // over the same content, both valid.
         let a = auth.sign(CONTENT, &mut FixedRng(0x01)).unwrap();
         let b = auth.sign(CONTENT, &mut FixedRng(0x02)).unwrap();
+        // `blinding` hedges the nonce (RFC 6979 §3.6): distinct rng → distinct
+        // signatures. Off, it's plain deterministic RFC 6979 — rng-independent.
+        #[cfg(feature = "blinding")]
         assert_ne!(a, b);
+        #[cfg(not(feature = "blinding"))]
+        assert_eq!(a, b);
         assert!(verify_p256(&pk, prehash.as_slice(), &a).is_ok());
         assert!(verify_p256(&pk, prehash.as_slice(), &b).is_ok());
     }

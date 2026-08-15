@@ -678,11 +678,13 @@ mod tests {
         // builds (RFC 8446 §4.4.3), proving the sign/verify loop agrees on
         // the domain-separation framing.
         let signed = certificate_verify_signed_content(&th);
-        assert!(ed25519_heapless::verify::<VerifyBn>(pubkey, &signed, sig));
+        use signature::Verifier as _;
+        let vk = ed25519_heapless::VerifyingKey::<VerifyBn>::from_bytes(pubkey);
+        assert!(vk.verify(&signed, &sig).is_ok());
 
         // A different transcript must not verify against this signature.
         let other = certificate_verify_signed_content(&TranscriptDigest::new([0x43u8; 32]));
-        assert!(!ed25519_heapless::verify::<VerifyBn>(pubkey, &other, sig));
+        assert!(vk.verify(&other, &sig).is_err());
     }
 
     // Ed25519 only draws from the rng under `blinding` (the hedge); deterministic

@@ -29,8 +29,6 @@ use crate::hkdf::{
     handshake_traffic_secrets, master_secret, next_application_traffic_secret,
 };
 use crate::newtype::Secret;
-#[cfg(feature = "x25519-kx")]
-use crate::newtype::ZeroBuf;
 use crate::parse_server_hello;
 use crate::reassembler::{ReassemblyError, ServerFlightReassembler};
 use crate::server_flight::FlightError;
@@ -39,11 +37,6 @@ use crate::server_flight::verify_server_flight;
 use crate::traits::verify_strategy::PreparedVerifier;
 use crate::traits::{CertView, Ed25519VerifierProvider, HkdfSha256, RsaVerifierProvider};
 use rand_core::TryCryptoRng;
-#[cfg(feature = "x25519-kx")]
-use subtle::ConstantTimeEq;
-
-#[cfg(feature = "x25519-kx")]
-use crate::bigint::Curve25519CtBn as Bn;
 
 /// Internal scratch for the outgoing ClientHello before it's forwarded to the
 /// caller's `Write`. Sized for the locked profile with a 255-char SNI, the full
@@ -251,7 +244,7 @@ impl<E: core::error::Error + 'static> core::error::Error for ConnectionError<E> 
 pub struct Init {
     pub(crate) client_random: [u8; 32],
     #[cfg(feature = "x25519-kx")]
-    pub(crate) x25519_priv: ZeroBuf<32>,
+    pub(crate) x25519_ecdhe: crate::backends::ecdhe_x25519::EcdheX25519,
     /// Ephemeral ML-KEM-768 decapsulator for the `X25519MLKEM768` hybrid; held
     /// from ClientHello until the server's ciphertext arrives in ServerHello.
     #[cfg(feature = "mlkem")]
@@ -267,7 +260,7 @@ pub struct WaitServerHello {
     /// ServerHello echoes it back verbatim (RFC 8446 §4.1.3).
     pub(crate) session_id: Option<[u8; LEGACY_SESSION_ID_LEN]>,
     #[cfg(feature = "x25519-kx")]
-    pub(crate) x25519_priv: ZeroBuf<32>,
+    pub(crate) x25519_ecdhe: crate::backends::ecdhe_x25519::EcdheX25519,
     #[cfg(feature = "mlkem")]
     pub(crate) mlkem: crate::backends::mlkem::MlKem768,
     #[cfg(feature = "p256-kx")]
@@ -416,7 +409,7 @@ where
 {
     pub fn new(
         client_random: [u8; 32],
-        #[cfg(feature = "x25519-kx")] x25519_priv: ZeroBuf<32>,
+        #[cfg(feature = "x25519-kx")] x25519_ecdhe: crate::backends::ecdhe_x25519::EcdheX25519,
         #[cfg(feature = "mlkem")] mlkem: crate::backends::mlkem::MlKem768,
         #[cfg(feature = "p256-kx")] ecdhe: crate::backends::ecdhe::EcdheP256,
     ) -> Self {
@@ -425,7 +418,7 @@ where
             state: Init {
                 client_random,
                 #[cfg(feature = "x25519-kx")]
-                x25519_priv,
+                x25519_ecdhe,
                 #[cfg(feature = "mlkem")]
                 mlkem,
                 #[cfg(feature = "p256-kx")]
@@ -487,7 +480,7 @@ where
             state: WaitServerHello {
                 session_id: opts.session_id.copied(),
                 #[cfg(feature = "x25519-kx")]
-                x25519_priv: self.state.x25519_priv,
+                x25519_ecdhe: self.state.x25519_ecdhe,
                 #[cfg(feature = "mlkem")]
                 mlkem: self.state.mlkem,
                 #[cfg(feature = "p256-kx")]
@@ -645,22 +638,18 @@ where
             }
             #[cfg(feature = "x25519-kx")]
             {
-                // `CurveSetupError` is unreachable on the ≥256-bit carrier — fail
-                // closed into the same abort as the low-order-point check below.
-                let x25519_ss = zeroize::Zeroizing::new(
-                    ed25519_heapless::x25519::<Bn>(
-                        &self.state.x25519_priv,
-                        sh.x25519_share
-                            .ok_or(ConnectionError::Parse(ParseError::BadKeyShare))?,
-                    )
-                    .map_err(|_| ConnectionError::Parse(ParseError::DhAllZero))?,
-                );
-                // RFC 8446 §7.4.2.1: all-zero X25519 output (low-order server
-                // share) MUST abort with `illegal_parameter`. ML-KEM has no
-                // equivalent — implicit rejection yields a deterministic secret.
-                if bool::from(x25519_ss.ct_eq(&[0u8; 32])) {
-                    return Err(ConnectionError::Parse(ParseError::DhAllZero));
-                }
+                let server_share = sh
+                    .x25519_share
+                    .ok_or(ConnectionError::Parse(ParseError::BadKeyShare))?;
+                // The KEM rejects a low-order / all-zero shared secret internally
+                // (RFC 7748 §6.1, RFC 8446 §7.4.2.1 `illegal_parameter`), so a bad
+                // server share aborts here. ML-KEM has no equivalent — implicit
+                // rejection yields a deterministic secret.
+                let x25519_ss = self
+                    .state
+                    .x25519_ecdhe
+                    .agree(server_share)
+                    .map_err(|_| ConnectionError::Parse(ParseError::DhAllZero))?;
                 // X25519MLKEM768 IKM (draft-ietf-tls-ecdhe-mlkem): ML-KEM ss || X25519 ss.
                 #[cfg(feature = "mlkem")]
                 {

@@ -32,7 +32,7 @@ default = ["cert-der", "cipher-aes", "x25519-kx"]
 # signers). Off by default — the unblinded primitives are the constant-time
 # baseline; the countermeasures cost extra `.text`/entropy and target a physical-
 # access threat model. Signing still draws its PSS salt / RFC 6979 nonce either way.
-blinding = ["dep:kem"]
+blinding = []
 # Expose internal helpers that aren't part of the TLS 1.3 API
 dev-utils = []
 # Compile the cfg(test) backend carrier matrix (`src/backend_matrix.rs`), which
@@ -144,7 +144,9 @@ p256-kx = ["dep:krabiecdsa", "krabiecdsa/ecdh", "dep:kem", "fixed-bigint/cios"]
 # Curve25519 ladder in the KX path — for an all-ECDSA/P-256 profile (e.g. AWS
 # IoT). At least one key-exchange group (`x25519-kx` or `p256-kx`) must be on.
 # `mlkem` (X25519MLKEM768) is a hybrid built on X25519, so it requires this.
-x25519-kx = []
+# Pulls the `kem` crate: X25519 agreement runs through ed25519_heapless's
+# X25519-as-KEM (blinder-at-keygen personality selected by `blinding`).
+x25519-kx = ["dep:kem"]
 
 [dependencies]
 embedded-io = { version = "0.7.1", default-features = false }
@@ -168,7 +170,7 @@ sha2 = { version = "0.11", default-features = false }
 digest = { version = "0.11", default-features = false }
 hmac = { version = "0.13", default-features = false }
 hkdf = { version = "0.13", default-features = false }
-ed25519_heapless = { version = "0.5.2", default-features = false, features = ["sha512-sha2"] }
+ed25519_heapless = { git = "https://github.com/kaidokert/ed25519", tag = "v0.6.0-alpha.1", default-features = false, features = ["sha512-sha2"] }
 fixed-bigint = { version = "0.6", default-features = false, features = ["use-unsafe", "zeroize", "cios"] }
 const-num-traits = { version = "0.2.1", default-features = false, features = ["ct"] }
 der = { version = "0.8.0", default-features = false, features = ["oid"], optional = true }
