@@ -15,12 +15,15 @@ use zeroize::Zeroizing;
 /// `tls_fixture/tls13.py::derive_bytes`.
 const DERIVE_DOMAIN: &[u8] = b"tls_fixture\0";
 
-/// Maximum entropy bytes the facade draws per `connect()`: 32 for
-/// `client_random`, 32 for the X25519 private key, then the ML-KEM-768 keygen
-/// `d` (32) and `z` (32) that an `mlkem` build draws for the X25519MLKEM768
-/// key_share. Derived unconditionally — a non-`mlkem` client just never reads
-/// past byte 64 — so the helper needs no cipher/KEM feature of its own.
-const ENTROPY_TOTAL: usize = 128;
+/// Entropy bytes the facade may draw per `connect()`. The first 128 are the
+/// key-exchange draws, at fixed offsets so every seeded fixture stays
+/// byte-stable: 32 `client_random`, 32 X25519 private key, then the ML-KEM-768
+/// keygen `d` (32) and `z` (32) an `mlkem` build draws. The remainder feeds the
+/// client-auth signer's own draws — a base-blinded RSA-PSS sign pulls a PSS salt
+/// plus a modulus-width base-blinding factor (and a rare coprimality retry), an
+/// ECDSA sign pulls the hedge + scalar/coordinate blinds — so the pool must
+/// outrun a widest-width (RSA-4096, 512-byte) blind with margin.
+const ENTROPY_TOTAL: usize = 4096;
 
 /// Deterministic entropy source mirroring the Python fixture's seed-mode
 /// RNG so the facade's `client_random` + X25519 private key match Python's
@@ -48,6 +51,10 @@ impl SeededRng {
         // ML-KEM-768 keygen draw is deterministic across capture and replay.
         derive_bytes_into(seed, b"client_mlkem_d", &mut bytes[64..96]);
         derive_bytes_into(seed, b"client_mlkem_z", &mut bytes[96..128]);
+        // Signer entropy (PSS salt + RSA base blind / ECDSA hedge+blinds), drawn
+        // only after the key-exchange bytes above, so the 0..128 layout — and
+        // every fixture that pins it — is unchanged.
+        derive_bytes_into(seed, b"client_sign_entropy", &mut bytes[128..]);
         Self { bytes, pos: 0 }
     }
 
@@ -57,9 +64,9 @@ impl SeededRng {
     }
 }
 
-/// `try_fill_bytes` requested more bytes than the precomputed stream holds.
-/// Indicates a test draws more entropy than the facade's `connect()` shape
-/// (`client_random` + X25519 priv, plus the ML-KEM keygen `d`/`z` under `mlkem`).
+/// `try_fill_bytes` requested more bytes than the precomputed stream holds —
+/// a test drew past the [`ENTROPY_TOTAL`] pool (key-exchange draws plus the
+/// client-auth signer's salt/blind draws).
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct EntropyExhausted;
 

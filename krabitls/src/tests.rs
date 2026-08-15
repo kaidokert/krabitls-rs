@@ -1875,6 +1875,68 @@ mod cipher_aes {
     mod rsa_tests {
         use super::*;
 
+        /// Seeded xorshift64 test RNG. The PSS salt AND the RSA base blind draw
+        /// from it — the blind's coprimality retry redraws, so the stream must
+        /// advance (a constant fill would loop on a non-coprime `r`). Distinct
+        /// seeds give distinct salts/blinds → distinct signatures. Not a CSPRNG.
+        struct XorRng(u64);
+        impl XorRng {
+            fn seeded(seed: u8) -> Self {
+                Self(0xdead_beef_0000_0000 | u64::from(seed).wrapping_add(1))
+            }
+            fn step(&mut self) -> u64 {
+                let mut x = self.0;
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                self.0 = x;
+                x
+            }
+        }
+        impl rand_core::TryRng for XorRng {
+            type Error = core::convert::Infallible;
+            fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
+                Ok(self.step() as u32)
+            }
+            fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
+                Ok(self.step())
+            }
+            fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), Self::Error> {
+                for chunk in dst.chunks_mut(8) {
+                    let b = self.step().to_le_bytes();
+                    chunk.copy_from_slice(&b[..chunk.len()]);
+                }
+                Ok(())
+            }
+        }
+        impl rand_core::TryCryptoRng for XorRng {}
+
+        /// Test RNG whose every draw fails, to exercise the fallible sign path:
+        /// the PSS salt and base blind both come from the RNG, so a failure must
+        /// surface as `ClientAuthError`, never a panic or a half-formed signature.
+        #[derive(Debug)]
+        struct RngBroken;
+        impl core::fmt::Display for RngBroken {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                f.write_str("rng failed")
+            }
+        }
+        impl core::error::Error for RngBroken {}
+        struct ErrorRng;
+        impl rand_core::TryRng for ErrorRng {
+            type Error = RngBroken;
+            fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
+                Err(RngBroken)
+            }
+            fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
+                Err(RngBroken)
+            }
+            fn try_fill_bytes(&mut self, _dst: &mut [u8]) -> Result<(), Self::Error> {
+                Err(RngBroken)
+            }
+        }
+        impl rand_core::TryCryptoRng for ErrorRng {}
+
         /// RSA fixture, c→s ClientHello.
         const FIXTURE_RSA_CLIENT_HELLO: [u8; 151] = crate::hex_decode(include_str!(
             "../../testdata/packets_rsa/001_c2s_ClientHello.hex"
@@ -2146,21 +2208,39 @@ mod cipher_aes {
 
             let auth = RsaClientAuth::from_components(&CLIENT_N, CLIENT_E, &CLIENT_D, &[0x30])
                 .expect("components accepted");
-            assert_eq!(auth.scheme(), crate::consts::SIG_SCHEME_RSA_PSS_RSAE_SHA256);
+            assert_eq!(
+                ClientAuth::<XorRng>::scheme(&auth),
+                crate::consts::SIG_SCHEME_RSA_PSS_RSAE_SHA256
+            );
 
             let content = b"stand-in CertificateVerify signed content";
-            let sig = auth.sign(content, &[0x5a; 32]).expect("sign");
+            let sig = auth.sign(content, &mut XorRng::seeded(0x5a)).expect("sign");
             assert_eq!(sig.len(), 256);
             let vk = RsaVerifierKey::new(&CLIENT_N, CLIENT_E).expect("vk");
             vk.verify_pss_sha256(content, &sig).expect("PSS verifies");
             assert!(vk.verify_pss_sha256(b"other content", &sig).is_err());
 
-            // A different salt yields a different (still valid) signature —
-            // the entropy actually reaches the PSS encoding.
-            let sig2 = auth.sign(content, &[0xa5; 32]).expect("sign 2");
+            // A different rng yields a different salt → a different (still valid)
+            // signature — the entropy actually reaches the PSS encoding.
+            let sig2 = auth
+                .sign(content, &mut XorRng::seeded(0xa5))
+                .expect("sign 2");
             assert_ne!(sig, sig2);
             vk.verify_pss_sha256(content, &sig2)
                 .expect("PSS verifies 2");
+        }
+
+        #[test]
+        fn rsa_client_auth_sign_fails_cleanly_when_rng_errors() {
+            use crate::backends::RsaClientAuth;
+            use crate::traits::client_auth::ClientAuth;
+
+            let auth = RsaClientAuth::from_components(&CLIENT_N, CLIENT_E, &CLIENT_D, &[0x30])
+                .expect("components accepted");
+            assert!(
+                auth.sign(b"content", &mut ErrorRng).is_err(),
+                "a failing RNG must yield ClientAuthError, not a signature",
+            );
         }
 
         /// RSA-3072 client-auth sign round-trip — `from_components` signs
@@ -2203,7 +2283,7 @@ mod cipher_aes {
             let auth = RsaClientAuth::from_components(&N, 65537, &D, &[0x30])
                 .expect("components accepted");
             let content = b"stand-in CertificateVerify signed content";
-            let sig = auth.sign(content, &[0x5a; 32]).expect("sign");
+            let sig = auth.sign(content, &mut XorRng::seeded(0x5a)).expect("sign");
             assert_eq!(sig.len(), 384);
             let vk = RsaVerifierKey::new(&N, 65537).expect("vk");
             vk.verify_pss_sha256(content, &sig).expect("PSS verifies");
@@ -2258,7 +2338,7 @@ mod cipher_aes {
             let auth = RsaClientAuth::from_components(&N, 65537, &D, &[0x30])
                 .expect("components accepted");
             let content = b"stand-in CertificateVerify signed content";
-            let sig = auth.sign(content, &[0x5a; 32]).expect("sign");
+            let sig = auth.sign(content, &mut XorRng::seeded(0x5a)).expect("sign");
             assert_eq!(sig.len(), 512);
             let vk = RsaVerifierKey::new(&N, 65537).expect("vk");
             vk.verify_pss_sha256(content, &sig).expect("PSS verifies");

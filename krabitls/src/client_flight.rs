@@ -7,6 +7,7 @@ use crate::hkdf::{HkdfLabelError, TranscriptHash, finished_mac};
 use crate::newtype::{Secret, TranscriptDigest, ZeroBuf};
 use crate::traits::HkdfSha256;
 use crate::traits::client_auth::{ClientAuth, ClientAuthError, MAX_CLIENT_SIG_LEN};
+use rand_core::TryCryptoRng;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, thiserror::Error)]
 pub enum ClientFinishedError {
@@ -209,14 +210,14 @@ pub fn build_client_empty_certificate<'a>(
 /// Serialize the client `CertificateVerify` handshake message (RFC 8446
 /// §4.4.3): sign the transcript-bound content with the caller's signer, then
 /// frame `scheme || signature`. Returns the plaintext handshake bytes.
-pub fn build_client_certificate_verify<'a, A: ClientAuth + ?Sized>(
+pub fn build_client_certificate_verify<'a, R: TryCryptoRng + ?Sized, A: ClientAuth<R> + ?Sized>(
     auth: &A,
     transcript_hash_through_client_cert: &TranscriptDigest,
-    entropy: &[u8; 32],
+    rng: &mut R,
     out: &'a mut [u8],
 ) -> Result<&'a [u8], ClientAuthFlightError> {
     let signed = certificate_verify_signed_content(transcript_hash_through_client_cert);
-    let sig = auth.sign(&signed, entropy)?;
+    let sig = auth.sign(&signed, rng)?;
 
     let body_len = 2 + 2 + sig.len();
     let total = 4 + body_len;
@@ -250,19 +251,19 @@ pub trait ClientAuthPolicy {
     /// request then aborts the handshake without any builder being codegened.
     const ACCEPT_CERT_REQUEST: bool;
 
-    /// Largest plaintext [`build_flight`](Self::build_flight) can produce, so
-    /// `connect()` can reject a too-small `SEND` buffer up front instead of
-    /// failing mid-handshake. `0` for policies that send no certificate.
+    /// Largest plaintext [`build_flight`](ClientAuthSign::build_flight) can
+    /// produce, so `connect()` can reject a too-small `SEND` buffer up front
+    /// instead of failing mid-handshake. `0` for policies that send no
+    /// certificate.
     const MAX_FLIGHT_LEN: usize;
+}
 
-    /// Whether the connection must pre-draw signing entropy for this policy
-    /// (see [`ClientAuth::needs_entropy`]). Policies that never sign return
-    /// `false`, so a failed RNG draw can't abort a handshake that would
-    /// never have consumed it.
-    fn needs_signing_entropy(&self) -> bool {
-        Self::ACCEPT_CERT_REQUEST
-    }
-
+/// The signing half of a client-auth policy, split from the rng-agnostic
+/// [`ClientAuthPolicy`] consts so buffer sizing stays independent of the RNG
+/// type. Parameterized over the connection RNG `R` (rather than a generic
+/// `build_flight<R>` method) so a policy erasing its signer behind
+/// `dyn ClientAuth<R>` can call it — see [`ClientAuth`].
+pub trait ClientAuthSign<R: TryCryptoRng + ?Sized>: ClientAuthPolicy {
     /// Build the coalesced client second-flight plaintext (`Certificate [||
     /// CertificateVerify] || Finished`) in response to a `CertificateRequest`,
     /// folding each message into `transcript`. `transcript` is positioned at
@@ -270,15 +271,15 @@ pub trait ClientAuthPolicy {
     /// application-traffic-secret derivation first. `cert_request_sig_algs` is
     /// the server's advertised `signature_algorithms` list (concatenated u16
     /// scheme code points), against which a signing policy must check its
-    /// scheme. `entropy` is fresh connection-RNG output forwarded to
-    /// [`ClientAuth::sign`] for randomized signature schemes. `out` is scratch
-    /// sized by [`MAX_CLIENT_AUTH_FLIGHT`]. `Err` aborts the handshake —
-    /// e.g. no certificate, or no mutual scheme.
+    /// scheme. `rng` is the live connection RNG forwarded to
+    /// [`ClientAuth::sign`] for randomized / blinded signature schemes. `out`
+    /// is scratch sized by [`MAX_CLIENT_AUTH_FLIGHT`]. `Err` aborts the
+    /// handshake — e.g. no certificate, or no mutual scheme.
     fn build_flight<'a, H: HkdfSha256>(
         &self,
         cert_request_context: &[u8],
         cert_request_sig_algs: &[u8],
-        entropy: &[u8; 32],
+        rng: &mut R,
         c_hs_traffic_secret: &Secret,
         transcript: &mut TranscriptHash<H>,
         out: &'a mut [u8],
@@ -306,6 +307,9 @@ pub struct NoClientAuth;
 impl ClientAuthPolicy for NoClientAuth {
     const ACCEPT_CERT_REQUEST: bool = false;
     const MAX_FLIGHT_LEN: usize = 0;
+}
+
+impl<R: TryCryptoRng + ?Sized> ClientAuthSign<R> for NoClientAuth {
     // `#[inline]` so the unconditional `Err` propagates into
     // `finish_handshake_with_policy::<NoClientAuth>` and lets the optimizer
     // drop the second-flight scratch buffer + encrypt path — the no-auth
@@ -315,7 +319,7 @@ impl ClientAuthPolicy for NoClientAuth {
         &self,
         _cert_request_context: &[u8],
         _cert_request_sig_algs: &[u8],
-        _entropy: &[u8; 32],
+        _rng: &mut R,
         _c_hs_traffic_secret: &Secret,
         _transcript: &mut TranscriptHash<H>,
         _out: &'a mut [u8],
@@ -333,16 +337,14 @@ pub struct DeclineClientAuth;
 impl ClientAuthPolicy for DeclineClientAuth {
     const ACCEPT_CERT_REQUEST: bool = true;
     const MAX_FLIGHT_LEN: usize = MAX_CLIENT_EMPTY_AUTH_FLIGHT;
+}
 
-    // An empty Certificate carries no CertificateVerify — nothing to sign.
-    fn needs_signing_entropy(&self) -> bool {
-        false
-    }
+impl<R: TryCryptoRng + ?Sized> ClientAuthSign<R> for DeclineClientAuth {
     fn build_flight<'a, H: HkdfSha256>(
         &self,
         cert_request_context: &[u8],
         _cert_request_sig_algs: &[u8],
-        _entropy: &[u8; 32],
+        _rng: &mut R,
         c_hs_traffic_secret: &Secret,
         transcript: &mut TranscriptHash<H>,
         out: &'a mut [u8],
@@ -358,35 +360,35 @@ impl ClientAuthPolicy for DeclineClientAuth {
 /// Mutual authentication with a caller-supplied signer. The private key never
 /// leaves the [`ClientAuth`] implementation.
 ///
-/// Generic over the signer with a `dyn ClientAuth` default — passing a
-/// concrete `&Signer` monomorphizes the flight path (LTO collapses it per
-/// binary, as with [`Clocked<T>`](crate::client::Clocked)); `&dyn ClientAuth`
-/// keeps the erased, ergonomic form.
-pub struct WithClientAuth<'a, A: ClientAuth + ?Sized = dyn ClientAuth>(pub &'a A);
+/// Generic over the signer. A concrete `&Signer` monomorphizes the flight path
+/// (LTO collapses it per binary, as with [`Clocked<T>`](crate::client::Clocked));
+/// a `&dyn ClientAuth<R>` keeps the erased form for one fixed connection RNG `R`.
+pub struct WithClientAuth<'a, A: ?Sized>(pub &'a A);
 
-// Hand-written so the `dyn ClientAuth` default stays `Clone`/`Copy`: the field
-// is `&'a A` (always `Copy`), whereas `#[derive]` would wrongly demand `A: Copy`.
-impl<A: ClientAuth + ?Sized> Clone for WithClientAuth<'_, A> {
+// Hand-written so an erased `dyn ClientAuth<R>` signer stays `Clone`/`Copy`: the
+// field is `&'a A` (always `Copy`), whereas `#[derive]` would wrongly demand
+// `A: Copy`.
+impl<A: ?Sized> Clone for WithClientAuth<'_, A> {
     #[inline]
     fn clone(&self) -> Self {
         *self
     }
 }
-impl<A: ClientAuth + ?Sized> Copy for WithClientAuth<'_, A> {}
+impl<A: ?Sized> Copy for WithClientAuth<'_, A> {}
 
-impl<A: ClientAuth + ?Sized> ClientAuthPolicy for WithClientAuth<'_, A> {
+impl<A: ?Sized> ClientAuthPolicy for WithClientAuth<'_, A> {
     const ACCEPT_CERT_REQUEST: bool = true;
     const MAX_FLIGHT_LEN: usize = MAX_CLIENT_AUTH_FLIGHT;
+}
 
-    fn needs_signing_entropy(&self) -> bool {
-        self.0.needs_entropy()
-    }
-
+impl<R: TryCryptoRng + ?Sized, A: ClientAuth<R> + ?Sized> ClientAuthSign<R>
+    for WithClientAuth<'_, A>
+{
     fn build_flight<'a, H: HkdfSha256>(
         &self,
         cert_request_context: &[u8],
         cert_request_sig_algs: &[u8],
-        entropy: &[u8; 32],
+        rng: &mut R,
         c_hs_traffic_secret: &Secret,
         transcript: &mut TranscriptHash<H>,
         out: &'a mut [u8],
@@ -404,13 +406,8 @@ impl<A: ClientAuth + ?Sized> ClientAuthPolicy for WithClientAuth<'_, A> {
         transcript.update(&out[..cert_end]);
         let th_through_cert = transcript.snapshot();
         let cv_end = cert_end
-            + build_client_certificate_verify(
-                self.0,
-                &th_through_cert,
-                entropy,
-                &mut out[cert_end..],
-            )?
-            .len();
+            + build_client_certificate_verify(self.0, &th_through_cert, rng, &mut out[cert_end..])?
+                .len();
         transcript.update(&out[cert_end..cv_end]);
         append_finished::<H>(c_hs_traffic_secret, transcript, out, cv_end)
     }
@@ -450,6 +447,48 @@ mod tests {
 
     /// Verify backend mirrors the `RustCrypto` provider (non-CT, 512-bit).
     use crate::bigint::Curve25519VerifyBn as VerifyBn;
+
+    /// Constant-fill test RNG. A constant hedge input degrades the ed25519
+    /// signature to deterministic (never nonce reuse) — still valid. Not a CSPRNG.
+    struct TestRng;
+    impl rand_core::TryRng for TestRng {
+        type Error = core::convert::Infallible;
+        fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
+            Ok(0)
+        }
+        fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
+            Ok(0)
+        }
+        fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), Self::Error> {
+            dst.fill(0);
+            Ok(())
+        }
+    }
+    impl rand_core::TryCryptoRng for TestRng {}
+
+    /// Test RNG whose every draw fails, to exercise the fallible sign path.
+    #[derive(Debug)]
+    struct RngBroken;
+    impl core::fmt::Display for RngBroken {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            f.write_str("rng failed")
+        }
+    }
+    impl core::error::Error for RngBroken {}
+    struct ErrorRng;
+    impl rand_core::TryRng for ErrorRng {
+        type Error = RngBroken;
+        fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
+            Err(RngBroken)
+        }
+        fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
+            Err(RngBroken)
+        }
+        fn try_fill_bytes(&mut self, _dst: &mut [u8]) -> Result<(), Self::Error> {
+            Err(RngBroken)
+        }
+    }
+    impl rand_core::TryCryptoRng for ErrorRng {}
 
     fn read_u24(b: &[u8]) -> usize {
         u32::from_be_bytes([0, b[0], b[1], b[2]]) as usize
@@ -496,11 +535,11 @@ mod tests {
     }
 
     #[test]
-    fn with_client_auth_dyn_default_is_copy() {
+    fn with_client_auth_erased_is_copy() {
         // Regression guard for the hand-written Clone/Copy: `#[derive]` would
-        // demand `A: Copy` and break the `dyn ClientAuth` default.
+        // demand `A: Copy` and break the erased `dyn ClientAuth<R>` form.
         fn assert_copy<T: Copy>() {}
-        assert_copy::<WithClientAuth<'static, dyn ClientAuth>>();
+        assert_copy::<WithClientAuth<'static, dyn ClientAuth<TestRng>>>();
     }
 
     #[test]
@@ -534,7 +573,7 @@ mod tests {
             policy.build_flight::<RustCrypto>(
                 &[],
                 &[0x04, 0x03],
-                &[0u8; 32],
+                &mut TestRng,
                 &secret,
                 &mut t,
                 &mut out
@@ -549,7 +588,7 @@ mod tests {
                 .build_flight::<RustCrypto>(
                     &[],
                     &[0x08, 0x07],
-                    &[0u8; 32],
+                    &mut TestRng,
                     &secret,
                     &mut t,
                     &mut out
@@ -619,7 +658,7 @@ mod tests {
 
         let th = TranscriptDigest::new([0x42u8; 32]);
         let mut out = [0u8; 128];
-        let cv = build_client_certificate_verify(&auth, &th, &[0u8; 32], &mut out).unwrap();
+        let cv = build_client_certificate_verify(&auth, &th, &mut TestRng, &mut out).unwrap();
 
         assert_eq!(cv[0], HS_CERTIFICATE_VERIFY);
         assert_eq!(read_u24(&cv[1..4]), cv.len() - 4);
@@ -637,6 +676,16 @@ mod tests {
         // A different transcript must not verify against this signature.
         let other = certificate_verify_signed_content(&TranscriptDigest::new([0x43u8; 32]));
         assert!(!ed25519_heapless::verify::<VerifyBn>(pubkey, &other, sig));
+    }
+
+    #[test]
+    fn certificate_verify_fails_cleanly_when_rng_errors() {
+        let auth = Ed25519ClientAuth::from_seed(&[7u8; 32], &[0x55u8; 16]).unwrap();
+        let th = TranscriptDigest::new([0x42u8; 32]);
+        let mut out = [0u8; 128];
+        // The hedged signer draws its nonce hedge + blinder from the rng, so a
+        // failing rng must surface as an error, not a panic or a bad signature.
+        assert!(build_client_certificate_verify(&auth, &th, &mut ErrorRng, &mut out).is_err());
     }
 
     #[test]

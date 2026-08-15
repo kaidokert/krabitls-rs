@@ -15,7 +15,7 @@ use core::net::{IpAddr, SocketAddr};
 use embedded_io::{ErrorKind, ErrorType};
 use embedded_nal::{AddrType, Dns, TcpClientStack};
 use krabitls::client::{
-    ClientAuthPolicy, ClientConfig, ClientParams, ConnectError, DefaultConfig, DefaultScratch,
+    ClientAuthSign, ClientConfig, ClientParams, ConnectError, DefaultConfig, DefaultScratch,
     DefaultStreamWith, Transport, VerifyStrategy,
 };
 
@@ -189,7 +189,7 @@ where
             <DefaultConfig as ClientConfig>::Ed25519,
             <DefaultConfig as ClientConfig>::Rsa,
         >,
-    A: ClientAuthPolicy,
+    A: ClientAuthSign<R>,
 {
     let transport = PollNal::new(NalTransport::open(stack, remote).map_err(ConnectError::Io)?);
     NalStream::<S, V>::connect(params, scratch, transport, rng)
