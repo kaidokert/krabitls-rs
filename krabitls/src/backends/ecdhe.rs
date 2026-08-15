@@ -1,8 +1,9 @@
 //! Classical secp256r1 (P-256) ECDHE for the TLS 1.3 `key_share`: generate an
 //! ephemeral keypair, advertise the SEC1 public point, and agree on the shared
-//! secret against the server's point. Wraps krabiecdsa's constant-time ECDH,
-//! whose `d·P` multiply is scalar- and coordinate-blinded (blinder drawn at
-//! keygen, spent once).
+//! secret against the server's point. Wraps krabiecdsa's constant-time ECDH-as-
+//! KEM; the `blinding` feature selects the `Blinded` personality (scalar/
+//! coordinate blinder drawn at keygen, spent once) over the default `Unblinded`.
+//! The public point and shared secret are identical either way.
 
 use crate::bigint::EcdsaP256CtBn;
 use kem::common::array::Array;
@@ -12,7 +13,13 @@ use krabiecdsa::p256::P256;
 use rand_core::TryCryptoRng;
 use zeroize::{Zeroize, Zeroizing};
 
-type P256Kem = EcdhKem<P256, EcdsaP256CtBn>;
+#[cfg(feature = "blinding")]
+use krabiecdsa::ecdh::Blinded as P256Blinding;
+#[cfg(not(feature = "blinding"))]
+use krabiecdsa::ecdh::Unblinded as P256Blinding;
+
+type P256Kem = EcdhKem<P256, EcdsaP256CtBn, P256Blinding>;
+type P256DecapKey = DecapsulationKey<P256, EcdsaP256CtBn, P256Blinding>;
 
 /// SEC1-uncompressed public point (`0x04 || X || Y`) sent in the key_share, and
 /// the length of the server's P-256 share.
@@ -25,21 +32,20 @@ pub const P256_SS_BYTES: usize = 32;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EcdheP256Error;
 
-/// Client-side P-256 ECDHE ephemeral: holds the blinded decapsulation key until
-/// the server's share arrives (secret zeroized on drop inside the krabiecdsa type).
+/// Client-side P-256 ECDHE ephemeral: holds the decapsulation key until the
+/// server's share arrives (secret zeroized on drop inside the krabiecdsa type).
 pub struct EcdheP256 {
-    secret: DecapsulationKey<P256, EcdsaP256CtBn>,
+    secret: P256DecapKey,
 }
 
 impl EcdheP256 {
-    /// Generate an ephemeral keypair, drawing the scalar and the DPA blinder
-    /// from `rng`. Returns the secret holder plus the SEC1-uncompressed public
-    /// point (`d·G`) to advertise in the key_share.
+    /// Generate an ephemeral keypair. Returns the secret holder plus the
+    /// SEC1-uncompressed public point (`d·G`) to advertise in the key_share.
+    /// Under `blinding` the DPA blinder is drawn from `rng` alongside the scalar.
     pub fn generate<R: TryCryptoRng + ?Sized>(
         rng: &mut R,
     ) -> Result<(Self, [u8; P256_SHARE_BYTES]), EcdheP256Error> {
-        let secret = DecapsulationKey::<P256, EcdsaP256CtBn>::try_generate_from_rng(rng)
-            .map_err(|_| EcdheP256Error)?;
+        let secret = P256DecapKey::try_generate_from_rng(rng).map_err(|_| EcdheP256Error)?;
         let sec1 = secret.encapsulation_key().to_bytes();
         if sec1.len() != P256_SHARE_BYTES {
             return Err(EcdheP256Error);
@@ -50,8 +56,8 @@ impl EcdheP256 {
     }
 
     /// Agree on the shared secret `x(d·P)` from the server's SEC1 point. Consumes
-    /// `self`: the generation-time blinder is single-use. `Err` if the point is
-    /// malformed, off-curve, or identity.
+    /// `self` (one-shot — under `blinding` the generation-time blinder is
+    /// single-use). `Err` if the point is malformed, off-curve, or identity.
     pub fn agree(
         self,
         peer_share: &[u8; P256_SHARE_BYTES],
