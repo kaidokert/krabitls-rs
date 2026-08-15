@@ -84,6 +84,7 @@ impl EcdheP256 {
 mod tests {
     use super::*;
     use core::convert::Infallible;
+    use krabiecdsa::ecdh::{Blinded, Unblinded};
 
     /// Fixed-byte RNG — a constant fill is a valid in-range P-256 scalar, so
     /// rejection sampling accepts it first try; distinct constants give distinct
@@ -114,6 +115,33 @@ mod tests {
         let ss_ab = a.agree(&b_pub).unwrap();
         let ss_ba = b.agree(&a_pub).unwrap();
         assert_eq!(ss_ab.as_slice(), ss_ba.as_slice());
+    }
+
+    /// The `Blinded` and `Unblinded` P-256 personalities agree on the same shared
+    /// secret for the same scalar — the blinder is output-transparent. Names both
+    /// markers explicitly, so it gives the blinded path coverage in every build.
+    #[test]
+    fn p256_blinded_matches_unblinded() {
+        let (_b, b_pub) = EcdheP256::generate(&mut FixedRng(0x77)).unwrap();
+        let unblinded = {
+            let dk = DecapsulationKey::<P256, EcdsaP256CtBn, Unblinded>::try_generate_from_rng(
+                &mut FixedRng(0x42),
+            )
+            .unwrap();
+            let ct: Ciphertext<EcdhKem<P256, EcdsaP256CtBn, Unblinded>> =
+                Array::try_from(&b_pub[..]).unwrap();
+            dk.try_decapsulate(&ct).unwrap()
+        };
+        let blinded = {
+            let dk = DecapsulationKey::<P256, EcdsaP256CtBn, Blinded>::try_generate_from_rng(
+                &mut FixedRng(0x42),
+            )
+            .unwrap();
+            let ct: Ciphertext<EcdhKem<P256, EcdsaP256CtBn, Blinded>> =
+                Array::try_from(&b_pub[..]).unwrap();
+            dk.try_decapsulate(&ct).unwrap()
+        };
+        assert_eq!(unblinded.as_slice(), blinded.as_slice());
     }
 
     #[test]

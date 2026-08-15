@@ -114,6 +114,7 @@ impl EcdheX25519 {
 mod tests {
     use super::*;
     use core::convert::Infallible;
+    use ed25519_heapless::x25519_kem::{Blinded, DecapsulationKey, Unblinded, X25519Kem};
 
     /// Fixed-byte RNG — reproducible, NOT a CSPRNG.
     struct FixedRng(u8);
@@ -147,5 +148,60 @@ mod tests {
         let (a, _) = EcdheX25519::generate(&mut FixedRng(0x11)).unwrap();
         // All-zero u yields the all-zero shared secret → rejected.
         assert!(a.agree(&[0u8; X25519_SHARE_BYTES]).is_err());
+    }
+
+    /// RNG yielding a fixed 32-byte scalar on the first fill, then zeros — pins
+    /// the KEM's ephemeral scalar (and, for `Blinded`, a zero blinder, which the
+    /// blinder must tolerate) to a known value.
+    struct ScalarRng([u8; 32], usize);
+    impl rand_core::TryRng for ScalarRng {
+        type Error = Infallible;
+        fn try_next_u32(&mut self) -> Result<u32, Infallible> {
+            Ok(0)
+        }
+        fn try_next_u64(&mut self) -> Result<u64, Infallible> {
+            Ok(0)
+        }
+        fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), Infallible> {
+            for b in dst {
+                *b = self.0.get(self.1).copied().unwrap_or(0);
+                self.1 += 1;
+            }
+            Ok(())
+        }
+    }
+    impl rand_core::TryCryptoRng for ScalarRng {}
+
+    /// RFC 7748 §5.2 X25519 known-answer (`X25519(scalar, u) = out`). Assert BOTH
+    /// the `Unblinded` and `Blinded` KEM personalities produce the standard shared
+    /// secret — proving the blinder is output-transparent against a reference
+    /// vector. Uses both markers explicitly, so it runs in every build (not only
+    /// `blinding`) and gives the blinded math CI coverage.
+    #[test]
+    fn x25519_rfc7748_kat_both_personalities() {
+        const SCALAR: [u8; 32] =
+            crate::hex_decode("a546e36bf0527c9d3b16154b82465edd62144c0ac1fc5a18506a2244ba449ac4");
+        const PEER_U: [u8; 32] =
+            crate::hex_decode("e6db6867583030db3594c1a424b15f7c726624ec26b3353b10a903a6d0ab1c4c");
+        const EXPECTED: [u8; 32] =
+            crate::hex_decode("c3da55379de9c6908e94ea4df28d084f32eccf03491c71f754b4075577a28552");
+
+        let unblinded = {
+            let dk =
+                DecapsulationKey::<Bn, Unblinded>::try_generate_from_rng(&mut ScalarRng(SCALAR, 0))
+                    .unwrap();
+            let ct: Ciphertext<X25519Kem<Bn, Unblinded>> = Array::try_from(&PEER_U[..]).unwrap();
+            dk.try_decapsulate(&ct).unwrap()
+        };
+        assert_eq!(unblinded.as_slice(), &EXPECTED, "unblinded KEM ≠ RFC 7748");
+
+        let blinded = {
+            let dk =
+                DecapsulationKey::<Bn, Blinded>::try_generate_from_rng(&mut ScalarRng(SCALAR, 0))
+                    .unwrap();
+            let ct: Ciphertext<X25519Kem<Bn, Blinded>> = Array::try_from(&PEER_U[..]).unwrap();
+            dk.try_decapsulate(&ct).unwrap()
+        };
+        assert_eq!(blinded.as_slice(), &EXPECTED, "blinded KEM ≠ RFC 7748");
     }
 }
