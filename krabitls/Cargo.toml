@@ -26,13 +26,14 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = ["cert-der", "cipher-aes", "x25519-kx"]
-# Route every secret-key op (key exchange + client-auth signing) through the
-# deps' blinded/hedged paths against power/EM differential analysis: X25519/P-256
-# ECDH as a blinder-at-keygen KEM, and RSA/ECDSA/Ed25519 signing as hedged
-# randomized signers. Off by default — the unblinded primitives are the baseline;
-# the countermeasures cost extra `.text`/entropy and target a physical-access
-# threat model. Signing still draws its PSS salt / RFC 6979 nonce either way.
-blinding = []
+# Route the gate-able secret-key ops through the deps' blinded/hedged paths
+# against power/EM differential analysis: the X25519 key exchange (blinder-at-
+# keygen KEM) and RSA/ECDSA/Ed25519 client-auth signing (hedged randomized
+# signers). Off by default — the unblinded primitives are the baseline; the
+# countermeasures cost extra `.text`/entropy and target a physical-access threat
+# model. Signing still draws its PSS salt / RFC 6979 nonce either way. P-256 ECDH
+# is unconditionally blinded (krabiecdsa 0.6 exposes no unblinded ECDH).
+blinding = ["dep:kem"]
 # Expose internal helpers that aren't part of the TLS 1.3 API
 dev-utils = []
 # Compile the cfg(test) backend carrier matrix (`src/backend_matrix.rs`), which
