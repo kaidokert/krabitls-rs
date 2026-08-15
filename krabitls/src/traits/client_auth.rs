@@ -52,8 +52,9 @@ pub trait ClientAuth<R: TryCryptoRng + ?Sized> {
     /// 64-space pad, the `"TLS 1.3, client CertificateVerify"` context, a
     /// separator, and the handshake transcript hash, assembled by krabitls.
     ///
-    /// `rng` is the live connection RNG. Randomized and side-channel-blinded
-    /// schemes draw their nonce hedge / PSS salt / DPA blinder from it;
-    /// deterministic schemes (ed25519) ignore it.
+    /// `rng` is the live connection RNG. Every bundled signer — RSA-PSS, ECDSA,
+    /// and Ed25519 (via `RandomizedSigner`) — draws its nonce hedge / PSS salt /
+    /// DPA blinder from it, so a failing `rng` yields `ClientAuthError`. A custom
+    /// deterministic impl may ignore it.
     fn sign(&self, content: &[u8], rng: &mut R) -> Result<ClientSignature, ClientAuthError>;
 }
