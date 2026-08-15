@@ -35,8 +35,9 @@ impl ClientHelloOptions<'_> {
 }
 
 /// A valid secp256r1 SEC1 point (openssl-generated) for the P-256 key_share in
-/// tests that build a ClientHello under `p256-kx`.
-#[cfg(feature = "p256-kx")]
+/// tests that build a ClientHello under `p256-kx` (only as a *second* group —
+/// when P-256 is primary the writer takes `FIXTURE_PRIMARY_PUB` instead).
+#[cfg(all(feature = "p256-kx", feature = "x25519-kx"))]
 const FIXTURE_P256_PUB: [u8; 65] = crate::hex_decode(
     "04fe1343c5e53259e920618e27d777fd12dee919ad865bb28facc228736a4d29d3\
      8e24b4f1108c86cc5a2367ebd5a858767bc5f1d637afc32d658e8f91432beedc",
@@ -526,7 +527,7 @@ const FIXTURE_SERVER_HELLO: [u8; 95] = [
 ];
 const SH_CIPHER_SUITE_OFFSET: usize = 44;
 
-#[cfg(not(feature = "mlkem"))]
+#[cfg(all(not(feature = "mlkem"), feature = "x25519-kx"))]
 const FIXTURE_SERVER_RANDOM: [u8; 32] = [
     0x64, 0x1c, 0x5b, 0xd9, 0x34, 0xab, 0xe1, 0xc5, 0x98, 0xa9, 0xc9, 0x61, 0xf7, 0xcb, 0x1e, 0x06,
     0x28, 0x0b, 0x4a, 0x5e, 0x88, 0x0c, 0x1c, 0x19, 0xd2, 0xfe, 0x9e, 0xef, 0x33, 0x48, 0x0c, 0xae,
