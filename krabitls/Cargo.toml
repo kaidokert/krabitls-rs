@@ -174,7 +174,7 @@ rand_core = { version = "0.10", default-features = false }
 krabipqc = { version = "0.1.4", default-features = false, optional = true }
 krabiecdsa = { version = "0.6.0", default-features = false, optional = true }
 # ECDH-as-KEM types (Ciphertext/SharedKey/Array + traits) for the blinded P-256
-# key exchange; krabiecdsa 0.6.0 exposes ECDH only through the `kem` traits.
+# key exchange; krabiecdsa exposes ECDH only through the `kem` traits.
 kem = { version = "0.3", default-features = false, optional = true }
 
 # Deterministic SeededRng + CannedTransport for the host facade replay

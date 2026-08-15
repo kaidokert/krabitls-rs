@@ -1,9 +1,8 @@
 //! Classical secp256r1 (P-256) ECDHE for the TLS 1.3 `key_share`: generate an
 //! ephemeral keypair, advertise the SEC1 public point, and agree on the shared
 //! secret against the server's point. Wraps krabiecdsa's constant-time ECDH,
-//! which 0.6.0 exposes as a `kem` KEM whose `d·P` multiply is scalar- and
-//! coordinate-blinded (the blinder is drawn from the generation RNG and spent
-//! once in `try_decapsulate`).
+//! whose `d·P` multiply is scalar- and coordinate-blinded (blinder drawn at
+//! keygen, spent once).
 
 use crate::bigint::EcdsaP256CtBn;
 use kem::common::array::Array;
@@ -26,9 +25,8 @@ pub const P256_SS_BYTES: usize = 32;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EcdheP256Error;
 
-/// Client-side P-256 ECDHE ephemeral: holds the blinded decapsulation key (the
-/// secret scalar plus its generation-time blinder, zeroized on drop inside the
-/// krabiecdsa secret) until the server's share arrives.
+/// Client-side P-256 ECDHE ephemeral: holds the blinded decapsulation key until
+/// the server's share arrives (secret zeroized on drop inside the krabiecdsa type).
 pub struct EcdheP256 {
     secret: DecapsulationKey<P256, EcdsaP256CtBn>,
 }
@@ -51,9 +49,9 @@ impl EcdheP256 {
         Ok((Self { secret }, out))
     }
 
-    /// Agree on the shared secret `x(d·P)` from the server's SEC1 point. One-shot
-    /// (a second call fails closed, since the generation-time blinder can only be
-    /// spent once). `Err` if the point is malformed, off-curve, or identity.
+    /// Agree on the shared secret `x(d·P)` from the server's SEC1 point. Consumes
+    /// `self`: the generation-time blinder is single-use. `Err` if the point is
+    /// malformed, off-curve, or identity.
     pub fn agree(
         self,
         peer_share: &[u8; P256_SHARE_BYTES],
