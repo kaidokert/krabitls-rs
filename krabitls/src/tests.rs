@@ -168,7 +168,6 @@ fn p256_primary_client_hello_offers_only_secp256r1() {
         2,
         "secp256r1 in supported_groups and key_share"
     );
-    // The 65-byte SEC1 primary point is emitted verbatim as the key_share.
     assert!(
         ch.windows(65).any(|w| w == FIXTURE_PRIMARY_PUB),
         "the P-256 key_share point must be present"

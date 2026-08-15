@@ -167,7 +167,7 @@ where
             suites,
             #[cfg(feature = "mlkem")]
             mlkem_ek: Some(&mlkem_ek),
-            // P-256 rides as a *second* key_share only when X25519 is primary;
+            // P-256 rides as a second key_share only when X25519 is primary;
             // when it IS the primary group it's passed as `primary_pub` instead
             // (and the `p256_pub` field doesn't exist in that config).
             #[cfg(all(feature = "p256-kx", feature = "x25519-kx"))]

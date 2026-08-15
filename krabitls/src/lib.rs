@@ -267,16 +267,15 @@ const KEY_SHARE_KEY_LEN: usize = backends::ecdhe::P256_SHARE_BYTES;
 // u16 would silently truncate the length prefixes derived from it.
 const _: () = assert!(KEY_SHARE_KEY_LEN <= u16::MAX as usize);
 const KEY_SHARE_KEY_LEN_U16: u16 = KEY_SHARE_KEY_LEN as u16;
-// Length of the raw DH public the caller hands the writer for the primary
-// key_share: the 32-byte X25519 pub (also under mlkem, where the ek is prepended
-// separately), or the 65-byte secp256r1 SEC1 point when P-256 is primary.
+// The primary group's DH public the caller hands the writer: 32 B X25519 (the
+// ek is written separately under mlkem) or 65 B P-256.
 #[cfg(feature = "mlkem")]
 pub(crate) const PRIMARY_PUB_LEN: usize = 32;
 #[cfg(not(feature = "mlkem"))]
 pub(crate) const PRIMARY_PUB_LEN: usize = KEY_SHARE_KEY_LEN;
 // Primary client_shares entry: group (2) + key_len (2) + key.
 const PRIMARY_KEY_SHARE_ENTRY: u16 = 4 + KEY_SHARE_KEY_LEN_U16;
-// secp256r1 *second* key_share entry: group (2) + key_len (2) + SEC1 point (65).
+// secp256r1 second key_share entry: group (2) + key_len (2) + SEC1 point (65).
 // Only present when P-256 is a secondary group (X25519 primary + p256-kx); when
 // `x25519-kx` is off, P-256 is the primary entry, so there is no second entry.
 #[cfg(all(feature = "p256-kx", feature = "x25519-kx"))]
@@ -520,7 +519,7 @@ const _: () = assert!(
             // Primary key_share point vs the 32-byte X25519 baseline: +ek under
             // mlkem, +33 when secp256r1 (65) is the primary group (x25519-kx off).
             + (KEY_SHARE_KEY_LEN - 32)
-            // p256-kx as a *second* group adds a supported_groups entry (2) and a
+            // p256-kx as a second group adds a supported_groups entry (2) and a
             // full secp256r1 key_share entry (P256_KX_ENTRY_LEN). Both are zero
             // when P-256 is the primary group (x25519-kx off).
             + P256_KX_ENTRY_LEN as usize
@@ -671,7 +670,7 @@ pub(crate) fn write_client_hello_with<W: Write>(
     out.write_u16(2 + 2 * SUPPORTED_GROUPS_COUNT)?; // ext_data: list_len (2) + groups
     out.write_u16(2 * SUPPORTED_GROUPS_COUNT)?; // named_group_list len
     out.write_u16(KEY_SHARE_GROUP)?;
-    // secp256r1 as a *second* named group only when X25519 is the primary; with
+    // secp256r1 as a second named group only when X25519 is the primary; with
     // `x25519-kx` off, KEY_SHARE_GROUP already is secp256r1.
     #[cfg(all(feature = "p256-kx", feature = "x25519-kx"))]
     out.write_u16(NAMED_GROUP_SECP256R1)?;
@@ -927,7 +926,7 @@ pub(crate) fn parse_server_hello(input: &[u8]) -> Result<ServerHelloView<'_>, Pa
                     }
                 } else {
                     // The only other group we can have advertised is secp256r1 as a
-                    // *second* group (X25519 primary + p256-kx).
+                    // second group (X25519 primary + p256-kx).
                     #[cfg(all(feature = "p256-kx", feature = "x25519-kx"))]
                     if group == NAMED_GROUP_SECP256R1 {
                         p256_share = Some(key.try_into().map_err(|_| ParseError::BadKeyShare)?);
