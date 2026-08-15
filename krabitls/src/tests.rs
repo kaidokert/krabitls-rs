@@ -1911,6 +1911,32 @@ mod cipher_aes {
         }
         impl rand_core::TryCryptoRng for XorRng {}
 
+        /// Test RNG whose every draw fails, to exercise the fallible sign path:
+        /// the PSS salt and base blind both come from the RNG, so a failure must
+        /// surface as `ClientAuthError`, never a panic or a half-formed signature.
+        #[derive(Debug)]
+        struct RngBroken;
+        impl core::fmt::Display for RngBroken {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                f.write_str("rng failed")
+            }
+        }
+        impl core::error::Error for RngBroken {}
+        struct ErrorRng;
+        impl rand_core::TryRng for ErrorRng {
+            type Error = RngBroken;
+            fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
+                Err(RngBroken)
+            }
+            fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
+                Err(RngBroken)
+            }
+            fn try_fill_bytes(&mut self, _dst: &mut [u8]) -> Result<(), Self::Error> {
+                Err(RngBroken)
+            }
+        }
+        impl rand_core::TryCryptoRng for ErrorRng {}
+
         /// RSA fixture, c→s ClientHello.
         const FIXTURE_RSA_CLIENT_HELLO: [u8; 151] = crate::hex_decode(include_str!(
             "../../testdata/packets_rsa/001_c2s_ClientHello.hex"
@@ -2202,6 +2228,19 @@ mod cipher_aes {
             assert_ne!(sig, sig2);
             vk.verify_pss_sha256(content, &sig2)
                 .expect("PSS verifies 2");
+        }
+
+        #[test]
+        fn rsa_client_auth_sign_fails_cleanly_when_rng_errors() {
+            use crate::backends::RsaClientAuth;
+            use crate::traits::client_auth::ClientAuth;
+
+            let auth = RsaClientAuth::from_components(&CLIENT_N, CLIENT_E, &CLIENT_D, &[0x30])
+                .expect("components accepted");
+            assert!(
+                auth.sign(b"content", &mut ErrorRng).is_err(),
+                "a failing RNG must yield ClientAuthError, not a signature",
+            );
         }
 
         /// RSA-3072 client-auth sign round-trip — `from_components` signs

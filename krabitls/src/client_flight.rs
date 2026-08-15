@@ -448,8 +448,8 @@ mod tests {
     /// Verify backend mirrors the `RustCrypto` provider (non-CT, 512-bit).
     use crate::bigint::Curve25519VerifyBn as VerifyBn;
 
-    /// Constant-fill test RNG (ed25519 signing ignores it; present so the
-    /// `ClientAuthSign<R>` calls have a concrete `R`). Not a CSPRNG.
+    /// Constant-fill test RNG. A constant hedge input degrades the ed25519
+    /// signature to deterministic (never nonce reuse) — still valid. Not a CSPRNG.
     struct TestRng;
     impl rand_core::TryRng for TestRng {
         type Error = core::convert::Infallible;
@@ -465,6 +465,30 @@ mod tests {
         }
     }
     impl rand_core::TryCryptoRng for TestRng {}
+
+    /// Test RNG whose every draw fails, to exercise the fallible sign path.
+    #[derive(Debug)]
+    struct RngBroken;
+    impl core::fmt::Display for RngBroken {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            f.write_str("rng failed")
+        }
+    }
+    impl core::error::Error for RngBroken {}
+    struct ErrorRng;
+    impl rand_core::TryRng for ErrorRng {
+        type Error = RngBroken;
+        fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
+            Err(RngBroken)
+        }
+        fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
+            Err(RngBroken)
+        }
+        fn try_fill_bytes(&mut self, _dst: &mut [u8]) -> Result<(), Self::Error> {
+            Err(RngBroken)
+        }
+    }
+    impl rand_core::TryCryptoRng for ErrorRng {}
 
     fn read_u24(b: &[u8]) -> usize {
         u32::from_be_bytes([0, b[0], b[1], b[2]]) as usize
@@ -652,6 +676,16 @@ mod tests {
         // A different transcript must not verify against this signature.
         let other = certificate_verify_signed_content(&TranscriptDigest::new([0x43u8; 32]));
         assert!(!ed25519_heapless::verify::<VerifyBn>(pubkey, &other, sig));
+    }
+
+    #[test]
+    fn certificate_verify_fails_cleanly_when_rng_errors() {
+        let auth = Ed25519ClientAuth::from_seed(&[7u8; 32], &[0x55u8; 16]).unwrap();
+        let th = TranscriptDigest::new([0x42u8; 32]);
+        let mut out = [0u8; 128];
+        // The hedged signer draws its nonce hedge + blinder from the rng, so a
+        // failing rng must surface as an error, not a panic or a bad signature.
+        assert!(build_client_certificate_verify(&auth, &th, &mut ErrorRng, &mut out).is_err());
     }
 
     #[test]
