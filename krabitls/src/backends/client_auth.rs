@@ -3,6 +3,7 @@
 
 use ed25519_heapless::SigningKey;
 use rand_core::TryCryptoRng;
+use signature::RandomizedSigner;
 
 #[cfg(feature = "rsa")]
 use {
@@ -87,10 +88,14 @@ impl<R: TryCryptoRng + ?Sized> ClientAuth<R> for Ed25519ClientAuth<'_> {
         SIG_SCHEME_ED25519
     }
 
-    // Ed25519 is deterministic (RFC 8032) — no draw, ignores `rng`.
-    fn sign(&self, content: &[u8], _rng: &mut R) -> Result<ClientSignature, ClientAuthError> {
-        let sig =
-            ed25519_heapless::sign(&self.signing_key, content).map_err(|_| ClientAuthError)?;
+    // Hedged + blinded (RandomizedSigner): `rng` drives the nonce hedge and the
+    // scalar/coordinate blinding. Output is non-deterministic but a standard RFC
+    // 8032 signature any verifier accepts.
+    fn sign(&self, content: &[u8], rng: &mut R) -> Result<ClientSignature, ClientAuthError> {
+        let sig = self
+            .signing_key
+            .try_sign_with_rng(rng, content)
+            .map_err(|_| ClientAuthError)?;
         let mut out = ClientSignature::new();
         out.extend_from_slice(&sig).map_err(|_| ClientAuthError)?;
         Ok(out)

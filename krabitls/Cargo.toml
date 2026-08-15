@@ -161,7 +161,7 @@ sha2 = { version = "0.11", default-features = false }
 digest = { version = "0.11", default-features = false }
 hmac = { version = "0.13", default-features = false }
 hkdf = { version = "0.13", default-features = false }
-ed25519_heapless = { version = "0.5.0", default-features = false, features = ["sha512-sha2"] }
+ed25519_heapless = { version = "0.5.2", default-features = false, features = ["sha512-sha2"] }
 fixed-bigint = { version = "0.6", default-features = false, features = ["use-unsafe", "zeroize", "cios"] }
 const-num-traits = { version = "0.2.1", default-features = false, features = ["ct"] }
 der = { version = "0.8.0", default-features = false, features = ["oid"], optional = true }
