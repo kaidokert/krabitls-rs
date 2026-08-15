@@ -12,14 +12,18 @@ publish = false
 # `rand_core::TryCryptoRng` but is NOT a CSPRNG — can never be reached from a
 # real krabitls build.
 
-# krabitls's lib doesn't compile without a cipher suite, so forward one.
-# The fixtures code itself is cipher-independent (only `Transport` + SHA-256);
-# these flags exist purely to let the underlying krabitls build resolve. The
-# consumer (footprint) forwards whichever cipher it measures.
+# krabitls's lib needs a cipher suite and a key-exchange group to compile, so
+# forward one of each for a standalone build (the fixtures code itself is
+# cipher/KX-agnostic — only `Transport` + SHA-256). Forwarded via the default,
+# not the krabitls dependency's `features`: krabitls dev-deps this crate with
+# `default-features = false`, so nothing is forced onto krabitls and its per-test
+# config is inherited via feature unification — which keeps a P-256-only
+# (`x25519-kx` off) krabitls testable instead of pinning X25519 on.
 [features]
-default = ["cipher-aes"]
+default = ["cipher-aes", "x25519-kx"]
 cipher-aes = ["krabitls/cipher-aes"]
 chacha20 = ["krabitls/chacha20"]
+x25519-kx = ["krabitls/x25519-kx"]
 
 [dependencies]
 krabitls = { path = "../krabitls", default-features = false }

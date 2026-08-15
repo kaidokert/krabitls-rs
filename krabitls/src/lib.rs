@@ -169,9 +169,10 @@ pub(crate) mod consts {
     pub const CIPHER_AES_128_GCM_SHA256: u16 = 0x1301;
     pub const CIPHER_CHACHA20_POLY1305_SHA256: u16 = 0x1303;
     pub const NAMED_GROUP_X25519: u16 = 0x001D;
-    /// secp256r1 (NIST P-256) classical ECDHE group. Advertised as a second
-    /// group alongside the primary under `feature = "p256-kx"`.
-    #[cfg(feature = "p256-kx")]
+    /// secp256r1 (NIST P-256) classical ECDHE group. Unconditional so
+    /// `KEY_SHARE_GROUP` / the key-share writer can name it from a
+    /// `cfg!`-false branch; advertised as a second group under `p256-kx`, or as
+    /// the primary group in a P-256-primary build (`x25519-kx` off).
     pub const NAMED_GROUP_SECP256R1: u16 = 0x0017;
     /// `X25519MLKEM768` hybrid group (draft-ietf-tls-ecdhe-mlkem). Unconditional
     /// so the key-share writer can name it from a `cfg!(feature = "mlkem")`-false
@@ -229,7 +230,8 @@ use consts::*;
 
 const EXT_SUPPORTED_VERSIONS_TOTAL: u16 = 4 + 3;
 // supported_groups: the primary group, plus secp256r1 under `p256-kx`.
-const SUPPORTED_GROUPS_COUNT: u16 = 1 + cfg!(feature = "p256-kx") as u16;
+const SUPPORTED_GROUPS_COUNT: u16 =
+    cfg!(feature = "x25519-kx") as u16 + cfg!(feature = "p256-kx") as u16;
 // ext header (4) + list_len (2) + 2 bytes per group.
 const EXT_SUPPORTED_GROUPS_TOTAL: u16 = 4 + 2 + 2 * SUPPORTED_GROUPS_COUNT;
 // Schemes advertised in signature_algorithms: ed25519 always, rsa_pss when
@@ -245,26 +247,40 @@ const EXT_SIGNATURE_ALGORITHMS_TOTAL: u16 = 4 + 2 + 2 * SIG_SCHEME_COUNT;
 // X25519MLKEM768 under `mlkem`, otherwise plain X25519.
 const KEY_SHARE_GROUP: u16 = if cfg!(feature = "mlkem") {
     NAMED_GROUP_X25519MLKEM768
-} else {
+} else if cfg!(feature = "x25519-kx") {
     NAMED_GROUP_X25519
+} else {
+    // `x25519-kx` off ⇒ secp256r1 is the sole/primary group (the
+    // at-least-one-KX guard below rejects the no-KX build).
+    NAMED_GROUP_SECP256R1
 };
-// key_exchange byte length of our key_share entry. X25519MLKEM768 prepends the
-// ML-KEM-768 encapsulation key (1184) to the X25519 public key (32); plain
-// X25519 is 32.
+// key_exchange byte length of our primary key_share entry. X25519MLKEM768
+// prepends the ML-KEM-768 encapsulation key (1184) to the X25519 public key
+// (32); plain X25519 is 32; a P-256-primary build carries the 65-byte SEC1 point.
 #[cfg(feature = "mlkem")]
 const KEY_SHARE_KEY_LEN: usize = backends::mlkem::MLKEM768_EK_BYTES + 32;
-#[cfg(not(feature = "mlkem"))]
+#[cfg(all(not(feature = "mlkem"), feature = "x25519-kx"))]
 const KEY_SHARE_KEY_LEN: usize = 32;
+#[cfg(all(not(feature = "mlkem"), not(feature = "x25519-kx")))]
+const KEY_SHARE_KEY_LEN: usize = backends::ecdhe::P256_SHARE_BYTES;
 // key_exchange is a u16-prefixed wire field; a future KEM whose key overflowed
 // u16 would silently truncate the length prefixes derived from it.
 const _: () = assert!(KEY_SHARE_KEY_LEN <= u16::MAX as usize);
 const KEY_SHARE_KEY_LEN_U16: u16 = KEY_SHARE_KEY_LEN as u16;
+// The primary group's DH public the caller hands the writer: 32 B X25519 (the
+// ek is written separately under mlkem) or 65 B P-256.
+#[cfg(feature = "mlkem")]
+pub(crate) const PRIMARY_PUB_LEN: usize = 32;
+#[cfg(not(feature = "mlkem"))]
+pub(crate) const PRIMARY_PUB_LEN: usize = KEY_SHARE_KEY_LEN;
 // Primary client_shares entry: group (2) + key_len (2) + key.
 const PRIMARY_KEY_SHARE_ENTRY: u16 = 4 + KEY_SHARE_KEY_LEN_U16;
-// secp256r1 entry (p256-kx): group (2) + key_len (2) + SEC1 point (65).
-#[cfg(feature = "p256-kx")]
+// secp256r1 second key_share entry: group (2) + key_len (2) + SEC1 point (65).
+// Only present when P-256 is a secondary group (X25519 primary + p256-kx); when
+// `x25519-kx` is off, P-256 is the primary entry, so there is no second entry.
+#[cfg(all(feature = "p256-kx", feature = "x25519-kx"))]
 const P256_KX_ENTRY_LEN: u16 = 4 + 65;
-#[cfg(not(feature = "p256-kx"))]
+#[cfg(not(all(feature = "p256-kx", feature = "x25519-kx")))]
 const P256_KX_ENTRY_LEN: u16 = 0;
 #[cfg(feature = "p256-kx")]
 const _: () = assert!(backends::ecdhe::P256_SHARE_BYTES == 65);
@@ -280,6 +296,14 @@ const EXT_KEY_SHARE_TOTAL: u16 = 4 + KEY_SHARE_EXT_DATA_LEN;
 #[cfg(not(any(feature = "cipher-aes", feature = "chacha20")))]
 compile_error!(
     "krabitls requires at least one of `cipher-aes` (default) or `chacha20` to provide a cipher suite"
+);
+
+// A ClientHello with no supported_groups / key_share is unusable. `x25519-kx`
+// (default) and `p256-kx` are the two key-exchange groups; at least one must be
+// on. `mlkem` (X25519MLKEM768) is a hybrid on X25519, so it pulls in `x25519-kx`.
+#[cfg(not(any(feature = "x25519-kx", feature = "p256-kx")))]
+compile_error!(
+    "krabitls requires at least one key-exchange group: `x25519-kx` (default) or `p256-kx`"
 );
 
 const CH_CIPHER_SUITES_COUNT: usize =
@@ -332,10 +356,12 @@ pub(crate) struct ClientHelloOptions<'a> {
     /// `mlkem` (the writer errors rather than emit a short key_share).
     #[cfg(feature = "mlkem")]
     pub mlkem_ek: Option<&'a [u8; backends::mlkem::MLKEM768_EK_BYTES]>,
-    /// secp256r1 SEC1 public point for the P-256 `key_share` entry. Set by the
-    /// connection layer from the generated ephemeral; `None` is a bug under
-    /// `p256-kx` (the writer errors rather than emit a short key_share).
-    #[cfg(feature = "p256-kx")]
+    /// secp256r1 SEC1 public point for the P-256 *second* `key_share` entry. Set
+    /// by the connection layer from the generated ephemeral; `None` is a bug (the
+    /// writer errors rather than emit a short key_share). Only present when P-256
+    /// is a second group (X25519 primary + `p256-kx`); in a P-256-primary build
+    /// (`x25519-kx` off) the point is passed as the primary `primary_pub`.
+    #[cfg(all(feature = "p256-kx", feature = "x25519-kx"))]
     pub p256_pub: Option<&'a [u8; backends::ecdhe::P256_SHARE_BYTES]>,
 }
 
@@ -490,12 +516,14 @@ const _: () = assert!(
         == 117
             + 2 * CH_CIPHER_SUITES_COUNT.saturating_sub(1)
             + 2 * (SIG_SCHEME_COUNT as usize - 1)
-            // key_share grows from the 32-byte X25519 baseline by the ML-KEM ek.
+            // Primary key_share point vs the 32-byte X25519 baseline: +ek under
+            // mlkem, +33 when secp256r1 (65) is the primary group (x25519-kx off).
             + (KEY_SHARE_KEY_LEN - 32)
-            // p256-kx adds a supported_groups entry (2) and a full secp256r1
-            // key_share entry (group+len+point = P256_KX_ENTRY_LEN).
+            // p256-kx as a second group adds a supported_groups entry (2) and a
+            // full secp256r1 key_share entry (P256_KX_ENTRY_LEN). Both are zero
+            // when P-256 is the primary group (x25519-kx off).
             + P256_KX_ENTRY_LEN as usize
-            + 2 * cfg!(feature = "p256-kx") as usize
+            + 2 * cfg!(all(feature = "p256-kx", feature = "x25519-kx")) as usize
 );
 
 /// Big-endian byte-emission helpers layered on top of [`embedded_io::Write`].
@@ -536,9 +564,14 @@ const TLS_PLAINTEXT_MAX: usize = 1 << 14;
 pub(crate) fn write_client_hello_with<W: Write>(
     out: &mut W,
     random: &[u8; 32],
-    x25519_pub: &[u8; 32],
+    primary_pub: &[u8],
     opts: &ClientHelloOptions<'_>,
 ) -> Result<usize, ClientHelloError<W::Error>> {
+    debug_assert_eq!(
+        primary_pub.len(),
+        PRIMARY_PUB_LEN,
+        "primary key_share pub must be the primary group's DH public length"
+    );
     let hostname = opts.hostname;
     let host_len = hostname.map(|h| h.len()).unwrap_or(0);
     if host_len > u16::MAX as usize {
@@ -637,7 +670,9 @@ pub(crate) fn write_client_hello_with<W: Write>(
     out.write_u16(2 + 2 * SUPPORTED_GROUPS_COUNT)?; // ext_data: list_len (2) + groups
     out.write_u16(2 * SUPPORTED_GROUPS_COUNT)?; // named_group_list len
     out.write_u16(KEY_SHARE_GROUP)?;
-    #[cfg(feature = "p256-kx")]
+    // secp256r1 as a second named group only when X25519 is the primary; with
+    // `x25519-kx` off, KEY_SHARE_GROUP already is secp256r1.
+    #[cfg(all(feature = "p256-kx", feature = "x25519-kx"))]
     out.write_u16(NAMED_GROUP_SECP256R1)?;
 
     out.write_u16(EXT_SIGNATURE_ALGORITHMS)?;
@@ -687,9 +722,11 @@ pub(crate) fn write_client_hello_with<W: Write>(
         }
     }
 
-    // Single key_share entry. Under `mlkem` the key_exchange is
+    // Primary key_share entry. Under `mlkem` the key_exchange is
     // `ML-KEM-768 ek (1184) || X25519 pub (32)` (draft-ietf-tls-ecdhe-mlkem
-    // orders ML-KEM first for X25519MLKEM768); otherwise just the X25519 pub.
+    // orders ML-KEM first for X25519MLKEM768); otherwise it is `primary_pub`
+    // alone — the 32-byte X25519 pub, or the 65-byte secp256r1 SEC1 point when
+    // P-256 is the primary group.
     out.write_u16(EXT_KEY_SHARE)?;
     out.write_u16(KEY_SHARE_EXT_DATA_LEN)?;
     out.write_u16(KEY_SHARE_LIST_LEN)?;
@@ -700,10 +737,11 @@ pub(crate) fn write_client_hello_with<W: Write>(
         opts.mlkem_ek
             .ok_or(ClientHelloError::MissingMlKemKeyShare)?,
     )?;
-    out.write_all(x25519_pub)?;
-    // Second key_share entry: the secp256r1 SEC1 point (RFC 8446 orders entries
-    // by client preference; the server picks whichever group it supports).
-    #[cfg(feature = "p256-kx")]
+    out.write_all(primary_pub)?;
+    // Second key_share entry: the secp256r1 SEC1 point, only when X25519 is the
+    // primary and P-256 is offered alongside (RFC 8446 orders entries by client
+    // preference; the server picks whichever group it supports).
+    #[cfg(all(feature = "p256-kx", feature = "x25519-kx"))]
     {
         out.write_u16(NAMED_GROUP_SECP256R1)?;
         out.write_u16(backends::ecdhe::P256_SHARE_BYTES as u16)?;
@@ -737,7 +775,10 @@ pub(crate) struct ServerHelloView<'a> {
     pub selected_group: u16,
     /// Server's ephemeral X25519 public key (32 bytes) — `Some` iff the server
     /// selected the primary group (under `mlkem`, the trailing 32 bytes of the
-    /// `X25519MLKEM768` share). `None` when it selected secp256r1.
+    /// `X25519MLKEM768` share). `None` when it selected secp256r1. Absent from a
+    /// P-256-primary build (`x25519-kx` off), where secp256r1 is the primary
+    /// group and its share lands in `p256_share`.
+    #[cfg(feature = "x25519-kx")]
     pub x25519_share: Option<&'a [u8; 32]>,
     /// ML-KEM-768 ciphertext from the `X25519MLKEM768` server key_share, `Some`
     /// iff the hybrid group was selected.
@@ -826,6 +867,7 @@ pub(crate) fn parse_server_hello(input: &[u8]) -> Result<ServerHelloView<'_>, Pa
 
     let mut selected_version: Option<u16> = None;
     let mut selected_group: Option<u16> = None;
+    #[cfg(feature = "x25519-kx")]
     let mut x25519_share: Option<&[u8; 32]> = None;
     #[cfg(feature = "mlkem")]
     let mut mlkem_ct: Option<&[u8; backends::mlkem::MLKEM768_CT_BYTES]> = None;
@@ -872,19 +914,26 @@ pub(crate) fn parse_server_hello(input: &[u8]) -> Result<ServerHelloView<'_>, Pa
                         mlkem_ct = Some(ct.try_into().map_err(|_| ParseError::BadKeyShare)?);
                         x25519_share = Some(x.try_into().map_err(|_| ParseError::BadKeyShare)?);
                     }
-                    #[cfg(not(feature = "mlkem"))]
+                    #[cfg(all(not(feature = "mlkem"), feature = "x25519-kx"))]
                     {
                         x25519_share = Some(key.try_into().map_err(|_| ParseError::BadKeyShare)?);
                     }
+                    // `x25519-kx` off ⇒ KEY_SHARE_GROUP *is* secp256r1: the primary
+                    // share is the P-256 SEC1 point.
+                    #[cfg(all(not(feature = "mlkem"), not(feature = "x25519-kx")))]
+                    {
+                        p256_share = Some(key.try_into().map_err(|_| ParseError::BadKeyShare)?);
+                    }
                 } else {
-                    // The only other group we can have advertised is secp256r1.
-                    #[cfg(feature = "p256-kx")]
+                    // The only other group we can have advertised is secp256r1 as a
+                    // second group (X25519 primary + p256-kx).
+                    #[cfg(all(feature = "p256-kx", feature = "x25519-kx"))]
                     if group == NAMED_GROUP_SECP256R1 {
                         p256_share = Some(key.try_into().map_err(|_| ParseError::BadKeyShare)?);
                     } else {
                         return Err(ParseError::BadKeyShare);
                     }
-                    #[cfg(not(feature = "p256-kx"))]
+                    #[cfg(not(all(feature = "p256-kx", feature = "x25519-kx")))]
                     return Err(ParseError::BadKeyShare);
                 }
                 selected_group = Some(group);
@@ -897,9 +946,16 @@ pub(crate) fn parse_server_hello(input: &[u8]) -> Result<ServerHelloView<'_>, Pa
     }
 
     let selected_group = selected_group.ok_or(ParseError::BadKeyShare)?;
-    // The selected group's share must be present (the primary path also requires
-    // the X25519 component; the ML-KEM ciphertext is checked at decapsulation).
+    // The selected group's share must be present (under mlkem the primary path
+    // also carries the X25519 component; the ML-KEM ciphertext is checked at
+    // decapsulation). The primary group is X25519(MLKEM) under `x25519-kx`, else
+    // secp256r1.
+    #[cfg(feature = "x25519-kx")]
     if selected_group == KEY_SHARE_GROUP && x25519_share.is_none() {
+        return Err(ParseError::BadKeyShare);
+    }
+    #[cfg(not(feature = "x25519-kx"))]
+    if selected_group == KEY_SHARE_GROUP && p256_share.is_none() {
         return Err(ParseError::BadKeyShare);
     }
     Ok(ServerHelloView {
@@ -908,6 +964,7 @@ pub(crate) fn parse_server_hello(input: &[u8]) -> Result<ServerHelloView<'_>, Pa
         cipher_suite,
         selected_version: selected_version.ok_or(ParseError::BadSupportedVersions)?,
         selected_group,
+        #[cfg(feature = "x25519-kx")]
         x25519_share,
         #[cfg(feature = "mlkem")]
         mlkem_ct,
