@@ -3,11 +3,14 @@
 //! `gen_ecdsa_fixtures`). Exercises the ECDSA verify path with no network:
 //! self-signed P-256 leaf verify + the ECDSA-P256 CertificateVerify. Gated to
 //! `ecdsa` + `cipher-aes` to match the captured ClientHello (its two ECDSA
-//! signature_algorithms entries shift the bytes vs the Ed25519 fixtures).
+//! signature_algorithms entries shift the bytes vs the Ed25519 fixtures). The
+//! capture is an X25519 key exchange, so it also needs `x25519-kx`: a P-256-only
+//! build offers no X25519 key_share and rejects the fixture's server share.
 
 #![cfg(all(
     feature = "cipher-aes",
     feature = "ecdsa",
+    feature = "x25519-kx",
     not(feature = "chacha20"),
     not(feature = "rsa"),
     not(feature = "mldsa"),
