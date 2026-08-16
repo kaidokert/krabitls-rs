@@ -21,24 +21,24 @@ size at the cost of some wasted stack.
 
 #### Resource usage
 
-Peak stack and `.text` for a full TLS 1.3 handshake (real − baseline, QEMU).
-A few corners of the range on Cortex-M3; the `+ client cert` column is mutual
-TLS. Full grid for both M3 and RV32IMAC, all key-exchange / cipher / signature
-combinations: [`FOOTPRINT.md`](FOOTPRINT.md).
+Example peak stack and `.text` for a full TLS 1.3 handshake (representative
+measurement, real − baseline, on QEMU). `+ client cert` is the same handshake
+with mutual TLS. Full grid for both targets and every key-exchange / cipher /
+signature combination: [`FOOTPRINT.md`](FOOTPRINT.md).
 
-| KEX            | AEAD              | Server cert  | .text (KiB) | Stack (B) | + client cert |
-|----------------|-------------------|--------------|------------:|----------:|--------------:|
-| X25519         | ChaCha20-Poly1305 | Ed25519      |        37.5 |    10 660 |             — |
-| X25519         | AES-128-GCM       | ECDSA-P256   |        58.5 |     9 716 |        12 844 |
-| P-256 ECDHE    | AES-128-GCM       | Ed25519      |        50.1 |    12 884 |             — |
-| X25519         | AES-128-GCM       | RSA-2048-PSS |        47.8 |    29 492 |        47 268 |
-| X25519MLKEM768 | AES-128-GCM       | ML-DSA-44    |        62.1 |   107 668 |             — |
+| Target   | Server cert  | AEAD              | KEX            | .text (KiB) | Stack (B) | + client cert |
+|----------|--------------|-------------------|----------------|------------:|----------:|--------------:|
+| M3       | Ed25519      | AES-128-GCM       | X25519         |        41.0 |    10 604 |        12 484 |
+| M3       | ECDSA-P256   | AES-128-GCM       | X25519         |        58.5 |     9 716 |        12 844 |
+| M3       | RSA-2048-PSS | AES-128-GCM       | X25519         |        47.8 |    29 492 |             — |
+| M3       | Ed25519      | AES-128-GCM       | P-256 ECDHE    |        50.1 |    12 884 |             — |
+| M3       | ML-DSA-44    | AES-128-GCM       | X25519MLKEM768 |        62.1 |   107 668 |             — |
+| RV32IMAC | Ed25519      | ChaCha20-Poly1305 | X25519         |        56.7 |    10 524 |             — |
+| RV32IMAC | ML-DSA-44    | AES-128-GCM       | X25519MLKEM768 |        96.2 |   111 640 |             — |
 
-Smallest flash is ChaCha20/Ed25519; smallest stack is ECDSA-P256 (its verify is
-shallow, though its `.text` is among the largest); the post-quantum
-X25519MLKEM768 / ML-DSA-44 corner is ~10× the stack. RV32IMAC spans the same
-range at ≈1.5× the `.text`: ChaCha20/Ed25519 ~56.7 KiB / 10 524 B, the PQC corner
-~96.2 KiB / 111 640 B.
+`+ client cert` shows same-algorithm mutual auth (Ed25519, ECDSA). RSA-2048-PSS
+client certificates are also supported; that path is in
+[`FOOTPRINT.md`](FOOTPRINT.md).
 
 ## License
 
