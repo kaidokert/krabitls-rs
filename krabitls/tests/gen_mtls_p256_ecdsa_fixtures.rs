@@ -21,7 +21,7 @@
 //! ```
 //!
 //! ```text
-//! KB_PORT=14465 cargo test --features ecdsa,p256-kx --test gen_mtls_p256_ecdsa_fixtures \
+//! KB_PORT=14465 cargo test --features ecdsa,p256-kx,dev-utils --test gen_mtls_p256_ecdsa_fixtures \
 //!   -- --ignored --nocapture capture_mtls_p256_ecdsa_fixtures
 //! ```
 

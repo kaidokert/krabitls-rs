@@ -126,11 +126,26 @@ fn capture_p256_ecdsa_fixtures() {
         rx.iter().map(|r| r[0]).collect::<Vec<_>>()
     );
 
-    // TX starts with the plaintext ClientHello (0x16); RX is the plaintext
-    // ServerHello (0x16) then the encrypted flight (0x17…).
+    // TX = [plaintext ClientHello (0x16), encrypted Finished (0x17)]; RX =
+    // plaintext ServerHello (0x16) then the encrypted flight (0x17…). Assert the
+    // full shape so a misconfigured server (extra tickets, reordering) fails
+    // here instead of writing a bad fixture.
+    assert_eq!(
+        tx.len(),
+        2,
+        "expected [ClientHello, encrypted Finished] TX records"
+    );
     assert_eq!(tx[0][0], 0x16, "first TX record must be the ClientHello");
-    assert_eq!(rx[0][0], 0x16, "first RX record must be the ServerHello");
+    assert_eq!(
+        tx[1][0], 0x17,
+        "second TX record must be the encrypted Finished"
+    );
     assert!(rx.len() >= 2, "expected ServerHello + encrypted flight");
+    assert_eq!(rx[0][0], 0x16, "first RX record must be the ServerHello");
+    assert!(
+        rx[1..].iter().all(|r| r[0] == 0x17),
+        "post-ServerHello RX must be encrypted application_data"
+    );
 
     let dir = concat!(
         env!("CARGO_MANIFEST_DIR"),
