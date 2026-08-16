@@ -708,7 +708,7 @@ pub(crate) mod tests {
         let content = b"chacha plaintext sample bytes";
         let seq = 11;
         let keys = RecordKeys::<ChaCha20Poly1305Sha256> {
-            cipher: ChaCha20Poly1305Sha256::make_cipher(&key),
+            key: key.clone(),
             iv: iv.clone(),
         };
 
