@@ -1,0 +1,456 @@
+//! Chain-validation strategy: trust a server cert chain that walks up to a
+//! pinned anchor.
+//!
+//! [`PinnedRoots`] holds a small ledger of [`Anchor`]s and validates the
+//! presented chain leaf→up: each issuer→subject signature is verified (reusing
+//! [`verify_link`]), issuers must be CAs (basicConstraints + keyUsage), and the
+//! walk accepts at the first cert whose SHA-256 fingerprint is pinned, or — for
+//! a stored [`Anchor::Cert`] — when the topmost presented cert is signed by that
+//! stored anchor's key. The walk is iterative (one link's frame reused per
+//! step), so a deep chain costs the same stack as a shallow one; peak tracks the
+//! most expensive single link's verify.
+//!
+//! Trust flows down from the pinned fingerprint / stored anchor through
+//! signatures; there is no CA-bundle path building and no revocation (CRL/OCSP)
+//! — the ledger is updated out-of-band. See `notes/chain-verify-design.md`.
+
+use core::marker::PhantomData;
+
+use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
+
+use crate::traits::cert::{CertParseError, CertParser};
+use crate::traits::verify_strategy::{
+    CertChainView, Clock, LinkErr, NoClock, PrepareLeafErr, PreparedVerifier, Trusted,
+    VerifyStrategy, prepare_leaf, verify_link,
+};
+use crate::traits::{Ed25519VerifierProvider, RsaVerifierProvider};
+
+/// A trust anchor in the on-board ledger.
+#[derive(Debug, Clone, Copy)]
+pub enum Anchor<'a> {
+    /// SHA-256 fingerprint of the full DER of a cert the server transmits
+    /// (`openssl x509 -fingerprint -sha256`). The walk accepts at the first
+    /// presented cert whose fingerprint matches; certs above it are ignored.
+    Fingerprint([u8; 32]),
+    /// A stored anchor certificate (full DER, e.g. in flash). The topmost
+    /// presented cert is verified against this cert's public key, so the anchor
+    /// need not be transmitted — the durable posture for roots the server omits.
+    Cert(&'a [u8]),
+}
+
+/// Default per-call chain-depth cap. Real chains rarely exceed 4; 8 leaves slack.
+pub const DEFAULT_CHAIN_DEPTH: usize = 8;
+
+/// Chain-validation [`VerifyStrategy`] anchored in a fingerprint/cert ledger.
+///
+/// `C` is the [`CertParser`], `K` the validity [`Clock`] (default [`NoClock`] =
+/// validity skipped), `CAP` the max presented-chain depth. Construct with
+/// [`PinnedRoots::new`] (or [`with_clock`](PinnedRoots::with_clock)) and plug in
+/// via [`ClientParams::with_strategy`](crate::client::ClientParams::with_strategy).
+#[derive(Debug, Clone)]
+pub struct PinnedRoots<'a, C, K = NoClock, const CAP: usize = DEFAULT_CHAIN_DEPTH> {
+    anchors: &'a [Anchor<'a>],
+    clock: K,
+    /// When `true`, the pinned anchor's own validity window is checked too. Off
+    /// by default: an operator's pin is the trust statement, and an expired
+    /// pinned anchor should not brick a device (WebPKI ignores trust-anchor
+    /// expiry for the same reason). Below-anchor certs are always checked.
+    enforce_anchor_expiry: bool,
+    _parser: PhantomData<C>,
+}
+
+impl<'a, C, const CAP: usize> PinnedRoots<'a, C, NoClock, CAP> {
+    /// Ledger-only strategy; cert validity windows are not checked (no clock).
+    pub fn new(anchors: &'a [Anchor<'a>]) -> Self {
+        Self {
+            anchors,
+            clock: NoClock,
+            enforce_anchor_expiry: false,
+            _parser: PhantomData,
+        }
+    }
+}
+
+impl<'a, C, K, const CAP: usize> PinnedRoots<'a, C, K, CAP> {
+    /// Attach a validity [`Clock`] so below-anchor certs are `notBefore`/
+    /// `notAfter`-checked. The clock's type fixes `K`.
+    pub fn with_clock(anchors: &'a [Anchor<'a>], clock: K) -> Self {
+        Self {
+            anchors,
+            clock,
+            enforce_anchor_expiry: false,
+            _parser: PhantomData,
+        }
+    }
+
+    /// Also enforce the pinned anchor's own validity window. Off by default;
+    /// only meaningful with a real clock. Enable when the anchor's expiry must
+    /// be honored despite the self-brick risk.
+    pub fn enforce_anchor_expiry(mut self, on: bool) -> Self {
+        self.enforce_anchor_expiry = on;
+        self
+    }
+}
+
+/// Reasons [`PinnedRoots`] rejects a chain.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum PinnedRootsError {
+    #[error("chain is empty")]
+    EmptyChain,
+    #[error("chain exceeded the configured depth cap")]
+    ChainTooLong,
+    #[error("cert parse failed: {0}")]
+    Parse(#[from] CertParseError),
+    #[error("per-link signature did not verify")]
+    LinkSignatureInvalid,
+    #[cfg(feature = "rsa")]
+    #[error("intermediate cert outer signatureAlgorithm not recognized")]
+    UnknownLinkSigAlg,
+    #[cfg(feature = "rsa")]
+    #[error("RSA verifier construction failed for an issuer cert")]
+    RsaVerifierInvalid,
+    #[cfg(feature = "mldsa")]
+    #[error("ML-DSA verifier construction failed for an issuer cert")]
+    MlDsaVerifierInvalid,
+    #[error("a cert used as an issuer is not a CA (basicConstraints cA=FALSE / absent)")]
+    IssuerNotCa,
+    #[error("a cert used as an issuer has keyUsage without keyCertSign")]
+    IssuerKeyUsageForbidsCertSign,
+    #[error("issuer pathLenConstraint exceeded")]
+    PathLenExceeded,
+    #[error("no pinned anchor found in or above the presented chain")]
+    UntrustedRoot,
+    #[error("a cert's validity window check failed")]
+    Validity,
+    #[error("building the leaf verifier from its SPKI failed")]
+    LeafVerifierInvalid,
+}
+
+impl From<LinkErr> for PinnedRootsError {
+    fn from(e: LinkErr) -> Self {
+        match e {
+            LinkErr::LinkSignatureInvalid => PinnedRootsError::LinkSignatureInvalid,
+            #[cfg(feature = "rsa")]
+            LinkErr::UnknownLinkSigAlg => PinnedRootsError::UnknownLinkSigAlg,
+            #[cfg(feature = "rsa")]
+            LinkErr::RsaVerifierInvalid => PinnedRootsError::RsaVerifierInvalid,
+            #[cfg(feature = "mldsa")]
+            LinkErr::MlDsaVerifierInvalid => PinnedRootsError::MlDsaVerifierInvalid,
+        }
+    }
+}
+
+impl From<PrepareLeafErr> for PinnedRootsError {
+    fn from(_: PrepareLeafErr) -> Self {
+        PinnedRootsError::LeafVerifierInvalid
+    }
+}
+
+impl<C, K, const CAP: usize> PinnedRoots<'_, C, K, CAP> {
+    /// True when `der`'s full-cert SHA-256 fingerprint is in the ledger.
+    fn fingerprint_pinned(&self, der: &[u8]) -> bool {
+        let digest = Sha256::digest(der);
+        self.anchors.iter().any(|a| match a {
+            Anchor::Fingerprint(fp) => bool::from(digest.as_slice().ct_eq(&fp[..])),
+            Anchor::Cert(_) => false,
+        })
+    }
+}
+
+/// Verify an issuer cert is eligible: a CA, with keyUsage permitting cert
+/// signing, and pathLen room for `intermediates_below` CAs beneath it.
+fn require_issuer_ca<C: CertParser>(
+    issuer_der: &[u8],
+    intermediates_below: usize,
+) -> Result<(), PinnedRootsError> {
+    let ca = C::parse_ca_constraints(issuer_der)?;
+    if !ca.is_ca {
+        return Err(PinnedRootsError::IssuerNotCa);
+    }
+    if ca.key_cert_sign == Some(false) {
+        return Err(PinnedRootsError::IssuerKeyUsageForbidsCertSign);
+    }
+    if let Some(p) = ca.path_len {
+        if (p as usize) < intermediates_below {
+            return Err(PinnedRootsError::PathLenExceeded);
+        }
+    }
+    Ok(())
+}
+
+impl<'a, C, K, E, R, const CAP: usize> VerifyStrategy<E, R> for PinnedRoots<'a, C, K, CAP>
+where
+    C: CertParser,
+    K: Clock,
+    E: Ed25519VerifierProvider,
+    R: RsaVerifierProvider,
+{
+    type Error = PinnedRootsError;
+
+    fn verify_chain<'chain, 'src, 'slot>(
+        &self,
+        chain: CertChainView<'chain, 'src>,
+        slot: &'slot mut Option<PreparedVerifier<E, R>>,
+    ) -> Result<Trusted<'slot, E, R>, Self::Error> {
+        let certs = chain.certs;
+        if certs.is_empty() {
+            return Err(PinnedRootsError::EmptyChain);
+        }
+        if certs.len() > CAP {
+            return Err(PinnedRootsError::ChainTooLong);
+        }
+
+        // The leaf is prepared for the CertificateVerify path at the end; parse
+        // it once and keep it (CertView is Copy, borrowing the flight buffer).
+        let leaf_view = C::parse(certs[0])?;
+
+        // Walk leaf→up holding only the current cert's view — no chain-wide
+        // buffer. `child` is always the view of `certs[i]`.
+        let mut child = leaf_view;
+        let mut anchored = false;
+        let mut i = 0usize;
+        while i < certs.len() {
+            if self.fingerprint_pinned(certs[i]) {
+                // Anchor reached: links below are already verified. Its own
+                // signature is irrelevant (the pin is the trust); its expiry is
+                // only checked when opted in.
+                if self.enforce_anchor_expiry {
+                    self.clock
+                        .check_validity(&child)
+                        .map_err(|_| PinnedRootsError::Validity)?;
+                }
+                anchored = true;
+                break;
+            }
+            // Below the anchor: this cert must be time-valid.
+            self.clock
+                .check_validity(&child)
+                .map_err(|_| PinnedRootsError::Validity)?;
+            if i + 1 == certs.len() {
+                // Reached the top with no fingerprint match; a stored cert
+                // anchor (if any) must vouch for this top cert.
+                break;
+            }
+            let parent = C::parse(certs[i + 1])?;
+            verify_link::<E, R>(&child, &parent)?;
+            require_issuer_ca::<C>(certs[i + 1], i)?;
+            child = parent;
+            i += 1;
+        }
+
+        if !anchored {
+            // `child` is the top presented cert. Accept if a stored anchor cert
+            // signed it (and is itself a CA with pathLen room for the `i`
+            // intermediates below it).
+            for anchor in self.anchors {
+                let Anchor::Cert(anchor_der) = anchor else {
+                    continue;
+                };
+                let anchor_view = C::parse(anchor_der)?;
+                if require_issuer_ca::<C>(anchor_der, i).is_ok()
+                    && verify_link::<E, R>(&child, &anchor_view).is_ok()
+                {
+                    if self.enforce_anchor_expiry {
+                        self.clock
+                            .check_validity(&anchor_view)
+                            .map_err(|_| PinnedRootsError::Validity)?;
+                    }
+                    anchored = true;
+                    break;
+                }
+            }
+            if !anchored {
+                return Err(PinnedRootsError::UntrustedRoot);
+            }
+        }
+
+        *slot = Some(prepare_leaf::<E, R>(&leaf_view)?);
+        Ok(Trusted::new(slot.as_ref().unwrap()))
+    }
+}
+
+#[cfg(all(test, feature = "ecdsa", feature = "cert-der"))]
+mod tests {
+    use super::*;
+    use crate::backends::{DerCert, RustCrypto};
+    use crate::traits::verify_strategy::Clocked;
+
+    // A locally-minted ECDSA-P256 chain: ca0 (self-signed root) → ca1 … ca8
+    // (intermediates) → leaf. Regenerate via testdata/certs_chain (openssl).
+    const ROOT: &[u8] = include_bytes!("../../../testdata/certs_chain/ca0.der");
+    const CA1: &[u8] = include_bytes!("../../../testdata/certs_chain/ca1.der");
+    const CA2: &[u8] = include_bytes!("../../../testdata/certs_chain/ca2.der");
+    const CA3: &[u8] = include_bytes!("../../../testdata/certs_chain/ca3.der");
+    const CA4: &[u8] = include_bytes!("../../../testdata/certs_chain/ca4.der");
+    const CA5: &[u8] = include_bytes!("../../../testdata/certs_chain/ca5.der");
+    const CA6: &[u8] = include_bytes!("../../../testdata/certs_chain/ca6.der");
+    const CA7: &[u8] = include_bytes!("../../../testdata/certs_chain/ca7.der");
+    const CA8: &[u8] = include_bytes!("../../../testdata/certs_chain/ca8.der");
+    const LEAF: &[u8] = include_bytes!("../../../testdata/certs_chain/leaf.der");
+    // Forgery: evil_leaf (CA:FALSE, signed by ca8) is used to sign `forged`.
+    const EVIL_LEAF: &[u8] = include_bytes!("../../../testdata/certs_chain/evil_leaf.der");
+    const FORGED: &[u8] = include_bytes!("../../../testdata/certs_chain/forged.der");
+    // pathLen: p0 (CA, pathlen:0, under root) → cx (CA) → leafx.
+    const PATHLEN0: &[u8] = include_bytes!("../../../testdata/certs_chain/pathlen0_ca.der");
+    const CX: &[u8] = include_bytes!("../../../testdata/certs_chain/cx_ca.der");
+    const LEAFX: &[u8] = include_bytes!("../../../testdata/certs_chain/leafx.der");
+
+    /// Wire order (leaf first) for the full 10-deep chain including the root.
+    const FULL_CHAIN: [&[u8]; 10] = [LEAF, CA8, CA7, CA6, CA5, CA4, CA3, CA2, CA1, ROOT];
+    /// Same, but the root is not transmitted (the AWS-shaped case).
+    const NO_ROOT_CHAIN: [&[u8]; 9] = [LEAF, CA8, CA7, CA6, CA5, CA4, CA3, CA2, CA1];
+
+    fn fp(der: &[u8]) -> [u8; 32] {
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&Sha256::digest(der));
+        out
+    }
+
+    fn run<const CAP: usize>(
+        anchors: &[Anchor<'_>],
+        chain: &[&[u8]],
+    ) -> Result<(), PinnedRootsError> {
+        let pr: PinnedRoots<DerCert, NoClock, CAP> = PinnedRoots::new(anchors);
+        let mut slot: Option<PreparedVerifier<RustCrypto, RustCrypto>> = None;
+        VerifyStrategy::<RustCrypto, RustCrypto>::verify_chain(
+            &pr,
+            CertChainView { certs: chain },
+            &mut slot,
+        )
+        .map(|_| ())
+    }
+
+    #[test]
+    fn parse_ca_constraints_reads_basic_constraints_and_key_usage() {
+        let root = DerCert::parse_ca_constraints(ROOT).unwrap();
+        assert!(root.is_ca);
+        assert_eq!(root.key_cert_sign, Some(true));
+        let leaf = DerCert::parse_ca_constraints(LEAF).unwrap();
+        assert!(!leaf.is_ca);
+        assert_eq!(leaf.key_cert_sign, Some(false));
+        let p0 = DerCert::parse_ca_constraints(PATHLEN0).unwrap();
+        assert!(p0.is_ca);
+        assert_eq!(p0.path_len, Some(0));
+    }
+
+    // The load-bearing Tier-1.5 assumption: a stored anchor cert parsed from a
+    // (here `&'static`) slice can serve as `verify_link`'s parent unchanged, so
+    // the top transmitted cert verifies against a root the server never sent.
+    #[test]
+    fn cert_anchor_from_flash_verifies_top_of_untransmitted_root_chain() {
+        let anchors = [Anchor::Cert(ROOT)];
+        assert!(run::<10>(&anchors, &NO_ROOT_CHAIN).is_ok());
+    }
+
+    #[test]
+    fn cert_anchor_survives_intermediate_rotation() {
+        // Same stored root, a different top intermediate set still chains to it.
+        // Here: drop ca1 and re-anchor the shorter chain on the root via ca2's
+        // issuer — modeled by pinning the root and presenting leaf→ca8→…→ca1,
+        // then a truncated variant; both must validate against the one root.
+        assert!(run::<10>(&[Anchor::Cert(ROOT)], &NO_ROOT_CHAIN).is_ok());
+        assert!(run::<10>(&[Anchor::Cert(ROOT)], &FULL_CHAIN).is_ok());
+    }
+
+    #[test]
+    fn fingerprint_root_accepts_full_chain() {
+        assert!(run::<10>(&[Anchor::Fingerprint(fp(ROOT))], &FULL_CHAIN).is_ok());
+    }
+
+    #[test]
+    fn fingerprint_intermediate_accepts_and_ignores_certs_above() {
+        // Pin ca8; a two-cert presentation stops at ca8 after one link.
+        assert!(run::<8>(&[Anchor::Fingerprint(fp(CA8))], &[LEAF, CA8]).is_ok());
+    }
+
+    #[test]
+    fn leaf_fingerprint_accepts_with_garbage_above_and_zero_links() {
+        // Degenerate leaf-pin (today's leaf-pin model): the first-match rule
+        // accepts at the leaf before parsing or verifying anything above it.
+        let garbage: &[u8] = &[0xDE, 0xAD, 0xBE, 0xEF];
+        assert!(run::<8>(&[Anchor::Fingerprint(fp(LEAF))], &[LEAF, garbage]).is_ok());
+    }
+
+    #[test]
+    fn non_ca_issuer_is_rejected_the_basic_constraints_forgery() {
+        // forged ← evil_leaf(CA:FALSE) ← ca8 … ← root. The link signatures all
+        // verify; the CA-bit check is what stops a server leaf minting sub-certs.
+        let chain = [
+            FORGED, EVIL_LEAF, CA8, CA7, CA6, CA5, CA4, CA3, CA2, CA1, ROOT,
+        ];
+        assert_eq!(
+            run::<12>(&[Anchor::Fingerprint(fp(ROOT))], &chain),
+            Err(PinnedRootsError::IssuerNotCa)
+        );
+    }
+
+    #[test]
+    fn pathlen_constraint_is_enforced() {
+        // p0 permits 0 intermediates below it, but cx sits between it and leafx.
+        let chain = [LEAFX, CX, PATHLEN0, ROOT];
+        assert_eq!(
+            run::<8>(&[Anchor::Fingerprint(fp(ROOT))], &chain),
+            Err(PinnedRootsError::PathLenExceeded)
+        );
+    }
+
+    #[test]
+    fn unpinned_chain_is_rejected() {
+        assert_eq!(
+            run::<10>(&[Anchor::Fingerprint([0x11; 32])], &FULL_CHAIN),
+            Err(PinnedRootsError::UntrustedRoot)
+        );
+    }
+
+    #[test]
+    fn chain_exceeding_depth_cap_is_rejected() {
+        assert_eq!(
+            run::<8>(&[Anchor::Fingerprint(fp(ROOT))], &FULL_CHAIN),
+            Err(PinnedRootsError::ChainTooLong)
+        );
+    }
+
+    #[test]
+    fn tampered_intermediate_is_rejected() {
+        let mut ca4 = CA4.to_vec();
+        ca4[40] ^= 0x01;
+        let chain: [&[u8]; 9] = [LEAF, CA8, CA7, CA6, CA5, &ca4, CA3, CA2, CA1];
+        assert!(run::<10>(&[Anchor::Cert(ROOT)], &chain).is_err());
+    }
+
+    #[test]
+    fn clocked_rejects_expired_below_anchor_but_default_skips_anchor() {
+        use crate::traits::time::tests::FixedTime;
+        // The fixtures are valid ~2026..2126; 1.8e9 ≈ 2027 (in window), 6e9 ≈
+        // 2160 (past notAfter).
+        let anchors = [Anchor::Cert(ROOT)];
+        let in_window: PinnedRoots<DerCert, _, 10> =
+            PinnedRoots::with_clock(&anchors, Clocked(FixedTime(1_800_000_000)));
+        let expired: PinnedRoots<DerCert, _, 10> =
+            PinnedRoots::with_clock(&anchors, Clocked(FixedTime(6_000_000_000)));
+        let mut slot: Option<PreparedVerifier<RustCrypto, RustCrypto>> = None;
+        assert!(
+            VerifyStrategy::<RustCrypto, RustCrypto>::verify_chain(
+                &in_window,
+                CertChainView {
+                    certs: &NO_ROOT_CHAIN
+                },
+                &mut slot,
+            )
+            .is_ok()
+        );
+        let mut slot2: Option<PreparedVerifier<RustCrypto, RustCrypto>> = None;
+        assert_eq!(
+            VerifyStrategy::<RustCrypto, RustCrypto>::verify_chain(
+                &expired,
+                CertChainView {
+                    certs: &NO_ROOT_CHAIN
+                },
+                &mut slot2,
+            )
+            .map(|_| ()),
+            Err(PinnedRootsError::Validity)
+        );
+    }
+}

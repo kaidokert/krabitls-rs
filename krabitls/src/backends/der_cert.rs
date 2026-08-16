@@ -3,6 +3,8 @@
 use der::asn1::{AnyRef, BitStringRef, ObjectIdentifier};
 use der::{Decode, Reader, SliceReader, Tag, TagNumber};
 
+#[cfg(feature = "chain-verify")]
+use crate::traits::cert::CaConstraints;
 use crate::traits::cert::{CertParseError, CertParser, CertView};
 
 /// Marker type for the `der`-crate-backed cert parser implementation.
@@ -34,6 +36,11 @@ const P256_SEC1_LEN: usize = 65;
 const P384_SEC1_LEN: usize = 97;
 
 const SAN_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.5.29.17");
+
+#[cfg(feature = "chain-verify")]
+const BASIC_CONSTRAINTS_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.5.29.19");
+#[cfg(feature = "chain-verify")]
+const KEY_USAGE_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.5.29.15");
 
 const X509_V3: u8 = 2;
 
@@ -218,6 +225,12 @@ impl CertParser for DerCert {
             }
         }
     }
+
+    #[cfg(feature = "chain-verify")]
+    fn parse_ca_constraints(cert_der: &[u8]) -> Result<CaConstraints, CertParseError> {
+        let mut tbs_r = extensions_reader(cert_der)?;
+        walk_extensions_for_ca(&mut tbs_r)
+    }
 }
 
 /// Reject anything but a SEC1 uncompressed point (`0x04` prefix) of `expect_len`.
@@ -300,6 +313,136 @@ fn walk_extensions_for_san<'a>(
         }
     }
     Ok(None)
+}
+
+/// Position a reader at the TBS tail (past `subjectPublicKeyInfo`), where the
+/// optional UIDs and `[3]` Extensions live — the same spot [`walk_extensions_for_san`]
+/// consumes from, reached independently for the chain-verify CA-constraints read.
+#[cfg(feature = "chain-verify")]
+fn extensions_reader(cert_der: &[u8]) -> Result<SliceReader<'_>, CertParseError> {
+    let map_err = |_| CertParseError::Malformed;
+    let outer = AnyRef::try_from(cert_der).map_err(map_err)?;
+    if outer.header().tag() != Tag::Sequence {
+        return Err(CertParseError::Malformed);
+    }
+    let mut body = SliceReader::new(outer.value()).map_err(map_err)?;
+    let tbs_bytes = body.tlv_bytes().map_err(map_err)?;
+    let tbs_any = AnyRef::try_from(tbs_bytes).map_err(map_err)?;
+    if tbs_any.header().tag() != Tag::Sequence {
+        return Err(CertParseError::Malformed);
+    }
+    let mut tbs_r = SliceReader::new(tbs_any.value()).map_err(map_err)?;
+    // Optional `[0] EXPLICIT Version` (present for the v3 certs this client accepts).
+    if matches!(
+        Tag::peek(&tbs_r).map_err(map_err)?,
+        Tag::ContextSpecific {
+            constructed: true,
+            number: TagNumber(0)
+        }
+    ) {
+        tbs_r.tlv_bytes().map_err(map_err)?;
+    }
+    // serial, signature, issuer, validity, subject, subjectPublicKeyInfo.
+    for _ in 0..6 {
+        tbs_r.tlv_bytes().map_err(map_err)?;
+    }
+    Ok(tbs_r)
+}
+
+/// Walk the Extensions block for basicConstraints + keyUsage. Same navigation
+/// as [`walk_extensions_for_san`]; absent extensions leave the conservative
+/// default (`is_ca = false`).
+#[cfg(feature = "chain-verify")]
+fn walk_extensions_for_ca(tbs_r: &mut SliceReader<'_>) -> Result<CaConstraints, CertParseError> {
+    let map_err = |_| CertParseError::Malformed;
+    let mut out = CaConstraints::default();
+    while !tbs_r.is_finished() {
+        let tag = Tag::peek(tbs_r).map_err(map_err)?;
+        match tag {
+            Tag::ContextSpecific {
+                constructed: true,
+                number: TagNumber(3),
+            } => {
+                let exts_explicit = AnyRef::decode(tbs_r).map_err(map_err)?;
+                let exts_seq = AnyRef::try_from(exts_explicit.value()).map_err(map_err)?;
+                if exts_seq.header().tag() != Tag::Sequence {
+                    return Err(CertParseError::Malformed);
+                }
+                let mut exts_r = SliceReader::new(exts_seq.value()).map_err(map_err)?;
+                while !exts_r.is_finished() {
+                    let ext = AnyRef::decode(&mut exts_r).map_err(map_err)?;
+                    if ext.header().tag() != Tag::Sequence {
+                        return Err(CertParseError::Malformed);
+                    }
+                    let mut ext_r = SliceReader::new(ext.value()).map_err(map_err)?;
+                    let ext_oid = ObjectIdentifier::decode(&mut ext_r).map_err(map_err)?;
+                    let next_tag = Tag::peek(&ext_r).map_err(map_err)?;
+                    if next_tag == Tag::Boolean {
+                        ext_r.tlv_bytes().map_err(map_err)?;
+                    }
+                    let extn_value = AnyRef::decode(&mut ext_r).map_err(map_err)?;
+                    if extn_value.header().tag() != Tag::OctetString {
+                        return Err(CertParseError::Malformed);
+                    }
+                    if ext_oid == BASIC_CONSTRAINTS_OID {
+                        parse_basic_constraints(extn_value.value(), &mut out)?;
+                    } else if ext_oid == KEY_USAGE_OID {
+                        out.key_cert_sign = Some(key_usage_cert_sign(extn_value.value())?);
+                    }
+                }
+                return Ok(out);
+            }
+            _ => {
+                tbs_r.tlv_bytes().map_err(map_err)?;
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// `BasicConstraints ::= SEQUENCE { cA BOOLEAN DEFAULT FALSE, pathLenConstraint
+/// INTEGER OPTIONAL }`. `bytes` is the extnValue OCTET STRING content.
+#[cfg(feature = "chain-verify")]
+fn parse_basic_constraints(bytes: &[u8], out: &mut CaConstraints) -> Result<(), CertParseError> {
+    let map_err = |_| CertParseError::Malformed;
+    let seq = AnyRef::try_from(bytes).map_err(map_err)?;
+    if seq.header().tag() != Tag::Sequence {
+        return Err(CertParseError::Malformed);
+    }
+    let mut r = SliceReader::new(seq.value()).map_err(map_err)?;
+    if !r.is_finished() && Tag::peek(&r).map_err(map_err)? == Tag::Boolean {
+        let b = AnyRef::decode(&mut r).map_err(map_err)?;
+        out.is_ca = b.value().first().is_some_and(|&v| v != 0);
+    }
+    if !r.is_finished() && Tag::peek(&r).map_err(map_err)? == Tag::Integer {
+        let int = AnyRef::decode(&mut r).map_err(map_err)?;
+        out.path_len = Some(der_int_to_u32(int.value())?);
+    }
+    Ok(())
+}
+
+/// keyUsage is a BIT STRING; `keyCertSign` is bit 5 (mask `0x04` in the first
+/// data byte, after the leading unused-bit count). `bytes` is the extnValue
+/// OCTET STRING content.
+#[cfg(feature = "chain-verify")]
+fn key_usage_cert_sign(bytes: &[u8]) -> Result<bool, CertParseError> {
+    let map_err = |_| CertParseError::Malformed;
+    let bs = AnyRef::try_from(bytes).map_err(map_err)?;
+    if bs.header().tag() != Tag::BitString {
+        return Err(CertParseError::Malformed);
+    }
+    Ok(bs.value().get(1).is_some_and(|&b| b & 0x04 != 0))
+}
+
+/// Fold a DER INTEGER's content bytes (big-endian, one optional leading zero)
+/// into a `u32`. `pathLenConstraint` is small and non-negative.
+#[cfg(feature = "chain-verify")]
+fn der_int_to_u32(bytes: &[u8]) -> Result<u32, CertParseError> {
+    let sig = bytes.strip_prefix(&[0u8]).unwrap_or(bytes);
+    if sig.len() > 4 {
+        return Err(CertParseError::Malformed);
+    }
+    Ok(sig.iter().fold(0u32, |acc, &b| (acc << 8) | b as u32))
 }
 
 /// Decode the SPKI `AlgorithmIdentifier` and classify it.

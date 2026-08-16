@@ -4,6 +4,31 @@
 pub trait CertParser {
     /// Parse a DER-encoded X.509 certificate and return borrows into `cert_der`.
     fn parse<'a>(cert_der: &'a [u8]) -> Result<CertView<'a>, CertParseError>;
+
+    /// Extract the issuer-eligibility fields a chain validator needs:
+    /// basicConstraints (`cA`, `pathLenConstraint`) and keyUsage `keyCertSign`.
+    /// An absent extension yields the conservative default (`is_ca = false`,
+    /// `key_cert_sign = None`) so a cert that doesn't assert CA rights can't
+    /// serve as a chain issuer. Only compiled for the chain-verify strategy.
+    #[cfg(feature = "chain-verify")]
+    fn parse_ca_constraints(cert_der: &[u8]) -> Result<CaConstraints, CertParseError>;
+}
+
+/// Issuer-eligibility fields read from a cert's X.509v3 extensions, used by
+/// [`PinnedRoots`](crate::backends::PinnedRoots) to reject a non-CA (or
+/// pathLen-exhausted) cert being used as a chain issuer.
+#[cfg(feature = "chain-verify")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CaConstraints {
+    /// basicConstraints `cA` (DEFAULT FALSE — `false` when absent).
+    pub is_ca: bool,
+    /// basicConstraints `pathLenConstraint`, if present. Bounds how many
+    /// intermediates may appear below this CA.
+    pub path_len: Option<u32>,
+    /// keyUsage `keyCertSign` bit. `None` when no keyUsage extension is present
+    /// (unconstrained); `Some(false)` when keyUsage is present but the bit is
+    /// not asserted (issuance forbidden).
+    pub key_cert_sign: Option<bool>,
 }
 
 /// Parsed view of a self-signed X.509 cert.

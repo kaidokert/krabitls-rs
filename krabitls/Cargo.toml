@@ -105,6 +105,15 @@ rsa_pss_only = ["rsa"]
 # `der` dropped entirely (~-4 KiB .text), and validity is unavailable (the
 # default `NoClock` strategy is the only one that compiles).
 cert-der = ["dep:der"]
+# Server-cert chain validation against a stored ledger of trusted root/CA
+# fingerprints (or stored anchor certs). Ships the `PinnedRoots` VerifyStrategy:
+# walks the presented chain leaf→up verifying each issuer→subject signature,
+# accepting at the first cert whose SHA-256 fingerprint is pinned (or whose top
+# is signed by a stored anchor cert). Additive — leaf-pin/self-signed builds
+# don't link it. Enables `CertParser::parse_ca_constraints` (basicConstraints +
+# keyUsage) on the active cert parser; that is the only cost a non-chain build
+# would pay, and it's DCE'd when this feature is off.
+chain-verify = []
 # Match IP-literal hostnames against SAN `iPAddress` entries. Without it,
 # IP literals fall through to `HostnameMismatch`. Saves ~2 KiB of
 # `core::net::parser` on DNS-only embedded deployments. Default OFF.
