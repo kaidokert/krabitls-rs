@@ -150,9 +150,10 @@ mod tests {
         assert!(a.agree(&[0u8; X25519_SHARE_BYTES]).is_err());
     }
 
-    /// RNG yielding a fixed 32-byte scalar on the first fill, then zeros — pins
-    /// the KEM's ephemeral scalar (and, for `Blinded`, a zero blinder, which the
-    /// blinder must tolerate) to a known value.
+    /// RNG that pins the KEM's ephemeral scalar to a fixed 32-byte value, then —
+    /// for `Blinded` — supplies deterministic NON-zero blinder bytes (the 32-bit
+    /// scalar blind `r` and the 32-byte coordinate blind `λ`), so the KAT exercises
+    /// a real blind rather than the degenerate all-zero one.
     struct ScalarRng([u8; 32], usize);
     impl rand_core::TryRng for ScalarRng {
         type Error = Infallible;
@@ -164,7 +165,12 @@ mod tests {
         }
         fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), Infallible> {
             for b in dst {
-                *b = self.0.get(self.1).copied().unwrap_or(0);
+                *b = if self.1 < 32 {
+                    self.0[self.1]
+                } else {
+                    // High bit set → always non-zero; deterministic per position.
+                    (self.1 as u8) | 0x80
+                };
                 self.1 += 1;
             }
             Ok(())
