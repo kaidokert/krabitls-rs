@@ -8,7 +8,7 @@
 
 A hobby `no_std` TLS 1.3 client for microcontrollers. Don't use it for anything you care about.
 
-- TLS 1.3; X25519 or X25519MLKEM768 key exchange
+- TLS 1.3; X25519, P-256 ECDHE, or X25519MLKEM768 key exchange
 - Verifies Ed25519, RSA, ECDSA (P-256/P-384), or ML-DSA server certificates
 - RSA is 2048-bit; 1024/3072/4096 are opt-in cargo features
 - Optional mutual-TLS client certificates (Ed25519 or RSA-PSS)
@@ -21,20 +21,27 @@ size at the cost of some wasted stack.
 
 #### Resource usage
 
-Cortex-M3 and RV32IMAC footprint — real-minus-baseline `.text` and peak stack.
+Example peak stack and `.text` for a full TLS 1.3 handshake (representative
+measurement, real − baseline, on QEMU). `+ client cert` is the same handshake
+with mutual TLS (a same-algorithm client certificate). The `.text` and `Stack`
+columns are the server-auth build. Full grid — P-256 ECDHE and X25519MLKEM768
+key exchange, ML-DSA server certs, both targets — in
+[`FOOTPRINT.md`](FOOTPRINT.md).
 
-| Target   | Suite             | KEX / Sig                  | .text (KiB) | Stack (B) |
-|----------|-------------------|----------------------------|------------:|----------:|
-| M3       | ChaCha20-Poly1305 | X25519 / Ed25519           |        37.3 |     10916 |
-| M3       | AES-128-GCM       | X25519 / Ed25519           |        41.8 |     16444 |
-| M3       | AES-128-GCM       | X25519 / RSA-2048-PSS      |        55.5 |     31292 |
-| M3       | AES-128-GCM       | X25519 / ECDSA-P256        |        58.4 |     20668 |
-| M3       | AES-128-GCM       | X25519MLKEM768 / ML-DSA-44 |        60.6 |    117252 |
-| RV32IMAC | ChaCha20-Poly1305 | X25519 / Ed25519           |        55.9 |     10692 |
-| RV32IMAC | AES-128-GCM       | X25519 / Ed25519           |        65.2 |     16212 |
-| RV32IMAC | AES-128-GCM       | X25519 / RSA-2048-PSS      |        88.2 |     31012 |
-| RV32IMAC | AES-128-GCM       | X25519 / ECDSA-P256        |        90.4 |     20300 |
-| RV32IMAC | AES-128-GCM       | X25519MLKEM768 / ML-DSA-44 |        93.0 |    117112 |
+| Target   | Server cert  | AEAD              | KEX            | .text (KiB) | Stack (B) | + client cert |
+|----------|--------------|-------------------|----------------|------------:|----------:|--------------:|
+| M3       | Ed25519      | ChaCha20-Poly1305 | X25519         |        37.5 |    10 660 |        12 668 |
+| M3       | Ed25519      | AES-128-GCM       | X25519         |        41.0 |    10 604 |        12 484 |
+| M3       | ECDSA-P256   | AES-128-GCM       | X25519         |        58.5 |     9 716 |        12 844 |
+| M3       | RSA-2048-PSS | AES-128-GCM       | X25519         |        47.8 |    29 492 |        47 276 |
+| M3       | ML-DSA-44    | AES-128-GCM       | X25519MLKEM768 |        62.1 |   107 668 |             — |
+| RV32IMAC | Ed25519      | AES-128-GCM       | X25519         |        63.9 |    10 476 |        12 396 |
+| RV32IMAC | ML-DSA-44    | AES-128-GCM       | X25519MLKEM768 |        96.2 |   111 640 |             — |
+
+RV32IMAC shows the most-common and post-quantum configs (same as their M3 rows)
+to demonstrate the cross-architecture delta — stack within a few percent, `.text`
+≈1.5×. P-256 ECDHE key exchange (~12.9 KB stack) and the full grid are in
+[`FOOTPRINT.md`](FOOTPRINT.md).
 
 ## License
 
