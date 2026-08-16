@@ -16,6 +16,10 @@ rsa = ["footprint_handshakes/rsa"]
 mlkem = ["footprint_handshakes/mlkem"]
 mldsa = ["footprint_handshakes/mldsa"]
 ecdsa = ["footprint_handshakes/ecdsa"]
+# `krabitls_ecdsa_mtls` example: layers ECDSA-P256 client authentication onto
+# the `ecdsa` server-cert path — the client answers a CertificateRequest with
+# its own cert + ECDSA CertificateVerify, linking the client-auth signing path.
+client-auth = ["footprint_handshakes/client-auth"]
 chacha20 = ["footprint_handshakes/chacha20"]
 cert-der = ["footprint_handshakes/cert-der"]
 cipher-aes = ["footprint_handshakes/cipher-aes"]
@@ -50,6 +54,10 @@ required-features = ["mldsa", "canned-replay"]
 [[example]]
 name = "krabitls_ecdsa"
 required-features = ["ecdsa", "canned-replay"]
+
+[[example]]
+name = "krabitls_ecdsa_mtls"
+required-features = ["ecdsa", "client-auth", "canned-replay"]
 
 [[example]]
 name = "krabitls_mlkem_mldsa"
