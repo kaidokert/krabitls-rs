@@ -188,6 +188,11 @@ where
 {
     type Error = PinnedRootsError;
 
+    // Outlined so the walk's working set (cert parse + per-link verify) is a
+    // sibling frame of `verify_server_flight` / the client-sign phase rather than
+    // unioning into the handshake driver's frame — the walk shares, not adds to,
+    // the handshake stack peak. See notes/chain-verify-design.md §6.
+    #[inline(never)]
     fn verify_chain<'chain, 'src, 'slot>(
         &self,
         chain: CertChainView<'chain, 'src>,
