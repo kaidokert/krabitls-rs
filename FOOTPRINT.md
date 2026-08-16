@@ -24,7 +24,8 @@ the protocol.
 | X25519          | AES-128-GCM       | Ed25519      | —            |        41.0 |    10 604 |
 | X25519          | AES-128-GCM       | RSA-2048-PSS | —            |        47.8 |    29 492 |
 | X25519          | AES-128-GCM       | ECDSA-P256   | —            |        58.5 |     9 716 |
-| P-256 ECDHE     | AES-128-GCM       | Ed25519      | —            |        50.1 |    12 884 |
+| P-256 ECDHE     | AES-128-GCM       | ECDSA-P256   | —            |        67.0 |    11 868 |
+| P-256 ECDHE     | AES-128-GCM       | ECDSA-P256   | ECDSA-P256   |        79.2 |    15 012 |
 | X25519          | AES-128-GCM       | Ed25519      | Ed25519      |        47.1 |    12 484 |
 | X25519          | AES-128-GCM       | ECDSA-P256   | ECDSA-P256   |        75.8 |    12 844 |
 | X25519          | AES-128-GCM       | Ed25519      | RSA-2048-PSS |        55.4 |    47 268 |
@@ -43,7 +44,8 @@ the protocol.
 | X25519          | AES-128-GCM       | Ed25519      | —            |        63.9 |    10 476 |
 | X25519          | AES-128-GCM       | RSA-2048-PSS | —            |        74.9 |    29 412 |
 | X25519          | AES-128-GCM       | ECDSA-P256   | —            |        91.6 |     9 596 |
-| P-256 ECDHE     | AES-128-GCM       | Ed25519      | —            |        78.1 |    12 748 |
+| P-256 ECDHE     | AES-128-GCM       | ECDSA-P256   | —            |       105.5 |    11 756 |
+| P-256 ECDHE     | AES-128-GCM       | ECDSA-P256   | ECDSA-P256   |       125.8 |    14 872 |
 | X25519          | AES-128-GCM       | Ed25519      | Ed25519      |        74.8 |    12 396 |
 | X25519          | AES-128-GCM       | ECDSA-P256   | ECDSA-P256   |       119.3 |    12 744 |
 | X25519          | AES-128-GCM       | Ed25519      | RSA-2048-PSS |        87.8 |    46 892 |

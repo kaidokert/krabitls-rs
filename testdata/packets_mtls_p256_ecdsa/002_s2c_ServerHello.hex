@@ -1,0 +1,4 @@
+# krabitls seed-0 AES-128-GCM P-256-ECDHE ECDSA-P256-mTLS ServerHello (128 bytes),
+# captured from a local openssl s_server -Verify handshake. Regenerate
+# with the `#[ignore]`d `gen_mtls_p256_ecdsa_fixtures` test; do not hand-edit.
+160303007b020000770303c581af90ece77899c3722ad4079d42e5c4751ebb010a40403fc2ce5062690c6200130100004f002b0002030400330045001700410487ddae1c378442e2d1c0ef0cb6ba0f5f8a61992986ec47996e2b0df9e66ef84c7bc338bac7fbc6f5feeddefbb3b349389be5ac10c8e6e6a3e13d06166e9a336d

@@ -1241,7 +1241,8 @@ pub fn run_full_stack() -> bool {
     })
 }
 
-// secp256r1 (P-256) ECDHE + AES-128-GCM + Ed25519 server cert. The seed-0
+// secp256r1 (P-256) ECDHE + AES-128-GCM + ECDSA-P256 server cert — a fully
+// coherent all-P-256 handshake (P-256 KEX *and* an ECDSA-P256 leaf). The seed-0
 // capture offered X25519 + P-256 and the server selected P-256, so this needs
 // `p256-kx` layered on the always-present `x25519-kx`. Server-auth only; there
 // is no captured client second flight, so the check pins the ClientHello prefix
@@ -1250,21 +1251,21 @@ pub fn run_full_stack() -> bool {
     feature = "canned-replay",
     feature = "cipher-aes",
     feature = "p256-kx",
+    feature = "ecdsa",
     not(feature = "chacha20"),
     not(feature = "rsa"),
     not(feature = "mlkem"),
     not(feature = "mldsa"),
-    not(feature = "ecdsa"),
 ))]
-mod fixture_p256_ed25519_facade {
-    pub const CLIENT_HELLO: [u8; 220] = krabitls::hex_decode(include_str!(
-        "../../../testdata/packets_p256/001_c2s_ClientHello.hex"
+mod fixture_p256_ecdsa_facade {
+    pub const CLIENT_HELLO: [u8; 224] = krabitls::hex_decode(include_str!(
+        "../../../testdata/packets_p256_ecdsa/001_c2s_ClientHello.hex"
     ));
     pub const SERVER_HELLO: [u8; 128] = krabitls::hex_decode(include_str!(
-        "../../../testdata/packets_p256/002_s2c_ServerHello.hex"
+        "../../../testdata/packets_p256_ecdsa/002_s2c_ServerHello.hex"
     ));
-    pub const SERVER_FLIGHT: [u8; 584] = krabitls::hex_decode(include_str!(
-        "../../../testdata/packets_p256/003_s2c_ServerFlight_encrypted.hex"
+    pub const SERVER_FLIGHT: [u8; 653] = krabitls::hex_decode(include_str!(
+        "../../../testdata/packets_p256_ecdsa/003_s2c_ServerFlight_encrypted.hex"
     ));
     pub const SERVER_STREAM: [u8; SERVER_HELLO.len() + SERVER_FLIGHT.len()] =
         concat_sh_sf!(SERVER_HELLO.len(), SERVER_FLIGHT.len());
@@ -1280,14 +1281,14 @@ mod fixture_p256_ed25519_facade {
     feature = "canned-replay",
     feature = "cipher-aes",
     feature = "p256-kx",
+    feature = "ecdsa",
     not(feature = "chacha20"),
     not(feature = "rsa"),
     not(feature = "mlkem"),
     not(feature = "mldsa"),
-    not(feature = "ecdsa"),
 ))]
-pub fn run_p256_ed25519_facade() -> Result<(), ()> {
-    facade_scratch::with(connect_check_p256_ed25519)
+pub fn run_p256_ecdsa_facade() -> Result<(), ()> {
+    facade_scratch::with(connect_check_p256_ecdsa)
 }
 
 // `inline(never)`: models a real application caller so the measured stack is the
@@ -1296,29 +1297,29 @@ pub fn run_p256_ed25519_facade() -> Result<(), ()> {
     feature = "canned-replay",
     feature = "cipher-aes",
     feature = "p256-kx",
+    feature = "ecdsa",
     not(feature = "chacha20"),
     not(feature = "rsa"),
     not(feature = "mlkem"),
     not(feature = "mldsa"),
-    not(feature = "ecdsa"),
 ))]
 #[inline(never)]
-fn connect_check_p256_ed25519(scratch: &mut krabitls::client::DefaultScratch) -> Result<(), ()> {
-    let client_hello = &fixture_p256_ed25519_facade::CLIENT_HELLO;
+fn connect_check_p256_ecdsa(scratch: &mut krabitls::client::DefaultScratch) -> Result<(), ()> {
+    let client_hello = &fixture_p256_ecdsa_facade::CLIENT_HELLO;
     let mut rng = SeededRng::new(0);
     let transport = CannedTransport::<
         {
-            fixture_p256_ed25519_facade::CLIENT_HELLO.len()
-                + fixture_p256_ed25519_facade::CLIENT_FINISHED_LEN
+            fixture_p256_ecdsa_facade::CLIENT_HELLO.len()
+                + fixture_p256_ecdsa_facade::CLIENT_FINISHED_LEN
         },
-    >::new(&fixture_p256_ed25519_facade::SERVER_STREAM);
+    >::new(&fixture_p256_ecdsa_facade::SERVER_STREAM);
     let params =
         ClientParams::self_signed("tls-fixture.local").suite_policy(RuntimeSuitePolicy::Default);
 
     let tls = DefaultStream::connect(&params, scratch, transport, &mut rng).map_err(|_| ())?;
 
     let captured = tls.transport().captured_tx();
-    let expected_len = client_hello.len() + fixture_p256_ed25519_facade::CLIENT_FINISHED_LEN;
+    let expected_len = client_hello.len() + fixture_p256_ecdsa_facade::CLIENT_FINISHED_LEN;
     if captured.len() != expected_len || captured[..client_hello.len()] != client_hello[..] {
         return Err(());
     }
@@ -1329,17 +1330,17 @@ fn connect_check_p256_ed25519(scratch: &mut krabitls::client::DefaultScratch) ->
     feature = "canned-replay",
     feature = "cipher-aes",
     feature = "p256-kx",
+    feature = "ecdsa",
     not(feature = "chacha20"),
     not(feature = "rsa"),
     not(feature = "mlkem"),
     not(feature = "mldsa"),
-    not(feature = "ecdsa"),
 ))]
 #[inline(never)]
-pub fn baseline_p256_ed25519_facade() -> bool {
-    black_box(&fixture_p256_ed25519_facade::CLIENT_HELLO);
-    black_box(&fixture_p256_ed25519_facade::SERVER_HELLO);
-    black_box(&fixture_p256_ed25519_facade::SERVER_FLIGHT);
+pub fn baseline_p256_ecdsa_facade() -> bool {
+    black_box(&fixture_p256_ecdsa_facade::CLIENT_HELLO);
+    black_box(&fixture_p256_ecdsa_facade::SERVER_HELLO);
+    black_box(&fixture_p256_ecdsa_facade::SERVER_FLIGHT);
     true
 }
 
@@ -1481,6 +1482,148 @@ pub fn baseline_ed25519_mtls_facade() -> bool {
     black_box(&fixture_ed25519_mtls_facade::CLIENT_SECOND_FLIGHT);
     black_box(fixture_ed25519_mtls_facade::CLIENT_LEAF);
     black_box(&fixture_ed25519_mtls_facade::CLIENT_SEED);
+    true
+}
+
+// secp256r1 (P-256) ECDHE + AES-128-GCM + ECDSA-P256 server cert AND ECDSA-P256
+// CLIENT certificate (mutual TLS) — a fully coherent all-P-256 mTLS handshake.
+// The seed-0 capture offered X25519 + P-256 and the server selected P-256, so
+// this needs `p256-kx` layered on the always-present `x25519-kx`; the client
+// second flight is `Certificate || CertificateVerify (ECDSA sign) || Finished`.
+// Reuses the ECDSA client leaf + scalar from the X25519 `packets_mtls_ecdsa`.
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "cipher-aes",
+    feature = "p256-kx",
+    feature = "ecdsa",
+    feature = "client-auth",
+    not(feature = "blinding"),
+    not(feature = "chacha20"),
+    not(feature = "rsa"),
+    not(feature = "mldsa"),
+    not(feature = "mlkem"),
+))]
+mod fixture_p256_mtls_facade {
+    pub const CLIENT_HELLO: [u8; 224] = krabitls::hex_decode(include_str!(
+        "../../../testdata/packets_mtls_p256_ecdsa/001_c2s_ClientHello.hex"
+    ));
+    pub const SERVER_HELLO: [u8; 128] = krabitls::hex_decode(include_str!(
+        "../../../testdata/packets_mtls_p256_ecdsa/002_s2c_ServerHello.hex"
+    ));
+    pub const SERVER_FLIGHT: [u8; 767] = krabitls::hex_decode(include_str!(
+        "../../../testdata/packets_mtls_p256_ecdsa/003_s2c_ServerFlight_encrypted.hex"
+    ));
+    /// Client `Certificate || CertificateVerify || Finished` (one AEAD record).
+    pub const CLIENT_SECOND_FLIGHT: [u8; 509] = krabitls::hex_decode(include_str!(
+        "../../../testdata/packets_mtls_p256_ecdsa/004_c2s_ClientSecondFlight_encrypted.hex"
+    ));
+    pub const SERVER_STREAM: [u8; SERVER_HELLO.len() + SERVER_FLIGHT.len()] =
+        concat_sh_sf!(SERVER_HELLO.len(), SERVER_FLIGHT.len());
+    pub const CLIENT_LEAF: &[u8] =
+        include_bytes!("../../../testdata/packets_mtls_p256_ecdsa/client_leaf.der");
+    /// Big-endian P-256 client scalar for `CLIENT_LEAF` — a test vector.
+    pub const CLIENT_SCALAR: [u8; 32] =
+        krabitls::hex_decode("ec798c9d6ab974fe4b9d5e5e853e5003e2e2bcef642191c11b97b767964abfdd");
+}
+
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "cipher-aes",
+    feature = "p256-kx",
+    feature = "ecdsa",
+    feature = "client-auth",
+    not(feature = "blinding"),
+    not(feature = "chacha20"),
+    not(feature = "rsa"),
+    not(feature = "mldsa"),
+    not(feature = "mlkem"),
+))]
+use krabitls::client::EcdsaClientAuth as EcdsaClientAuthP256;
+
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "cipher-aes",
+    feature = "p256-kx",
+    feature = "ecdsa",
+    feature = "client-auth",
+    not(feature = "blinding"),
+    not(feature = "chacha20"),
+    not(feature = "rsa"),
+    not(feature = "mldsa"),
+    not(feature = "mlkem"),
+))]
+pub fn run_p256_mtls_facade() -> Result<(), ()> {
+    facade_scratch::with(connect_check_p256_mtls)
+}
+
+// `inline(never)`: models a real application caller so the measured stack is the
+// client's, not the harness's — see `connect_check_aes_ecdsa_mtls`.
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "cipher-aes",
+    feature = "p256-kx",
+    feature = "ecdsa",
+    feature = "client-auth",
+    not(feature = "blinding"),
+    not(feature = "chacha20"),
+    not(feature = "rsa"),
+    not(feature = "mldsa"),
+    not(feature = "mlkem"),
+))]
+#[inline(never)]
+fn connect_check_p256_mtls(scratch: &mut krabitls::client::DefaultScratch) -> Result<(), ()> {
+    let client_hello = &fixture_p256_mtls_facade::CLIENT_HELLO;
+    let client_flight = &fixture_p256_mtls_facade::CLIENT_SECOND_FLIGHT;
+
+    let signer = EcdsaClientAuthP256::p256_from_scalar(
+        &fixture_p256_mtls_facade::CLIENT_SCALAR,
+        fixture_p256_mtls_facade::CLIENT_LEAF,
+    )
+    .map_err(|_| ())?;
+    let mut rng = SeededRng::new(0);
+    let transport = CannedTransport::<
+        {
+            fixture_p256_mtls_facade::CLIENT_HELLO.len()
+                + fixture_p256_mtls_facade::CLIENT_SECOND_FLIGHT.len()
+        },
+    >::new(&fixture_p256_mtls_facade::SERVER_STREAM);
+    let params = ClientParams::self_signed("tls-fixture.local")
+        .suite_policy(RuntimeSuitePolicy::Default)
+        .with_client_auth(&signer);
+
+    let tls = DefaultStream::connect(&params, scratch, transport, &mut rng).map_err(|_| ())?;
+
+    let captured = tls.transport().captured_tx();
+    let expected_len = client_hello.len() + client_flight.len();
+    if captured.len() != expected_len
+        || captured[..client_hello.len()] != client_hello[..]
+        || captured[client_hello.len()..] != client_flight[..]
+    {
+        return Err(());
+    }
+    Ok(())
+}
+
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "cipher-aes",
+    feature = "p256-kx",
+    feature = "ecdsa",
+    feature = "client-auth",
+    not(feature = "blinding"),
+    not(feature = "chacha20"),
+    not(feature = "rsa"),
+    not(feature = "mldsa"),
+    not(feature = "mlkem"),
+))]
+#[inline(never)]
+pub fn baseline_p256_mtls_facade() -> bool {
+    black_box(&fixture_p256_mtls_facade::CLIENT_HELLO);
+    black_box(&fixture_p256_mtls_facade::SERVER_HELLO);
+    black_box(&fixture_p256_mtls_facade::SERVER_FLIGHT);
+    black_box(&fixture_p256_mtls_facade::CLIENT_SECOND_FLIGHT);
+    black_box(fixture_p256_mtls_facade::CLIENT_LEAF);
+    black_box(&fixture_p256_mtls_facade::CLIENT_SCALAR);
     true
 }
 
