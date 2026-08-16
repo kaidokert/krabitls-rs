@@ -210,10 +210,7 @@ mod aes {
             traffic_secret: &crate::newtype::Secret,
         ) -> Result<RecordKeys<Self>, crate::hkdf::HkdfLabelError> {
             let (key_bytes, iv) = crate::hkdf::traffic_keys::<H, 16>(traffic_secret)?;
-            Ok(RecordKeys {
-                cipher: Self::make_cipher(&key_bytes),
-                iv,
-            })
+            Ok(RecordKeys { key: key_bytes, iv })
         }
     }
 }
@@ -237,10 +234,7 @@ mod chacha {
             traffic_secret: &crate::newtype::Secret,
         ) -> Result<RecordKeys<Self>, crate::hkdf::HkdfLabelError> {
             let (key_bytes, iv) = crate::hkdf::traffic_keys::<H, 32>(traffic_secret)?;
-            Ok(RecordKeys {
-                cipher: Self::make_cipher(&key_bytes),
-                iv,
-            })
+            Ok(RecordKeys { key: key_bytes, iv })
         }
     }
 }
@@ -248,7 +242,13 @@ mod chacha {
 pub use chacha::ChaCha20Poly1305Sha256;
 
 pub struct RecordKeys<S: CipherSuite> {
-    pub(crate) cipher: S::Cipher,
+    // Store the 16/32-byte traffic key, not the fully-expanded cipher (~848 B
+    // for AES-GCM), and re-run the key schedule per record. The typestate
+    // carries several `RecordKeys` by value across handshake transitions, so
+    // caching the expanded cipher would multiply peak stack by ~848 B per live
+    // key; the per-record re-expansion is a fixed sub-microsecond adder,
+    // negligible next to the record's own AEAD pass.
+    pub(crate) key: zeroize::Zeroizing<S::KeyBytes>,
     pub iv: AeadIv,
 }
 
@@ -259,13 +259,19 @@ impl<S: CipherSuite> RecordKeys<S> {
         S::derive_keys::<H>(traffic_secret)
     }
 
+    /// Run `f` against a per-call AEAD schedule built from the stored key.
+    #[inline]
+    fn with_cipher<R>(&self, f: impl FnOnce(&S::Cipher) -> R) -> R {
+        f(&S::make_cipher(&self.key))
+    }
+
     pub fn decrypt_record_inplace(
         &self,
         record: &mut [u8],
         seq: u64,
     ) -> Result<usize, DecryptError> {
         decrypt_record_inplace_with(record, &self.iv, seq, |nonce, aad, pt, tag| {
-            run_decrypt::<S>(&self.cipher, nonce, aad, pt, tag)
+            self.with_cipher(|c| run_decrypt::<S>(c, nonce, aad, pt, tag))
         })
     }
 
@@ -283,7 +289,7 @@ impl<S: CipherSuite> RecordKeys<S> {
             &self.iv,
             seq,
             out_buf,
-            |nonce, aad, buf| run_encrypt::<S>(&self.cipher, nonce, aad, buf),
+            |nonce, aad, buf| self.with_cipher(|c| run_encrypt::<S>(c, nonce, aad, buf)),
         )
     }
 
@@ -299,7 +305,7 @@ impl<S: CipherSuite> RecordKeys<S> {
         seq: u64,
         buf: &mut [u8],
     ) -> Result<[u8; 16], crate::traits::AeadError> {
-        run_encrypt::<S>(&self.cipher, &aead_nonce(&self.iv, seq), aad, buf)
+        self.with_cipher(|c| run_encrypt::<S>(c, &aead_nonce(&self.iv, seq), aad, buf))
     }
 
     /// AEAD-open `buf` in place under an explicit `aad`. DTLS counterpart of
@@ -312,7 +318,7 @@ impl<S: CipherSuite> RecordKeys<S> {
         buf: &mut [u8],
         tag: &[u8; 16],
     ) -> Result<(), crate::traits::AeadError> {
-        run_decrypt::<S>(&self.cipher, &aead_nonce(&self.iv, seq), aad, buf, tag)
+        self.with_cipher(|c| run_decrypt::<S>(c, &aead_nonce(&self.iv, seq), aad, buf, tag))
     }
 }
 
@@ -472,11 +478,8 @@ pub(crate) mod tests {
             fn derive_keys<H: crate::traits::HkdfSha256>(
                 traffic_secret: &crate::newtype::Secret,
             ) -> Result<RecordKeys<Self>, crate::hkdf::HkdfLabelError> {
-                let (_, iv) = crate::hkdf::traffic_keys::<H, 16>(traffic_secret)?;
-                Ok(RecordKeys {
-                    cipher: NoopAead,
-                    iv,
-                })
+                let (key, iv) = crate::hkdf::traffic_keys::<H, 16>(traffic_secret)?;
+                Ok(RecordKeys { key, iv })
             }
         }
     }
@@ -565,7 +568,9 @@ pub(crate) mod tests {
                 &self.iv,
                 seq,
                 plaintext_buf,
-                |nonce, aad, pt, tag| run_decrypt::<S>(&self.cipher, nonce, aad, pt, tag),
+                |nonce, aad, pt, tag| {
+                    self.with_cipher(|c| run_decrypt::<S>(c, nonce, aad, pt, tag))
+                },
             )
         }
     }
@@ -665,7 +670,7 @@ pub(crate) mod tests {
         let content = b"hello world, this is plaintext";
         let seq = 7;
         let keys = RecordKeys::<DefaultCipher> {
-            cipher: DefaultCipher::make_cipher(&key),
+            key: key.clone(),
             iv: iv.clone(),
         };
 

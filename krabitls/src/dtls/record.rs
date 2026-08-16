@@ -330,7 +330,7 @@ pub(crate) trait DtlsSuite: CipherSuite {
 #[cfg(feature = "cipher-aes")]
 mod aes_mask {
     use super::{DtlsSuite, HkdfLabelError, RecordKeys, SN_SAMPLE_LEN, Secret};
-    use crate::aead::{Aes128GcmSha256, CipherSuite};
+    use crate::aead::Aes128GcmSha256;
     use crate::hkdf::{dtls_traffic_keys, sn_key};
     use crate::traits::HkdfSha256;
     use aes_gcm::aes::Aes128;
@@ -344,10 +344,7 @@ mod aes_mask {
             traffic_secret: &Secret,
         ) -> Result<RecordKeys<Self>, HkdfLabelError> {
             let (key, iv) = dtls_traffic_keys::<H, 16>(traffic_secret)?;
-            Ok(RecordKeys {
-                cipher: Self::make_cipher(&key),
-                iv,
-            })
+            Ok(RecordKeys { key, iv })
         }
 
         fn derive_masker<H: HkdfSha256>(
@@ -371,7 +368,7 @@ mod aes_mask {
 #[cfg(feature = "chacha20")]
 mod chacha_mask {
     use super::{DtlsSuite, HkdfLabelError, RecordKeys, SN_SAMPLE_LEN, Secret};
-    use crate::aead::{ChaCha20Poly1305Sha256, CipherSuite};
+    use crate::aead::ChaCha20Poly1305Sha256;
     use crate::hkdf::{dtls_traffic_keys, sn_key};
     use crate::newtype::ZeroBuf;
     use crate::traits::HkdfSha256;
@@ -386,10 +383,7 @@ mod chacha_mask {
             traffic_secret: &Secret,
         ) -> Result<RecordKeys<Self>, HkdfLabelError> {
             let (key, iv) = dtls_traffic_keys::<H, 32>(traffic_secret)?;
-            Ok(RecordKeys {
-                cipher: Self::make_cipher(&key),
-                iv,
-            })
+            Ok(RecordKeys { key, iv })
         }
 
         fn derive_masker<H: HkdfSha256>(

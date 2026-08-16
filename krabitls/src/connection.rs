@@ -490,6 +490,9 @@ where
         })
     }
 
+    // `inline(never)`: the ClientHello builder's scratch stays out of the
+    // long-lived `connect` frame (peak-stack containment).
+    #[inline(never)]
     pub fn write_client_hello_to_slice_with(
         self,
         buf: &mut [u8],
@@ -831,6 +834,9 @@ type FinishHandshakeOut<'a, S> = (&'a [u8], RecordKeys<S>, RecordKeys<S>, Secret
 
 type FinishHandshakeOk<'a, S, H> = (&'a [u8], TlsConnection<AppData<S>, H>);
 
+// `inline(never)`: isolates the client-finished / app-key-derivation working
+// set from the handshake driver frame (peak-stack containment).
+#[inline(never)]
 fn finish_handshake_inner<'a, S, H, BuildFn, DeriveFn>(
     hs: &Secret,
     c_hs_ts: &Secret,
@@ -936,6 +942,9 @@ where
     // is a distinct borrowed resource — a params struct would only rename the
     // eight-ness.
     #[allow(clippy::too_many_arguments)]
+    // Keep the client-auth build+sign working set in its own frame rather than
+    // the finish path's (peak-stack containment).
+    #[inline(never)]
     pub fn finish_handshake_with_policy<'a, R: TryCryptoRng + ?Sized, A: ClientAuthSign<R>>(
         mut self,
         policy: &A,

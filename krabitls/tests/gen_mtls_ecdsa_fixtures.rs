@@ -24,6 +24,7 @@
 #![cfg(all(
     feature = "cipher-aes",
     feature = "ecdsa",
+    feature = "dev-utils",
     not(feature = "chacha20"),
     not(feature = "rsa"),
     not(feature = "mldsa"),

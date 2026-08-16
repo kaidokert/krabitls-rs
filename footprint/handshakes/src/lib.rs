@@ -897,36 +897,54 @@ pub fn run_aes_ecdsa_facade() -> Result<(), ()> {
     not(feature = "mldsa"),
 ))]
 pub fn run_aes_ecdsa_mtls_facade() -> Result<(), ()> {
-    // Fully-qualified `fixture_aes_ecdsa_mtls_facade::*` rather than a glob:
-    // the module-level glob is the *server*-ECDSA fixture (`CLIENT_FINISHED`
-    // etc. for the sibling run bodies), and these share const names.
+    facade_scratch::with(connect_check_aes_ecdsa_mtls)
+}
+
+// `inline(never)`: models a real application caller. Behind a call boundary,
+// NRVO reuses a single `TlsStream` return slot; inlined into the harness's
+// `main` the whole workload folds into one frame where each `Result`/
+// `ControlFlow` representation on the return path lands in its own copy — a ~5×
+// stack multiplier that measures the harness, not the client. A ~768 B canned
+// transport (vs a real ~tens-of-byte NAL socket) is the only remaining rig
+// overhead. Fully-qualified `fixture_aes_ecdsa_mtls_facade::*` because the
+// module glob is the server-ECDSA fixture and they share const names.
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "cipher-aes",
+    feature = "ecdsa",
+    feature = "client-auth",
+    not(feature = "chacha20"),
+    not(feature = "rsa"),
+    not(feature = "mlkem"),
+    not(feature = "mldsa"),
+))]
+#[inline(never)]
+fn connect_check_aes_ecdsa_mtls(scratch: &mut krabitls::client::DefaultScratch) -> Result<(), ()> {
     let client_hello = &fixture_aes_ecdsa_mtls_facade::CLIENT_HELLO;
     let client_flight = &fixture_aes_ecdsa_mtls_facade::CLIENT_SECOND_FLIGHT;
 
-    facade_scratch::with(|scratch| {
-        let signer = EcdsaClientAuth::p256_from_scalar(
-            &fixture_aes_ecdsa_mtls_facade::CLIENT_SCALAR,
-            fixture_aes_ecdsa_mtls_facade::CLIENT_LEAF,
-        )
-        .map_err(|_| ())?;
-        let mut rng = SeededRng::new(0);
-        let transport = CannedTransport::<2048>::new(&fixture_aes_ecdsa_mtls_facade::SERVER_STREAM);
-        let params = ClientParams::self_signed("tls-fixture.local")
-            .suite_policy(RuntimeSuitePolicy::Default)
-            .with_client_auth(&signer);
+    let signer = EcdsaClientAuth::p256_from_scalar(
+        &fixture_aes_ecdsa_mtls_facade::CLIENT_SCALAR,
+        fixture_aes_ecdsa_mtls_facade::CLIENT_LEAF,
+    )
+    .map_err(|_| ())?;
+    let mut rng = SeededRng::new(0);
+    let transport = CannedTransport::<768>::new(&fixture_aes_ecdsa_mtls_facade::SERVER_STREAM);
+    let params = ClientParams::self_signed("tls-fixture.local")
+        .suite_policy(RuntimeSuitePolicy::Default)
+        .with_client_auth(&signer);
 
-        let tls = DefaultStream::connect(&params, scratch, transport, &mut rng).map_err(|_| ())?;
+    let tls = DefaultStream::connect(&params, scratch, transport, &mut rng).map_err(|_| ())?;
 
-        let captured = tls.transport().captured_tx();
-        let expected_len = client_hello.len() + client_flight.len();
-        if captured.len() != expected_len
-            || captured[..client_hello.len()] != client_hello[..]
-            || captured[client_hello.len()..] != client_flight[..]
-        {
-            return Err(());
-        }
-        Ok(())
-    })
+    let captured = tls.transport().captured_tx();
+    let expected_len = client_hello.len() + client_flight.len();
+    if captured.len() != expected_len
+        || captured[..client_hello.len()] != client_hello[..]
+        || captured[client_hello.len()..] != client_flight[..]
+    {
+        return Err(());
+    }
+    Ok(())
 }
 
 /// Same facade path as `run_aes_ed25519_facade`, but the server flight carries
