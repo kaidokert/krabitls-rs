@@ -24,6 +24,7 @@ the protocol.
 | X25519          | AES-128-GCM       | Ed25519      | —            |        41.0 |    10 604 |
 | X25519          | AES-128-GCM       | RSA-2048-PSS | —            |        47.8 |    29 492 |
 | X25519          | AES-128-GCM       | ECDSA-P256   | —            |        58.5 |     9 716 |
+| X25519          | AES-128-GCM       | ECDSA-P256 chain¹ | —       |        59.1 |    10 660 |
 | P-256 ECDHE     | AES-128-GCM       | ECDSA-P256   | —            |        67.0 |    11 868 |
 | P-256 ECDHE     | AES-128-GCM       | ECDSA-P256   | ECDSA-P256   |        79.2 |    15 012 |
 | X25519          | AES-128-GCM       | Ed25519      | Ed25519      |        47.1 |    12 484 |
@@ -44,6 +45,7 @@ the protocol.
 | X25519          | AES-128-GCM       | Ed25519      | —            |        63.9 |    10 476 |
 | X25519          | AES-128-GCM       | RSA-2048-PSS | —            |        74.9 |    29 412 |
 | X25519          | AES-128-GCM       | ECDSA-P256   | —            |        91.6 |     9 596 |
+| X25519          | AES-128-GCM       | ECDSA-P256 chain¹ | —       |        91.9 |    10 556 |
 | P-256 ECDHE     | AES-128-GCM       | ECDSA-P256   | —            |       105.5 |    11 756 |
 | P-256 ECDHE     | AES-128-GCM       | ECDSA-P256   | ECDSA-P256   |       125.8 |    14 872 |
 | X25519          | AES-128-GCM       | Ed25519      | Ed25519      |        74.8 |    12 396 |
@@ -55,3 +57,10 @@ the protocol.
 | X25519          | AES-128-GCM       | ML-DSA-44    | —            |        82.7 |    42 724 |
 | X25519MLKEM768  | AES-128-GCM       | ML-DSA-44    | —            |        96.2 |   111 640 |
 | X25519MLKEM768  | ChaCha20-Poly1305 | ML-DSA-44    | —            |        87.9 |   111 636 |
+
+¹ **ECDSA-P256 chain** — the `chain-verify` `PinnedRoots` strategy validating a
+server chain of leaf + 8 intermediates (root omitted, anchored on a stored root
+cert) instead of a single pinned leaf. The walk is iterative, so a 10-deep chain
+peaks ~0.9 KB above the depth-1 ECDSA row rather than scaling with depth — the
+per-link verify frame is reused, not stacked. The `.text` delta over the leaf row
+(~0.7 KiB M3) is the walk plus `parse_ca_constraints`.
