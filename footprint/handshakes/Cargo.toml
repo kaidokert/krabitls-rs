@@ -36,6 +36,10 @@ ecdsa = ["krabitls/ecdsa"]
 # secp256r1 (P-256) ECDHE key exchange, layered on the always-present X25519 so
 # the seed-0 P-256 capture (client offered both, server picked P-256) replays.
 p256-kx = ["krabitls/p256-kx"]
+# Declared only so the canned mTLS fixtures can gate `not(feature = "blinding")`:
+# blinding shifts the client-auth sign entropy, which would break their
+# byte-exact captures. Enabling it cfg's those rows out rather than mismeasuring.
+blinding = ["krabitls/blinding"]
 # Drive mutual-TLS client auth in the run body (paired with a sig feature, e.g.
 # `ecdsa`) — selects the mTLS canned fixture + `with_client_auth` path.
 client-auth = []

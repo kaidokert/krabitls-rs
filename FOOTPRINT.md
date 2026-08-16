@@ -3,8 +3,8 @@
 Peak stack and `.text` for a full TLS 1.3 handshake, measured on QEMU (real
 binary minus a baseline stub that touches the same fixtures). Numbers reflect
 what a real caller sees: each row drives `connect` across a call boundary, not
-inlined into the measurement harness. Regenerate with `python3
-footprint/run_suite.py`.
+inlined into the measurement harness. Regenerate with `cd footprint && python3
+run_suite.py` (the script must run from that directory).
 
 - **Stack** — peak painted stack during the handshake, minus the harness baseline.
 - **.text** — real `.text` minus the baseline stub's.

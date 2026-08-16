@@ -119,6 +119,8 @@ mod fixture_aes_ecdsa_facade {
     feature = "cipher-aes",
     feature = "ecdsa",
     feature = "client-auth",
+    not(feature = "p256-kx"),
+    not(feature = "blinding"),
     not(feature = "chacha20"),
     not(feature = "rsa"),
     not(feature = "mlkem"),
@@ -336,6 +338,8 @@ use krabitls::client::RuntimeSuitePolicy;
     feature = "cipher-aes",
     feature = "ecdsa",
     feature = "client-auth",
+    not(feature = "p256-kx"),
+    not(feature = "blinding"),
     not(feature = "chacha20"),
     not(feature = "rsa"),
     not(feature = "mlkem"),
@@ -982,6 +986,8 @@ fn connect_check_aes_ecdsa(scratch: &mut krabitls::client::DefaultScratch) -> Re
     feature = "cipher-aes",
     feature = "ecdsa",
     feature = "client-auth",
+    not(feature = "p256-kx"),
+    not(feature = "blinding"),
     not(feature = "chacha20"),
     not(feature = "rsa"),
     not(feature = "mlkem"),
@@ -1004,6 +1010,8 @@ pub fn run_aes_ecdsa_mtls_facade() -> Result<(), ()> {
     feature = "cipher-aes",
     feature = "ecdsa",
     feature = "client-auth",
+    not(feature = "p256-kx"),
+    not(feature = "blinding"),
     not(feature = "chacha20"),
     not(feature = "rsa"),
     not(feature = "mlkem"),
@@ -1107,6 +1115,8 @@ pub fn baseline_aes_ecdsa_facade() -> bool {
     feature = "cipher-aes",
     feature = "ecdsa",
     feature = "client-auth",
+    not(feature = "p256-kx"),
+    not(feature = "blinding"),
     not(feature = "chacha20"),
     not(feature = "rsa"),
     not(feature = "mlkem"),
@@ -1258,10 +1268,11 @@ mod fixture_p256_ed25519_facade {
     ));
     pub const SERVER_STREAM: [u8; SERVER_HELLO.len() + SERVER_FLIGHT.len()] =
         concat_sh_sf!(SERVER_HELLO.len(), SERVER_FLIGHT.len());
-    /// The Finished record framing is key-exchange-independent (5-byte header +
-    /// 32-byte SHA-256 verify_data + 1 inner type + 16-byte GCM tag), so the
-    /// P-256 client Finished is the same 58 bytes as every other AES row — used
-    /// only to size the TX capture buffer, since no client flight was captured.
+    /// The Finished record framing is key-exchange-independent (5-byte record
+    /// header + 4-byte handshake header + 32-byte SHA-256 verify_data + 1 inner
+    /// content type + 16-byte GCM tag = 58), so the P-256 client Finished is the
+    /// same 58 bytes as every other AES row — used to size the TX capture buffer
+    /// and assert the exact captured length.
     pub const CLIENT_FINISHED_LEN: usize = 58;
 }
 
@@ -1307,7 +1318,8 @@ fn connect_check_p256_ed25519(scratch: &mut krabitls::client::DefaultScratch) ->
     let tls = DefaultStream::connect(&params, scratch, transport, &mut rng).map_err(|_| ())?;
 
     let captured = tls.transport().captured_tx();
-    if captured.len() <= client_hello.len() || captured[..client_hello.len()] != client_hello[..] {
+    let expected_len = client_hello.len() + fixture_p256_ed25519_facade::CLIENT_FINISHED_LEN;
+    if captured.len() != expected_len || captured[..client_hello.len()] != client_hello[..] {
         return Err(());
     }
     Ok(())
@@ -1338,6 +1350,7 @@ pub fn baseline_p256_ed25519_facade() -> bool {
     feature = "canned-replay",
     feature = "cipher-aes",
     feature = "client-auth",
+    not(feature = "blinding"),
     not(feature = "chacha20"),
     not(feature = "rsa"),
     not(feature = "mldsa"),
@@ -1374,6 +1387,7 @@ mod fixture_ed25519_mtls_facade {
     feature = "canned-replay",
     feature = "cipher-aes",
     feature = "client-auth",
+    not(feature = "blinding"),
     not(feature = "chacha20"),
     not(feature = "rsa"),
     not(feature = "mldsa"),
@@ -1387,6 +1401,7 @@ use krabitls::client::Ed25519ClientAuth;
     feature = "canned-replay",
     feature = "cipher-aes",
     feature = "client-auth",
+    not(feature = "blinding"),
     not(feature = "chacha20"),
     not(feature = "rsa"),
     not(feature = "mldsa"),
@@ -1404,6 +1419,7 @@ pub fn run_ed25519_mtls_facade() -> Result<(), ()> {
     feature = "canned-replay",
     feature = "cipher-aes",
     feature = "client-auth",
+    not(feature = "blinding"),
     not(feature = "chacha20"),
     not(feature = "rsa"),
     not(feature = "mldsa"),
@@ -1449,6 +1465,7 @@ fn connect_check_ed25519_mtls(scratch: &mut krabitls::client::DefaultScratch) ->
     feature = "canned-replay",
     feature = "cipher-aes",
     feature = "client-auth",
+    not(feature = "blinding"),
     not(feature = "chacha20"),
     not(feature = "rsa"),
     not(feature = "mldsa"),
@@ -1475,6 +1492,8 @@ pub fn baseline_ed25519_mtls_facade() -> bool {
     feature = "cipher-aes",
     feature = "rsa",
     feature = "client-auth",
+    not(feature = "p256-kx"),
+    not(feature = "blinding"),
     not(feature = "chacha20"),
     not(feature = "mldsa"),
     not(feature = "ecdsa"),
@@ -1527,6 +1546,8 @@ mod fixture_rsa_mtls_facade {
     feature = "cipher-aes",
     feature = "rsa",
     feature = "client-auth",
+    not(feature = "p256-kx"),
+    not(feature = "blinding"),
     not(feature = "chacha20"),
     not(feature = "mldsa"),
     not(feature = "ecdsa"),
@@ -1539,6 +1560,8 @@ use krabitls::client::RsaClientAuth;
     feature = "cipher-aes",
     feature = "rsa",
     feature = "client-auth",
+    not(feature = "p256-kx"),
+    not(feature = "blinding"),
     not(feature = "chacha20"),
     not(feature = "mldsa"),
     not(feature = "ecdsa"),
@@ -1555,6 +1578,8 @@ pub fn run_rsa_mtls_facade() -> Result<(), ()> {
     feature = "cipher-aes",
     feature = "rsa",
     feature = "client-auth",
+    not(feature = "p256-kx"),
+    not(feature = "blinding"),
     not(feature = "chacha20"),
     not(feature = "mldsa"),
     not(feature = "ecdsa"),
@@ -1601,6 +1626,8 @@ fn connect_check_rsa_mtls(scratch: &mut krabitls::client::DefaultScratch) -> Res
     feature = "cipher-aes",
     feature = "rsa",
     feature = "client-auth",
+    not(feature = "p256-kx"),
+    not(feature = "blinding"),
     not(feature = "chacha20"),
     not(feature = "mldsa"),
     not(feature = "ecdsa"),
@@ -1628,6 +1655,8 @@ pub fn baseline_rsa_mtls_facade() -> bool {
     feature = "cipher-aes",
     feature = "rsa",
     feature = "client-auth",
+    not(feature = "p256-kx"),
+    not(feature = "blinding"),
     not(feature = "chacha20"),
     not(feature = "mldsa"),
     not(feature = "ecdsa"),
@@ -1680,6 +1709,8 @@ mod fixture_rsa_mtls_srv_facade {
     feature = "cipher-aes",
     feature = "rsa",
     feature = "client-auth",
+    not(feature = "p256-kx"),
+    not(feature = "blinding"),
     not(feature = "chacha20"),
     not(feature = "mldsa"),
     not(feature = "ecdsa"),
@@ -1697,6 +1728,8 @@ pub fn run_rsa_mtls_srv_facade() -> Result<(), ()> {
     feature = "cipher-aes",
     feature = "rsa",
     feature = "client-auth",
+    not(feature = "p256-kx"),
+    not(feature = "blinding"),
     not(feature = "chacha20"),
     not(feature = "mldsa"),
     not(feature = "ecdsa"),
@@ -1743,6 +1776,8 @@ fn connect_check_rsa_mtls_srv(scratch: &mut krabitls::client::DefaultScratch) ->
     feature = "cipher-aes",
     feature = "rsa",
     feature = "client-auth",
+    not(feature = "p256-kx"),
+    not(feature = "blinding"),
     not(feature = "chacha20"),
     not(feature = "mldsa"),
     not(feature = "ecdsa"),
@@ -1769,6 +1804,7 @@ pub fn baseline_rsa_mtls_srv_facade() -> bool {
     feature = "canned-replay",
     feature = "chacha20",
     feature = "client-auth",
+    not(feature = "blinding"),
     not(feature = "cipher-aes"),
     not(feature = "rsa"),
     not(feature = "mldsa"),
@@ -1806,6 +1842,7 @@ mod fixture_chacha_mtls_facade {
     feature = "canned-replay",
     feature = "chacha20",
     feature = "client-auth",
+    not(feature = "blinding"),
     not(feature = "cipher-aes"),
     not(feature = "rsa"),
     not(feature = "mldsa"),
@@ -1819,6 +1856,7 @@ use krabitls::client::Ed25519ClientAuth as ChaChaEd25519ClientAuth;
     feature = "canned-replay",
     feature = "chacha20",
     feature = "client-auth",
+    not(feature = "blinding"),
     not(feature = "cipher-aes"),
     not(feature = "rsa"),
     not(feature = "mldsa"),
@@ -1837,6 +1875,7 @@ pub fn run_chacha_mtls_facade() -> Result<(), ()> {
     feature = "canned-replay",
     feature = "chacha20",
     feature = "client-auth",
+    not(feature = "blinding"),
     not(feature = "cipher-aes"),
     not(feature = "rsa"),
     not(feature = "mldsa"),
@@ -1880,6 +1919,7 @@ fn connect_check_chacha_mtls(scratch: &mut krabitls::client::DefaultScratch) -> 
     feature = "canned-replay",
     feature = "chacha20",
     feature = "client-auth",
+    not(feature = "blinding"),
     not(feature = "cipher-aes"),
     not(feature = "rsa"),
     not(feature = "mldsa"),
