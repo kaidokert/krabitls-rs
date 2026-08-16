@@ -21,20 +21,24 @@ size at the cost of some wasted stack.
 
 #### Resource usage
 
-Cortex-M3 and RV32IMAC footprint — real-minus-baseline `.text` and peak stack.
+Peak stack and `.text` for a full TLS 1.3 handshake (real − baseline, QEMU).
+A few corners of the range on Cortex-M3; the `+ client cert` column is mutual
+TLS. Full grid for both M3 and RV32IMAC, all key-exchange / cipher / signature
+combinations: [`FOOTPRINT.md`](FOOTPRINT.md).
 
-| Target   | Suite             | KEX / Sig                  | .text (KiB) | Stack (B) |
-|----------|-------------------|----------------------------|------------:|----------:|
-| M3       | ChaCha20-Poly1305 | X25519 / Ed25519           |        37.3 |     10916 |
-| M3       | AES-128-GCM       | X25519 / Ed25519           |        41.8 |     16444 |
-| M3       | AES-128-GCM       | X25519 / RSA-2048-PSS      |        55.5 |     31292 |
-| M3       | AES-128-GCM       | X25519 / ECDSA-P256        |        58.4 |     20668 |
-| M3       | AES-128-GCM       | X25519MLKEM768 / ML-DSA-44 |        60.6 |    117252 |
-| RV32IMAC | ChaCha20-Poly1305 | X25519 / Ed25519           |        55.9 |     10692 |
-| RV32IMAC | AES-128-GCM       | X25519 / Ed25519           |        65.2 |     16212 |
-| RV32IMAC | AES-128-GCM       | X25519 / RSA-2048-PSS      |        88.2 |     31012 |
-| RV32IMAC | AES-128-GCM       | X25519 / ECDSA-P256        |        90.4 |     20300 |
-| RV32IMAC | AES-128-GCM       | X25519MLKEM768 / ML-DSA-44 |        93.0 |    117112 |
+| KEX            | AEAD              | Server cert  | .text (KiB) | Stack (B) | + client cert |
+|----------------|-------------------|--------------|------------:|----------:|--------------:|
+| X25519         | ChaCha20-Poly1305 | Ed25519      |        37.5 |    10 660 |             — |
+| X25519         | AES-128-GCM       | ECDSA-P256   |        58.5 |     9 716 |        12 844 |
+| P-256 ECDHE    | AES-128-GCM       | Ed25519      |        50.1 |    12 884 |             — |
+| X25519         | AES-128-GCM       | RSA-2048-PSS |        47.8 |    29 492 |        47 268 |
+| X25519MLKEM768 | AES-128-GCM       | ML-DSA-44    |        62.1 |   107 668 |             — |
+
+Smallest flash is ChaCha20/Ed25519; smallest stack is ECDSA-P256 (its verify is
+shallow, though its `.text` is among the largest); the post-quantum
+X25519MLKEM768 / ML-DSA-44 corner is ~10× the stack. RV32IMAC spans the same
+range at ≈1.5× the `.text`: ChaCha20/Ed25519 ~56.7 KiB / 10 524 B, the PQC corner
+~96.2 KiB / 111 640 B.
 
 ## License
 
