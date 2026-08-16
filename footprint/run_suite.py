@@ -32,6 +32,10 @@ ROWS = [
     ("AES-128-GCM", "Ed25519 + client cert",    "krabitls_ed25519_mtls", True, ["cipher-aes", "client-auth", "canned-replay"]),
     ("AES-128-GCM", "ECDSA-P256 + client cert", "krabitls_ecdsa_mtls",   True, ["cipher-aes", "ecdsa", "client-auth", "canned-replay"]),
     ("AES-128-GCM", "RSA-2048-PSS + client cert","krabitls_rsa_mtls",    True, ["cipher-aes", "rsa", "client-auth", "canned-replay"]),
+    # All-RSA mutual TLS: RSA-2048 server leaf AND RSA-2048-PSS client cert.
+    ("AES-128-GCM", "RSA-2048 srv + RSA client", "krabitls_rsa_mtls_srv", True, ["cipher-aes", "rsa", "client-auth", "canned-replay"]),
+    # ChaCha20-Poly1305 mutual TLS: Ed25519 server cert + Ed25519 client cert.
+    ("ChaCha20-Poly1305", "Ed25519 + client cert", "krabitls_chacha_mtls", True, ["chacha20", "client-auth", "canned-replay"]),
     ("AES-128-GCM",       "X25519MLKEM768",   "krabitls_mlkem",       True, ["cipher-aes", "mlkem", "canned-replay"]),
     ("AES-128-GCM",       "ML-DSA-44",        "krabitls_mldsa",       True, ["cipher-aes", "mldsa", "canned-replay"]),
     ("AES-128-GCM",       "MLKEM768+MLDSA44", "krabitls_mlkem_mldsa", True, ["cipher-aes", "mlkem", "mldsa", "canned-replay"]),

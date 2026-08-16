@@ -107,6 +107,14 @@ name = "krabitls_rsa_mtls"
 required-features = ["rsa", "client-auth", "canned-replay"]
 
 [[example]]
+name = "krabitls_rsa_mtls_srv"
+required-features = ["rsa", "client-auth", "canned-replay"]
+
+[[example]]
+name = "krabitls_chacha_mtls"
+required-features = ["chacha20", "client-auth", "canned-replay"]
+
+[[example]]
 name = "krabitls_mlkem_mldsa"
 required-features = ["mlkem", "mldsa", "canned-replay"]
 

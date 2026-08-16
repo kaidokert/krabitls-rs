@@ -1617,3 +1617,283 @@ pub fn baseline_rsa_mtls_facade() -> bool {
     black_box(&fixture_rsa_mtls_facade::CLIENT_D);
     true
 }
+
+// AES-128-GCM + RSA-2048 server cert AND RSA-2048-PSS CLIENT certificate (mutual
+// TLS): both server-auth (RSA verify) and client-auth (RSA sign) run RSA-2048, so
+// this row isolates the cost of an all-RSA mutual handshake. The server flight
+// carries a CertificateRequest and the client answers with
+// `Certificate || CertificateVerify (RSA-PSS sign) || Finished`.
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "cipher-aes",
+    feature = "rsa",
+    feature = "client-auth",
+    not(feature = "chacha20"),
+    not(feature = "mldsa"),
+    not(feature = "ecdsa"),
+    not(feature = "mlkem"),
+))]
+mod fixture_rsa_mtls_srv_facade {
+    pub const CLIENT_HELLO: [u8; 152] = krabitls::hex_decode(include_str!(
+        "../../../testdata/packets_mtls_rsa_srv/001_c2s_ClientHello.hex"
+    ));
+    pub const SERVER_HELLO: [u8; 95] = krabitls::hex_decode(include_str!(
+        "../../../testdata/packets_mtls_rsa_srv/002_s2c_ServerHello.hex"
+    ));
+    pub const SERVER_FLIGHT: [u8; 1475] = krabitls::hex_decode(include_str!(
+        "../../../testdata/packets_mtls_rsa_srv/003_s2c_ServerFlight_encrypted.hex"
+    ));
+    /// Client `Certificate || CertificateVerify || Finished` (one AEAD record).
+    pub const CLIENT_SECOND_FLIGHT: [u8; 936] = krabitls::hex_decode(include_str!(
+        "../../../testdata/packets_mtls_rsa_srv/004_c2s_ClientSecondFlight_encrypted.hex"
+    ));
+    pub const SERVER_STREAM: [u8; SERVER_HELLO.len() + SERVER_FLIGHT.len()] =
+        concat_sh_sf!(SERVER_HELLO.len(), SERVER_FLIGHT.len());
+    pub const CLIENT_LEAF: &[u8] =
+        include_bytes!("../../../testdata/packets_mtls_rsa_srv/client_leaf.der");
+    /// Throwaway RSA-2048 client key — a test vector certified by `CLIENT_LEAF`.
+    pub const CLIENT_N: [u8; 256] = krabitls::hex_decode(
+        "a2906830b167480a497efc6bbbe503a038fe4778e6e04f09f2e2e3667140beb6\
+         397a86523c0e9129820665dd7d69e60ceac0d9988addfcb9a3316de6f4084af8\
+         4f70250a833f057bfa960ec8ede6889c4ca3b79c0decfc394b02e8581ba46dfe\
+         132e734223e34900368d9bb2a5087a2c595a444c4b232fc95cc2a766a9e10f7b\
+         c4842c28275a0f131ea0ea3d5ffefa208f52a723be2e85beed036195bf96ea5a\
+         fa5e28716d708ef59b281d1b80c782e1b18b4992602085f478d550588520d994\
+         37ebd17189824cf61f5c0389051167a0679c17e87c61bb1f9a8765bb3a4d0251\
+         f1cf04f81ed426c1bd3c9618ac5f8574fe89ce6b89b4945dd58c1a39ac911ba5",
+    );
+    pub const CLIENT_D: [u8; 256] = krabitls::hex_decode(
+        "14f43731db941c019372a657beaae8da3cae6e0903fd72c2ae0797d72b0ef4e6\
+         2927856bd128f1861fa7f27667c5802d370f2f9d0d7d4aa7a504e88d25f471b1\
+         6b0fe1fe666777ae00e159bb858abb1e2674cde474191173d31ae757000d244e\
+         652b8e18bee67b90e6f73ed3fa98caa2afcbc654ed347662e6ad828565ad4860\
+         ef65d75740448190eb2d75aaec68fde78e20eeca81d98505b084d3859c49fc3b\
+         2130beb6b8b2076321d28ba4b35bc3213336a109579990a2eb1fbede6632a5d9\
+         1a2ef0459fa077e28691a503f9ca369966de82923328b58a1ea295f47b85cca8\
+         f2b36cd39a0a93234d2da7313c9191a307c80bd271f0ff74be8a4665149eb791",
+    );
+    pub const CLIENT_E: u32 = 65537;
+}
+
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "cipher-aes",
+    feature = "rsa",
+    feature = "client-auth",
+    not(feature = "chacha20"),
+    not(feature = "mldsa"),
+    not(feature = "ecdsa"),
+    not(feature = "mlkem"),
+))]
+pub fn run_rsa_mtls_srv_facade() -> Result<(), ()> {
+    facade_scratch::with(connect_check_rsa_mtls_srv)
+}
+
+// `inline(never)`: models a real application caller so the measured stack is the
+// client's, not the harness's — see `connect_check_aes_ecdsa_mtls`. Uses the
+// `RsaClientAuth` import shared with `connect_check_rsa_mtls`.
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "cipher-aes",
+    feature = "rsa",
+    feature = "client-auth",
+    not(feature = "chacha20"),
+    not(feature = "mldsa"),
+    not(feature = "ecdsa"),
+    not(feature = "mlkem"),
+))]
+#[inline(never)]
+fn connect_check_rsa_mtls_srv(scratch: &mut krabitls::client::DefaultScratch) -> Result<(), ()> {
+    let client_hello = &fixture_rsa_mtls_srv_facade::CLIENT_HELLO;
+    let client_flight = &fixture_rsa_mtls_srv_facade::CLIENT_SECOND_FLIGHT;
+
+    let signer = RsaClientAuth::from_components(
+        &fixture_rsa_mtls_srv_facade::CLIENT_N,
+        fixture_rsa_mtls_srv_facade::CLIENT_E,
+        &fixture_rsa_mtls_srv_facade::CLIENT_D,
+        fixture_rsa_mtls_srv_facade::CLIENT_LEAF,
+    )
+    .map_err(|_| ())?;
+    let mut rng = SeededRng::new(0);
+    let transport = CannedTransport::<
+        {
+            fixture_rsa_mtls_srv_facade::CLIENT_HELLO.len()
+                + fixture_rsa_mtls_srv_facade::CLIENT_SECOND_FLIGHT.len()
+        },
+    >::new(&fixture_rsa_mtls_srv_facade::SERVER_STREAM);
+    let params = ClientParams::self_signed("mtls-fixture.local")
+        .suite_policy(RuntimeSuitePolicy::Default)
+        .with_client_auth(&signer);
+
+    let tls = DefaultStream::connect(&params, scratch, transport, &mut rng).map_err(|_| ())?;
+
+    let captured = tls.transport().captured_tx();
+    let expected_len = client_hello.len() + client_flight.len();
+    if captured.len() != expected_len
+        || captured[..client_hello.len()] != client_hello[..]
+        || captured[client_hello.len()..] != client_flight[..]
+    {
+        return Err(());
+    }
+    Ok(())
+}
+
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "cipher-aes",
+    feature = "rsa",
+    feature = "client-auth",
+    not(feature = "chacha20"),
+    not(feature = "mldsa"),
+    not(feature = "ecdsa"),
+    not(feature = "mlkem"),
+))]
+#[inline(never)]
+pub fn baseline_rsa_mtls_srv_facade() -> bool {
+    black_box(&fixture_rsa_mtls_srv_facade::CLIENT_HELLO);
+    black_box(&fixture_rsa_mtls_srv_facade::SERVER_HELLO);
+    black_box(&fixture_rsa_mtls_srv_facade::SERVER_FLIGHT);
+    black_box(&fixture_rsa_mtls_srv_facade::CLIENT_SECOND_FLIGHT);
+    black_box(fixture_rsa_mtls_srv_facade::CLIENT_LEAF);
+    black_box(&fixture_rsa_mtls_srv_facade::CLIENT_N);
+    black_box(&fixture_rsa_mtls_srv_facade::CLIENT_D);
+    true
+}
+
+// ChaCha20-Poly1305 + Ed25519 server cert AND Ed25519 CLIENT certificate (mutual
+// TLS), chacha-only build: the server flight carries a CertificateRequest and the
+// client second flight is `Certificate || CertificateVerify (Ed25519 sign) ||
+// Finished`. Same mutual path as `fixture_ed25519_mtls_facade` but with the AEAD
+// swapped to ChaCha20-Poly1305.
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "chacha20",
+    feature = "client-auth",
+    not(feature = "cipher-aes"),
+    not(feature = "rsa"),
+    not(feature = "mldsa"),
+    not(feature = "ecdsa"),
+    not(feature = "mlkem"),
+    not(feature = "p256-kx"),
+))]
+mod fixture_chacha_mtls_facade {
+    pub const CLIENT_HELLO: [u8; 150] = krabitls::hex_decode(include_str!(
+        "../../../testdata/packets_mtls_chacha/001_c2s_ClientHello.hex"
+    ));
+    pub const SERVER_HELLO: [u8; 95] = krabitls::hex_decode(include_str!(
+        "../../../testdata/packets_mtls_chacha/002_s2c_ServerHello.hex"
+    ));
+    pub const SERVER_FLIGHT: [u8; 718] = krabitls::hex_decode(include_str!(
+        "../../../testdata/packets_mtls_chacha/003_s2c_ServerFlight_encrypted.hex"
+    ));
+    /// Client `Certificate || CertificateVerify || Finished` (one AEAD record).
+    pub const CLIENT_SECOND_FLIGHT: [u8; 497] = krabitls::hex_decode(include_str!(
+        "../../../testdata/packets_mtls_chacha/004_c2s_ClientSecondFlight_encrypted.hex"
+    ));
+    pub const SERVER_STREAM: [u8; SERVER_HELLO.len() + SERVER_FLIGHT.len()] =
+        concat_sh_sf!(SERVER_HELLO.len(), SERVER_FLIGHT.len());
+    pub const CLIENT_LEAF: &[u8] =
+        include_bytes!("../../../testdata/packets_mtls_chacha/client_leaf.der");
+    /// Ed25519 seed for `CLIENT_LEAF` — a test vector, derives its public key.
+    pub const CLIENT_SEED: [u8; 32] = [
+        0xf2, 0x7f, 0x8c, 0xfc, 0xe9, 0x94, 0x5f, 0x91, 0x13, 0xab, 0xbb, 0xd4, 0x1a, 0x35, 0x94,
+        0x91, 0xe6, 0x95, 0xaf, 0x92, 0x35, 0x65, 0xf8, 0xda, 0xc6, 0x25, 0xd1, 0xdd, 0x98, 0x80,
+        0x1b, 0xc9,
+    ];
+}
+
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "chacha20",
+    feature = "client-auth",
+    not(feature = "cipher-aes"),
+    not(feature = "rsa"),
+    not(feature = "mldsa"),
+    not(feature = "ecdsa"),
+    not(feature = "mlkem"),
+    not(feature = "p256-kx"),
+))]
+use krabitls::client::Ed25519ClientAuth as ChaChaEd25519ClientAuth;
+
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "chacha20",
+    feature = "client-auth",
+    not(feature = "cipher-aes"),
+    not(feature = "rsa"),
+    not(feature = "mldsa"),
+    not(feature = "ecdsa"),
+    not(feature = "mlkem"),
+    not(feature = "p256-kx"),
+))]
+pub fn run_chacha_mtls_facade() -> Result<(), ()> {
+    facade_scratch::with(connect_check_chacha_mtls)
+}
+
+// `inline(never)`: models a real application caller so the measured stack is the
+// client's, not the harness's — see `connect_check_aes_ecdsa_mtls`. No
+// `suite_policy` override: with `cipher-aes` off the default policy is ChaChaOnly.
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "chacha20",
+    feature = "client-auth",
+    not(feature = "cipher-aes"),
+    not(feature = "rsa"),
+    not(feature = "mldsa"),
+    not(feature = "ecdsa"),
+    not(feature = "mlkem"),
+    not(feature = "p256-kx"),
+))]
+#[inline(never)]
+fn connect_check_chacha_mtls(scratch: &mut krabitls::client::DefaultScratch) -> Result<(), ()> {
+    let client_hello = &fixture_chacha_mtls_facade::CLIENT_HELLO;
+    let client_flight = &fixture_chacha_mtls_facade::CLIENT_SECOND_FLIGHT;
+
+    let signer = ChaChaEd25519ClientAuth::from_seed(
+        &fixture_chacha_mtls_facade::CLIENT_SEED,
+        fixture_chacha_mtls_facade::CLIENT_LEAF,
+    )
+    .map_err(|_| ())?;
+    let mut rng = SeededRng::new(0);
+    let transport = CannedTransport::<
+        {
+            fixture_chacha_mtls_facade::CLIENT_HELLO.len()
+                + fixture_chacha_mtls_facade::CLIENT_SECOND_FLIGHT.len()
+        },
+    >::new(&fixture_chacha_mtls_facade::SERVER_STREAM);
+    let params = ClientParams::self_signed("mtls-fixture.local").with_client_auth(&signer);
+
+    let tls = DefaultStream::connect(&params, scratch, transport, &mut rng).map_err(|_| ())?;
+
+    let captured = tls.transport().captured_tx();
+    let expected_len = client_hello.len() + client_flight.len();
+    if captured.len() != expected_len
+        || captured[..client_hello.len()] != client_hello[..]
+        || captured[client_hello.len()..] != client_flight[..]
+    {
+        return Err(());
+    }
+    Ok(())
+}
+
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "chacha20",
+    feature = "client-auth",
+    not(feature = "cipher-aes"),
+    not(feature = "rsa"),
+    not(feature = "mldsa"),
+    not(feature = "ecdsa"),
+    not(feature = "mlkem"),
+    not(feature = "p256-kx"),
+))]
+#[inline(never)]
+pub fn baseline_chacha_mtls_facade() -> bool {
+    black_box(&fixture_chacha_mtls_facade::CLIENT_HELLO);
+    black_box(&fixture_chacha_mtls_facade::SERVER_HELLO);
+    black_box(&fixture_chacha_mtls_facade::SERVER_FLIGHT);
+    black_box(&fixture_chacha_mtls_facade::CLIENT_SECOND_FLIGHT);
+    black_box(fixture_chacha_mtls_facade::CLIENT_LEAF);
+    black_box(&fixture_chacha_mtls_facade::CLIENT_SEED);
+    true
+}

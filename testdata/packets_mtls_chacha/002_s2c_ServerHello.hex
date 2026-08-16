@@ -1,0 +1,4 @@
+# krabitls seed-0 ChaCha20-Poly1305 Ed25519-mTLS ServerHello (95 bytes),
+# captured from a local openssl s_server -Verify handshake. Regenerate
+# with the `#[ignore]`d `gen_mtls_chacha_fixtures` test; do not hand-edit.
+160303005a0200005603037aed0dbbd528a38c66a287d54c03d2ef7c53028d276debf08fb980c8dfcac3a800130300002e002b0002030400330024001d0020421188007c698d50bda983d1ee6314b9d769ba07030b2bca5caeb6acf69a6272

@@ -23,21 +23,24 @@ size at the cost of some wasted stack.
 
 Example peak stack and `.text` for a full TLS 1.3 handshake (representative
 measurement, real − baseline, on QEMU). `+ client cert` is the same handshake
-with mutual TLS. Full grid for both targets and every key-exchange / cipher /
-signature combination: [`FOOTPRINT.md`](FOOTPRINT.md).
+with mutual TLS (a same-algorithm client certificate). The `.text` and `Stack`
+columns are the server-auth build. Full grid — P-256 ECDHE and X25519MLKEM768
+key exchange, ML-DSA server certs, both targets — in
+[`FOOTPRINT.md`](FOOTPRINT.md).
 
-| Target   | Server cert  | AEAD              | KEX            | .text (KiB) | Stack (B) | + client cert |
-|----------|--------------|-------------------|----------------|------------:|----------:|--------------:|
-| M3       | Ed25519      | AES-128-GCM       | X25519         |        41.0 |    10 604 |        12 484 |
-| M3       | ECDSA-P256   | AES-128-GCM       | X25519         |        58.5 |     9 716 |        12 844 |
-| M3       | RSA-2048-PSS | AES-128-GCM       | X25519         |        47.8 |    29 492 |             — |
-| M3       | Ed25519      | AES-128-GCM       | P-256 ECDHE    |        50.1 |    12 884 |             — |
-| M3       | ML-DSA-44    | AES-128-GCM       | X25519MLKEM768 |        62.1 |   107 668 |             — |
-| RV32IMAC | Ed25519      | ChaCha20-Poly1305 | X25519         |        56.7 |    10 524 |             — |
-| RV32IMAC | ML-DSA-44    | AES-128-GCM       | X25519MLKEM768 |        96.2 |   111 640 |             — |
+| Target   | Server cert  | AEAD              | KEX    | .text (KiB) | Stack (B) | + client cert |
+|----------|--------------|-------------------|--------|------------:|----------:|--------------:|
+| M3       | Ed25519      | AES-128-GCM       | X25519 |        41.0 |    10 604 |        12 484 |
+| M3       | Ed25519      | ChaCha20-Poly1305 | X25519 |        37.5 |    10 660 |        12 668 |
+| M3       | ECDSA-P256   | AES-128-GCM       | X25519 |        58.5 |     9 716 |        12 844 |
+| M3       | RSA-2048-PSS | AES-128-GCM       | X25519 |        47.8 |    29 492 |        47 276 |
+| RV32IMAC | Ed25519      | AES-128-GCM       | X25519 |        63.9 |    10 476 |        12 396 |
+| RV32IMAC | Ed25519      | ChaCha20-Poly1305 | X25519 |        56.7 |    10 524 |        12 572 |
+| RV32IMAC | ECDSA-P256   | AES-128-GCM       | X25519 |        91.6 |     9 596 |        12 744 |
+| RV32IMAC | RSA-2048-PSS | AES-128-GCM       | X25519 |        74.9 |    29 412 |        46 908 |
 
-`+ client cert` shows same-algorithm mutual auth (Ed25519, ECDSA). RSA-2048-PSS
-client certificates are also supported; that path is in
+The post-quantum X25519MLKEM768 / ML-DSA-44 handshake is ~108 KB stack on M3
+(~62 KiB `.text`); P-256 ECDHE key exchange ~12.9 KB. See
 [`FOOTPRINT.md`](FOOTPRINT.md).
 
 ## License
