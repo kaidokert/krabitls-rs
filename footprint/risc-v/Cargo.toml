@@ -16,9 +16,14 @@ rsa = ["footprint_handshakes/rsa"]
 mlkem = ["footprint_handshakes/mlkem"]
 mldsa = ["footprint_handshakes/mldsa"]
 ecdsa = ["footprint_handshakes/ecdsa"]
-# `krabitls_ecdsa_mtls` example: layers ECDSA-P256 client authentication onto
-# the `ecdsa` server-cert path — the client answers a CertificateRequest with
-# its own cert + ECDSA CertificateVerify, linking the client-auth signing path.
+# `krabitls_p256` example: secp256r1 (P-256) ECDHE key exchange with an Ed25519
+# server cert, replayed from the seed-0 P-256 capture.
+p256-kx = ["footprint_handshakes/p256-kx"]
+# `krabitls_ecdsa_mtls` / `krabitls_ed25519_mtls` / `krabitls_rsa_mtls` examples:
+# client authentication — the client answers a CertificateRequest with its own
+# cert + CertificateVerify, linking the client-auth signing path. The client
+# cert's key type is selected by the paired sig feature (`ecdsa`, `rsa`, or bare
+# for Ed25519).
 client-auth = ["footprint_handshakes/client-auth"]
 chacha20 = ["footprint_handshakes/chacha20"]
 cert-der = ["footprint_handshakes/cert-der"]
@@ -58,6 +63,18 @@ required-features = ["ecdsa", "canned-replay"]
 [[example]]
 name = "krabitls_ecdsa_mtls"
 required-features = ["ecdsa", "client-auth", "canned-replay"]
+
+[[example]]
+name = "krabitls_p256"
+required-features = ["p256-kx", "canned-replay"]
+
+[[example]]
+name = "krabitls_ed25519_mtls"
+required-features = ["client-auth", "canned-replay"]
+
+[[example]]
+name = "krabitls_rsa_mtls"
+required-features = ["rsa", "client-auth", "canned-replay"]
 
 [[example]]
 name = "krabitls_mlkem_mldsa"

@@ -26,6 +26,12 @@ ROWS = [
     ("AES-128-GCM",       "Ed25519",      "krabitls",        True, ["cipher-aes", "canned-replay"]),
     ("AES-128-GCM",       "RSA-2048-PSS", "krabitls_rsa",    True, ["cipher-aes", "rsa", "canned-replay"]),
     ("AES-128-GCM",       "ECDSA-P256",   "krabitls_ecdsa",  True, ["cipher-aes", "ecdsa", "canned-replay"]),
+    # P-256 ECDHE key exchange (secp256r1) rather than X25519, Ed25519 server cert.
+    ("AES-128-GCM (P-256 ECDHE)", "Ed25519", "krabitls_p256", True, ["cipher-aes", "p256-kx", "canned-replay"]),
+    # Mutual TLS: server cert + a client certificate (adds the client-auth sign).
+    ("AES-128-GCM", "Ed25519 + client cert",    "krabitls_ed25519_mtls", True, ["cipher-aes", "client-auth", "canned-replay"]),
+    ("AES-128-GCM", "ECDSA-P256 + client cert", "krabitls_ecdsa_mtls",   True, ["cipher-aes", "ecdsa", "client-auth", "canned-replay"]),
+    ("AES-128-GCM", "RSA-2048-PSS + client cert","krabitls_rsa_mtls",    True, ["cipher-aes", "rsa", "client-auth", "canned-replay"]),
     ("AES-128-GCM",       "X25519MLKEM768",   "krabitls_mlkem",       True, ["cipher-aes", "mlkem", "canned-replay"]),
     ("AES-128-GCM",       "ML-DSA-44",        "krabitls_mldsa",       True, ["cipher-aes", "mldsa", "canned-replay"]),
     ("AES-128-GCM",       "MLKEM768+MLDSA44", "krabitls_mlkem_mldsa", True, ["cipher-aes", "mlkem", "mldsa", "canned-replay"]),
