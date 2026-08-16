@@ -32,6 +32,7 @@ key exchange, ML-DSA server certs, both targets — in
 |----------|--------------|-------------------|----------------|------------:|----------:|--------------:|
 | M3       | Ed25519      | ChaCha20-Poly1305 | X25519         |        37.5 |    10 660 |        12 668 |
 | M3       | Ed25519      | AES-128-GCM       | X25519         |        41.0 |    10 604 |        12 484 |
+| M3       | ECDSA-P256   | AES-128-GCM       | P-256 ECDHE    |        67.0 |    11 868 |        15 012 |
 | M3       | ECDSA-P256   | AES-128-GCM       | X25519         |        58.5 |     9 716 |        12 844 |
 | M3       | RSA-2048-PSS | AES-128-GCM       | X25519         |        47.8 |    29 492 |        47 276 |
 | M3       | ML-DSA-44    | AES-128-GCM       | X25519MLKEM768 |        62.1 |   107 668 |             — |
@@ -40,8 +41,7 @@ key exchange, ML-DSA server certs, both targets — in
 
 RV32IMAC shows the most-common and post-quantum configs (same as their M3 rows)
 to demonstrate the cross-architecture delta — stack within a few percent, `.text`
-≈1.5×. P-256 ECDHE key exchange (~12.9 KB stack) and the full grid are in
-[`FOOTPRINT.md`](FOOTPRINT.md).
+≈1.5×. Full grid in [`FOOTPRINT.md`](FOOTPRINT.md).
 
 ## License
 
