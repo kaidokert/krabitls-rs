@@ -33,6 +33,9 @@ mlkem = ["krabitls/mlkem"]
 mldsa = ["krabitls/mldsa"]
 # ECDSA P-256 server-cert verification (secp256r1 / SHA-256).
 ecdsa = ["krabitls/ecdsa"]
+# Drive mutual-TLS client auth in the run body (paired with a sig feature, e.g.
+# `ecdsa`) — selects the mTLS canned fixture + `with_client_auth` path.
+client-auth = []
 # Fully-featured verify surface — U1024+U2048 (both PKCS1v15+PSS), all sig
 # algos. NOT footprint `rsa` (that is 2048-only, no U1024).
 full-stack = ["krabitls/rsa", "krabitls/rsa-1024", "krabitls/ecdsa", "krabitls/mldsa", "krabitls/mlkem"]

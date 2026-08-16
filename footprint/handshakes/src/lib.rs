@@ -111,6 +111,42 @@ mod fixture_aes_ecdsa_facade {
         concat_sh_sf!(SERVER_HELLO.len(), SERVER_FLIGHT.len());
 }
 
+// AES-128-GCM + ECDSA-P256 server cert AND ECDSA-P256 client certificate
+// (mutual TLS): the server flight carries a CertificateRequest, and the client
+// second flight is `Certificate || CertificateVerify (ECDSA sign) || Finished`.
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "cipher-aes",
+    feature = "ecdsa",
+    feature = "client-auth",
+    not(feature = "chacha20"),
+    not(feature = "rsa"),
+    not(feature = "mlkem"),
+    not(feature = "mldsa"),
+))]
+mod fixture_aes_ecdsa_mtls_facade {
+    pub const CLIENT_HELLO: [u8; 153] = krabitls::hex_decode(include_str!(
+        "../../../testdata/packets_mtls_ecdsa/001_c2s_ClientHello.hex"
+    ));
+    pub const SERVER_HELLO: [u8; 95] = krabitls::hex_decode(include_str!(
+        "../../../testdata/packets_mtls_ecdsa/002_s2c_ServerHello.hex"
+    ));
+    pub const SERVER_FLIGHT: [u8; 756] = krabitls::hex_decode(include_str!(
+        "../../../testdata/packets_mtls_ecdsa/003_s2c_ServerFlight_encrypted.hex"
+    ));
+    /// Client `Certificate || CertificateVerify || Finished` (one AEAD record).
+    pub const CLIENT_SECOND_FLIGHT: [u8; 509] = krabitls::hex_decode(include_str!(
+        "../../../testdata/packets_mtls_ecdsa/004_c2s_ClientSecondFlight_encrypted.hex"
+    ));
+    pub const SERVER_STREAM: [u8; SERVER_HELLO.len() + SERVER_FLIGHT.len()] =
+        concat_sh_sf!(SERVER_HELLO.len(), SERVER_FLIGHT.len());
+    pub const CLIENT_LEAF: &[u8] =
+        include_bytes!("../../../testdata/packets_mtls_ecdsa/client_leaf.der");
+    /// Big-endian P-256 client scalar for `CLIENT_LEAF` — a test vector.
+    pub const CLIENT_SCALAR: [u8; 32] =
+        krabitls::hex_decode("ec798c9d6ab974fe4b9d5e5e853e5003e2e2bcef642191c11b97b767964abfdd");
+}
+
 #[cfg(all(
     feature = "canned-replay",
     feature = "chacha20",
@@ -294,6 +330,18 @@ use {
     not(feature = "chacha20")
 ))]
 use krabitls::client::RuntimeSuitePolicy;
+
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "cipher-aes",
+    feature = "ecdsa",
+    feature = "client-auth",
+    not(feature = "chacha20"),
+    not(feature = "rsa"),
+    not(feature = "mlkem"),
+    not(feature = "mldsa"),
+))]
+use krabitls::client::EcdsaClientAuth;
 
 // Fixture data globs — one captured-suite module each, so these stay per-cfg.
 #[cfg(all(
@@ -833,6 +881,72 @@ pub fn run_aes_ecdsa_facade() -> Result<(), ()> {
     })
 }
 
+/// Same AES-128-GCM + ECDSA-P256 path as `run_aes_ecdsa_facade`, but the server
+/// flight carries a CertificateRequest and the client answers with its own
+/// P-256 certificate + ECDSA CertificateVerify — so `connect()` additionally
+/// links the client-auth signing path. This is the stack-cost measurement for
+/// an ECDSA client-authenticated handshake.
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "cipher-aes",
+    feature = "ecdsa",
+    feature = "client-auth",
+    not(feature = "chacha20"),
+    not(feature = "rsa"),
+    not(feature = "mlkem"),
+    not(feature = "mldsa"),
+))]
+pub fn run_aes_ecdsa_mtls_facade() -> Result<(), ()> {
+    facade_scratch::with(connect_check_aes_ecdsa_mtls)
+}
+
+// `inline(never)`: models a real application caller. Behind a call boundary,
+// NRVO reuses a single `TlsStream` return slot; inlined into the harness's
+// `main` the whole workload folds into one frame where each `Result`/
+// `ControlFlow` representation on the return path lands in its own copy — a ~5×
+// stack multiplier that measures the harness, not the client. A ~768 B canned
+// transport (vs a real ~tens-of-byte NAL socket) is the only remaining rig
+// overhead. Fully-qualified `fixture_aes_ecdsa_mtls_facade::*` because the
+// module glob is the server-ECDSA fixture and they share const names.
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "cipher-aes",
+    feature = "ecdsa",
+    feature = "client-auth",
+    not(feature = "chacha20"),
+    not(feature = "rsa"),
+    not(feature = "mlkem"),
+    not(feature = "mldsa"),
+))]
+#[inline(never)]
+fn connect_check_aes_ecdsa_mtls(scratch: &mut krabitls::client::DefaultScratch) -> Result<(), ()> {
+    let client_hello = &fixture_aes_ecdsa_mtls_facade::CLIENT_HELLO;
+    let client_flight = &fixture_aes_ecdsa_mtls_facade::CLIENT_SECOND_FLIGHT;
+
+    let signer = EcdsaClientAuth::p256_from_scalar(
+        &fixture_aes_ecdsa_mtls_facade::CLIENT_SCALAR,
+        fixture_aes_ecdsa_mtls_facade::CLIENT_LEAF,
+    )
+    .map_err(|_| ())?;
+    let mut rng = SeededRng::new(0);
+    let transport = CannedTransport::<768>::new(&fixture_aes_ecdsa_mtls_facade::SERVER_STREAM);
+    let params = ClientParams::self_signed("tls-fixture.local")
+        .suite_policy(RuntimeSuitePolicy::Default)
+        .with_client_auth(&signer);
+
+    let tls = DefaultStream::connect(&params, scratch, transport, &mut rng).map_err(|_| ())?;
+
+    let captured = tls.transport().captured_tx();
+    let expected_len = client_hello.len() + client_flight.len();
+    if captured.len() != expected_len
+        || captured[..client_hello.len()] != client_hello[..]
+        || captured[client_hello.len()..] != client_flight[..]
+    {
+        return Err(());
+    }
+    Ok(())
+}
+
 /// Same facade path as `run_aes_ed25519_facade`, but the server flight carries
 /// an ML-DSA-44 certificate + CertificateVerify, so `connect()` links the
 /// ML-DSA verify path.
@@ -880,6 +994,27 @@ pub fn baseline_aes_ecdsa_facade() -> bool {
     black_box(&SERVER_HELLO);
     black_box(&SERVER_FLIGHT);
     black_box(&CLIENT_FINISHED);
+    true
+}
+
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "cipher-aes",
+    feature = "ecdsa",
+    feature = "client-auth",
+    not(feature = "chacha20"),
+    not(feature = "rsa"),
+    not(feature = "mlkem"),
+    not(feature = "mldsa"),
+))]
+#[inline(never)]
+pub fn baseline_aes_ecdsa_mtls_facade() -> bool {
+    black_box(&fixture_aes_ecdsa_mtls_facade::CLIENT_HELLO);
+    black_box(&fixture_aes_ecdsa_mtls_facade::SERVER_HELLO);
+    black_box(&fixture_aes_ecdsa_mtls_facade::SERVER_FLIGHT);
+    black_box(&fixture_aes_ecdsa_mtls_facade::CLIENT_SECOND_FLIGHT);
+    black_box(fixture_aes_ecdsa_mtls_facade::CLIENT_LEAF);
+    black_box(&fixture_aes_ecdsa_mtls_facade::CLIENT_SCALAR);
     true
 }
 

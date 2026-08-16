@@ -330,6 +330,10 @@ impl<
 
     /// Shared boundary-finder for both phases. RFC 8449 limit is enforced
     /// by dispatch, not here (plaintext SH/CCS are exempt).
+    // Outline off the persistent `step_handshake` frame so the per-record
+    // decrypt working set (incl. the rebuilt AEAD schedule) frees between
+    // records instead of unioning into the dispatch frame.
+    #[inline(never)]
     fn frame_one_record(&mut self) -> Result<Framed, HandshakeError> {
         if self.recv.plaintext_parked() {
             debug_assert!(
@@ -386,6 +390,10 @@ impl<
         })
     }
 
+    // Outline off the persistent `step_handshake` frame so the per-record
+    // decrypt working set (incl. the rebuilt AEAD schedule) frees between
+    // records instead of unioning into the dispatch frame.
+    #[inline(never)]
     fn dispatch_handshake_record<V, A, R>(
         &mut self,
         start: usize,

@@ -471,6 +471,10 @@ pub(crate) struct ServerFlightVerified<'a> {
 /// and produced `prepared` + `leaf_view`. This function does protocol
 /// invariants only: transcript advance for EE/Cert, CertificateVerify
 /// against `prepared`, and Server Finished MAC.
+// `inline(never)`: keeps this phase's large verify working set (cert parse +
+// signature verify) in its own frame so it does not union into the handshake
+// driver's frame and inflate peak stack.
+#[inline(never)]
 pub(crate) fn verify_server_flight<'a, H: HkdfSha256, E, R>(
     transcript: &mut TranscriptHash<H>,
     plaintext: &'a [u8],

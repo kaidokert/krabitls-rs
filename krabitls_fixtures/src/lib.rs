@@ -23,7 +23,7 @@ const DERIVE_DOMAIN: &[u8] = b"tls_fixture\0";
 /// plus a modulus-width base-blinding factor (and a rare coprimality retry), an
 /// ECDSA sign pulls the hedge + scalar/coordinate blinds — so the pool must
 /// outrun a widest-width (RSA-4096, 512-byte) blind with margin.
-const ENTROPY_TOTAL: usize = 4096;
+const ENTROPY_TOTAL: usize = 1024;
 
 /// Deterministic entropy source mirroring the Python fixture's seed-mode
 /// RNG so the facade's `client_random` + X25519 private key match Python's

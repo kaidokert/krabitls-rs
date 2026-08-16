@@ -402,6 +402,10 @@ where
 // Engine drive loop for the handshake phase
 // ============================================================================
 
+// `inline(never)`: keeps the entire handshake step-loop working set in its own
+// frame instead of unioning into the `connect` frame that stays live for the
+// whole call (peak-stack containment on constrained SRAM).
+#[inline(never)]
 fn drive_handshake<
     C,
     T,
