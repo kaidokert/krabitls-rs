@@ -3,7 +3,10 @@
 
 use ed25519_heapless::SigningKey;
 use rand_core::TryCryptoRng;
+#[cfg(feature = "blinding")]
 use signature::RandomizedSigner;
+#[cfg(not(feature = "blinding"))]
+use signature::Signer;
 
 #[cfg(feature = "rsa")]
 use {
@@ -38,19 +41,27 @@ use {
     crate::bigint::{EcdsaP256Bn, EcdsaP256CtBn, EcdsaP384Bn, EcdsaP384CtBn},
     crate::consts::{SIG_SCHEME_ECDSA_P256, SIG_SCHEME_ECDSA_P384},
     hmac::Hmac,
-    krabiecdsa::{p256::P256, p384::P384, signing::RandomizedSigningKey},
+    krabiecdsa::{p256::P256, p384::P384},
     sha2::{Sha256 as EcdsaSha256, Sha384 as EcdsaSha384},
-    signature::hazmat::RandomizedPrehashSigner,
 };
+#[cfg(all(feature = "ecdsa", not(feature = "blinding")))]
+use {krabiecdsa::signing::PrehashSigningKey, signature::hazmat::PrehashSigner};
+#[cfg(all(feature = "ecdsa", feature = "blinding"))]
+use {krabiecdsa::signing::RandomizedSigningKey, signature::hazmat::RandomizedPrehashSigner};
 
-// P-256/P-384 hedged signers, fully monomorphized: constant-time sign backend,
-// variable-time verify backend (the RustCrypto keypair bound, and the
-// verify-after-sign fault check), and the RFC 6979 HMAC hedged per §3.6. The
-// nonce hedge plus scalar/coordinate blinding are drawn from the connection RNG.
-#[cfg(feature = "ecdsa")]
+// P-256/P-384 signers, fully monomorphized (constant-time sign backend,
+// variable-time verify backend for the verify-after-sign fault check). With
+// `blinding` on, the RFC 6979 nonce is hedged (§3.6) and `k·G` is scalar/
+// coordinate-blinded from the connection RNG; off, it's plain deterministic
+// RFC 6979.
+#[cfg(all(feature = "ecdsa", feature = "blinding"))]
 type P256Signer = RandomizedSigningKey<P256, EcdsaP256CtBn, EcdsaP256Bn, Hmac<EcdsaSha256>>;
-#[cfg(feature = "ecdsa")]
+#[cfg(all(feature = "ecdsa", feature = "blinding"))]
 type P384Signer = RandomizedSigningKey<P384, EcdsaP384CtBn, EcdsaP384Bn, Hmac<EcdsaSha384>>;
+#[cfg(all(feature = "ecdsa", not(feature = "blinding")))]
+type P256Signer = PrehashSigningKey<P256, EcdsaP256CtBn, EcdsaP256Bn, Hmac<EcdsaSha256>>;
+#[cfg(all(feature = "ecdsa", not(feature = "blinding")))]
+type P384Signer = PrehashSigningKey<P384, EcdsaP384CtBn, EcdsaP384Bn, Hmac<EcdsaSha384>>;
 
 /// Ed25519 client authenticator: a seed-derived signing key (long-term
 /// secret wiped on drop inside [`SigningKey`]) paired with the leaf
@@ -88,13 +99,25 @@ impl<R: TryCryptoRng + ?Sized> ClientAuth<R> for Ed25519ClientAuth<'_> {
         SIG_SCHEME_ED25519
     }
 
-    // Hedged + blinded (RandomizedSigner): `rng` drives the nonce hedge and the
-    // scalar/coordinate blinding. Output is non-deterministic but a standard RFC
-    // 8032 signature any verifier accepts.
+    // `blinding` on: hedged + blinded (RandomizedSigner) — `rng` drives the nonce
+    // hedge and the scalar/coordinate blinding; output is non-deterministic.
+    // Off: plain deterministic RFC 8032. Either way a standard signature.
+    #[cfg(feature = "blinding")]
     fn sign(&self, content: &[u8], rng: &mut R) -> Result<ClientSignature, ClientAuthError> {
         let sig = self
             .signing_key
             .try_sign_with_rng(rng, content)
+            .map_err(|_| ClientAuthError)?;
+        let mut out = ClientSignature::new();
+        out.extend_from_slice(&sig).map_err(|_| ClientAuthError)?;
+        Ok(out)
+    }
+
+    #[cfg(not(feature = "blinding"))]
+    fn sign(&self, content: &[u8], _rng: &mut R) -> Result<ClientSignature, ClientAuthError> {
+        let sig = self
+            .signing_key
+            .try_sign(content)
             .map_err(|_| ClientAuthError)?;
         let mut out = ClientSignature::new();
         out.extend_from_slice(&sig).map_err(|_| ClientAuthError)?;
@@ -110,9 +133,11 @@ impl<R: TryCryptoRng + ?Sized> ClientAuth<R> for Ed25519ClientAuth<'_> {
 /// (Verify uses a per-width enum instead — exact-width carriers matter on the
 /// hot server-cert path; signing is rare enough that the one-carrier trade wins.)
 ///
-/// The modexp is constant-time in `d` and base-blinded: a random `r` drawn from
-/// the connection RNG masks the base (`(m·rᵉ)ᵈ·r⁻¹`), with a verify-after-sign
-/// fault check, so it resists the power/EM DPA the unblinded ladder can't.
+/// The modexp is always constant-time in `d`. Under `blinding` it is
+/// additionally base-blinded — a random `r` from the connection RNG masks the
+/// base (`(m·rᵉ)ᵈ·r⁻¹`), with a verify-after-sign fault check, resisting the
+/// power/EM DPA the plain path can't; without `blinding` the default build signs
+/// salt-only (same signature bytes, no base masking).
 #[cfg(feature = "rsa")]
 pub struct RsaClientAuth<'a> {
     signing_key: GenericSigningKey<Sha256, SignBn, ModMathParams<SignBn, const_num_traits::Ct>>,
@@ -169,17 +194,26 @@ impl<R: TryCryptoRng + ?Sized> ClientAuth<R> for RsaClientAuth<'_> {
 
     fn sign(&self, content: &[u8], rng: &mut R) -> Result<ClientSignature, ClientAuthError> {
         let prehash = Sha256::digest(content);
-        // EM scratch + signature output; both public once the signature is
-        // released, no wipe needed. `salt` holds the 32-byte PSS salt drawn from
-        // `rng` (saltLen == hashLen); the base-blinding factor is drawn from the
-        // same rng inside the signer.
+        // EM scratch + signature output; both public once released, no wipe.
+        // `salt` is the 32-byte PSS salt (saltLen == hashLen), drawn from `rng`
+        // either way. `blinding` on additionally masks the modexp base from the
+        // same rng — the signature bytes are identical, only the side channel
+        // differs.
         let mut em = [0u8; MAX_CLIENT_SIG_LEN];
         let mut sig = [0u8; MAX_CLIENT_SIG_LEN];
         let mut salt = [0u8; 32];
+        #[cfg(feature = "blinding")]
         let sig_slice = self
             .signing_key
             .try_sign_prehash_with_rng_into(rng, &prehash, &mut em, &mut sig, &mut salt)
             .map_err(|_| ClientAuthError)?;
+        #[cfg(not(feature = "blinding"))]
+        let sig_slice = {
+            rng.try_fill_bytes(&mut salt).map_err(|_| ClientAuthError)?;
+            self.signing_key
+                .try_sign_prehash_with_salt_into(&prehash, &salt, &mut em, &mut sig)
+                .map_err(|_| ClientAuthError)?
+        };
         let mut out = ClientSignature::new();
         out.extend_from_slice(sig_slice)
             .map_err(|_| ClientAuthError)?;
@@ -190,12 +224,13 @@ impl<R: TryCryptoRng + ?Sized> ClientAuth<R> for RsaClientAuth<'_> {
 /// ECDSA client authenticator (P-256 / P-384) producing DER `ECDSA-Sig-Value`
 /// `CertificateVerify` signatures.
 ///
-/// The nonce is RFC 6979 hedged with fresh connection-RNG entropy (§3.6), and
-/// the `k·G` multiply is scalar- (`k + r·n`) and coordinate- (λ) blinded from
-/// the same rng, with a verify-after-sign fault check. The signing scalar and
-/// nonce math are constant-time (krabiecdsa's Ct path), and the secret scalar
-/// wipes on drop inside the signing key. A weak rng draw degrades to plain
-/// RFC 6979 determinism, never to nonce reuse.
+/// The signing scalar and nonce math are always constant-time (krabiecdsa's Ct
+/// path), and the secret scalar wipes on drop. Under `blinding` the nonce is
+/// additionally RFC 6979 hedged with connection-RNG entropy (§3.6) and the `k·G`
+/// multiply is scalar- (`k + r·n`) and coordinate- (λ) blinded from the same rng,
+/// with a verify-after-sign fault check (a weak draw degrades to plain RFC 6979
+/// determinism, never nonce reuse); the default build signs plain deterministic
+/// RFC 6979, no hedge or blinding.
 #[cfg(feature = "ecdsa")]
 pub struct EcdsaClientAuth<'a>(EcdsaKey<'a>);
 
@@ -290,10 +325,11 @@ impl<R: TryCryptoRng + ?Sized> ClientAuth<R> for EcdsaClientAuth<'_> {
         }
     }
 
+    // The signer returns the fixed-width P1363 `r || s`; split at the element
+    // width and re-encode as the DER `ECDSA-Sig-Value` TLS wants. `blinding` on
+    // hedges the nonce from `rng`; off is plain deterministic RFC 6979.
+    #[cfg(feature = "blinding")]
     fn sign(&self, content: &[u8], rng: &mut R) -> Result<ClientSignature, ClientAuthError> {
-        // `sign_prehash_with_rng` returns the fixed-width P1363 `r || s`; split
-        // at the element width and re-encode as the DER `ECDSA-Sig-Value` TLS
-        // wants.
         match &self.0 {
             EcdsaKey::P256 { key, .. } => {
                 let digest = EcdsaSha256::digest(content);
@@ -307,6 +343,28 @@ impl<R: TryCryptoRng + ?Sized> ClientAuth<R> for EcdsaClientAuth<'_> {
                 let digest = EcdsaSha384::digest(content);
                 let sig = key
                     .sign_prehash_with_rng(rng, digest.as_slice())
+                    .map_err(|_| ClientAuthError)?;
+                let (r, s) = sig.split_at(48);
+                der_ecdsa_sig(r, s)
+            }
+        }
+    }
+
+    #[cfg(not(feature = "blinding"))]
+    fn sign(&self, content: &[u8], _rng: &mut R) -> Result<ClientSignature, ClientAuthError> {
+        match &self.0 {
+            EcdsaKey::P256 { key, .. } => {
+                let digest = EcdsaSha256::digest(content);
+                let sig = key
+                    .sign_prehash(digest.as_slice())
+                    .map_err(|_| ClientAuthError)?;
+                let (r, s) = sig.split_at(32);
+                der_ecdsa_sig(r, s)
+            }
+            EcdsaKey::P384 { key, .. } => {
+                let digest = EcdsaSha384::digest(content);
+                let sig = key
+                    .sign_prehash(digest.as_slice())
                     .map_err(|_| ClientAuthError)?;
                 let (r, s) = sig.split_at(48);
                 der_ecdsa_sig(r, s)
@@ -371,11 +429,14 @@ mod ecdsa_sign_tests {
         let mut pk = [0u8; 65];
         auth.public_key_sec1(&mut pk).unwrap();
         let prehash = EcdsaSha256::digest(CONTENT);
-        // Hedged (RFC 6979 §3.6): distinct rng streams yield distinct signatures
-        // over the same content, both valid.
         let a = auth.sign(CONTENT, &mut FixedRng(0x01)).unwrap();
         let b = auth.sign(CONTENT, &mut FixedRng(0x02)).unwrap();
+        // `blinding` hedges the nonce (RFC 6979 §3.6): distinct rng → distinct
+        // signatures. Off, it's plain deterministic RFC 6979 — rng-independent.
+        #[cfg(feature = "blinding")]
         assert_ne!(a, b);
+        #[cfg(not(feature = "blinding"))]
+        assert_eq!(a, b);
         assert!(verify_p256(&pk, prehash.as_slice(), &a).is_ok());
         assert!(verify_p256(&pk, prehash.as_slice(), &b).is_ok());
     }

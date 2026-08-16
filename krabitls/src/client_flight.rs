@@ -467,15 +467,21 @@ mod tests {
     impl rand_core::TryCryptoRng for TestRng {}
 
     /// Test RNG whose every draw fails, to exercise the fallible sign path.
+    /// Only the `blinding` build reaches an Ed25519 rng-error path.
+    #[cfg(feature = "blinding")]
     #[derive(Debug)]
     struct RngBroken;
+    #[cfg(feature = "blinding")]
     impl core::fmt::Display for RngBroken {
         fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
             f.write_str("rng failed")
         }
     }
+    #[cfg(feature = "blinding")]
     impl core::error::Error for RngBroken {}
+    #[cfg(feature = "blinding")]
     struct ErrorRng;
+    #[cfg(feature = "blinding")]
     impl rand_core::TryRng for ErrorRng {
         type Error = RngBroken;
         fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
@@ -488,6 +494,7 @@ mod tests {
             Err(RngBroken)
         }
     }
+    #[cfg(feature = "blinding")]
     impl rand_core::TryCryptoRng for ErrorRng {}
 
     fn read_u24(b: &[u8]) -> usize {
@@ -671,13 +678,18 @@ mod tests {
         // builds (RFC 8446 §4.4.3), proving the sign/verify loop agrees on
         // the domain-separation framing.
         let signed = certificate_verify_signed_content(&th);
-        assert!(ed25519_heapless::verify::<VerifyBn>(pubkey, &signed, sig));
+        use signature::Verifier as _;
+        let vk = ed25519_heapless::VerifyingKey::<VerifyBn>::from_bytes(pubkey);
+        assert!(vk.verify(&signed, &sig).is_ok());
 
         // A different transcript must not verify against this signature.
         let other = certificate_verify_signed_content(&TranscriptDigest::new([0x43u8; 32]));
-        assert!(!ed25519_heapless::verify::<VerifyBn>(pubkey, &other, sig));
+        assert!(vk.verify(&other, &sig).is_err());
     }
 
+    // Ed25519 only draws from the rng under `blinding` (the hedge); deterministic
+    // signing ignores it, so there's no rng-error path to exercise off.
+    #[cfg(feature = "blinding")]
     #[test]
     fn certificate_verify_fails_cleanly_when_rng_errors() {
         let auth = Ed25519ClientAuth::from_seed(&[7u8; 32], &[0x55u8; 16]).unwrap();

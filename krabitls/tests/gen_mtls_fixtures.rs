@@ -19,7 +19,8 @@
     not(feature = "mldsa"),
     not(feature = "ecdsa"),
     not(feature = "mlkem"),
-    not(feature = "p256-kx")
+    not(feature = "p256-kx"),
+    not(feature = "blinding")
 ))]
 
 use core::fmt::Write as _;

@@ -122,18 +122,12 @@ macro_rules! ed25519_verify_row {
     ($name:ident, $t:ty) => {
         #[test]
         fn $name() {
-            assert!(ed25519_heapless::verify::<$t>(
-                ed_kat::PUB,
-                ed_kat::MSG,
-                ed_kat::SIG
-            ));
+            use signature::Verifier as _;
+            let vk = ed25519_heapless::VerifyingKey::<$t>::from_bytes(ed_kat::PUB);
+            assert!(vk.verify(ed_kat::MSG, &ed_kat::SIG).is_ok());
             let mut bad = ed_kat::SIG;
             bad[0] ^= 1;
-            assert!(!ed25519_heapless::verify::<$t>(
-                ed_kat::PUB,
-                ed_kat::MSG,
-                bad
-            ));
+            assert!(vk.verify(ed_kat::MSG, &bad).is_err());
         }
     };
 }
@@ -237,7 +231,8 @@ macro_rules! x25519_row {
     ($name:ident, $t:ty) => {
         #[test]
         fn $name() {
-            let got = ed25519_heapless::x25519::<$t>(&x_kat::SCALAR, &x_kat::U).expect("x25519");
+            let got =
+                ed25519_heapless::hazmat::x25519::<$t>(&x_kat::SCALAR, &x_kat::U).expect("x25519");
             assert_eq!(got, x_kat::OUT);
         }
     };

@@ -45,7 +45,7 @@ pub(crate) fn derive_handshake_keys<S: DtlsSuite, H: HkdfSha256>(
     transcript_hash_ch_sh: &TranscriptDigest,
 ) -> Result<HandshakeKeys<S>, KeyScheduleError> {
     let ss = zeroize::Zeroizing::new(
-        ed25519_heapless::x25519::<Bn>(x25519_priv, server_pubkey)
+        ed25519_heapless::hazmat::x25519::<Bn>(x25519_priv, server_pubkey)
             .map_err(|_| KeyScheduleError::DhAllZero)?,
     );
     // RFC 8446 §7.4.2.1: an all-zero X25519 output MUST abort.
@@ -85,7 +85,7 @@ mod tests {
     #[test]
     fn derives_distinct_epoch_keys_that_self_round_trip() {
         let priv_key = [7u8; 32];
-        let server_pub = ed25519_heapless::x25519::<Bn>(&[9u8; 32], &basepoint()).unwrap();
+        let server_pub = ed25519_heapless::hazmat::x25519::<Bn>(&[9u8; 32], &basepoint()).unwrap();
 
         let hk = derive_handshake_keys::<Suite, RustCrypto>(
             &priv_key,

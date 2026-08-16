@@ -71,9 +71,12 @@ const FIXTURE_CLIENT_X25519_PRIV: [u8; 32] = [
 #[cfg(all(feature = "cipher-aes", feature = "chacha20", not(feature = "mlkem")))]
 #[test]
 fn write_client_hello_with_aes_only_narrows_cipher_suites() {
-    let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
+    let x25519 = || {
+        crate::backends::ecdhe_x25519::EcdheX25519::from_secret_bytes(&FIXTURE_CLIENT_X25519_PRIV)
+            .unwrap()
+    };
     let conn_default: TlsConnection<Init, RustCrypto> =
-        TlsConnection::new(FIXTURE_RANDOM, priv_zb.clone());
+        TlsConnection::new(FIXTURE_RANDOM, x25519());
     let mut out_default = [0u8; 256];
     let (written_default, _) = conn_default
         .write_client_hello_to_slice_with(
@@ -83,7 +86,7 @@ fn write_client_hello_with_aes_only_narrows_cipher_suites() {
         )
         .expect("default");
 
-    let conn_aes: TlsConnection<Init, RustCrypto> = TlsConnection::new(FIXTURE_RANDOM, priv_zb);
+    let conn_aes: TlsConnection<Init, RustCrypto> = TlsConnection::new(FIXTURE_RANDOM, x25519());
     let mut out_aes = [0u8; 256];
     let aes_opts = crate::ClientHelloOptions {
         hostname: None,
@@ -207,7 +210,10 @@ mod aes_only {
 
     #[test]
     fn write_client_hello_with_legacy_opts_emits_no_rsl_extension() {
-        let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
+        let priv_zb = crate::backends::ecdhe_x25519::EcdheX25519::from_secret_bytes(
+            &FIXTURE_CLIENT_X25519_PRIV,
+        )
+        .unwrap();
         let conn: TlsConnection<Init, RustCrypto> = TlsConnection::new(FIXTURE_RANDOM, priv_zb);
         let mut out = [0u8; 256];
         let (written, _next) = conn
@@ -229,7 +235,10 @@ mod aes_only {
 
     #[test]
     fn write_client_hello_with_record_size_limit_extension_present() {
-        let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
+        let priv_zb = crate::backends::ecdhe_x25519::EcdheX25519::from_secret_bytes(
+            &FIXTURE_CLIENT_X25519_PRIV,
+        )
+        .unwrap();
         let conn: TlsConnection<Init, RustCrypto> = TlsConnection::new(FIXTURE_RANDOM, priv_zb);
         let mut out = [0u8; 256];
         let opts = crate::ClientHelloOptions {
@@ -255,7 +264,10 @@ mod aes_only {
 
     #[test]
     fn init_writes_byte_identical_client_hello() {
-        let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
+        let priv_zb = crate::backends::ecdhe_x25519::EcdheX25519::from_secret_bytes(
+            &FIXTURE_CLIENT_X25519_PRIV,
+        )
+        .unwrap();
         let conn: TlsConnection<Init, RustCrypto> = TlsConnection::new(FIXTURE_RANDOM, priv_zb);
         const BUF_LEN: usize = 256;
         let mut out = [0u8; BUF_LEN];
@@ -272,7 +284,10 @@ mod aes_only {
 
     #[test]
     fn read_server_hello_lands_on_aes_variant() {
-        let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
+        let priv_zb = crate::backends::ecdhe_x25519::EcdheX25519::from_secret_bytes(
+            &FIXTURE_CLIENT_X25519_PRIV,
+        )
+        .unwrap();
         let conn: TlsConnection<Init, RustCrypto> = TlsConnection::new(FIXTURE_RANDOM, priv_zb);
         let mut out_buf = [0u8; 256];
         let mut cursor: &mut [u8] = &mut out_buf[..];
@@ -309,7 +324,10 @@ mod aes_only {
         session_id: Option<&[u8; 32]>,
         sh: &[u8],
     ) -> Result<NegotiatedSuite<RustCrypto>, ConnectionError> {
-        let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
+        let priv_zb = crate::backends::ecdhe_x25519::EcdheX25519::from_secret_bytes(
+            &FIXTURE_CLIENT_X25519_PRIV,
+        )
+        .unwrap();
         let conn: TlsConnection<Init, RustCrypto> = TlsConnection::new(FIXTURE_RANDOM, priv_zb);
         let opts = crate::ClientHelloOptions {
             session_id,
@@ -326,7 +344,10 @@ mod aes_only {
     #[test]
     fn client_hello_carries_32_byte_session_id_when_enabled() {
         const ID: [u8; 32] = [0x5a; 32];
-        let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
+        let priv_zb = crate::backends::ecdhe_x25519::EcdheX25519::from_secret_bytes(
+            &FIXTURE_CLIENT_X25519_PRIV,
+        )
+        .unwrap();
         let conn: TlsConnection<Init, RustCrypto> = TlsConnection::new(FIXTURE_RANDOM, priv_zb);
         let opts = crate::ClientHelloOptions {
             session_id: Some(&ID),
@@ -345,7 +366,10 @@ mod aes_only {
     #[test]
     fn client_hello_carries_alpn_extension() {
         const PROTOS: [&[u8]; 1] = [b"h2"];
-        let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
+        let priv_zb = crate::backends::ecdhe_x25519::EcdheX25519::from_secret_bytes(
+            &FIXTURE_CLIENT_X25519_PRIV,
+        )
+        .unwrap();
         let conn: TlsConnection<Init, RustCrypto> = TlsConnection::new(FIXTURE_RANDOM, priv_zb);
         let opts = crate::ClientHelloOptions {
             alpn: Some(&PROTOS),
@@ -410,7 +434,10 @@ mod aes_only {
 
     #[test]
     fn feed_server_record_and_finalize_smoke() {
-        let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
+        let priv_zb = crate::backends::ecdhe_x25519::EcdheX25519::from_secret_bytes(
+            &FIXTURE_CLIENT_X25519_PRIV,
+        )
+        .unwrap();
         let conn: TlsConnection<Init, RustCrypto> = TlsConnection::new(FIXTURE_RANDOM, priv_zb);
         let mut out_buf = [0u8; 256];
         let mut cursor: &mut [u8] = &mut out_buf[..];
@@ -452,7 +479,10 @@ mod aes_only {
 
     #[test]
     fn finalize_without_flight_is_incomplete() {
-        let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
+        let priv_zb = crate::backends::ecdhe_x25519::EcdheX25519::from_secret_bytes(
+            &FIXTURE_CLIENT_X25519_PRIV,
+        )
+        .unwrap();
         let conn: TlsConnection<Init, RustCrypto> = TlsConnection::new(FIXTURE_RANDOM, priv_zb);
         let mut out_buf = [0u8; 256];
         let mut cursor: &mut [u8] = &mut out_buf[..];
@@ -479,7 +509,10 @@ mod aes_only {
 
     #[test]
     fn feed_server_record_skips_ccs_without_bumping_seq() {
-        let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
+        let priv_zb = crate::backends::ecdhe_x25519::EcdheX25519::from_secret_bytes(
+            &FIXTURE_CLIENT_X25519_PRIV,
+        )
+        .unwrap();
         let conn: TlsConnection<Init, RustCrypto> = TlsConnection::new(FIXTURE_RANDOM, priv_zb);
         let mut out_buf = [0u8; 256];
         let mut cursor: &mut [u8] = &mut out_buf[..];
@@ -512,7 +545,10 @@ mod aes_only {
 
     #[test]
     fn feed_server_record_inplace_matches_copying() {
-        let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
+        let priv_zb = crate::backends::ecdhe_x25519::EcdheX25519::from_secret_bytes(
+            &FIXTURE_CLIENT_X25519_PRIV,
+        )
+        .unwrap();
         let conn: TlsConnection<Init, RustCrypto> = TlsConnection::new(FIXTURE_RANDOM, priv_zb);
         let mut out_buf = [0u8; 256];
         let mut cursor: &mut [u8] = &mut out_buf[..];
@@ -532,7 +568,10 @@ mod aes_only {
         let seq_copy = conn_copy.state.seq_in;
 
         // Separate TlsConnection so we can compare seq_in.
-        let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
+        let priv_zb = crate::backends::ecdhe_x25519::EcdheX25519::from_secret_bytes(
+            &FIXTURE_CLIENT_X25519_PRIV,
+        )
+        .unwrap();
         let conn: TlsConnection<Init, RustCrypto> = TlsConnection::new(FIXTURE_RANDOM, priv_zb);
         let mut out_buf = [0u8; 256];
         let mut cursor: &mut [u8] = &mut out_buf[..];
@@ -557,7 +596,10 @@ mod aes_only {
 
     #[test]
     fn feed_server_record_inplace_skips_ccs_without_bumping_seq() {
-        let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
+        let priv_zb = crate::backends::ecdhe_x25519::EcdheX25519::from_secret_bytes(
+            &FIXTURE_CLIENT_X25519_PRIV,
+        )
+        .unwrap();
         let conn: TlsConnection<Init, RustCrypto> = TlsConnection::new(FIXTURE_RANDOM, priv_zb);
         let mut out_buf = [0u8; 256];
         let mut cursor: &mut [u8] = &mut out_buf[..];
@@ -588,7 +630,10 @@ mod aes_only {
 
     #[test]
     fn finish_handshake_byte_identical_client_finished() {
-        let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
+        let priv_zb = crate::backends::ecdhe_x25519::EcdheX25519::from_secret_bytes(
+            &FIXTURE_CLIENT_X25519_PRIV,
+        )
+        .unwrap();
         let conn: TlsConnection<Init, RustCrypto> = TlsConnection::new(FIXTURE_RANDOM, priv_zb);
         let mut out = [0u8; 256];
         let mut cursor: &mut [u8] = &mut out[..];
@@ -619,7 +664,10 @@ mod aes_only {
 
     #[test]
     fn app_data_encrypt_record_byte_identical_packet_5() {
-        let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
+        let priv_zb = crate::backends::ecdhe_x25519::EcdheX25519::from_secret_bytes(
+            &FIXTURE_CLIENT_X25519_PRIV,
+        )
+        .unwrap();
         let conn: TlsConnection<Init, RustCrypto> = TlsConnection::new(FIXTURE_RANDOM, priv_zb);
         let mut ch_buf = [0u8; 256];
         let mut cursor: &mut [u8] = &mut ch_buf[..];
@@ -656,7 +704,10 @@ mod aes_only {
 
     #[test]
     fn app_data_decrypt_record_round_trips_packet_6() {
-        let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
+        let priv_zb = crate::backends::ecdhe_x25519::EcdheX25519::from_secret_bytes(
+            &FIXTURE_CLIENT_X25519_PRIV,
+        )
+        .unwrap();
         let conn: TlsConnection<Init, RustCrypto> = TlsConnection::new(FIXTURE_RANDOM, priv_zb);
         let mut ch_buf = [0u8; 256];
         let mut cursor: &mut [u8] = &mut ch_buf[..];
@@ -695,7 +746,10 @@ mod aes_only {
 
     #[test]
     fn close_notify_emits_encrypted_alert_record() {
-        let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
+        let priv_zb = crate::backends::ecdhe_x25519::EcdheX25519::from_secret_bytes(
+            &FIXTURE_CLIENT_X25519_PRIV,
+        )
+        .unwrap();
         let conn: TlsConnection<Init, RustCrypto> = TlsConnection::new(FIXTURE_RANDOM, priv_zb);
         let mut ch_buf = [0u8; 256];
         let mut cursor: &mut [u8] = &mut ch_buf[..];
@@ -732,7 +786,10 @@ mod aes_only {
 
     #[test]
     fn assume_aes_succeeds_for_aes_handshake() {
-        let priv_zb = ZeroBuf::<32>::new(FIXTURE_CLIENT_X25519_PRIV);
+        let priv_zb = crate::backends::ecdhe_x25519::EcdheX25519::from_secret_bytes(
+            &FIXTURE_CLIENT_X25519_PRIV,
+        )
+        .unwrap();
         let conn: TlsConnection<Init, RustCrypto> = TlsConnection::new(FIXTURE_RANDOM, priv_zb);
         let mut out_buf = [0u8; 256];
         let mut cursor: &mut [u8] = &mut out_buf[..];
@@ -749,7 +806,7 @@ mod aes_only {
     type AppConn = TlsConnection<AppData<Aes128GcmSha256>, RustCrypto>;
 
     fn app_secret(byte: u8) -> Secret {
-        Secret::new(ZeroBuf::<32>::new([byte; 32]))
+        Secret::new(crate::newtype::ZeroBuf::<32>::new([byte; 32]))
     }
 
     /// A client-auth flight larger than the peer's `record_size_limit`

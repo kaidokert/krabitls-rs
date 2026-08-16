@@ -939,18 +939,22 @@ fn fixture_transcript_hash_ch_sh() {
 #[test]
 fn fixture_dhe_via_x25519() {
     type T = crate::bigint::Curve25519CtBn;
-    let dhe =
-        ed25519_heapless::x25519::<T>(&FIXTURE_CLIENT_X25519_PRIV, &FIXTURE_SERVER_X25519_PUB_2)
-            .expect("x25519 infallible on >=256-bit carrier");
+    let dhe = ed25519_heapless::hazmat::x25519::<T>(
+        &FIXTURE_CLIENT_X25519_PRIV,
+        &FIXTURE_SERVER_X25519_PUB_2,
+    )
+    .expect("x25519 infallible on >=256-bit carrier");
     assert_eq!(dhe, FIXTURE_DHE);
 }
 
 #[test]
 fn fixture_s_hs_traffic_secret_full_chain() {
     type T = crate::bigint::Curve25519CtBn;
-    let dhe =
-        ed25519_heapless::x25519::<T>(&FIXTURE_CLIENT_X25519_PRIV, &FIXTURE_SERVER_X25519_PUB_2)
-            .expect("x25519 infallible on >=256-bit carrier");
+    let dhe = ed25519_heapless::hazmat::x25519::<T>(
+        &FIXTURE_CLIENT_X25519_PRIV,
+        &FIXTURE_SERVER_X25519_PUB_2,
+    )
+    .expect("x25519 infallible on >=256-bit carrier");
     let hs = handshake_secret::<RustCrypto>(&dhe).unwrap();
     assert_eq!(hs.as_bytes(), &FIXTURE_HANDSHAKE_SECRET_BYTES);
     let th = {
@@ -1037,9 +1041,11 @@ fn jedisct_matches_rustcrypto() {
     }
     // Full TLS 1.3 chain through to s_hs_traffic_secret must match.
     type Bn = crate::bigint::Curve25519CtBn;
-    let dhe =
-        ed25519_heapless::x25519::<Bn>(&FIXTURE_CLIENT_X25519_PRIV, &FIXTURE_SERVER_X25519_PUB_2)
-            .expect("x25519 infallible on >=256-bit carrier");
+    let dhe = ed25519_heapless::hazmat::x25519::<Bn>(
+        &FIXTURE_CLIENT_X25519_PRIV,
+        &FIXTURE_SERVER_X25519_PUB_2,
+    )
+    .expect("x25519 infallible on >=256-bit carrier");
     let rc_hs = handshake_secret::<RustCrypto>(&dhe).unwrap();
     let jd_hs = handshake_secret::<JedisctCrypto>(&dhe).unwrap();
     assert_eq!(rc_hs, jd_hs);
@@ -1549,7 +1555,7 @@ mod cipher_aes {
         #[test]
         fn fixture_packet_3_decrypts_full_chain() {
             type Bn = crate::bigint::Curve25519CtBn;
-            let dhe = ed25519_heapless::x25519::<Bn>(
+            let dhe = ed25519_heapless::hazmat::x25519::<Bn>(
                 &FIXTURE_CLIENT_X25519_PRIV,
                 &FIXTURE_SERVER_X25519_PUB_2,
             )

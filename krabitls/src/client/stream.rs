@@ -14,8 +14,6 @@ use super::scratch::{
     client_auth_send_floor,
 };
 use super::{ClientConfig, ClientParams, ConfigSuitePolicy, RuntimeSuitePolicy, Transport};
-#[cfg(feature = "x25519-kx")]
-use crate::bigint::Curve25519CtBn as X25519Bn;
 
 /// TLS 1.3 client handle.
 ///
@@ -94,15 +92,13 @@ where
         let mut client_random = [0u8; 32];
         rng.try_fill_bytes(&mut client_random)
             .map_err(|_| HandshakeError::Rng)?;
-        // X25519 ephemeral private key. Skipped entirely (no draw, no ladder) in a
-        // P-256-primary build (`x25519-kx` off) — see the `p256-kx` keygen below.
+        // X25519 ephemeral keypair (via the X25519-as-KEM). Skipped entirely in a
+        // P-256-primary build (`x25519-kx` off). Generated before `session_id` so
+        // the deterministic fixture entropy stream keeps its stable prefix — the
+        // unblinded personality draws exactly the 32-byte scalar, as before.
         #[cfg(feature = "x25519-kx")]
-        let x25519_priv = {
-            let mut x25519_priv = crate::newtype::ZeroBuf::<32>::new([0u8; 32]);
-            rng.try_fill_bytes(&mut *x25519_priv)
-                .map_err(|_| HandshakeError::Rng)?;
-            x25519_priv
-        };
+        let (x25519_ecdhe, x25519_pub) = crate::backends::ecdhe_x25519::EcdheX25519::generate(rng)
+            .map_err(|_| HandshakeError::Rng)?;
         // 32-byte legacy_session_id for middlebox-compatibility mode (RFC 8446
         // §D.4), only when opted in. Drawn after the always-present keys so the
         // deterministic fixture entropy stream stays a stable prefix.
@@ -114,12 +110,6 @@ where
         } else {
             None
         };
-
-        // `CurveSetupError` is unreachable on the ≥256-bit carrier — fail closed,
-        // matching the adjacent ephemeral-keygen error.
-        #[cfg(feature = "x25519-kx")]
-        let x25519_pub = ed25519_heapless::x25519_base::<X25519Bn>(&x25519_priv)
-            .map_err(|_| HandshakeError::Rng)?;
 
         // Ephemeral ML-KEM-768 keypair for the X25519MLKEM768 key_share: the
         // decapsulator moves into the connection state; the public ek is
@@ -141,7 +131,7 @@ where
         let init = TlsConnection::<Init, C::Hkdf>::new(
             client_random,
             #[cfg(feature = "x25519-kx")]
-            x25519_priv,
+            x25519_ecdhe,
             #[cfg(feature = "mlkem")]
             mlkem,
             #[cfg(feature = "p256-kx")]

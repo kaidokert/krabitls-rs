@@ -17,7 +17,10 @@
     not(feature = "chacha20"),
     not(feature = "mldsa"),
     not(feature = "mlkem"),
-    not(feature = "ecdsa")
+    not(feature = "ecdsa"),
+    // Blinding draws extra keygen entropy, shifting the seed-0 wire bytes off the
+    // capture; this byte-golden fixture only reproduces with blinding off.
+    not(feature = "blinding")
 ))]
 
 use krabitls::client::{

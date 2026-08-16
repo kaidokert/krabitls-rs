@@ -17,6 +17,8 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use getrandom::SysRng;
+#[cfg(feature = "ecdsa")]
+use krabitls::client::EcdsaClientAuth;
 #[cfg(feature = "rsa")]
 use krabitls::client::RsaClientAuth;
 use krabitls::client::{
@@ -138,6 +140,13 @@ enum ClientAuthMaterial {
         cert_der: Vec<u8>,
         seed: Zeroizing<[u8; 32]>,
     },
+    #[cfg(feature = "ecdsa")]
+    Ecdsa {
+        cert_der: Vec<u8>,
+        /// Big-endian private scalar, left-aligned; `scalar_len` is 32 (P-256) or 48 (P-384).
+        scalar: Zeroizing<[u8; 48]>,
+        scalar_len: usize,
+    },
     #[cfg(feature = "rsa")]
     Rsa {
         cert_der: Vec<u8>,
@@ -167,6 +176,28 @@ fn load_client_auth_ed25519(cert_path: &str, seed_hex: &str) -> Result<ClientAut
     let mut seed = Zeroizing::new([0u8; 32]);
     decode_hex_into(seed_hex, &mut seed[..]).map_err(|e| format!("--client-seed: {e}"))?;
     Ok(ClientAuthMaterial::Ed25519 { cert_der, seed })
+}
+
+#[cfg(feature = "ecdsa")]
+fn load_client_auth_ecdsa(cert_path: &str, scalar_hex: &str) -> Result<ClientAuthMaterial> {
+    let cert_der = load_client_cert(cert_path)?;
+    let scalar_len = match scalar_hex.len() {
+        64 => 32, // P-256
+        96 => 48, // P-384
+        _ => {
+            return Err(
+                "--client-ecdsa-key: expected 64 hex chars (P-256) or 96 (P-384)".to_string(),
+            );
+        }
+    };
+    let mut scalar = Zeroizing::new([0u8; 48]);
+    decode_hex_into(scalar_hex, &mut scalar[..scalar_len])
+        .map_err(|e| format!("--client-ecdsa-key: {e}"))?;
+    Ok(ClientAuthMaterial::Ecdsa {
+        cert_der,
+        scalar,
+        scalar_len,
+    })
 }
 
 #[cfg(feature = "rsa")]
@@ -384,6 +415,34 @@ fn run(
                 probe,
             )
         }
+        #[cfg(feature = "ecdsa")]
+        Some(ClientAuthMaterial::Ecdsa {
+            cert_der,
+            scalar,
+            scalar_len,
+        }) => {
+            let is_p384 = *scalar_len == 48;
+            let signer = if is_p384 {
+                let s: &[u8; 48] = scalar;
+                EcdsaClientAuth::p384_from_scalar(s, cert_der)
+            } else {
+                let s: &[u8; 32] = scalar[..32].try_into().expect("loader pins 32");
+                EcdsaClientAuth::p256_from_scalar(s, cert_der)
+            }
+            .map_err(|_| "invalid --client-ecdsa-key (scalar not in [1, n-1])")?;
+            info!(
+                "client auth: ECDSA P-{}, {} byte leaf",
+                if is_p384 { 384 } else { 256 },
+                cert_der.len()
+            );
+            drive(
+                &mut stack,
+                addr,
+                &base.with_client_auth(&signer),
+                host,
+                probe,
+            )
+        }
         #[cfg(feature = "rsa")]
         Some(ClientAuthMaterial::Rsa { cert_der, n, e, d }) => {
             let signer = RsaClientAuth::from_components(n, *e, &d[..], cert_der)
@@ -447,7 +506,7 @@ where
 fn print_usage() {
     eprintln!(
         "usage: krabitls_connect {{--pin <hex> | --self-signed}} [--mqtt] \\\n\
-         \x20             [--client-cert <der> {{--client-seed <hex> | --client-rsa-key <der>}}] \\\n\
+         \x20             [--client-cert <der> {{--client-seed <hex> | --client-ecdsa-key <hex> | --client-rsa-key <der>}}] \\\n\
          \x20             [--alpn <name>]... [--middlebox-compat] <host>[:<port>]\n\
          \n\
          krabitls TLS 1.3 client over embedded-nal (std-embedded-nal on host).\n\
@@ -458,6 +517,7 @@ fn print_usage() {
            --mqtt          MQTT 3.1.1 CONNECT/CONNACK instead of HTTP GET.\n\
            --client-cert   Client leaf cert (DER) for mutual TLS, plus one key:\n\
            --client-seed   32-byte Ed25519 seed (hex), or\n\
+           --client-ecdsa-key  P-256 (64 hex) / P-384 (96 hex) scalar (needs --features ecdsa), or\n\
            --client-rsa-key  RSA-2048 private key DER (needs --features rsa).\n\
          \n\
          A trust mode is required — an unattended no-pin connect is\n\
@@ -475,6 +535,7 @@ fn main() -> ExitCode {
     let mut client_cert: Option<String> = None;
     let mut client_seed: Option<String> = None;
     let mut client_rsa_key: Option<String> = None;
+    let mut client_ecdsa_key: Option<String> = None;
     let mut alpn: Vec<String> = Vec::new();
     let mut middlebox_compat = false;
 
@@ -502,6 +563,7 @@ fn main() -> ExitCode {
             "--client-cert" => client_cert = Some(value!("--client-cert")),
             "--client-seed" => client_seed = Some(value!("--client-seed")),
             "--client-rsa-key" => client_rsa_key = Some(value!("--client-rsa-key")),
+            "--client-ecdsa-key" => client_ecdsa_key = Some(value!("--client-ecdsa-key")),
             "--alpn" => alpn.push(value!("--alpn")),
             "--middlebox-compat" => middlebox_compat = true,
             "--help" | "-h" => {
@@ -531,17 +593,30 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     }
 
-    let auth = match (client_cert, client_seed, client_rsa_key) {
-        (None, None, None) => None,
-        (Some(cert), Some(seed), None) => match load_client_auth_ed25519(&cert, &seed) {
+    let auth = match (client_cert, client_seed, client_rsa_key, client_ecdsa_key) {
+        (None, None, None, None) => None,
+        (Some(cert), Some(seed), None, None) => match load_client_auth_ed25519(&cert, &seed) {
             Ok(m) => Some(m),
             Err(e) => {
                 eprintln!("error: {e}");
                 return ExitCode::from(2);
             }
         },
+        #[cfg(feature = "ecdsa")]
+        (Some(cert), None, None, Some(scalar)) => match load_client_auth_ecdsa(&cert, &scalar) {
+            Ok(m) => Some(m),
+            Err(e) => {
+                eprintln!("error: {e}");
+                return ExitCode::from(2);
+            }
+        },
+        #[cfg(not(feature = "ecdsa"))]
+        (Some(_), None, None, Some(_)) => {
+            eprintln!("error: --client-ecdsa-key requires building with --features ecdsa");
+            return ExitCode::from(2);
+        }
         #[cfg(feature = "rsa")]
-        (Some(cert), None, Some(key)) => match load_client_auth_rsa(&cert, &key) {
+        (Some(cert), None, Some(key), None) => match load_client_auth_rsa(&cert, &key) {
             Ok(m) => Some(m),
             Err(e) => {
                 eprintln!("error: {e}");
@@ -549,12 +624,14 @@ fn main() -> ExitCode {
             }
         },
         #[cfg(not(feature = "rsa"))]
-        (Some(_), None, Some(_)) => {
+        (Some(_), None, Some(_), None) => {
             eprintln!("error: --client-rsa-key requires building with --features rsa");
             return ExitCode::from(2);
         }
         _ => {
-            eprintln!("error: --client-cert needs exactly one of --client-seed / --client-rsa-key");
+            eprintln!(
+                "error: --client-cert needs exactly one of --client-seed / --client-ecdsa-key / --client-rsa-key"
+            );
             return ExitCode::from(2);
         }
     };
