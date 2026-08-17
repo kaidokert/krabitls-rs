@@ -11,7 +11,8 @@ A hobby `no_std` TLS 1.3 client for microcontrollers. Don't use it for anything 
 - TLS 1.3; X25519, P-256 ECDHE, or X25519MLKEM768 key exchange
 - Verifies Ed25519, RSA, ECDSA (P-256/P-384), or ML-DSA server certificates
 - RSA is 2048-bit; 1024/3072/4096 are opt-in cargo features
-- Optional mutual-TLS client certificates (Ed25519 or RSA-PSS)
+- Optional mutual-TLS client certificates (Ed25519, ECDSA-P256, or RSA-PSS)
+- Optional DTLS 1.3 (RFC 9147) over UDP for CoAP / datagram links (`dtls` feature)
 - Bundled trust is pin-a-pubkey, trust-SAN, or `PinnedRoots` (walks an intermediate chain to a stored root ledger: full-cert or SPKI fingerprint, or a stored anchor cert). No CA bundle or path building; verification is a pluggable `VerifyStrategy`, so a build that doesn't use one links none of it
 - Hand-rolled and unaudited; constant-time primitives, with opt-in power/EM-DPA blinding (key exchange + signing) behind the `blinding` feature
 
