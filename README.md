@@ -12,7 +12,7 @@ A hobby `no_std` TLS 1.3 client for microcontrollers. Don't use it for anything 
 - Verifies Ed25519, RSA, ECDSA (P-256/P-384), or ML-DSA server certificates
 - RSA is 2048-bit; 1024/3072/4096 are opt-in cargo features
 - Optional mutual-TLS client certificates (Ed25519 or RSA-PSS)
-- Bundled trust is pin-a-pubkey or trust-SAN — no CA bundle or chain walking; verification is a pluggable `VerifyStrategy`
+- Bundled trust is pin-a-pubkey or trust-SAN; the optional `chain-verify` feature walks an intermediate chain to a stored root ledger (full-cert or SPKI fingerprint, or a stored anchor cert). No CA bundle or path building; verification is a pluggable `VerifyStrategy`
 - Hand-rolled and unaudited; constant-time primitives, with opt-in power/EM-DPA blinding (key exchange + signing) behind the `blinding` feature
 
 No heap allocations, and prefer reduced flash + stack size over speed. On builds
