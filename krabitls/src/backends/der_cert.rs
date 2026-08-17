@@ -699,8 +699,6 @@ mod tests {
 
     #[test]
     fn der_int_to_u32_rejects_negative_and_accepts_positive() {
-        // `pathLenConstraint` is INTEGER (0..MAX). A high-bit-set first byte is a
-        // negative two's-complement encoding and must be rejected, not folded.
         assert!(der_int_to_u32(&[0xFF]).is_err()); // -1
         assert!(der_int_to_u32(&[0x80]).is_err()); // -128
         assert_eq!(der_int_to_u32(&[0x00]).unwrap(), 0);

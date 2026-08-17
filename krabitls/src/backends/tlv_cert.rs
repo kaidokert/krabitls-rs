@@ -402,7 +402,7 @@ fn key_usage_cert_sign(bytes: &[u8]) -> Result<bool, CertParseError> {
 /// Fold a DER INTEGER's content (big-endian, one optional leading zero) into a
 /// `u32`; `pathLenConstraint` is small and non-negative.
 fn int_to_u32(bytes: &[u8]) -> Result<u32, CertParseError> {
-    // Reject a negative (high-bit-set) pathLenConstraint — see der_cert.rs.
+    // Reject a negative (high-bit-set) pathLenConstraint two's-complement encoding.
     if bytes.first().is_some_and(|&b| b & 0x80 != 0) {
         return Err(CertParseError::Malformed);
     }

@@ -416,9 +416,9 @@ mod tests {
         assert_eq!(p0.path_len, Some(0));
     }
 
-    // The load-bearing Tier-1.5 assumption: a stored anchor cert parsed from a
-    // (here `&'static`) slice can serve as `verify_link`'s parent unchanged, so
-    // the top transmitted cert verifies against a root the server never sent.
+    // A stored anchor cert parsed from a (here `&'static`) slice serves as
+    // `verify_link`'s parent unchanged, so the top transmitted cert verifies
+    // against a root the server never sent.
     #[test]
     fn cert_anchor_from_flash_verifies_top_of_untransmitted_root_chain() {
         let anchors = [Anchor::Cert(ROOT)];
@@ -474,7 +474,7 @@ mod tests {
 
     #[test]
     fn leaf_fingerprint_accepts_with_garbage_above_and_zero_links() {
-        // Degenerate leaf-pin (today's leaf-pin model): the first-match rule
+        // Degenerate leaf-pin: the first-match rule
         // accepts at the leaf before parsing or verifying anything above it.
         let garbage: &[u8] = &[0xDE, 0xAD, 0xBE, 0xEF];
         assert!(run::<8>(&[Anchor::Fingerprint(fp(LEAF))], &[LEAF, garbage]).is_ok());

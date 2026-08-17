@@ -5,7 +5,7 @@
 //! deep intermediate chain, and writes `testdata/packets_chain/` replay
 //! fixtures for the footprint suite's chain-validation stack measurement.
 //!
-//! This exercises the Tier-1.5 posture end-to-end through the real engine: the
+//! This exercises the root-omitted posture end-to-end through the real engine: the
 //! server omits the root, and the client verifies the topmost transmitted
 //! intermediate against the stored anchor cert parsed from flash.
 //!

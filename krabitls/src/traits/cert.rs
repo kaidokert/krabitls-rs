@@ -9,12 +9,9 @@ pub trait CertParser {
     /// chain validator needs: basicConstraints (`cA`, `pathLenConstraint`) and
     /// keyUsage `keyCertSign`. An absent extension yields the conservative
     /// default (`is_ca = false`, `key_cert_sign = None`) so a cert that doesn't
-    /// assert CA rights can't serve as a chain issuer.
-    ///
-    /// The default body returns `is_ca = false`, so a `CertParser` that doesn't
-    /// override it fails chain validation closed instead of forcing every impl to
-    /// implement it. The bundled `DerCert` overrides it. DCE'd when `PinnedRoots`
-    /// is unused.
+    /// assert CA rights can't serve as a chain issuer. The default body returns
+    /// that conservative default so a `CertParser` that doesn't override it fails
+    /// chain validation closed.
     fn parse_ca_constraints(_cert_der: &[u8]) -> Result<CaConstraints, CertParseError> {
         Ok(CaConstraints::default())
     }
@@ -23,10 +20,8 @@ pub trait CertParser {
     /// subjectPublicKey }` TLV) so [`PinnedRoots`](crate::backends::PinnedRoots)
     /// can pin an anchor by its SPKI SHA-256 — a key fingerprint (RFC 7469 shape)
     /// that survives cert renewal/reissue, unlike a full-cert-DER fingerprint.
-    ///
-    /// The default body errors (no SPKI extracted → SPKI pins never match),
-    /// so a non-overriding `CertParser` fails closed. The bundled `DerCert`
-    /// overrides it. DCE'd when `PinnedRoots` is unused.
+    /// The default body errors, so a non-overriding `CertParser` fails closed
+    /// (SPKI pins never match).
     fn spki_der(_cert_der: &[u8]) -> Result<&[u8], CertParseError> {
         Err(CertParseError::Malformed)
     }
