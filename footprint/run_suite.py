@@ -27,9 +27,9 @@ ROWS = [
     ("AES-128-GCM",       "RSA-2048-PSS", "krabitls_rsa",    True, ["cipher-aes", "rsa", "canned-replay"]),
     ("AES-128-GCM",       "ECDSA-P256",   "krabitls_ecdsa",  True, ["cipher-aes", "ecdsa", "canned-replay"]),
     # ECDSA-P256 with a deep intermediate chain (leaf + 8 intermediates, root
-    # omitted) validated by the PinnedRoots chain-verify strategy against a
+    # omitted) validated by the PinnedRoots strategy against a
     # stored anchor. The walk is iterative, so this tracks the shallow ECDSA row.
-    ("AES-128-GCM (10-deep chain)", "ECDSA-P256 chain-verify", "krabitls_chain", True, ["cipher-aes", "ecdsa", "chain-verify", "canned-replay"]),
+    ("AES-128-GCM (10-deep chain)", "ECDSA-P256 chain", "krabitls_chain", True, ["cipher-aes", "ecdsa", "canned-replay"]),
     # P-256 ECDHE key exchange (secp256r1) rather than X25519, ECDSA-P256 server
     # cert — a fully coherent all-P-256 handshake.
     ("AES-128-GCM (P-256 ECDHE)", "ECDSA-P256", "krabitls_p256", True, ["cipher-aes", "p256-kx", "ecdsa", "canned-replay"]),

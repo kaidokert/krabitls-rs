@@ -61,6 +61,6 @@ the protocol.
 ¹ **ECDSA-P256 chain** — the `chain-verify` `PinnedRoots` strategy validating a
 server chain of leaf + 8 intermediates (root omitted, anchored on a stored root
 cert) instead of a single pinned leaf. The walk is iterative, so a 10-deep chain
-peaks ~0.9 KB above the depth-1 ECDSA row rather than scaling with depth — the
+peaks ~0.9 KiB above the depth-1 ECDSA row rather than scaling with depth — the
 per-link verify frame is reused, not stacked. The `.text` delta over the leaf row
-(~0.7 KiB M3) is the walk plus `parse_ca_constraints`.
+(~0.6 KiB M3) is the walk plus `parse_ca_constraints`.

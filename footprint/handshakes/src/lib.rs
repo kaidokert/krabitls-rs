@@ -365,7 +365,6 @@ use fixture_aes_ecdsa_facade::*;
     feature = "canned-replay",
     feature = "cipher-aes",
     feature = "ecdsa",
-    feature = "chain-verify",
     not(feature = "chacha20"),
     not(feature = "rsa"),
     not(feature = "mlkem"),
@@ -991,7 +990,7 @@ fn connect_check_aes_ecdsa(scratch: &mut krabitls::client::DefaultScratch) -> Re
 }
 
 // AES-128-GCM + ECDSA-P256 with a DEEP intermediate chain validated by the
-// `PinnedRoots` chain-verify strategy: the server sends leaf + 8 intermediates
+// `PinnedRoots` chain validator: the server sends leaf + 8 intermediates
 // (root omitted), and the client verifies each link up to a stored anchor cert.
 // Measures the chain walk's stack — depth is loop-bounded, so this should track
 // the shallow ECDSA row, not scale with chain length.
@@ -999,7 +998,6 @@ fn connect_check_aes_ecdsa(scratch: &mut krabitls::client::DefaultScratch) -> Re
     feature = "canned-replay",
     feature = "cipher-aes",
     feature = "ecdsa",
-    feature = "chain-verify",
     not(feature = "chacha20"),
     not(feature = "rsa"),
     not(feature = "mlkem"),
@@ -1028,7 +1026,6 @@ mod fixture_aes_ecdsa_chain {
     feature = "canned-replay",
     feature = "cipher-aes",
     feature = "ecdsa",
-    feature = "chain-verify",
     not(feature = "chacha20"),
     not(feature = "rsa"),
     not(feature = "mlkem"),
@@ -1044,7 +1041,6 @@ pub fn run_aes_ecdsa_chain_facade() -> Result<(), ()> {
     feature = "canned-replay",
     feature = "cipher-aes",
     feature = "ecdsa",
-    feature = "chain-verify",
     not(feature = "chacha20"),
     not(feature = "rsa"),
     not(feature = "mlkem"),
@@ -1080,6 +1076,7 @@ fn connect_check_aes_ecdsa_chain(scratch: &mut krabitls::client::DefaultScratch)
     if captured.len() != fx::CLIENT_HELLO.len() + fx::CLIENT_FINISHED.len()
         || captured[..fx::CLIENT_HELLO.len()] != fx::CLIENT_HELLO[..]
         || captured[fx::CLIENT_HELLO.len()..] != fx::CLIENT_FINISHED[..]
+        || tls.transport().rx_remaining() != 0
     {
         return Err(());
     }
@@ -1090,7 +1087,6 @@ fn connect_check_aes_ecdsa_chain(scratch: &mut krabitls::client::DefaultScratch)
     feature = "canned-replay",
     feature = "cipher-aes",
     feature = "ecdsa",
-    feature = "chain-verify",
     not(feature = "chacha20"),
     not(feature = "rsa"),
     not(feature = "mlkem"),

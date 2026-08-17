@@ -33,7 +33,6 @@ mlkem = ["krabitls/mlkem"]
 mldsa = ["krabitls/mldsa"]
 # ECDSA P-256 server-cert verification (secp256r1 / SHA-256).
 ecdsa = ["krabitls/ecdsa"]
-chain-verify = ["krabitls/chain-verify"]
 # secp256r1 (P-256) ECDHE key exchange, layered on the always-present X25519 so
 # the seed-0 P-256 capture (client offered both, server picked P-256) replays.
 p256-kx = ["krabitls/p256-kx"]

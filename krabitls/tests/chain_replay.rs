@@ -9,7 +9,6 @@
     feature = "cipher-aes",
     feature = "ecdsa",
     feature = "x25519-kx",
-    feature = "chain-verify",
     feature = "cert-der",
     not(feature = "chacha20"),
     not(feature = "rsa"),
@@ -81,6 +80,11 @@ fn replays_deep_chain_handshake_against_stored_root() {
         tls.transport().captured_tx(),
         expected_tx.as_slice(),
         "client transmitted bytes must match the captured fixture"
+    );
+    assert_eq!(
+        tls.transport().rx_remaining(),
+        0,
+        "handshake must consume the whole canned server flight, not a prefix"
     );
 }
 

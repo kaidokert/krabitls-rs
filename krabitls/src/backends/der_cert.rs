@@ -3,7 +3,6 @@
 use der::asn1::{AnyRef, BitStringRef, ObjectIdentifier};
 use der::{Decode, Reader, SliceReader, Tag, TagNumber};
 
-#[cfg(feature = "chain-verify")]
 use crate::traits::cert::CaConstraints;
 use crate::traits::cert::{CertParseError, CertParser, CertView};
 
@@ -37,9 +36,7 @@ const P384_SEC1_LEN: usize = 97;
 
 const SAN_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.5.29.17");
 
-#[cfg(feature = "chain-verify")]
 const BASIC_CONSTRAINTS_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.5.29.19");
-#[cfg(feature = "chain-verify")]
 const KEY_USAGE_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.5.29.15");
 
 const X509_V3: u8 = 2;
@@ -226,13 +223,11 @@ impl CertParser for DerCert {
         }
     }
 
-    #[cfg(feature = "chain-verify")]
     fn parse_ca_constraints(cert_der: &[u8]) -> Result<CaConstraints, CertParseError> {
         let mut tbs_r = extensions_reader(cert_der)?;
         walk_extensions_for_ca(&mut tbs_r)
     }
 
-    #[cfg(feature = "chain-verify")]
     fn spki_der(cert_der: &[u8]) -> Result<&[u8], CertParseError> {
         let map_err = |_| CertParseError::Malformed;
         let outer = AnyRef::try_from(cert_der).map_err(map_err)?;
@@ -348,8 +343,7 @@ fn walk_extensions_for_san<'a>(
 
 /// Position a reader at the TBS tail (past `subjectPublicKeyInfo`), where the
 /// optional UIDs and `[3]` Extensions live — the same spot [`walk_extensions_for_san`]
-/// consumes from, reached independently for the chain-verify CA-constraints read.
-#[cfg(feature = "chain-verify")]
+/// consumes from, reached independently for the CA-constraints read.
 fn extensions_reader(cert_der: &[u8]) -> Result<SliceReader<'_>, CertParseError> {
     let map_err = |_| CertParseError::Malformed;
     let outer = AnyRef::try_from(cert_der).map_err(map_err)?;
@@ -383,7 +377,6 @@ fn extensions_reader(cert_der: &[u8]) -> Result<SliceReader<'_>, CertParseError>
 /// Walk the Extensions block for basicConstraints + keyUsage. Same navigation
 /// as [`walk_extensions_for_san`]; absent extensions leave the conservative
 /// default (`is_ca = false`).
-#[cfg(feature = "chain-verify")]
 fn walk_extensions_for_ca(tbs_r: &mut SliceReader<'_>) -> Result<CaConstraints, CertParseError> {
     let map_err = |_| CertParseError::Malformed;
     let mut out = CaConstraints::default();
@@ -433,7 +426,6 @@ fn walk_extensions_for_ca(tbs_r: &mut SliceReader<'_>) -> Result<CaConstraints, 
 
 /// `BasicConstraints ::= SEQUENCE { cA BOOLEAN DEFAULT FALSE, pathLenConstraint
 /// INTEGER OPTIONAL }`. `bytes` is the extnValue OCTET STRING content.
-#[cfg(feature = "chain-verify")]
 fn parse_basic_constraints(bytes: &[u8], out: &mut CaConstraints) -> Result<(), CertParseError> {
     let map_err = |_| CertParseError::Malformed;
     let seq = AnyRef::try_from(bytes).map_err(map_err)?;
@@ -455,7 +447,6 @@ fn parse_basic_constraints(bytes: &[u8], out: &mut CaConstraints) -> Result<(), 
 /// keyUsage is a BIT STRING; `keyCertSign` is bit 5 (mask `0x04` in the first
 /// data byte, after the leading unused-bit count). `bytes` is the extnValue
 /// OCTET STRING content.
-#[cfg(feature = "chain-verify")]
 fn key_usage_cert_sign(bytes: &[u8]) -> Result<bool, CertParseError> {
     let map_err = |_| CertParseError::Malformed;
     let bs = AnyRef::try_from(bytes).map_err(map_err)?;
@@ -467,8 +458,13 @@ fn key_usage_cert_sign(bytes: &[u8]) -> Result<bool, CertParseError> {
 
 /// Fold a DER INTEGER's content bytes (big-endian, one optional leading zero)
 /// into a `u32`. `pathLenConstraint` is small and non-negative.
-#[cfg(feature = "chain-verify")]
 fn der_int_to_u32(bytes: &[u8]) -> Result<u32, CertParseError> {
+    // pathLenConstraint is INTEGER (0..MAX); a two's-complement negative
+    // encoding (high bit set on the first content byte, no leading 0x00) is
+    // malformed and must not fold into a large positive budget.
+    if bytes.first().is_some_and(|&b| b & 0x80 != 0) {
+        return Err(CertParseError::Malformed);
+    }
     let sig = bytes.strip_prefix(&[0u8]).unwrap_or(bytes);
     if sig.len() > 4 {
         return Err(CertParseError::Malformed);
@@ -691,3 +687,19 @@ mod rsa {
 use rsa::{
     RSA_ENCRYPTION_OID, classify_rsa_outer_sig_alg, parse_rsa_pubkey, require_explicit_null_params,
 };
+
+#[cfg(test)]
+mod tests {
+    use super::der_int_to_u32;
+
+    #[test]
+    fn der_int_to_u32_rejects_negative_and_accepts_positive() {
+        // `pathLenConstraint` is INTEGER (0..MAX). A high-bit-set first byte is a
+        // negative two's-complement encoding and must be rejected, not folded.
+        assert!(der_int_to_u32(&[0xFF]).is_err()); // -1
+        assert!(der_int_to_u32(&[0x80]).is_err()); // -128
+        assert_eq!(der_int_to_u32(&[0x00]).unwrap(), 0);
+        assert_eq!(der_int_to_u32(&[0x7F]).unwrap(), 127);
+        assert_eq!(der_int_to_u32(&[0x00, 0x80]).unwrap(), 128); // leading-zero positive
+    }
+}

@@ -7,7 +7,6 @@ use super::tlv::{
     peek_tag, read_tlv, tag_ctx_constructed, tag_ctx_primitive,
 };
 
-#[cfg(feature = "chain-verify")]
 use crate::traits::cert::CaConstraints;
 use crate::traits::cert::{CertParseError, CertParser, CertView};
 
@@ -52,10 +51,8 @@ const P384_SEC1_LEN: usize = 97;
 const SAN_OID: &[u8] = &[0x55, 0x1D, 0x11];
 
 /// `2.5.29.19` — `id-ce-basicConstraints`.
-#[cfg(feature = "chain-verify")]
 const BASIC_CONSTRAINTS_OID: &[u8] = &[0x55, 0x1D, 0x13];
 /// `2.5.29.15` — `id-ce-keyUsage`.
-#[cfg(feature = "chain-verify")]
 const KEY_USAGE_OID: &[u8] = &[0x55, 0x1D, 0x0F];
 
 const X509_V3: u8 = 2;
@@ -270,12 +267,10 @@ impl CertParser for DerCert {
         }
     }
 
-    #[cfg(feature = "chain-verify")]
     fn parse_ca_constraints(cert_der: &[u8]) -> Result<CaConstraints, CertParseError> {
         walk_extensions_for_ca(extensions_slice(cert_der)?)
     }
 
-    #[cfg(feature = "chain-verify")]
     fn spki_der(cert_der: &[u8]) -> Result<&[u8], CertParseError> {
         let outer = read_expected(cert_der, TAG_SEQUENCE)?;
         let mut body = outer.body;
@@ -308,8 +303,7 @@ fn ec_sec1_point(pk_bytes: &[u8], expect_len: usize) -> Result<(), CertParseErro
 
 /// Return the TBS tail (past `subjectPublicKeyInfo`) where the optional UIDs and
 /// `[3]` Extensions live — the slice [`walk_extensions_for_san`] scans, reached
-/// independently for the chain-verify CA-constraints read.
-#[cfg(feature = "chain-verify")]
+/// independently for the CA-constraints read.
 fn extensions_slice(cert_der: &[u8]) -> Result<&[u8], CertParseError> {
     let outer = read_expected(cert_der, TAG_SEQUENCE)?;
     let mut body = outer.body;
@@ -330,7 +324,6 @@ fn extensions_slice(cert_der: &[u8]) -> Result<&[u8], CertParseError> {
 
 /// Walk the Extensions block for basicConstraints + keyUsage; absent extensions
 /// leave the conservative default (`is_ca = false`).
-#[cfg(feature = "chain-verify")]
 fn walk_extensions_for_ca(mut tbs_r: &[u8]) -> Result<CaConstraints, CertParseError> {
     let mut out = CaConstraints::default();
     while !tbs_r.is_empty() {
@@ -372,7 +365,6 @@ fn walk_extensions_for_ca(mut tbs_r: &[u8]) -> Result<CaConstraints, CertParseEr
 
 /// `BasicConstraints ::= SEQUENCE { cA BOOLEAN DEFAULT FALSE, pathLenConstraint
 /// INTEGER OPTIONAL }`. `bytes` is the extnValue OCTET STRING content.
-#[cfg(feature = "chain-verify")]
 fn parse_basic_constraints(bytes: &[u8], out: &mut CaConstraints) -> Result<(), CertParseError> {
     let seq = read_expected(bytes, TAG_SEQUENCE)?;
     // Reject bytes after the SEQUENCE so this backend matches the der-crate one,
@@ -394,7 +386,6 @@ fn parse_basic_constraints(bytes: &[u8], out: &mut CaConstraints) -> Result<(), 
 
 /// keyUsage is a BIT STRING; `keyCertSign` is bit 5 (mask `0x04` in the first
 /// data byte, after the leading unused-bit count).
-#[cfg(feature = "chain-verify")]
 fn key_usage_cert_sign(bytes: &[u8]) -> Result<bool, CertParseError> {
     let bs = read_expected(bytes, TAG_BIT_STRING)?;
     if !bs.rest.is_empty() {
@@ -405,8 +396,11 @@ fn key_usage_cert_sign(bytes: &[u8]) -> Result<bool, CertParseError> {
 
 /// Fold a DER INTEGER's content (big-endian, one optional leading zero) into a
 /// `u32`; `pathLenConstraint` is small and non-negative.
-#[cfg(feature = "chain-verify")]
 fn int_to_u32(bytes: &[u8]) -> Result<u32, CertParseError> {
+    // Reject a negative (high-bit-set) pathLenConstraint — see der_cert.rs.
+    if bytes.first().is_some_and(|&b| b & 0x80 != 0) {
+        return Err(CertParseError::Malformed);
+    }
     let sig = bytes.strip_prefix(&[0u8]).unwrap_or(bytes);
     if sig.len() > 4 {
         return Err(CertParseError::Malformed);

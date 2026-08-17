@@ -20,7 +20,7 @@
 //! ```
 //!
 //! ```text
-//! KB_PORT=14499 cargo test --features chain-verify,ecdsa --test gen_chain_fixtures \
+//! KB_PORT=14499 cargo test --features ecdsa --test gen_chain_fixtures \
 //!   -- --ignored --nocapture capture_chain_fixtures
 //! ```
 
@@ -28,7 +28,6 @@
     feature = "cipher-aes",
     feature = "ecdsa",
     feature = "x25519-kx",
-    feature = "chain-verify",
     feature = "cert-der",
     not(feature = "chacha20"),
     not(feature = "rsa"),

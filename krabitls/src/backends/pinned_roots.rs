@@ -421,11 +421,10 @@ mod tests {
     }
 
     #[test]
-    fn cert_anchor_survives_intermediate_rotation() {
-        // Same stored root, a different top intermediate set still chains to it.
-        // Here: drop ca1 and re-anchor the shorter chain on the root via ca2's
-        // issuer — modeled by pinning the root and presenting leaf→ca8→…→ca1,
-        // then a truncated variant; both must validate against the one root.
+    fn cert_anchor_accepts_root_transmitted_and_omitted() {
+        // One stored root anchors both the root-omitted presentation (verify the
+        // top intermediate against it) and the full chain that also transmits the
+        // root. (The same-key reissue case is covered by the SPKI-renewal test.)
         assert!(run::<10>(&[Anchor::Cert(ROOT)], &NO_ROOT_CHAIN).is_ok());
         assert!(run::<10>(&[Anchor::Cert(ROOT)], &FULL_CHAIN).is_ok());
     }

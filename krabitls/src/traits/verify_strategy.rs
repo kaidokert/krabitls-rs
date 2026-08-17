@@ -371,26 +371,28 @@ where
     }
 }
 
-/// Failure building a [`PreparedVerifier`] from a leaf's SPKI.
+/// Failure building a [`PreparedVerifier`] from a leaf's SPKI. Variants named by
+/// algorithm (not `*VerifierInvalid`) to avoid clippy's `enum_variant_names`
+/// firing once all three are enabled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PrepareLeafErr {
     #[cfg(feature = "rsa")]
-    RsaVerifierInvalid,
+    Rsa,
     #[cfg(feature = "mldsa")]
-    MlDsaVerifierInvalid,
+    MlDsa,
     #[cfg(feature = "ecdsa")]
-    EcdsaVerifierInvalid,
+    Ecdsa,
 }
 
 impl<TE> From<PrepareLeafErr> for SafeStrategyError<TE> {
     fn from(e: PrepareLeafErr) -> Self {
         match e {
             #[cfg(feature = "rsa")]
-            PrepareLeafErr::RsaVerifierInvalid => SafeStrategyError::RsaVerifierInvalid,
+            PrepareLeafErr::Rsa => SafeStrategyError::RsaVerifierInvalid,
             #[cfg(feature = "mldsa")]
-            PrepareLeafErr::MlDsaVerifierInvalid => SafeStrategyError::MlDsaVerifierInvalid,
+            PrepareLeafErr::MlDsa => SafeStrategyError::MlDsaVerifierInvalid,
             #[cfg(feature = "ecdsa")]
-            PrepareLeafErr::EcdsaVerifierInvalid => SafeStrategyError::EcdsaVerifierInvalid,
+            PrepareLeafErr::Ecdsa => SafeStrategyError::EcdsaVerifierInvalid,
         }
     }
 }
@@ -411,25 +413,21 @@ where
         CertView::Rsa {
             modulus, exponent, ..
         } => PreparedVerifier::Rsa(
-            R::prepare_rsa(modulus, *exponent).map_err(|_| PrepareLeafErr::RsaVerifierInvalid)?,
+            R::prepare_rsa(modulus, *exponent).map_err(|_| PrepareLeafErr::Rsa)?,
         ),
         #[cfg(feature = "mldsa")]
         CertView::MlDsa { pubkey, .. } => PreparedVerifier::MlDsa(
             crate::backends::mldsa_verify::MlDsaVerifierKey::new(pubkey)
-                .map_err(|_| PrepareLeafErr::MlDsaVerifierInvalid)?,
+                .map_err(|_| PrepareLeafErr::MlDsa)?,
         ),
         #[cfg(feature = "ecdsa")]
-        CertView::EcdsaP256 { pubkey, .. } => PreparedVerifier::EcdsaP256(
-            (*pubkey)
-                .try_into()
-                .map_err(|_| PrepareLeafErr::EcdsaVerifierInvalid)?,
-        ),
+        CertView::EcdsaP256 { pubkey, .. } => {
+            PreparedVerifier::EcdsaP256((*pubkey).try_into().map_err(|_| PrepareLeafErr::Ecdsa)?)
+        }
         #[cfg(feature = "ecdsa")]
-        CertView::EcdsaP384 { pubkey, .. } => PreparedVerifier::EcdsaP384(
-            (*pubkey)
-                .try_into()
-                .map_err(|_| PrepareLeafErr::EcdsaVerifierInvalid)?,
-        ),
+        CertView::EcdsaP384 { pubkey, .. } => {
+            PreparedVerifier::EcdsaP384((*pubkey).try_into().map_err(|_| PrepareLeafErr::Ecdsa)?)
+        }
     })
 }
 

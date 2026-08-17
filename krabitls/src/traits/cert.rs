@@ -5,31 +5,28 @@ pub trait CertParser {
     /// Parse a DER-encoded X.509 certificate and return borrows into `cert_der`.
     fn parse<'a>(cert_der: &'a [u8]) -> Result<CertView<'a>, CertParseError>;
 
-    /// Extract the issuer-eligibility fields a chain validator needs:
-    /// basicConstraints (`cA`, `pathLenConstraint`) and keyUsage `keyCertSign`.
-    /// An absent extension yields the conservative default (`is_ca = false`,
-    /// `key_cert_sign = None`) so a cert that doesn't assert CA rights can't
-    /// serve as a chain issuer. Only compiled for the chain-verify strategy.
+    /// Extract the issuer-eligibility fields the [`PinnedRoots`](crate::backends::PinnedRoots)
+    /// chain validator needs: basicConstraints (`cA`, `pathLenConstraint`) and
+    /// keyUsage `keyCertSign`. An absent extension yields the conservative
+    /// default (`is_ca = false`, `key_cert_sign = None`) so a cert that doesn't
+    /// assert CA rights can't serve as a chain issuer.
     ///
-    /// A default-provided body returns `is_ca = false` so a `CertParser` that
-    /// doesn't override it fails every chain closed rather than breaking the
-    /// build — enabling `chain-verify` (which Cargo may unify onto a downstream
-    /// impl) stays additive. The bundled `DerCert` overrides it.
-    #[cfg(feature = "chain-verify")]
+    /// The default body returns `is_ca = false`, so a `CertParser` that doesn't
+    /// override it fails chain validation closed instead of forcing every impl to
+    /// implement it. The bundled `DerCert` overrides it. DCE'd when `PinnedRoots`
+    /// is unused.
     fn parse_ca_constraints(_cert_der: &[u8]) -> Result<CaConstraints, CertParseError> {
         Ok(CaConstraints::default())
     }
 
     /// Return the raw `SubjectPublicKeyInfo` DER (the full `SEQUENCE { algorithm,
-    /// subjectPublicKey }` TLV) so a chain validator can pin an anchor by its
-    /// SPKI SHA-256 — a key fingerprint (RFC 7469 shape) that survives cert
-    /// renewal/reissue, unlike a full-cert-DER fingerprint. Only compiled for the
-    /// chain-verify strategy.
+    /// subjectPublicKey }` TLV) so [`PinnedRoots`](crate::backends::PinnedRoots)
+    /// can pin an anchor by its SPKI SHA-256 — a key fingerprint (RFC 7469 shape)
+    /// that survives cert renewal/reissue, unlike a full-cert-DER fingerprint.
     ///
     /// The default body errors (no SPKI extracted → SPKI pins never match),
-    /// keeping the feature additive for a non-overriding `CertParser`. The
-    /// bundled `DerCert` overrides it.
-    #[cfg(feature = "chain-verify")]
+    /// so a non-overriding `CertParser` fails closed. The bundled `DerCert`
+    /// overrides it. DCE'd when `PinnedRoots` is unused.
     fn spki_der(_cert_der: &[u8]) -> Result<&[u8], CertParseError> {
         Err(CertParseError::Malformed)
     }
@@ -38,7 +35,6 @@ pub trait CertParser {
 /// Issuer-eligibility fields read from a cert's X.509v3 extensions, used by
 /// [`PinnedRoots`](crate::backends::PinnedRoots) to reject a non-CA (or
 /// pathLen-exhausted) cert being used as a chain issuer.
-#[cfg(feature = "chain-verify")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct CaConstraints {
     /// basicConstraints `cA` (DEFAULT FALSE — `false` when absent).
