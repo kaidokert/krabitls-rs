@@ -358,6 +358,20 @@ use krabitls::client::EcdsaClientAuth;
     not(feature = "mldsa"),
 ))]
 use fixture_aes_ecdsa_facade::*;
+// Module *alias* (not a glob) — the chain fixture's cfg overlaps the plain-ECDSA
+// glob above, so importing its items by name would collide; the chain fns
+// reference `fx::CONST` instead.
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "cipher-aes",
+    feature = "ecdsa",
+    feature = "chain-verify",
+    not(feature = "chacha20"),
+    not(feature = "rsa"),
+    not(feature = "mlkem"),
+    not(feature = "mldsa"),
+))]
+use fixture_aes_ecdsa_chain as fx;
 #[cfg(all(
     feature = "canned-replay",
     feature = "cipher-aes",
@@ -1038,11 +1052,11 @@ pub fn run_aes_ecdsa_chain_facade() -> Result<(), ()> {
 ))]
 #[inline(never)]
 fn connect_check_aes_ecdsa_chain(scratch: &mut krabitls::client::DefaultScratch) -> Result<(), ()> {
-    use fixture_aes_ecdsa_chain::*;
     let mut rng = SeededRng::new(0);
-    let transport =
-        CannedTransport::<{ CLIENT_HELLO.len() + CLIENT_FINISHED.len() }>::new(&SERVER_STREAM);
-    let anchors = [krabitls::backends::Anchor::Cert(ROOT)];
+    let transport = CannedTransport::<{ fx::CLIENT_HELLO.len() + fx::CLIENT_FINISHED.len() }>::new(
+        &fx::SERVER_STREAM,
+    );
+    let anchors = [krabitls::backends::Anchor::Cert(fx::ROOT)];
     let verify: krabitls::backends::PinnedRoots<
         krabitls::backends::DerCert,
         krabitls::client::NoClock,
@@ -1063,9 +1077,9 @@ fn connect_check_aes_ecdsa_chain(scratch: &mut krabitls::client::DefaultScratch)
     .map_err(|_| ())?;
 
     let captured = tls.transport().captured_tx();
-    if captured.len() != CLIENT_HELLO.len() + CLIENT_FINISHED.len()
-        || captured[..CLIENT_HELLO.len()] != CLIENT_HELLO[..]
-        || captured[CLIENT_HELLO.len()..] != CLIENT_FINISHED[..]
+    if captured.len() != fx::CLIENT_HELLO.len() + fx::CLIENT_FINISHED.len()
+        || captured[..fx::CLIENT_HELLO.len()] != fx::CLIENT_HELLO[..]
+        || captured[fx::CLIENT_HELLO.len()..] != fx::CLIENT_FINISHED[..]
     {
         return Err(());
     }
@@ -1084,12 +1098,11 @@ fn connect_check_aes_ecdsa_chain(scratch: &mut krabitls::client::DefaultScratch)
 ))]
 #[inline(never)]
 pub fn baseline_aes_ecdsa_chain() -> bool {
-    use fixture_aes_ecdsa_chain::*;
-    black_box(&CLIENT_HELLO);
-    black_box(&SERVER_HELLO);
-    black_box(&SERVER_FLIGHT);
-    black_box(&CLIENT_FINISHED);
-    black_box(&ROOT);
+    black_box(&fx::CLIENT_HELLO);
+    black_box(&fx::SERVER_HELLO);
+    black_box(&fx::SERVER_FLIGHT);
+    black_box(&fx::CLIENT_FINISHED);
+    black_box(&fx::ROOT);
     true
 }
 

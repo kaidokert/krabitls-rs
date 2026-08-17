@@ -39,6 +39,10 @@ fn load(hex_with_comments: &str) -> Vec<u8> {
         .flat_map(|l| l.chars())
         .filter(|c| !c.is_whitespace())
         .collect();
+    assert!(
+        hex.len().is_multiple_of(2),
+        "hex fixture has an odd nibble count"
+    );
     (0..hex.len())
         .step_by(2)
         .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).expect("valid hex"))

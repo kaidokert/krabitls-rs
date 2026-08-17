@@ -10,16 +10,29 @@ pub trait CertParser {
     /// An absent extension yields the conservative default (`is_ca = false`,
     /// `key_cert_sign = None`) so a cert that doesn't assert CA rights can't
     /// serve as a chain issuer. Only compiled for the chain-verify strategy.
+    ///
+    /// A default-provided body returns `is_ca = false` so a `CertParser` that
+    /// doesn't override it fails every chain closed rather than breaking the
+    /// build — enabling `chain-verify` (which Cargo may unify onto a downstream
+    /// impl) stays additive. The bundled `DerCert` overrides it.
     #[cfg(feature = "chain-verify")]
-    fn parse_ca_constraints(cert_der: &[u8]) -> Result<CaConstraints, CertParseError>;
+    fn parse_ca_constraints(_cert_der: &[u8]) -> Result<CaConstraints, CertParseError> {
+        Ok(CaConstraints::default())
+    }
 
     /// Return the raw `SubjectPublicKeyInfo` DER (the full `SEQUENCE { algorithm,
     /// subjectPublicKey }` TLV) so a chain validator can pin an anchor by its
     /// SPKI SHA-256 — a key fingerprint (RFC 7469 shape) that survives cert
     /// renewal/reissue, unlike a full-cert-DER fingerprint. Only compiled for the
     /// chain-verify strategy.
+    ///
+    /// The default body errors (no SPKI extracted → SPKI pins never match),
+    /// keeping the feature additive for a non-overriding `CertParser`. The
+    /// bundled `DerCert` overrides it.
     #[cfg(feature = "chain-verify")]
-    fn spki_der(cert_der: &[u8]) -> Result<&[u8], CertParseError>;
+    fn spki_der(_cert_der: &[u8]) -> Result<&[u8], CertParseError> {
+        Err(CertParseError::Malformed)
+    }
 }
 
 /// Issuer-eligibility fields read from a cert's X.509v3 extensions, used by

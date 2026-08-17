@@ -375,6 +375,11 @@ fn walk_extensions_for_ca(mut tbs_r: &[u8]) -> Result<CaConstraints, CertParseEr
 #[cfg(feature = "chain-verify")]
 fn parse_basic_constraints(bytes: &[u8], out: &mut CaConstraints) -> Result<(), CertParseError> {
     let seq = read_expected(bytes, TAG_SEQUENCE)?;
+    // Reject bytes after the SEQUENCE so this backend matches the der-crate one,
+    // which rejects trailing content in the extnValue.
+    if !seq.rest.is_empty() {
+        return Err(CertParseError::Malformed);
+    }
     let mut r = seq.body;
     if !r.is_empty() && peek_tag(r).map_err(malformed)? == TAG_BOOLEAN {
         let b = take_tlv(&mut r)?;
@@ -392,6 +397,9 @@ fn parse_basic_constraints(bytes: &[u8], out: &mut CaConstraints) -> Result<(), 
 #[cfg(feature = "chain-verify")]
 fn key_usage_cert_sign(bytes: &[u8]) -> Result<bool, CertParseError> {
     let bs = read_expected(bytes, TAG_BIT_STRING)?;
+    if !bs.rest.is_empty() {
+        return Err(CertParseError::Malformed);
+    }
     Ok(bs.body.get(1).is_some_and(|&b| b & 0x04 != 0))
 }
 

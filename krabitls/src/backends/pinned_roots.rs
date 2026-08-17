@@ -12,14 +12,14 @@
 //!
 //! Trust flows down from the pinned fingerprint / stored anchor through
 //! signatures; there is no CA-bundle path building and no revocation (CRL/OCSP)
-//! — the ledger is updated out-of-band. See `notes/chain-verify-design.md`.
+//! — the ledger is updated out-of-band.
 
 use core::marker::PhantomData;
 
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
-use crate::traits::cert::{CertParseError, CertParser};
+use crate::traits::cert::{CertParseError, CertParser, CertView};
 use crate::traits::verify_strategy::{
     CertChainView, Clock, LinkErr, NoClock, PrepareLeafErr, PreparedVerifier, Trusted,
     VerifyStrategy, prepare_leaf, verify_link,
@@ -160,11 +160,17 @@ impl<C: CertParser, K, const CAP: usize> PinnedRoots<'_, C, K, CAP> {
     /// when at least one such anchor is present, so a fingerprint-only ledger
     /// pays nothing.
     fn anchor_matches(&self, cert_der: &[u8]) -> Result<bool, PinnedRootsError> {
-        let full = Sha256::digest(cert_der);
-        for a in self.anchors {
-            if let Anchor::Fingerprint(fp) = a {
-                if bool::from(full.as_slice().ct_eq(&fp[..])) {
-                    return Ok(true);
+        if self
+            .anchors
+            .iter()
+            .any(|a| matches!(a, Anchor::Fingerprint(_)))
+        {
+            let full = Sha256::digest(cert_der);
+            for a in self.anchors {
+                if let Anchor::Fingerprint(fp) = a {
+                    if bool::from(full.as_slice().ct_eq(&fp[..])) {
+                        return Ok(true);
+                    }
                 }
             }
         }
@@ -183,6 +189,35 @@ impl<C: CertParser, K, const CAP: usize> PinnedRoots<'_, C, K, CAP> {
             }
         }
         Ok(false)
+    }
+
+    /// True when `cert_der` is byte-identical to a stored [`Anchor::Cert`].
+    fn is_stored_cert_anchor(&self, cert_der: &[u8]) -> bool {
+        self.anchors
+            .iter()
+            .any(|a| matches!(a, Anchor::Cert(d) if *d == cert_der))
+    }
+
+    /// Whether a cert on the path should have its validity window checked. A
+    /// stored `Anchor::Cert` is exempt by default (the "expired pinned anchor
+    /// must not brick a device" rule applies consistently whether the server
+    /// transmits it or omits it) unless `enforce_anchor_expiry`; every other
+    /// cert — including a fingerprint/SPKI-matched leaf or intermediate, which
+    /// is a live transmitted cert — is always checked.
+    fn check_validity_of(
+        &self,
+        cert_der: &[u8],
+        view: &CertView<'_>,
+    ) -> Result<(), PinnedRootsError>
+    where
+        K: Clock,
+    {
+        if self.enforce_anchor_expiry || !self.is_stored_cert_anchor(cert_der) {
+            self.clock
+                .check_validity(view)
+                .map_err(|_| PinnedRootsError::Validity)?;
+        }
+        Ok(())
     }
 }
 
@@ -219,7 +254,7 @@ where
     // Outlined so the walk's working set (cert parse + per-link verify) is a
     // sibling frame of `verify_server_flight` / the client-sign phase rather than
     // unioning into the handshake driver's frame — the walk shares, not adds to,
-    // the handshake stack peak. See notes/chain-verify-design.md §6.
+    // the handshake stack peak.
     #[inline(never)]
     fn verify_chain<'chain, 'src, 'slot>(
         &self,
@@ -245,21 +280,16 @@ where
         let mut i = 0usize;
         while i < certs.len() {
             if self.anchor_matches(certs[i])? {
-                // Anchor reached: links below are already verified. Its own
-                // signature is irrelevant (the pin is the trust); its expiry is
-                // only checked when opted in.
-                if self.enforce_anchor_expiry {
-                    self.clock
-                        .check_validity(&child)
-                        .map_err(|_| PinnedRootsError::Validity)?;
-                }
+                // Anchor reached: links below are already verified, its own
+                // signature is irrelevant (the pin is the trust). A transmitted
+                // fingerprint/SPKI-matched cert is still validity-checked; a
+                // stored `Anchor::Cert` is exempt by default (`check_validity_of`).
+                self.check_validity_of(certs[i], &child)?;
                 anchored = true;
                 break;
             }
             // Below the anchor: this cert must be time-valid.
-            self.clock
-                .check_validity(&child)
-                .map_err(|_| PinnedRootsError::Validity)?;
+            self.check_validity_of(certs[i], &child)?;
             if i + 1 == certs.len() {
                 // Reached the top with no fingerprint match; a stored cert
                 // anchor (if any) must vouch for this top cert.
@@ -274,21 +304,21 @@ where
 
         if !anchored {
             // `child` is the top presented cert. Accept if a stored anchor cert
-            // signed it (and is itself a CA with pathLen room for the `i`
-            // intermediates below it).
+            // signed it (a CA with pathLen room for the `i` intermediates below).
+            // A malformed / unsupported / rejected anchor is skipped so a later
+            // good anchor in the ledger still gets its chance — every step is
+            // fail-soft (`is_ok`), never `?`, to keep the ledger order-independent.
             for anchor in self.anchors {
                 let Anchor::Cert(anchor_der) = anchor else {
                     continue;
                 };
-                let anchor_view = C::parse(anchor_der)?;
+                let Ok(anchor_view) = C::parse(anchor_der) else {
+                    continue;
+                };
                 if require_issuer_ca::<C>(anchor_der, i).is_ok()
                     && verify_link::<E, R>(&child, &anchor_view).is_ok()
+                    && self.check_validity_of(anchor_der, &anchor_view).is_ok()
                 {
-                    if self.enforce_anchor_expiry {
-                        self.clock
-                            .check_validity(&anchor_view)
-                            .map_err(|_| PinnedRootsError::Validity)?;
-                    }
                     anchored = true;
                     break;
                 }
@@ -303,10 +333,15 @@ where
     }
 }
 
-#[cfg(all(test, feature = "ecdsa", feature = "cert-der"))]
+// Not `cert-der`-gated: the core walk tests exercise the default-shipped `tlv`
+// parser too (via `--no-default-features`). Only the clock tests need `der`.
+#[cfg(all(test, feature = "ecdsa"))]
 mod tests {
     use super::*;
     use crate::backends::{DerCert, RustCrypto};
+    #[cfg(feature = "cert-der")]
+    use crate::traits::time::tests::FixedTime;
+    #[cfg(feature = "cert-der")]
     use crate::traits::verify_strategy::Clocked;
 
     // A locally-minted ECDSA-P256 chain: ca0 (self-signed root) → ca1 … ca8
@@ -488,9 +523,9 @@ mod tests {
         assert!(run::<10>(&[Anchor::Cert(ROOT)], &chain).is_err());
     }
 
+    #[cfg(feature = "cert-der")]
     #[test]
     fn clocked_rejects_expired_below_anchor_but_default_skips_anchor() {
-        use crate::traits::time::tests::FixedTime;
         // The fixtures are valid ~2026..2126; 1.8e9 ≈ 2027 (in window), 6e9 ≈
         // 2160 (past notAfter).
         let anchors = [Anchor::Cert(ROOT)];
@@ -520,6 +555,46 @@ mod tests {
             )
             .map(|_| ()),
             Err(PinnedRootsError::Validity)
+        );
+    }
+
+    #[test]
+    fn multi_anchor_ledger_is_order_independent() {
+        // A malformed / unsupported Anchor::Cert must be skipped, not abort the
+        // whole verification — a later good anchor still matches, either order.
+        const BOGUS: &[u8] = &[0xDE, 0xAD, 0xBE, 0xEF];
+        assert!(run::<10>(&[Anchor::Cert(BOGUS), Anchor::Cert(ROOT)], &NO_ROOT_CHAIN).is_ok());
+        assert!(run::<10>(&[Anchor::Cert(ROOT), Anchor::Cert(BOGUS)], &NO_ROOT_CHAIN).is_ok());
+    }
+
+    #[cfg(feature = "cert-der")]
+    #[test]
+    fn leaf_fingerprint_pin_still_validity_checks_the_leaf_under_a_clock() {
+        // A pinned end-entity leaf is a live transmitted cert: with a clock its
+        // expiry IS checked (unlike a stored Cert anchor, which is exempt).
+        let anchors = [Anchor::Fingerprint(fp(LEAF))];
+        let expired: PinnedRoots<DerCert, _, 10> =
+            PinnedRoots::with_clock(&anchors, Clocked(FixedTime(6_000_000_000)));
+        let mut slot: Option<PreparedVerifier<RustCrypto, RustCrypto>> = None;
+        assert_eq!(
+            VerifyStrategy::<RustCrypto, RustCrypto>::verify_chain(
+                &expired,
+                CertChainView { certs: &FULL_CHAIN },
+                &mut slot,
+            )
+            .map(|_| ()),
+            Err(PinnedRootsError::Validity)
+        );
+        let in_window: PinnedRoots<DerCert, _, 10> =
+            PinnedRoots::with_clock(&anchors, Clocked(FixedTime(1_800_000_000)));
+        let mut slot2: Option<PreparedVerifier<RustCrypto, RustCrypto>> = None;
+        assert!(
+            VerifyStrategy::<RustCrypto, RustCrypto>::verify_chain(
+                &in_window,
+                CertChainView { certs: &FULL_CHAIN },
+                &mut slot2,
+            )
+            .is_ok()
         );
     }
 }
