@@ -358,6 +358,19 @@ use krabitls::client::EcdsaClientAuth;
     not(feature = "mldsa"),
 ))]
 use fixture_aes_ecdsa_facade::*;
+// Module *alias* (not a glob) — the chain fixture's cfg overlaps the plain-ECDSA
+// glob above, so importing its items by name would collide; the chain fns
+// reference `fx::CONST` instead.
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "cipher-aes",
+    feature = "ecdsa",
+    not(feature = "chacha20"),
+    not(feature = "rsa"),
+    not(feature = "mlkem"),
+    not(feature = "mldsa"),
+))]
+use fixture_aes_ecdsa_chain as fx;
 #[cfg(all(
     feature = "canned-replay",
     feature = "cipher-aes",
@@ -974,6 +987,119 @@ fn connect_check_aes_ecdsa(scratch: &mut krabitls::client::DefaultScratch) -> Re
         return Err(());
     }
     Ok(())
+}
+
+// AES-128-GCM + ECDSA-P256 with a DEEP intermediate chain validated by the
+// `PinnedRoots` chain validator: the server sends leaf + 8 intermediates
+// (root omitted), and the client verifies each link up to a stored anchor cert.
+// Measures the chain walk's stack — depth is loop-bounded, so this should track
+// the shallow ECDSA row, not scale with chain length.
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "cipher-aes",
+    feature = "ecdsa",
+    not(feature = "chacha20"),
+    not(feature = "rsa"),
+    not(feature = "mlkem"),
+    not(feature = "mldsa"),
+))]
+mod fixture_aes_ecdsa_chain {
+    pub const CLIENT_HELLO: [u8; 146] = krabitls::hex_decode(include_str!(
+        "../../../testdata/packets_chain/001_c2s_ClientHello.hex"
+    ));
+    pub const SERVER_HELLO: [u8; 95] = krabitls::hex_decode(include_str!(
+        "../../../testdata/packets_chain/002_s2c_ServerHello.hex"
+    ));
+    pub const SERVER_FLIGHT: [u8; 3909] = krabitls::hex_decode(include_str!(
+        "../../../testdata/packets_chain/003_s2c_ServerFlight_encrypted.hex"
+    ));
+    pub const CLIENT_FINISHED: [u8; 58] = krabitls::hex_decode(include_str!(
+        "../../../testdata/packets_chain/004_c2s_ClientFinished_encrypted.hex"
+    ));
+    pub const SERVER_STREAM: [u8; SERVER_HELLO.len() + SERVER_FLIGHT.len()] =
+        concat_sh_sf!(SERVER_HELLO.len(), SERVER_FLIGHT.len());
+    /// The chain root — stored on the device, NOT transmitted by the server.
+    pub const ROOT: &[u8] = include_bytes!("../../../testdata/certs_chain/ca0.der");
+}
+
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "cipher-aes",
+    feature = "ecdsa",
+    not(feature = "chacha20"),
+    not(feature = "rsa"),
+    not(feature = "mlkem"),
+    not(feature = "mldsa"),
+))]
+pub fn run_aes_ecdsa_chain_facade() -> Result<(), ()> {
+    facade_scratch::with(connect_check_aes_ecdsa_chain)
+}
+
+// `inline(never)`: models a real application caller so the measured stack is the
+// client's, not the harness's — see `connect_check_aes_ecdsa_mtls`.
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "cipher-aes",
+    feature = "ecdsa",
+    not(feature = "chacha20"),
+    not(feature = "rsa"),
+    not(feature = "mlkem"),
+    not(feature = "mldsa"),
+))]
+#[inline(never)]
+fn connect_check_aes_ecdsa_chain(scratch: &mut krabitls::client::DefaultScratch) -> Result<(), ()> {
+    let mut rng = SeededRng::new(0);
+    let transport = CannedTransport::<{ fx::CLIENT_HELLO.len() + fx::CLIENT_FINISHED.len() }>::new(
+        &fx::SERVER_STREAM,
+    );
+    let anchors = [krabitls::backends::Anchor::Cert(fx::ROOT)];
+    let verify: krabitls::backends::PinnedRoots<
+        krabitls::backends::DerCert,
+        krabitls::client::NoClock,
+        10,
+    > = krabitls::backends::PinnedRoots::new(&anchors);
+    let params = ClientParams::with_strategy("chain.test", verify);
+
+    // MAX_CHAIN = 10 to admit the 9-cert transmitted chain (leaf + 8 intermediates).
+    let tls = krabitls::client::TlsStream::<
+        _,
+        krabitls::client::DefaultConfig,
+        _,
+        16384,
+        16645,
+        4096,
+        10,
+    >::connect(&params, scratch, transport, &mut rng)
+    .map_err(|_| ())?;
+
+    let captured = tls.transport().captured_tx();
+    if captured.len() != fx::CLIENT_HELLO.len() + fx::CLIENT_FINISHED.len()
+        || captured[..fx::CLIENT_HELLO.len()] != fx::CLIENT_HELLO[..]
+        || captured[fx::CLIENT_HELLO.len()..] != fx::CLIENT_FINISHED[..]
+        || tls.transport().rx_remaining() != 0
+    {
+        return Err(());
+    }
+    Ok(())
+}
+
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "cipher-aes",
+    feature = "ecdsa",
+    not(feature = "chacha20"),
+    not(feature = "rsa"),
+    not(feature = "mlkem"),
+    not(feature = "mldsa"),
+))]
+#[inline(never)]
+pub fn baseline_aes_ecdsa_chain() -> bool {
+    black_box(&fx::CLIENT_HELLO);
+    black_box(&fx::SERVER_HELLO);
+    black_box(&fx::SERVER_FLIGHT);
+    black_box(&fx::CLIENT_FINISHED);
+    black_box(&fx::ROOT);
+    true
 }
 
 /// Same AES-128-GCM + ECDSA-P256 path as `run_aes_ecdsa_facade`, but the server

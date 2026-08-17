@@ -365,43 +365,75 @@ where
                 .map_err(|_| SafeStrategyError::Validity)?;
         }
 
-        let leaf_prepared: PreparedVerifier<E, R> = match &views[0] {
-            CertView::Ed25519 { pubkey, .. } => {
-                PreparedVerifier::ed25519(E::prepare_ed25519(pubkey))
-            }
-            #[cfg(feature = "rsa")]
-            CertView::Rsa {
-                modulus, exponent, ..
-            } => PreparedVerifier::Rsa(
-                R::prepare_rsa(modulus, *exponent)
-                    .map_err(|_| SafeStrategyError::RsaVerifierInvalid)?,
-            ),
-            #[cfg(feature = "mldsa")]
-            CertView::MlDsa { pubkey, .. } => PreparedVerifier::MlDsa(
-                crate::backends::mldsa_verify::MlDsaVerifierKey::new(pubkey)
-                    .map_err(|_| SafeStrategyError::MlDsaVerifierInvalid)?,
-            ),
-            #[cfg(feature = "ecdsa")]
-            CertView::EcdsaP256 { pubkey, .. } => PreparedVerifier::EcdsaP256(
-                (*pubkey)
-                    .try_into()
-                    .map_err(|_| SafeStrategyError::EcdsaVerifierInvalid)?,
-            ),
-            #[cfg(feature = "ecdsa")]
-            CertView::EcdsaP384 { pubkey, .. } => PreparedVerifier::EcdsaP384(
-                (*pubkey)
-                    .try_into()
-                    .map_err(|_| SafeStrategyError::EcdsaVerifierInvalid)?,
-            ),
-        };
+        let leaf_prepared = prepare_leaf::<E, R>(&views[0])?;
         *slot = Some(leaf_prepared);
         Ok(Trusted::new(slot.as_ref().unwrap()))
     }
 }
 
+/// Failure building a [`PreparedVerifier`] from a leaf's SPKI. Variants named by
+/// algorithm (not `*VerifierInvalid`) to avoid clippy's `enum_variant_names`
+/// firing once all three are enabled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PrepareLeafErr {
+    #[cfg(feature = "rsa")]
+    Rsa,
+    #[cfg(feature = "mldsa")]
+    MlDsa,
+    #[cfg(feature = "ecdsa")]
+    Ecdsa,
+}
+
+impl<TE> From<PrepareLeafErr> for SafeStrategyError<TE> {
+    fn from(e: PrepareLeafErr) -> Self {
+        match e {
+            #[cfg(feature = "rsa")]
+            PrepareLeafErr::Rsa => SafeStrategyError::RsaVerifierInvalid,
+            #[cfg(feature = "mldsa")]
+            PrepareLeafErr::MlDsa => SafeStrategyError::MlDsaVerifierInvalid,
+            #[cfg(feature = "ecdsa")]
+            PrepareLeafErr::Ecdsa => SafeStrategyError::EcdsaVerifierInvalid,
+        }
+    }
+}
+
+/// Build the `PreparedVerifier` for a leaf from its parsed SPKI. Shared by
+/// [`SafeStrategy`] and [`PinnedRoots`](crate::backends::PinnedRoots) so both
+/// hand the stack a verifier the engine's `matches_cert` cross-check accepts.
+pub(crate) fn prepare_leaf<E, R>(
+    leaf: &CertView<'_>,
+) -> Result<PreparedVerifier<E, R>, PrepareLeafErr>
+where
+    E: Ed25519VerifierProvider,
+    R: RsaVerifierProvider,
+{
+    Ok(match leaf {
+        CertView::Ed25519 { pubkey, .. } => PreparedVerifier::ed25519(E::prepare_ed25519(pubkey)),
+        #[cfg(feature = "rsa")]
+        CertView::Rsa {
+            modulus, exponent, ..
+        } => PreparedVerifier::Rsa(
+            R::prepare_rsa(modulus, *exponent).map_err(|_| PrepareLeafErr::Rsa)?,
+        ),
+        #[cfg(feature = "mldsa")]
+        CertView::MlDsa { pubkey, .. } => PreparedVerifier::MlDsa(
+            crate::backends::mldsa_verify::MlDsaVerifierKey::new(pubkey)
+                .map_err(|_| PrepareLeafErr::MlDsa)?,
+        ),
+        #[cfg(feature = "ecdsa")]
+        CertView::EcdsaP256 { pubkey, .. } => {
+            PreparedVerifier::EcdsaP256((*pubkey).try_into().map_err(|_| PrepareLeafErr::Ecdsa)?)
+        }
+        #[cfg(feature = "ecdsa")]
+        CertView::EcdsaP384 { pubkey, .. } => {
+            PreparedVerifier::EcdsaP384((*pubkey).try_into().map_err(|_| PrepareLeafErr::Ecdsa)?)
+        }
+    })
+}
+
 /// Per-link verify failure. Wider [`SafeStrategyError`] converts via `From`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LinkErr {
+pub(crate) enum LinkErr {
     LinkSignatureInvalid,
     #[cfg(feature = "rsa")]
     UnknownLinkSigAlg,
@@ -425,7 +457,10 @@ impl<TE> From<LinkErr> for SafeStrategyError<TE> {
     }
 }
 
-fn verify_link<E, R>(child: &CertView<'_>, parent: &CertView<'_>) -> Result<(), LinkErr>
+/// Verify `child`'s outer signature against `parent`'s public key. `parent` is
+/// any parsed cert — a chain entry or a `PinnedRoots` stored anchor parsed from
+/// flash — the dispatch is on `parent`'s key family, nothing is bound to "self".
+pub(crate) fn verify_link<E, R>(child: &CertView<'_>, parent: &CertView<'_>) -> Result<(), LinkErr>
 where
     E: Ed25519VerifierProvider,
     R: RsaVerifierProvider,

@@ -7,6 +7,7 @@ use super::tlv::{
     peek_tag, read_tlv, tag_ctx_constructed, tag_ctx_primitive,
 };
 
+use crate::traits::cert::CaConstraints;
 use crate::traits::cert::{CertParseError, CertParser, CertView};
 
 /// Marker type for the hand-rolled-TLV-backed [`CertParser`].
@@ -48,6 +49,11 @@ const P384_SEC1_LEN: usize = 97;
 
 /// `2.5.29.17` — `id-ce-subjectAltName`.
 const SAN_OID: &[u8] = &[0x55, 0x1D, 0x11];
+
+/// `2.5.29.19` — `id-ce-basicConstraints`.
+const BASIC_CONSTRAINTS_OID: &[u8] = &[0x55, 0x1D, 0x13];
+/// `2.5.29.15` — `id-ce-keyUsage`.
+const KEY_USAGE_OID: &[u8] = &[0x55, 0x1D, 0x0F];
 
 const X509_V3: u8 = 2;
 
@@ -260,6 +266,30 @@ impl CertParser for DerCert {
             }
         }
     }
+
+    fn parse_ca_constraints(cert_der: &[u8]) -> Result<CaConstraints, CertParseError> {
+        walk_extensions_for_ca(extensions_slice(cert_der)?)
+    }
+
+    fn spki_der(cert_der: &[u8]) -> Result<&[u8], CertParseError> {
+        let outer = read_expected(cert_der, TAG_SEQUENCE)?;
+        let mut body = outer.body;
+        let tbs = take_tlv(&mut body)?;
+        if tbs.tag != TAG_SEQUENCE {
+            return Err(CertParseError::Malformed);
+        }
+        let mut tbs_r = tbs.body;
+        if peek_tag(tbs_r).map_err(malformed)? == tag_ctx_constructed(0) {
+            take_tlv(&mut tbs_r)?;
+        }
+        // serial, signature, issuer, validity, subject.
+        for _ in 0..5 {
+            take_tlv(&mut tbs_r)?;
+        }
+        // subjectPublicKeyInfo — the full TLV.
+        let spki = read_tlv(tbs_r).map_err(malformed)?;
+        Ok(&tbs_r[..spki.header_len + spki.body.len()])
+    }
 }
 
 /// Reject anything but a SEC1 uncompressed point (`0x04` prefix) of `expect_len`.
@@ -269,6 +299,118 @@ fn ec_sec1_point(pk_bytes: &[u8], expect_len: usize) -> Result<(), CertParseErro
         return Err(CertParseError::WrongEcdsaPubkey);
     }
     Ok(())
+}
+
+/// Return the TBS tail (past `subjectPublicKeyInfo`) where the optional UIDs and
+/// `[3]` Extensions live — the slice [`walk_extensions_for_san`] scans, reached
+/// independently for the CA-constraints read.
+fn extensions_slice(cert_der: &[u8]) -> Result<&[u8], CertParseError> {
+    let outer = read_expected(cert_der, TAG_SEQUENCE)?;
+    let mut body = outer.body;
+    let tbs = take_tlv(&mut body)?;
+    if tbs.tag != TAG_SEQUENCE {
+        return Err(CertParseError::Malformed);
+    }
+    let mut tbs_r = tbs.body;
+    if peek_tag(tbs_r).map_err(malformed)? == tag_ctx_constructed(0) {
+        take_tlv(&mut tbs_r)?;
+    }
+    // serial, signature, issuer, validity, subject, subjectPublicKeyInfo.
+    for _ in 0..6 {
+        take_tlv(&mut tbs_r)?;
+    }
+    Ok(tbs_r)
+}
+
+/// Walk the Extensions block for basicConstraints + keyUsage; absent extensions
+/// leave the conservative default (`is_ca = false`).
+fn walk_extensions_for_ca(mut tbs_r: &[u8]) -> Result<CaConstraints, CertParseError> {
+    let mut out = CaConstraints::default();
+    while !tbs_r.is_empty() {
+        let tag = peek_tag(tbs_r).map_err(malformed)?;
+        if tag == tag_ctx_constructed(3) {
+            let exts_explicit = take_tlv(&mut tbs_r)?;
+            let exts_seq = read_expected(exts_explicit.body, TAG_SEQUENCE)?;
+            let mut exts_r = exts_seq.body;
+            while !exts_r.is_empty() {
+                let ext_tlv = take_tlv(&mut exts_r)?;
+                if ext_tlv.tag != TAG_SEQUENCE {
+                    return Err(CertParseError::Malformed);
+                }
+                let mut ext_r = ext_tlv.body;
+                let oid_tlv = take_tlv(&mut ext_r)?;
+                if oid_tlv.tag != TAG_OID {
+                    return Err(CertParseError::Malformed);
+                }
+                let ext_oid = oid_tlv.body;
+                let mut critical = false;
+                if peek_tag(ext_r).map_err(malformed)? == TAG_BOOLEAN {
+                    let b = take_tlv(&mut ext_r)?;
+                    critical = b.body.first().is_some_and(|&v| v != 0);
+                }
+                let extn_value_tlv = take_tlv(&mut ext_r)?;
+                if extn_value_tlv.tag != TAG_OCTET_STRING {
+                    return Err(CertParseError::Malformed);
+                }
+                if ext_oid == BASIC_CONSTRAINTS_OID {
+                    parse_basic_constraints(extn_value_tlv.body, &mut out)?;
+                } else if ext_oid == KEY_USAGE_OID {
+                    out.key_cert_sign = Some(key_usage_cert_sign(extn_value_tlv.body)?);
+                } else if critical {
+                    // RFC 5280 §4.2: reject an unrecognized critical extension.
+                    return Err(CertParseError::UnhandledCriticalExtension);
+                }
+            }
+            return Ok(out);
+        }
+        take_tlv(&mut tbs_r)?;
+    }
+    Ok(out)
+}
+
+/// `BasicConstraints ::= SEQUENCE { cA BOOLEAN DEFAULT FALSE, pathLenConstraint
+/// INTEGER OPTIONAL }`. `bytes` is the extnValue OCTET STRING content.
+fn parse_basic_constraints(bytes: &[u8], out: &mut CaConstraints) -> Result<(), CertParseError> {
+    let seq = read_expected(bytes, TAG_SEQUENCE)?;
+    // Reject bytes after the SEQUENCE so this backend matches the der-crate one,
+    // which rejects trailing content in the extnValue.
+    if !seq.rest.is_empty() {
+        return Err(CertParseError::Malformed);
+    }
+    let mut r = seq.body;
+    if !r.is_empty() && peek_tag(r).map_err(malformed)? == TAG_BOOLEAN {
+        let b = take_tlv(&mut r)?;
+        out.is_ca = b.body.first().is_some_and(|&v| v != 0);
+    }
+    if !r.is_empty() && peek_tag(r).map_err(malformed)? == TAG_INTEGER {
+        let int = take_tlv(&mut r)?;
+        out.path_len = Some(int_to_u32(int.body)?);
+    }
+    Ok(())
+}
+
+/// keyUsage is a BIT STRING; `keyCertSign` is bit 5 (mask `0x04` in the first
+/// data byte, after the leading unused-bit count).
+fn key_usage_cert_sign(bytes: &[u8]) -> Result<bool, CertParseError> {
+    let bs = read_expected(bytes, TAG_BIT_STRING)?;
+    if !bs.rest.is_empty() {
+        return Err(CertParseError::Malformed);
+    }
+    Ok(bs.body.get(1).is_some_and(|&b| b & 0x04 != 0))
+}
+
+/// Fold a DER INTEGER's content (big-endian, one optional leading zero) into a
+/// `u32`; `pathLenConstraint` is small and non-negative.
+fn int_to_u32(bytes: &[u8]) -> Result<u32, CertParseError> {
+    // Reject a negative (high-bit-set) pathLenConstraint two's-complement encoding.
+    if bytes.first().is_some_and(|&b| b & 0x80 != 0) {
+        return Err(CertParseError::Malformed);
+    }
+    let sig = bytes.strip_prefix(&[0u8]).unwrap_or(bytes);
+    if sig.len() > 4 {
+        return Err(CertParseError::Malformed);
+    }
+    Ok(sig.iter().fold(0u32, |acc, &b| (acc << 8) | b as u32))
 }
 
 /// Skip past `[1]`/`[2]` unique identifiers and walk `[3] EXPLICIT

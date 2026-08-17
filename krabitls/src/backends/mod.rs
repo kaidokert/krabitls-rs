@@ -31,6 +31,7 @@ pub(crate) mod mldsa_verify;
 #[cfg(feature = "mlkem")]
 pub(crate) mod mlkem;
 pub(crate) mod pin_or_self_signed;
+pub(crate) mod pinned_roots;
 #[cfg(feature = "rsa")]
 pub(crate) mod rsa_verify;
 pub(crate) mod rustcrypto;
@@ -58,6 +59,7 @@ pub use mlkem::{MLKEM768_CT_BYTES, MLKEM768_EK_BYTES, MLKEM768_SS_BYTES, MlKem76
 pub use pin_or_self_signed::{
     PinOrSelfSigned, PinOrSelfSignedError, PinnedPubkeyOwned, PinnedPubkeyOwnedError,
 };
+pub use pinned_roots::{Anchor, DEFAULT_CHAIN_DEPTH, PinnedRoots, PinnedRootsError};
 #[allow(unused_imports)]
 #[cfg(all(feature = "rsa", not(feature = "rsa_pss_only")))]
 pub use rsa_verify::RsaPkcs1Sig;

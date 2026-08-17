@@ -118,3 +118,7 @@ panic = "abort"
 [[example]]
 name = "krabitls_full"
 required-features = ["full-stack", "canned-replay"]
+
+[[example]]
+name = "krabitls_chain"
+required-features = ["ecdsa", "canned-replay"]

@@ -4,6 +4,43 @@
 pub trait CertParser {
     /// Parse a DER-encoded X.509 certificate and return borrows into `cert_der`.
     fn parse<'a>(cert_der: &'a [u8]) -> Result<CertView<'a>, CertParseError>;
+
+    /// Extract the issuer-eligibility fields the [`PinnedRoots`](crate::backends::PinnedRoots)
+    /// chain validator needs: basicConstraints (`cA`, `pathLenConstraint`) and
+    /// keyUsage `keyCertSign`. An absent extension yields the conservative
+    /// default (`is_ca = false`, `key_cert_sign = None`) so a cert that doesn't
+    /// assert CA rights can't serve as a chain issuer. The default body returns
+    /// that conservative default so a `CertParser` that doesn't override it fails
+    /// chain validation closed.
+    fn parse_ca_constraints(_cert_der: &[u8]) -> Result<CaConstraints, CertParseError> {
+        Ok(CaConstraints::default())
+    }
+
+    /// Return the raw `SubjectPublicKeyInfo` DER (the full `SEQUENCE { algorithm,
+    /// subjectPublicKey }` TLV) so [`PinnedRoots`](crate::backends::PinnedRoots)
+    /// can pin an anchor by its SPKI SHA-256 — a key fingerprint (RFC 7469 shape)
+    /// that survives cert renewal/reissue, unlike a full-cert-DER fingerprint.
+    /// The default body errors, so a non-overriding `CertParser` fails closed
+    /// (SPKI pins never match).
+    fn spki_der(_cert_der: &[u8]) -> Result<&[u8], CertParseError> {
+        Err(CertParseError::Malformed)
+    }
+}
+
+/// Issuer-eligibility fields read from a cert's X.509v3 extensions, used by
+/// [`PinnedRoots`](crate::backends::PinnedRoots) to reject a non-CA (or
+/// pathLen-exhausted) cert being used as a chain issuer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CaConstraints {
+    /// basicConstraints `cA` (DEFAULT FALSE — `false` when absent).
+    pub is_ca: bool,
+    /// basicConstraints `pathLenConstraint`, if present. Bounds how many
+    /// intermediates may appear below this CA.
+    pub path_len: Option<u32>,
+    /// keyUsage `keyCertSign` bit. `None` when no keyUsage extension is present
+    /// (unconstrained); `Some(false)` when keyUsage is present but the bit is
+    /// not asserted (issuance forbidden).
+    pub key_cert_sign: Option<bool>,
 }
 
 /// Parsed view of a self-signed X.509 cert.
@@ -178,6 +215,12 @@ pub enum CertParseError {
     /// Underlying DER parse / length / tag error.
     #[error("malformed cert DER")]
     Malformed,
+    /// An issuer cert carried a critical X.509v3 extension the validator does
+    /// not process (RFC 5280 §4.2 requires rejecting it). Surfaced only from
+    /// [`CertParser::parse_ca_constraints`]; the recognized set is
+    /// basicConstraints + keyUsage.
+    #[error("unrecognized critical extension on an issuer certificate")]
+    UnhandledCriticalExtension,
     /// `Ed25519` `SubjectPublicKey` wasn't 32 bytes.
     #[error("Ed25519 SubjectPublicKey was not 32 bytes")]
     WrongPubkeyLength,

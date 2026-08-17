@@ -1,0 +1,5 @@
+# krabitls seed-0 AES-128-GCM X25519 ECDSA-P256 deep-chain ClientHello (146 bytes),
+# captured against a local openssl s_server presenting leaf + 8 intermediates
+# (root omitted), validated by PinnedRoots on the stored root. Regenerate with
+# the `#[ignore]`d `gen_chain_fixtures` test; do not hand-edit.
+160303008d010000890303ede57ba2433ad5a34d05503afe4fc289dfd9e95357d816368024e73fbfa6faf500000213010100005e002b0003020304000a00040002001d000d000800060807040305030000000f000d00000a636861696e2e74657374001c00024001003300260024001d00208246e7358f0af7f3317dcaf688d034c95d5a2b54bf66c8950eb87a5f4793960d
