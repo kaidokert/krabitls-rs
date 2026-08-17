@@ -339,6 +339,7 @@ where
 mod tests {
     use super::*;
     use crate::backends::{DerCert, RustCrypto};
+    use crate::traits::cert::CertParseError;
     #[cfg(feature = "cert-der")]
     use crate::traits::time::tests::FixedTime;
     #[cfg(feature = "cert-der")]
@@ -366,6 +367,10 @@ mod tests {
     // The root reissued from the SAME key (new serial + validity): different
     // full-cert bytes, identical SubjectPublicKeyInfo.
     const ROOT_RENEWED: &[u8] = include_bytes!("../../../testdata/certs_chain/ca0_renewed.der");
+    // An intermediate with a CRITICAL nameConstraints (an extension the validator
+    // does not process) + a leaf issued under it.
+    const CRIT_CA: &[u8] = include_bytes!("../../../testdata/certs_chain/crit_ca.der");
+    const CRIT_LEAF: &[u8] = include_bytes!("../../../testdata/certs_chain/crit_leaf.der");
 
     /// Wire order (leaf first) for the full 10-deep chain including the root.
     const FULL_CHAIN: [&[u8]; 10] = [LEAF, CA8, CA7, CA6, CA5, CA4, CA3, CA2, CA1, ROOT];
@@ -495,6 +500,25 @@ mod tests {
         assert_eq!(
             run::<8>(&[Anchor::Fingerprint(fp(ROOT))], &chain),
             Err(PinnedRootsError::PathLenExceeded)
+        );
+    }
+
+    #[test]
+    fn issuer_with_unrecognized_critical_extension_is_rejected() {
+        // crit_ca carries a critical nameConstraints the validator can't process;
+        // RFC 5280 §4.2 requires rejecting it, not silently ignoring the limit.
+        assert_eq!(
+            DerCert::parse_ca_constraints(CRIT_CA),
+            Err(CertParseError::UnhandledCriticalExtension)
+        );
+        assert_eq!(
+            run::<10>(
+                &[Anchor::Fingerprint(fp(ROOT))],
+                &[CRIT_LEAF, CRIT_CA, ROOT]
+            ),
+            Err(PinnedRootsError::Parse(
+                CertParseError::UnhandledCriticalExtension
+            ))
         );
     }
 

@@ -400,9 +400,10 @@ fn walk_extensions_for_ca(tbs_r: &mut SliceReader<'_>) -> Result<CaConstraints, 
                     }
                     let mut ext_r = SliceReader::new(ext.value()).map_err(map_err)?;
                     let ext_oid = ObjectIdentifier::decode(&mut ext_r).map_err(map_err)?;
-                    let next_tag = Tag::peek(&ext_r).map_err(map_err)?;
-                    if next_tag == Tag::Boolean {
-                        ext_r.tlv_bytes().map_err(map_err)?;
+                    let mut critical = false;
+                    if Tag::peek(&ext_r).map_err(map_err)? == Tag::Boolean {
+                        let b = AnyRef::decode(&mut ext_r).map_err(map_err)?;
+                        critical = b.value().first().is_some_and(|&v| v != 0);
                     }
                     let extn_value = AnyRef::decode(&mut ext_r).map_err(map_err)?;
                     if extn_value.header().tag() != Tag::OctetString {
@@ -412,6 +413,10 @@ fn walk_extensions_for_ca(tbs_r: &mut SliceReader<'_>) -> Result<CaConstraints, 
                         parse_basic_constraints(extn_value.value(), &mut out)?;
                     } else if ext_oid == KEY_USAGE_OID {
                         out.key_cert_sign = Some(key_usage_cert_sign(extn_value.value())?);
+                    } else if critical {
+                        // RFC 5280 §4.2: reject a critical extension we can't
+                        // process (e.g. nameConstraints) rather than ignore it.
+                        return Err(CertParseError::UnhandledCriticalExtension);
                     }
                 }
                 return Ok(out);

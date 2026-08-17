@@ -220,6 +220,12 @@ pub enum CertParseError {
     /// Underlying DER parse / length / tag error.
     #[error("malformed cert DER")]
     Malformed,
+    /// An issuer cert carried a critical X.509v3 extension the validator does
+    /// not process (RFC 5280 §4.2 requires rejecting it). Surfaced only from
+    /// [`CertParser::parse_ca_constraints`]; the recognized set is
+    /// basicConstraints + keyUsage.
+    #[error("unrecognized critical extension on an issuer certificate")]
+    UnhandledCriticalExtension,
     /// `Ed25519` `SubjectPublicKey` wasn't 32 bytes.
     #[error("Ed25519 SubjectPublicKey was not 32 bytes")]
     WrongPubkeyLength,

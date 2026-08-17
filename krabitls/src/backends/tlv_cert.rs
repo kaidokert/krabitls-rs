@@ -343,8 +343,10 @@ fn walk_extensions_for_ca(mut tbs_r: &[u8]) -> Result<CaConstraints, CertParseEr
                     return Err(CertParseError::Malformed);
                 }
                 let ext_oid = oid_tlv.body;
+                let mut critical = false;
                 if peek_tag(ext_r).map_err(malformed)? == TAG_BOOLEAN {
-                    take_tlv(&mut ext_r)?;
+                    let b = take_tlv(&mut ext_r)?;
+                    critical = b.body.first().is_some_and(|&v| v != 0);
                 }
                 let extn_value_tlv = take_tlv(&mut ext_r)?;
                 if extn_value_tlv.tag != TAG_OCTET_STRING {
@@ -354,6 +356,9 @@ fn walk_extensions_for_ca(mut tbs_r: &[u8]) -> Result<CaConstraints, CertParseEr
                     parse_basic_constraints(extn_value_tlv.body, &mut out)?;
                 } else if ext_oid == KEY_USAGE_OID {
                     out.key_cert_sign = Some(key_usage_cert_sign(extn_value_tlv.body)?);
+                } else if critical {
+                    // RFC 5280 §4.2: reject an unrecognized critical extension.
+                    return Err(CertParseError::UnhandledCriticalExtension);
                 }
             }
             return Ok(out);
