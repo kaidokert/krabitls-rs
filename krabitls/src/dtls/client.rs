@@ -101,6 +101,8 @@ pub enum DtlsClientError<E> {
     Handshake,
     /// Key derivation failed (all-zero DH share or an HKDF error).
     KeySchedule,
+    /// The caller-supplied RNG failed while generating the ephemeral key share.
+    Rng,
     /// A working buffer (ClientHello, record, or the flight-reassembly buffer)
     /// was too small.
     BufferTooSmall,
@@ -187,8 +189,7 @@ impl<S: DtlsSuite> DtlsClient<S> {
         // X25519 ephemeral via the shared KEM backend — blinded under the
         // `blinding` feature (blinder drawn from `rng` at generation), same path
         // TLS uses. `ecdhe` holds the secret until the server share arrives.
-        let (ecdhe, pub_key) =
-            EcdheX25519::generate(rng).map_err(|_| DtlsClientError::KeySchedule)?;
+        let (ecdhe, pub_key) = EcdheX25519::generate(rng).map_err(|_| DtlsClientError::Rng)?;
 
         // A single reused receive buffer + a reused flight buffer carry both
         // ClientHello exchanges; each flight is retransmitted on timeout. The

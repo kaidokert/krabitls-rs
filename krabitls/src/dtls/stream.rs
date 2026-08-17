@@ -30,9 +30,10 @@ impl<T: DatagramTransport> DtlsStream<T> {
     /// Drive a full DTLS 1.3 handshake over `transport` and return a ready
     /// stream. `strategy` decides trust in the server certificate chain;
     /// `hostname`, when `Some`, is matched against the leaf SAN (`None` skips the
-    /// check — sound only when the strategy pins the key). `x25519_priv` /
-    /// `client_random` are caller-supplied entropy; `flight_buf` receives the
-    /// reassembled server flight and must fit it (a few KiB).
+    /// check — sound only when the strategy pins the key). `rng` supplies the
+    /// ephemeral X25519 key entropy; `client_random` is caller-supplied entropy;
+    /// `flight_buf` receives the reassembled server flight and must fit it (a few
+    /// KiB).
     ///
     /// `MAX_CHAIN` bounds the accepted certificate-chain length. `flight_buf`
     /// receives the reassembled server flight and `reasm_buf` is scratch for
