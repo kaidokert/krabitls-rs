@@ -32,7 +32,14 @@ pub enum Anchor<'a> {
     /// SHA-256 fingerprint of the full DER of a cert the server transmits
     /// (`openssl x509 -fingerprint -sha256`). The walk accepts at the first
     /// presented cert whose fingerprint matches; certs above it are ignored.
+    /// Identifies the cert *document*, so it changes when the anchor is
+    /// renewed/reissued even with the same key — use [`Anchor::SpkiFingerprint`]
+    /// to survive rotation.
     Fingerprint([u8; 32]),
+    /// SHA-256 of a transmitted cert's `SubjectPublicKeyInfo` (RFC 7469 key
+    /// pin). Identifies the public *key*, so it keeps matching across cert
+    /// renewal, reissue, or cross-signing as long as the key is unchanged.
+    SpkiFingerprint([u8; 32]),
     /// A stored anchor certificate (full DER, e.g. in flash). The topmost
     /// presented cert is verified against this cert's public key, so the anchor
     /// need not be transmitted — the durable posture for roots the server omits.
@@ -147,14 +154,35 @@ impl From<PrepareLeafErr> for PinnedRootsError {
     }
 }
 
-impl<C, K, const CAP: usize> PinnedRoots<'_, C, K, CAP> {
-    /// True when `der`'s full-cert SHA-256 fingerprint is in the ledger.
-    fn fingerprint_pinned(&self, der: &[u8]) -> bool {
-        let digest = Sha256::digest(der);
-        self.anchors.iter().any(|a| match a {
-            Anchor::Fingerprint(fp) => bool::from(digest.as_slice().ct_eq(&fp[..])),
-            Anchor::Cert(_) => false,
-        })
+impl<C: CertParser, K, const CAP: usize> PinnedRoots<'_, C, K, CAP> {
+    /// True when `cert_der` matches a `Fingerprint` (full-cert SHA-256) or
+    /// `SpkiFingerprint` (SPKI SHA-256) anchor. The SPKI hash is only computed
+    /// when at least one such anchor is present, so a fingerprint-only ledger
+    /// pays nothing.
+    fn anchor_matches(&self, cert_der: &[u8]) -> Result<bool, PinnedRootsError> {
+        let full = Sha256::digest(cert_der);
+        for a in self.anchors {
+            if let Anchor::Fingerprint(fp) = a {
+                if bool::from(full.as_slice().ct_eq(&fp[..])) {
+                    return Ok(true);
+                }
+            }
+        }
+        if self
+            .anchors
+            .iter()
+            .any(|a| matches!(a, Anchor::SpkiFingerprint(_)))
+        {
+            let spki = Sha256::digest(C::spki_der(cert_der)?);
+            for a in self.anchors {
+                if let Anchor::SpkiFingerprint(fp) = a {
+                    if bool::from(spki.as_slice().ct_eq(&fp[..])) {
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+        Ok(false)
     }
 }
 
@@ -216,7 +244,7 @@ where
         let mut anchored = false;
         let mut i = 0usize;
         while i < certs.len() {
-            if self.fingerprint_pinned(certs[i]) {
+            if self.anchor_matches(certs[i])? {
                 // Anchor reached: links below are already verified. Its own
                 // signature is irrelevant (the pin is the trust); its expiry is
                 // only checked when opted in.
@@ -300,6 +328,9 @@ mod tests {
     const PATHLEN0: &[u8] = include_bytes!("../../../testdata/certs_chain/pathlen0_ca.der");
     const CX: &[u8] = include_bytes!("../../../testdata/certs_chain/cx_ca.der");
     const LEAFX: &[u8] = include_bytes!("../../../testdata/certs_chain/leafx.der");
+    // The root reissued from the SAME key (new serial + validity): different
+    // full-cert bytes, identical SubjectPublicKeyInfo.
+    const ROOT_RENEWED: &[u8] = include_bytes!("../../../testdata/certs_chain/ca0_renewed.der");
 
     /// Wire order (leaf first) for the full 10-deep chain including the root.
     const FULL_CHAIN: [&[u8]; 10] = [LEAF, CA8, CA7, CA6, CA5, CA4, CA3, CA2, CA1, ROOT];
@@ -309,6 +340,12 @@ mod tests {
     fn fp(der: &[u8]) -> [u8; 32] {
         let mut out = [0u8; 32];
         out.copy_from_slice(&Sha256::digest(der));
+        out
+    }
+
+    fn spki_fp(der: &[u8]) -> [u8; 32] {
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&Sha256::digest(DerCert::spki_der(der).expect("spki")));
         out
     }
 
@@ -361,6 +398,33 @@ mod tests {
     #[test]
     fn fingerprint_root_accepts_full_chain() {
         assert!(run::<10>(&[Anchor::Fingerprint(fp(ROOT))], &FULL_CHAIN).is_ok());
+    }
+
+    #[test]
+    fn spki_der_matches_openssl_pubkey_hash() {
+        // `openssl x509 -pubkey | openssl pkey -pubin -outform DER | dgst -sha256`
+        // over ca0 — confirms spki_der extracts the exact SubjectPublicKeyInfo.
+        let expected: [u8; 32] =
+            crate::hex_decode("3ce71d66d717437828a5b2098957db83042822c6d574c1b1d5e11cd3bea87245");
+        assert_eq!(spki_fp(ROOT), expected);
+    }
+
+    #[test]
+    fn spki_fingerprint_root_accepts_full_chain() {
+        assert!(run::<10>(&[Anchor::SpkiFingerprint(spki_fp(ROOT))], &FULL_CHAIN).is_ok());
+    }
+
+    #[test]
+    fn spki_pin_survives_root_renewal_but_full_cert_pin_does_not() {
+        // Same chain, but the top cert is the reissued root (same key, new bytes).
+        let renewed: [&[u8]; 10] = [LEAF, CA8, CA7, CA6, CA5, CA4, CA3, CA2, CA1, ROOT_RENEWED];
+        // SPKI pin of the ORIGINAL root still accepts — the key didn't move.
+        assert!(run::<10>(&[Anchor::SpkiFingerprint(spki_fp(ROOT))], &renewed).is_ok());
+        // Full-cert pin of the original root no longer matches the reissued bytes.
+        assert_eq!(
+            run::<10>(&[Anchor::Fingerprint(fp(ROOT))], &renewed),
+            Err(PinnedRootsError::UntrustedRoot)
+        );
     }
 
     #[test]

@@ -12,6 +12,14 @@ pub trait CertParser {
     /// serve as a chain issuer. Only compiled for the chain-verify strategy.
     #[cfg(feature = "chain-verify")]
     fn parse_ca_constraints(cert_der: &[u8]) -> Result<CaConstraints, CertParseError>;
+
+    /// Return the raw `SubjectPublicKeyInfo` DER (the full `SEQUENCE { algorithm,
+    /// subjectPublicKey }` TLV) so a chain validator can pin an anchor by its
+    /// SPKI SHA-256 — a key fingerprint (RFC 7469 shape) that survives cert
+    /// renewal/reissue, unlike a full-cert-DER fingerprint. Only compiled for the
+    /// chain-verify strategy.
+    #[cfg(feature = "chain-verify")]
+    fn spki_der(cert_der: &[u8]) -> Result<&[u8], CertParseError>;
 }
 
 /// Issuer-eligibility fields read from a cert's X.509v3 extensions, used by

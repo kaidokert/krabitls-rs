@@ -231,6 +231,37 @@ impl CertParser for DerCert {
         let mut tbs_r = extensions_reader(cert_der)?;
         walk_extensions_for_ca(&mut tbs_r)
     }
+
+    #[cfg(feature = "chain-verify")]
+    fn spki_der(cert_der: &[u8]) -> Result<&[u8], CertParseError> {
+        let map_err = |_| CertParseError::Malformed;
+        let outer = AnyRef::try_from(cert_der).map_err(map_err)?;
+        if outer.header().tag() != Tag::Sequence {
+            return Err(CertParseError::Malformed);
+        }
+        let mut body = SliceReader::new(outer.value()).map_err(map_err)?;
+        let tbs_bytes = body.tlv_bytes().map_err(map_err)?;
+        let tbs_any = AnyRef::try_from(tbs_bytes).map_err(map_err)?;
+        if tbs_any.header().tag() != Tag::Sequence {
+            return Err(CertParseError::Malformed);
+        }
+        let mut tbs_r = SliceReader::new(tbs_any.value()).map_err(map_err)?;
+        if matches!(
+            Tag::peek(&tbs_r).map_err(map_err)?,
+            Tag::ContextSpecific {
+                constructed: true,
+                number: TagNumber(0)
+            }
+        ) {
+            tbs_r.tlv_bytes().map_err(map_err)?;
+        }
+        // serial, signature, issuer, validity, subject.
+        for _ in 0..5 {
+            tbs_r.tlv_bytes().map_err(map_err)?;
+        }
+        // subjectPublicKeyInfo — the full TLV.
+        tbs_r.tlv_bytes().map_err(map_err)
+    }
 }
 
 /// Reject anything but a SEC1 uncompressed point (`0x04` prefix) of `expect_len`.

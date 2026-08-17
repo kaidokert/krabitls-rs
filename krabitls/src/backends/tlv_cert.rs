@@ -274,6 +274,27 @@ impl CertParser for DerCert {
     fn parse_ca_constraints(cert_der: &[u8]) -> Result<CaConstraints, CertParseError> {
         walk_extensions_for_ca(extensions_slice(cert_der)?)
     }
+
+    #[cfg(feature = "chain-verify")]
+    fn spki_der(cert_der: &[u8]) -> Result<&[u8], CertParseError> {
+        let outer = read_expected(cert_der, TAG_SEQUENCE)?;
+        let mut body = outer.body;
+        let tbs = take_tlv(&mut body)?;
+        if tbs.tag != TAG_SEQUENCE {
+            return Err(CertParseError::Malformed);
+        }
+        let mut tbs_r = tbs.body;
+        if peek_tag(tbs_r).map_err(malformed)? == tag_ctx_constructed(0) {
+            take_tlv(&mut tbs_r)?;
+        }
+        // serial, signature, issuer, validity, subject.
+        for _ in 0..5 {
+            take_tlv(&mut tbs_r)?;
+        }
+        // subjectPublicKeyInfo — the full TLV.
+        let spki = read_tlv(tbs_r).map_err(malformed)?;
+        Ok(&tbs_r[..spki.header_len + spki.body.len()])
+    }
 }
 
 /// Reject anything but a SEC1 uncompressed point (`0x04` prefix) of `expect_len`.
