@@ -156,6 +156,11 @@ const MAX_MSG_FRAGS: usize = 16;
 /// client forever.
 const MAX_FLIGHT_DATAGRAMS: usize = 256;
 
+/// The synthetic `message_hash` handshake header prefixed to `Hash(ClientHello1)`
+/// when a HelloRetryRequest intervenes (RFC 8446 §4.4.1): message type 254, u24
+/// length 32 (the SHA-256 digest size).
+const HRR_MESSAGE_HASH_HEADER: [u8; 4] = [0xFE, 0x00, 0x00, 0x20];
+
 impl<S: DtlsSuite> DtlsClient<S> {
     /// Drive a full DTLS 1.3 handshake against the connected peer and return a
     /// client ready to carry application data. `strategy` decides trust in the
@@ -223,7 +228,10 @@ impl<S: DtlsSuite> DtlsClient<S> {
         // substitutes CH1 with `message_hash(H(CH1))` (RFC 8446 §4.4.1) and folds
         // the HRR then CH2, while the direct path folds CH1 verbatim. Both leave
         // the ServerHello in `rbuf[..sh_len]` for the common block below.
-        let (sh_len, retransmit_len) = {
+        // The message_seq the client's Finished carries: it continues the
+        // ClientHello numbering, so 2 after an HRR (CH1=0, CH2=1) but 1 on the
+        // direct path (CH1=0, no CH2). DTLS has no client-auth messages here.
+        let (sh_len, retransmit_len, client_fin_msg_seq) = {
             let (first_body, _, _) = parse_hello_body::<T::Error>(&rbuf[..first_len])?;
             match parse_server_hello(first_body).map_err(|_| DtlsClientError::Handshake)? {
                 ServerHelloKind::Retry {
@@ -250,7 +258,7 @@ impl<S: DtlsSuite> DtlsClient<S> {
                         t.update(&ch1[..ch1_len]);
                         t.snapshot()
                     };
-                    transcript.update(&[0xFE, 0x00, 0x00, 0x20]);
+                    transcript.update(&HRR_MESSAGE_HASH_HEADER);
                     transcript.update(ch1_hash.as_bytes());
                     transcript.update(&transcript_msg_header(2, first_body.len()));
                     transcript.update(first_body);
@@ -277,14 +285,14 @@ impl<S: DtlsSuite> DtlsClient<S> {
                     )?;
                     transcript.update(&transcript_msg_header(CLIENT_HELLO_MSG_TYPE, ch2_len));
                     transcript.update(&ch2[..ch2_len]);
-                    (sh_len, ch2_rec_len)
+                    (sh_len, ch2_rec_len, 2)
                 }
                 ServerHelloKind::Hello { .. } => {
                     // No cookie round-trip: fold CH1 verbatim (no message_hash
                     // substitution) and take this first reply as the ServerHello.
                     transcript.update(&transcript_msg_header(CLIENT_HELLO_MSG_TYPE, ch1_len));
                     transcript.update(&ch1[..ch1_len]);
-                    (first_len, ch1_rec_len)
+                    (first_len, ch1_rec_len, 1)
                 }
             }
         };
@@ -469,11 +477,12 @@ impl<S: DtlsSuite> DtlsClient<S> {
         let th_server_fin = transcript.snapshot();
 
         // --- client Finished (epoch 2). The server accepts a bare Finished when
-        // it does not require client auth; message_seq continues 0,1,2. ---
+        // it does not require client auth; its message_seq continues the
+        // ClientHello numbering (2 after an HRR, else 1). ---
         let fin_data = dtls_finished_mac::<H>(&hk.client_hs_ts, &th_server_fin)
             .map_err(|_| DtlsClientError::KeySchedule)?;
         let mut fin_msg = [0u8; HS_HEADER_LEN + 48];
-        let fin_msg = write_hs_msg(&mut fin_msg, HS_FINISHED, 2, &fin_data[..])?;
+        let fin_msg = write_hs_msg(&mut fin_msg, HS_FINISHED, client_fin_msg_seq, &fin_data[..])?;
         let mut rec = [0u8; 128];
         let sealed = hk
             .client
@@ -1162,8 +1171,9 @@ mod tests {
             .map(|i| u8::from_str_radix(&SH[i..i + 2], 16).unwrap())
             .collect();
 
-        let mut transport = QueueTransport {
+        let mut transport = RecordingTransport {
             inbound: [sh].into(),
+            sent: Vec::new(),
         };
         let strategy = SafeStrategy::<_, DerCert>::new(PinOrSelfSigned::self_signed());
         let mut flight_buf = [0u8; 2048];
@@ -1192,6 +1202,14 @@ mod tests {
             Err(e) => panic!("expected Timeout (direct SH accepted), got {e:?}"),
             Ok(_) => panic!("direct ServerHello unexpectedly completed the handshake"),
         }
+        // The flight lost after the ServerHello triggers retransmits: one initial
+        // CH1 plus MAX_FLIGHT_ATTEMPTS - 1 resends, every one the same CH1 flight
+        // (the direct path never built a CH2 to resend).
+        assert_eq!(transport.sent.len(), MAX_FLIGHT_ATTEMPTS as usize);
+        assert!(
+            transport.sent.iter().all(|d| *d == transport.sent[0]),
+            "every retransmit resends the CH1 flight verbatim"
+        );
     }
 
     /// A duplicated epoch-3 application record must be delivered once and then
