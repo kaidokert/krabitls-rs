@@ -199,7 +199,7 @@ impl<S: DtlsSuite> DtlsClient<S> {
         let mut ch_dgram = [0u8; HS_HEADER_LEN + 512 + 16];
         let mut transcript = TranscriptHash::<H>::new();
 
-        // --- CH1 -> HelloRetryRequest ---
+        // --- CH1 -> HelloRetryRequest or a cookie-less ServerHello ---
         let mut ch1 = [0u8; 512];
         let ch1_len = write_client_hello(
             client_random,
@@ -212,61 +212,86 @@ impl<S: DtlsSuite> DtlsClient<S> {
         )
         .map_err(|_| DtlsClientError::BufferTooSmall)?;
         let ch1_rec = build_client_hello_record(&ch1[..ch1_len], 0, 0, &mut ch_dgram)?;
-        let hrr_len = send_flight_await_reply(transport, ch1_rec, &mut rbuf, MAX_FLIGHT_ATTEMPTS)?;
-        let cookie_buf = {
-            let (hrr_body, _, _) = parse_hello_body::<T::Error>(&rbuf[..hrr_len])?;
-            // HRR message-hash substitution: message_hash(H(CH1)) ‖ HRR.
-            let ch1_hash = {
-                let mut t = TranscriptHash::<H>::new();
-                t.update(&transcript_msg_header(CLIENT_HELLO_MSG_TYPE, ch1_len));
-                t.update(&ch1[..ch1_len]);
-                t.snapshot()
-            };
-            transcript.update(&[0xFE, 0x00, 0x00, 0x20]);
-            transcript.update(ch1_hash.as_bytes());
-            transcript.update(&transcript_msg_header(2, hrr_body.len()));
-            transcript.update(hrr_body);
+        let ch1_rec_len = ch1_rec.len();
+        let first_len =
+            send_flight_await_reply(transport, ch1_rec, &mut rbuf, MAX_FLIGHT_ATTEMPTS)?;
 
-            let mut cb = [0u8; 256];
-            let cookie =
-                match parse_server_hello(hrr_body).map_err(|_| DtlsClientError::Handshake)? {
-                    ServerHelloKind::Retry {
-                        selected_suite,
-                        cookie,
-                    } => {
-                        // RFC 8446 §4.1.4: reject an HRR naming a suite we did not
-                        // offer; the later ServerHello suite check then enforces
-                        // HRR↔ServerHello consistency (both must equal our suite).
-                        if selected_suite != S::CIPHER_SUITE_ID {
-                            return Err(DtlsClientError::Handshake);
-                        }
-                        cookie
+        // A server enforcing return-routability answers CH1 with a
+        // HelloRetryRequest bearing a cookie (CH1 → HRR → CH2 → ServerHello); one
+        // that does not replies with the ServerHello straight away (CH1 →
+        // ServerHello). The paths differ only in the transcript: the HRR path
+        // substitutes CH1 with `message_hash(H(CH1))` (RFC 8446 §4.4.1) and folds
+        // the HRR then CH2, while the direct path folds CH1 verbatim. Both leave
+        // the ServerHello in `rbuf[..sh_len]` for the common block below.
+        let (sh_len, retransmit_len) = {
+            let (first_body, _, _) = parse_hello_body::<T::Error>(&rbuf[..first_len])?;
+            match parse_server_hello(first_body).map_err(|_| DtlsClientError::Handshake)? {
+                ServerHelloKind::Retry {
+                    selected_suite,
+                    cookie,
+                } => {
+                    // RFC 8446 §4.1.4: reject an HRR naming a suite we did not
+                    // offer; the later ServerHello suite check then enforces
+                    // HRR↔ServerHello consistency (both must equal our suite).
+                    if selected_suite != S::CIPHER_SUITE_ID {
+                        return Err(DtlsClientError::Handshake);
                     }
-                    ServerHelloKind::Hello { .. } => return Err(DtlsClientError::Handshake),
-                };
-            let n = cookie.len();
-            cb.get_mut(..n)
-                .ok_or(DtlsClientError::BufferTooSmall)?
-                .copy_from_slice(cookie);
-            (cb, n)
-        };
+                    // Copy the cookie out before CH2 reuses `rbuf`.
+                    let mut cb = [0u8; 256];
+                    let n = cookie.len();
+                    cb.get_mut(..n)
+                        .ok_or(DtlsClientError::BufferTooSmall)?
+                        .copy_from_slice(cookie);
 
-        // --- CH2 (echo cookie) -> ServerHello ---
-        let mut ch2 = [0u8; 512];
-        let ch2_len = write_client_hello(
-            client_random,
-            &pub_key,
-            S::CIPHER_SUITE_ID,
-            None,
-            Some(&cookie_buf.0[..cookie_buf.1]),
-            client_cid,
-            &mut ch2,
-        )
-        .map_err(|_| DtlsClientError::BufferTooSmall)?;
-        let ch2_rec = build_client_hello_record(&ch2[..ch2_len], 1, 1, &mut ch_dgram)?;
-        let sh_len = send_flight_await_reply(transport, ch2_rec, &mut rbuf, MAX_FLIGHT_ATTEMPTS)?;
-        transcript.update(&transcript_msg_header(CLIENT_HELLO_MSG_TYPE, ch2_len));
-        transcript.update(&ch2[..ch2_len]);
+                    // HRR message-hash substitution: message_hash(H(CH1)) ‖ HRR.
+                    let ch1_hash = {
+                        let mut t = TranscriptHash::<H>::new();
+                        t.update(&transcript_msg_header(CLIENT_HELLO_MSG_TYPE, ch1_len));
+                        t.update(&ch1[..ch1_len]);
+                        t.snapshot()
+                    };
+                    transcript.update(&[0xFE, 0x00, 0x00, 0x20]);
+                    transcript.update(ch1_hash.as_bytes());
+                    transcript.update(&transcript_msg_header(2, first_body.len()));
+                    transcript.update(first_body);
+
+                    // --- CH2 (echo cookie) -> ServerHello ---
+                    let mut ch2 = [0u8; 512];
+                    let ch2_len = write_client_hello(
+                        client_random,
+                        &pub_key,
+                        S::CIPHER_SUITE_ID,
+                        None,
+                        Some(&cb[..n]),
+                        client_cid,
+                        &mut ch2,
+                    )
+                    .map_err(|_| DtlsClientError::BufferTooSmall)?;
+                    let ch2_rec = build_client_hello_record(&ch2[..ch2_len], 1, 1, &mut ch_dgram)?;
+                    let ch2_rec_len = ch2_rec.len();
+                    let sh_len = send_flight_await_reply(
+                        transport,
+                        ch2_rec,
+                        &mut rbuf,
+                        MAX_FLIGHT_ATTEMPTS,
+                    )?;
+                    transcript.update(&transcript_msg_header(CLIENT_HELLO_MSG_TYPE, ch2_len));
+                    transcript.update(&ch2[..ch2_len]);
+                    (sh_len, ch2_rec_len)
+                }
+                ServerHelloKind::Hello { .. } => {
+                    // No cookie round-trip: fold CH1 verbatim (no message_hash
+                    // substitution) and take this first reply as the ServerHello.
+                    transcript.update(&transcript_msg_header(CLIENT_HELLO_MSG_TYPE, ch1_len));
+                    transcript.update(&ch1[..ch1_len]);
+                    (first_len, ch1_rec_len)
+                }
+            }
+        };
+        // The last ClientHello flight — CH2 under an HRR, else CH1 — is still in
+        // `ch_dgram`; retransmit it to prompt a resend if the encrypted flight is
+        // lost (RFC 9147 §5.8).
+        let retransmit_rec = &ch_dgram[..retransmit_len];
         // Negotiated CID state, filled from the ServerHello. `recv_cid_len` is our
         // own advertised CID's length (present on inbound records once the server
         // agrees); `send_cid` is the server's CID we stamp on outbound records.
@@ -334,8 +359,9 @@ impl<S: DtlsSuite> DtlsClient<S> {
             )?;
         }
         let mut datagrams = 0usize;
-        // CH2 was already sent once (it drew the ServerHello), so the flight's
-        // remaining sends toward MAX_FLIGHT_ATTEMPTS total are one fewer.
+        // The last ClientHello flight was already sent once (it drew the
+        // ServerHello), so the remaining sends toward MAX_FLIGHT_ATTEMPTS are one
+        // fewer.
         let mut resends_left = MAX_FLIGHT_ATTEMPTS - 1;
         let mut dg = [0u8; MAX_DATAGRAM];
         while !reasm.flight_complete(base_seq, HS_FINISHED) {
@@ -349,15 +375,15 @@ impl<S: DtlsSuite> DtlsClient<S> {
             {
                 Some(n) => n,
                 None => {
-                    // A datagram of the encrypted flight was lost. Retransmit CH2
-                    // so the server resends the flight (RFC 9147 §5.8), up to a
-                    // budget, rather than aborting the handshake.
+                    // A datagram of the encrypted flight was lost. Retransmit the
+                    // last ClientHello flight so the server resends (RFC 9147
+                    // §5.8), up to a budget, rather than aborting the handshake.
                     if resends_left == 0 {
                         return Err(DtlsClientError::Timeout);
                     }
                     resends_left -= 1;
                     transport
-                        .send(ch2_rec)
+                        .send(retransmit_rec)
                         .map_err(DtlsClientError::Transport)?;
                     continue;
                 }
@@ -1113,6 +1139,58 @@ mod tests {
                 }
                 None => Ok(None),
             }
+        }
+    }
+
+    /// A server that skips return-routability sends a ServerHello as the first
+    /// reply to CH1, with no HelloRetryRequest/cookie round-trip (RFC 9147 §5.1).
+    /// The driver must accept it: replaying a captured ServerHello (with a valid
+    /// X25519 key share) as CH1's reply derives the handshake keys and proceeds
+    /// to await the encrypted flight, which — absent here — times out. The
+    /// pre-fix driver rejected a direct ServerHello outright with `Handshake`, so
+    /// reaching `Timeout` is the signal that the direct path was taken.
+    #[cfg(feature = "cipher-aes")]
+    #[test]
+    fn direct_server_hello_without_cookie_is_accepted() {
+        use crate::aead::Aes128GcmSha256 as Suite;
+        use crate::backends::{DerCert, PinOrSelfSigned, RustCrypto};
+        use crate::traits::verify_strategy::SafeStrategy;
+
+        const SH: &str = "16fefd00000000000000010062020000560001000000000056fefd24ed4dc49e4a797e5705a6434a563d1c04569128adcef7d4e79b5c88e235ee2300130100002e00330024001d0020b748adf1b22ecfdc07de16ac75c0f8e90d8c6b7215cf67edd9096a12e39b4f0f002b0002fefc";
+        let sh: Vec<u8> = (0..SH.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&SH[i..i + 2], 16).unwrap())
+            .collect();
+
+        let mut transport = QueueTransport {
+            inbound: [sh].into(),
+        };
+        let strategy = SafeStrategy::<_, DerCert>::new(PinOrSelfSigned::self_signed());
+        let mut flight_buf = [0u8; 2048];
+        let mut reasm_buf = [0u8; 2048];
+        let res = DtlsClient::<Suite>::connect::<
+            _,
+            RustCrypto,
+            _,
+            RustCrypto,
+            RustCrypto,
+            _,
+            DerCert,
+            4,
+        >(
+            &mut transport,
+            &strategy,
+            None,
+            None,
+            &mut FixedRng(0x42),
+            &[0x77u8; 32],
+            &mut flight_buf,
+            &mut reasm_buf,
+        );
+        match res {
+            Err(DtlsClientError::Timeout) => {}
+            Err(e) => panic!("expected Timeout (direct SH accepted), got {e:?}"),
+            Ok(_) => panic!("direct ServerHello unexpectedly completed the handshake"),
         }
     }
 
