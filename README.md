@@ -16,9 +16,9 @@ A hobby `no_std` TLS 1.3 client for microcontrollers. Don't use it for anything 
 - Bundled trust is pin-a-pubkey, trust-SAN, or `PinnedRoots` (walks an intermediate chain to a stored root ledger: full-cert or SPKI fingerprint, or a stored anchor cert). No CA bundle or path building; verification is a pluggable `VerifyStrategy`, so a build that doesn't use one links none of it
 - Hand-rolled and unaudited; constant-time primitives, with opt-in power/EM-DPA blinding (key exchange + signing) behind the `blinding` feature
 
-No heap allocations, and prefer reduced flash + stack size over speed. On builds
-that use several signature algorithms, the `bigint-heapless` feature cuts code
-size at the cost of some wasted stack.
+No heap allocations, no `unsafe` code, and prefer reduced flash + stack size over
+speed. On builds that use several signature algorithms, the `bigint-heapless`
+feature cuts code size at the cost of some wasted stack.
 
 #### Resource usage
 
