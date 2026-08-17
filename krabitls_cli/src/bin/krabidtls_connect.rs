@@ -183,19 +183,18 @@ fn run() -> Result<(), String> {
 
     let strategy = SafeStrategy::<_, DerCert>::new(decision);
 
-    let mut x25519_priv = [0u8; 32];
     let mut client_random = [0u8; 32];
-    getrandom::fill(&mut x25519_priv).map_err(|e| format!("rng: {e}"))?;
     getrandom::fill(&mut client_random).map_err(|e| format!("rng: {e}"))?;
+    let mut rng = getrandom::SysRng;
 
     let mut flight_buf = [0u8; 8192];
     let mut reasm_buf = [0u8; 8192];
-    let mut stream = DtlsStream::connect::<_, 4>(
+    let mut stream = DtlsStream::connect::<_, _, 4>(
         transport,
         &strategy,
         None,
         cid.as_deref(),
-        &x25519_priv,
+        &mut rng,
         &client_random,
         &mut flight_buf,
         &mut reasm_buf,

@@ -40,18 +40,19 @@ impl<T: DatagramTransport> DtlsStream<T> {
     /// `client_cid` (RFC 9146), when `Some`, is the connection id the client
     /// advertises; if the server agrees, records carry connection ids afterward.
     #[allow(clippy::too_many_arguments)]
-    pub fn connect<V, const MAX_CHAIN: usize>(
+    pub fn connect<V, Rng, const MAX_CHAIN: usize>(
         mut transport: T,
         strategy: &V,
         hostname: Option<&str>,
         client_cid: Option<&[u8]>,
-        x25519_priv: &[u8; 32],
+        rng: &mut Rng,
         client_random: &[u8; 32],
         flight_buf: &mut [u8],
         reasm_buf: &mut [u8],
     ) -> Result<Self, DtlsClientError<T::Error>>
     where
         V: VerifyStrategy<RustCrypto, RustCrypto>,
+        Rng: rand_core::TryCryptoRng + ?Sized,
     {
         let client = DtlsClient::<FacadeSuite>::connect::<
             T,
@@ -59,6 +60,7 @@ impl<T: DatagramTransport> DtlsStream<T> {
             V,
             RustCrypto,
             RustCrypto,
+            Rng,
             DerCert,
             MAX_CHAIN,
         >(
@@ -66,7 +68,7 @@ impl<T: DatagramTransport> DtlsStream<T> {
             strategy,
             hostname,
             client_cid,
-            x25519_priv,
+            rng,
             client_random,
             flight_buf,
             reasm_buf,
