@@ -5,7 +5,6 @@
 //! keys. Only the record framing that consumes these keys is DTLS-specific, so
 //! everything here is reused from [`crate::hkdf`] and [`EpochKeys`].
 
-use crate::bigint::Curve25519CtBn as Bn;
 use crate::dtls::record::{DtlsSuite, EpochKeys};
 use crate::hkdf::{HkdfLabelError, dtls_handshake_secret, dtls_handshake_traffic_secrets};
 use crate::newtype::{Secret, TranscriptDigest};
@@ -36,24 +35,20 @@ pub(crate) struct HandshakeKeys<S: DtlsSuite> {
     pub(crate) hs_secret: Secret,
 }
 
-/// Derive the handshake-epoch keys from the client's X25519 private key, the
-/// server's key share, and `transcript_hash(ClientHello…ServerHello)` (with the
-/// HRR/message-hash substitution already folded in by the caller).
+/// Derive the handshake-epoch keys from the X25519 shared secret and
+/// `transcript_hash(ClientHello…ServerHello)` (with the HRR/message-hash
+/// substitution already folded in by the caller).
 pub(crate) fn derive_handshake_keys<S: DtlsSuite, H: HkdfSha256>(
-    x25519_priv: &[u8; 32],
-    server_pubkey: &[u8; 32],
+    shared_secret: &[u8; 32],
     transcript_hash_ch_sh: &TranscriptDigest,
 ) -> Result<HandshakeKeys<S>, KeyScheduleError> {
-    let ss = zeroize::Zeroizing::new(
-        ed25519_heapless::hazmat::x25519::<Bn>(x25519_priv, server_pubkey)
-            .map_err(|_| KeyScheduleError::DhAllZero)?,
-    );
-    // RFC 8446 §7.4.2.1: an all-zero X25519 output MUST abort.
-    if bool::from(ss.ct_eq(&[0u8; 32])) {
+    // The KEM agreement already rejects a low-order / all-zero secret (RFC 8446
+    // §7.4.2.1); re-check here as defense in depth for any other caller.
+    if bool::from(shared_secret.ct_eq(&[0u8; 32])) {
         return Err(KeyScheduleError::DhAllZero);
     }
 
-    let hs = dtls_handshake_secret::<H>(&ss[..])?;
+    let hs = dtls_handshake_secret::<H>(&shared_secret[..])?;
     let (client_hs_ts, server_hs_ts) =
         dtls_handshake_traffic_secrets::<H>(&hs, transcript_hash_ch_sh)?;
     Ok(HandshakeKeys {
@@ -70,6 +65,7 @@ mod tests {
     use super::*;
     use crate::aead::Aes128GcmSha256 as Suite;
     use crate::backends::RustCrypto;
+    use crate::bigint::Curve25519CtBn as Bn;
     use crate::consts::CT_HANDSHAKE;
     use crate::dtls::record::{SealHeader, SeqNumLen};
     use crate::hkdf::EMPTY_TRANSCRIPT_HASH;
@@ -86,13 +82,10 @@ mod tests {
     fn derives_distinct_epoch_keys_that_self_round_trip() {
         let priv_key = [7u8; 32];
         let server_pub = ed25519_heapless::hazmat::x25519::<Bn>(&[9u8; 32], &basepoint()).unwrap();
+        let shared = ed25519_heapless::hazmat::x25519::<Bn>(&priv_key, &server_pub).unwrap();
 
-        let hk = derive_handshake_keys::<Suite, RustCrypto>(
-            &priv_key,
-            &server_pub,
-            &EMPTY_TRANSCRIPT_HASH,
-        )
-        .unwrap();
+        let hk =
+            derive_handshake_keys::<Suite, RustCrypto>(&shared, &EMPTY_TRANSCRIPT_HASH).unwrap();
 
         // "c hs traffic" and "s hs traffic" diverge.
         assert_ne!(hk.client_hs_ts.as_bytes(), hk.server_hs_ts.as_bytes());
@@ -117,13 +110,10 @@ mod tests {
     }
 
     #[test]
-    fn all_zero_server_share_is_rejected() {
-        // u=0 is a low-order point; X25519 yields all-zero → must abort.
-        let err = derive_handshake_keys::<Suite, RustCrypto>(
-            &[7u8; 32],
-            &[0u8; 32],
-            &EMPTY_TRANSCRIPT_HASH,
-        );
+    fn all_zero_shared_secret_is_rejected() {
+        // A low-order server share yields an all-zero X25519 secret; the key
+        // schedule must abort on it (RFC 8446 §7.4.2.1).
+        let err = derive_handshake_keys::<Suite, RustCrypto>(&[0u8; 32], &EMPTY_TRANSCRIPT_HASH);
         assert_eq!(err.err(), Some(KeyScheduleError::DhAllZero));
     }
 }

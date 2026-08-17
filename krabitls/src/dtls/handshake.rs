@@ -695,6 +695,11 @@ mod tests {
     }
 
     #[cfg(test)]
+    fn x25519_shared(priv_key: &[u8; 32], peer: &[u8; 32]) -> [u8; 32] {
+        ed25519_heapless::hazmat::x25519::<crate::bigint::Curve25519CtBn>(priv_key, peer).unwrap()
+    }
+
+    #[cfg(test)]
     fn send_ch_body(sock: &std::net::UdpSocket, body: &[u8], msg_seq: u16, seq: u64) {
         let mut msg = [0u8; 560];
         HandshakeHeader {
@@ -807,7 +812,11 @@ mod tests {
         transcript.update(&transcript_msg(2, &sh_body));
         let th = transcript.snapshot();
 
-        let hk = derive_handshake_keys::<Suite, RustCrypto>(&priv_key, &server_share, &th).unwrap();
+        let hk = derive_handshake_keys::<Suite, RustCrypto>(
+            &x25519_shared(&priv_key, &server_share),
+            &th,
+        )
+        .unwrap();
         let opened = hk
             .server
             .open(0, 0, &mut flight)
@@ -893,8 +902,7 @@ mod tests {
         transcript.update(&transcript_msg(1, &ch2[..ch2_len]));
         transcript.update(&transcript_msg(2, &sh_body));
         let hk = derive_handshake_keys::<Suite, RustCrypto>(
-            &priv_key,
-            &server_share,
+            &x25519_shared(&priv_key, &server_share),
             &transcript.snapshot(),
         )
         .unwrap();
@@ -1019,8 +1027,7 @@ mod tests {
         transcript.update(&transcript_msg(1, &ch2[..ch2_len]));
         transcript.update(&transcript_msg(2, &sh_body));
         let hk = derive_handshake_keys::<Suite, RustCrypto>(
-            &priv_key,
-            &server_share,
+            &x25519_shared(&priv_key, &server_share),
             &transcript.snapshot(),
         )
         .unwrap();

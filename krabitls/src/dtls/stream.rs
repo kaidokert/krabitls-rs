@@ -30,9 +30,10 @@ impl<T: DatagramTransport> DtlsStream<T> {
     /// Drive a full DTLS 1.3 handshake over `transport` and return a ready
     /// stream. `strategy` decides trust in the server certificate chain;
     /// `hostname`, when `Some`, is matched against the leaf SAN (`None` skips the
-    /// check — sound only when the strategy pins the key). `x25519_priv` /
-    /// `client_random` are caller-supplied entropy; `flight_buf` receives the
-    /// reassembled server flight and must fit it (a few KiB).
+    /// check — sound only when the strategy pins the key). `rng` supplies the
+    /// ephemeral X25519 key entropy; `client_random` is caller-supplied entropy;
+    /// `flight_buf` receives the reassembled server flight and must fit it (a few
+    /// KiB).
     ///
     /// `MAX_CHAIN` bounds the accepted certificate-chain length. `flight_buf`
     /// receives the reassembled server flight and `reasm_buf` is scratch for
@@ -40,18 +41,19 @@ impl<T: DatagramTransport> DtlsStream<T> {
     /// `client_cid` (RFC 9146), when `Some`, is the connection id the client
     /// advertises; if the server agrees, records carry connection ids afterward.
     #[allow(clippy::too_many_arguments)]
-    pub fn connect<V, const MAX_CHAIN: usize>(
+    pub fn connect<V, Rng, const MAX_CHAIN: usize>(
         mut transport: T,
         strategy: &V,
         hostname: Option<&str>,
         client_cid: Option<&[u8]>,
-        x25519_priv: &[u8; 32],
+        rng: &mut Rng,
         client_random: &[u8; 32],
         flight_buf: &mut [u8],
         reasm_buf: &mut [u8],
     ) -> Result<Self, DtlsClientError<T::Error>>
     where
         V: VerifyStrategy<RustCrypto, RustCrypto>,
+        Rng: rand_core::TryCryptoRng + ?Sized,
     {
         let client = DtlsClient::<FacadeSuite>::connect::<
             T,
@@ -59,6 +61,7 @@ impl<T: DatagramTransport> DtlsStream<T> {
             V,
             RustCrypto,
             RustCrypto,
+            Rng,
             DerCert,
             MAX_CHAIN,
         >(
@@ -66,7 +69,7 @@ impl<T: DatagramTransport> DtlsStream<T> {
             strategy,
             hostname,
             client_cid,
-            x25519_priv,
+            rng,
             client_random,
             flight_buf,
             reasm_buf,
