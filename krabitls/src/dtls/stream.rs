@@ -4,29 +4,37 @@
 //! the crypto backend to `RustCrypto`, the certificate parser to DER, and the
 //! cipher suite at compile time — AES-128-GCM-SHA256 when `cipher-aes` is built,
 //! otherwise ChaCha20-Poly1305-SHA256 — leaving the trust decision to a caller
-//! [`VerifyStrategy`]. This is the DTLS analogue of
+//! [`VerifyStrategy`]. AES builds may supply a custom `aead` implementation as
+//! the second type parameter. This is the DTLS analogue of
 //! [`TlsStream`](crate::client::TlsStream).
 
 use crate::backends::{DerCert, RustCrypto};
+#[cfg(feature = "cipher-aes")]
+use crate::client::Aes128Gcm;
 use crate::dtls::client::{DtlsClient, DtlsClientError};
 use crate::dtls::transport::DatagramTransport;
 use crate::traits::verify_strategy::VerifyStrategy;
 
 /// The suite the façade speaks. A `no_std` client is built for one suite, so it
 /// is selected at compile time — AES when present, else ChaCha20-Poly1305.
-#[cfg(feature = "cipher-aes")]
-type FacadeSuite = crate::aead::Aes128GcmSha256;
 #[cfg(all(not(feature = "cipher-aes"), feature = "chacha20"))]
 type FacadeSuite = crate::aead::ChaCha20Poly1305Sha256;
 
 /// A connected DTLS 1.3 client: owns the datagram transport and the negotiated
-/// epoch-3 application keys.
-pub struct DtlsStream<T: DatagramTransport> {
+/// epoch-3 application keys. On AES builds, `A` selects the AES-128-GCM record
+/// backend and defaults to the bundled RustCrypto implementation.
+pub struct DtlsStream<
+    T: DatagramTransport,
+    #[cfg(feature = "cipher-aes")] A: Aes128Gcm = aes_gcm::Aes128Gcm,
+> {
+    #[cfg(feature = "cipher-aes")]
+    client: DtlsClient<crate::aead::Aes128GcmSha256<A>>,
+    #[cfg(all(not(feature = "cipher-aes"), feature = "chacha20"))]
     client: DtlsClient<FacadeSuite>,
     transport: T,
 }
 
-impl<T: DatagramTransport> DtlsStream<T> {
+impl<T: DatagramTransport, #[cfg(feature = "cipher-aes")] A: Aes128Gcm> DtlsStream<T, A> {
     /// Drive a full DTLS 1.3 handshake over `transport` and return a ready
     /// stream. `strategy` decides trust in the server certificate chain;
     /// `hostname`, when `Some`, is matched against the leaf SAN (`None` skips the
@@ -55,6 +63,27 @@ impl<T: DatagramTransport> DtlsStream<T> {
         V: VerifyStrategy<RustCrypto, RustCrypto>,
         Rng: rand_core::TryCryptoRng + ?Sized,
     {
+        #[cfg(feature = "cipher-aes")]
+        let client = DtlsClient::<crate::aead::Aes128GcmSha256<A>>::connect::<
+            T,
+            RustCrypto,
+            V,
+            RustCrypto,
+            RustCrypto,
+            Rng,
+            DerCert,
+            MAX_CHAIN,
+        >(
+            &mut transport,
+            strategy,
+            hostname,
+            client_cid,
+            rng,
+            client_random,
+            flight_buf,
+            reasm_buf,
+        )?;
+        #[cfg(all(not(feature = "cipher-aes"), feature = "chacha20"))]
         let client = DtlsClient::<FacadeSuite>::connect::<
             T,
             RustCrypto,

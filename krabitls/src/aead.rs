@@ -196,15 +196,22 @@ pub trait CipherSuite: sealed::Sealed + Sized {
 #[cfg(feature = "cipher-aes")]
 mod aes {
     use super::*;
+    use core::marker::PhantomData;
 
     /// `TLS_AES_128_GCM_SHA256` (`0x1301`).
-    pub struct Aes128GcmSha256;
-    impl sealed::Sealed for Aes128GcmSha256 {}
-    impl CipherSuite for Aes128GcmSha256 {
+    pub struct Aes128GcmSha256<C = aes_gcm::Aes128Gcm>(PhantomData<C>);
+    impl<C> sealed::Sealed for Aes128GcmSha256<C> {}
+    impl<C> CipherSuite for Aes128GcmSha256<C>
+    where
+        C: AeadInOut
+            + KeyInit
+            + ::aead::KeySizeUser<KeySize = ::aead::consts::U16>
+            + AeadCore<NonceSize = ::aead::consts::U12, TagSize = ::aead::consts::U16>,
+    {
         type KeyBytes = [u8; 16];
-        type Cipher = aes_gcm::Aes128Gcm;
+        type Cipher = C;
         fn make_cipher(key: &zeroize::Zeroizing<[u8; 16]>) -> Self::Cipher {
-            aes_gcm::Aes128Gcm::new(&Array::from(**key))
+            C::new(&Array::from(**key))
         }
         fn derive_keys<H: crate::traits::HkdfSha256>(
             traffic_secret: &crate::newtype::Secret,

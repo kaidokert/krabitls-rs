@@ -28,6 +28,20 @@ use crate::traits::CertParser;
 use crate::traits::verify_strategy::{CertChainView, PreparedVerifier, VerifyStrategy};
 use rand_core::TryCryptoRng;
 
+#[cfg(feature = "custom-aes")]
+macro_rules! configured_aes_suite {
+    ($config:ty) => {
+        Aes128GcmSha256<<$config as ClientConfig>::Aes>
+    };
+}
+
+#[cfg(not(feature = "custom-aes"))]
+macro_rules! configured_aes_suite {
+    ($config:ty) => {
+        Aes128GcmSha256
+    };
+}
+
 /// Recv-buffer cursor state.
 ///
 /// Invariants:
@@ -93,11 +107,11 @@ impl PostHandshakeReasm {
 pub(crate) enum EngineState<C: ClientConfig> {
     WaitServerHello(TlsConnection<WaitServerHello, C::Hkdf>),
     #[cfg(feature = "cipher-aes")]
-    WaitFlightAes(TlsConnection<WaitServerFlight<Aes128GcmSha256>, C::Hkdf>),
+    WaitFlightAes(TlsConnection<WaitServerFlight<configured_aes_suite!(C)>, C::Hkdf>),
     #[cfg(feature = "chacha20")]
     WaitFlightChaCha(TlsConnection<WaitServerFlight<ChaCha20Poly1305Sha256>, C::Hkdf>),
     #[cfg(feature = "cipher-aes")]
-    AppAes(TlsConnection<AppData<Aes128GcmSha256>, C::Hkdf>),
+    AppAes(TlsConnection<AppData<configured_aes_suite!(C)>, C::Hkdf>),
     #[cfg(feature = "chacha20")]
     AppChaCha(TlsConnection<AppData<ChaCha20Poly1305Sha256>, C::Hkdf>),
     /// Terminal sentinel; also used as the `mem::replace` placeholder
@@ -467,6 +481,14 @@ impl<
         };
 
         let record = &self.scratch.recv_record[start..end];
+        #[cfg(feature = "custom-aes")]
+        let negotiated = conn
+            .read_server_hello_with_aes::<C::Aes>(record)
+            .map_err(|e| {
+                self.closed = true;
+                HandshakeError::Connection(e)
+            })?;
+        #[cfg(not(feature = "custom-aes"))]
         let negotiated = conn.read_server_hello(record).map_err(|e| {
             self.closed = true;
             HandshakeError::Connection(e)
@@ -715,7 +737,7 @@ impl<
 
 enum FlightDone<C: ClientConfig> {
     #[cfg(feature = "cipher-aes")]
-    Aes(TlsConnection<ServerFlightDone<Aes128GcmSha256>, C::Hkdf>),
+    Aes(TlsConnection<ServerFlightDone<configured_aes_suite!(C)>, C::Hkdf>),
     #[cfg(feature = "chacha20")]
     ChaCha(TlsConnection<ServerFlightDone<ChaCha20Poly1305Sha256>, C::Hkdf>),
 }

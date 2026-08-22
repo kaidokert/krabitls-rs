@@ -513,19 +513,21 @@ where
 
 /// Pre-known suite? Use `assume_*` to skip the runtime match.
 #[allow(clippy::large_enum_variant)] // AES Aes128Gcm key schedule dominates
-pub enum NegotiatedSuite<H = RustCrypto>
+pub enum NegotiatedSuite<H = RustCrypto, A = aes_gcm::Aes128Gcm>
 where
     H: HkdfSha256,
+    A: crate::client::Aes128Gcm,
 {
     #[cfg(feature = "cipher-aes")]
-    Aes128Gcm(TlsConnection<WaitServerFlight<Aes128GcmSha256>, H>),
+    Aes128Gcm(TlsConnection<WaitServerFlight<Aes128GcmSha256<A>>, H>),
     #[cfg(feature = "chacha20")]
     ChaCha20Poly1305(TlsConnection<WaitServerFlight<ChaCha20Poly1305Sha256>, H>),
 }
 
-impl<H> NegotiatedSuite<H>
+impl<H, A> NegotiatedSuite<H, A>
 where
     H: HkdfSha256,
+    A: crate::client::Aes128Gcm,
 {
     // Test-only; production matches on `NegotiatedSuite`. Sole consumer is the
     // seed-0 AES fixture replay, which is gated off when extra
@@ -542,7 +544,7 @@ where
     ))]
     pub fn assume_aes_128_gcm(
         self,
-    ) -> Result<TlsConnection<WaitServerFlight<Aes128GcmSha256>, H>, ConnectionError> {
+    ) -> Result<TlsConnection<WaitServerFlight<Aes128GcmSha256<A>>, H>, ConnectionError> {
         match self {
             Self::Aes128Gcm(c) => Ok(c),
             #[cfg(feature = "chacha20")]
@@ -558,10 +560,23 @@ impl<H> TlsConnection<WaitServerHello, H>
 where
     H: HkdfSha256,
 {
+    #[cfg_attr(feature = "custom-aes", allow(dead_code))]
     pub fn read_server_hello(
-        mut self,
+        self,
         sh_record: &[u8],
     ) -> Result<NegotiatedSuite<H>, ConnectionError> {
+        self.read_server_hello_with_aes::<aes_gcm::Aes128Gcm>(sh_record)
+    }
+
+    /// Process `ServerHello` using an explicitly selected AES-128-GCM record
+    /// backend. Used by `ClientConfig` when `custom-aes` is enabled.
+    pub fn read_server_hello_with_aes<A>(
+        mut self,
+        sh_record: &[u8],
+    ) -> Result<NegotiatedSuite<H, A>, ConnectionError>
+    where
+        A: crate::client::Aes128Gcm,
+    {
         let sh = parse_server_hello(sh_record)?;
         // RFC 8446 §4.1.3: the server MUST echo our `legacy_session_id`
         // verbatim (the empty string when we sent none). A mismatch means the
@@ -686,7 +701,7 @@ where
         match sh.cipher_suite {
             #[cfg(feature = "cipher-aes")]
             CIPHER_AES_128_GCM_SHA256 => {
-                let s_hs_keys = RecordKeys::<Aes128GcmSha256>::derive::<H>(&s_hs_ts)?;
+                let s_hs_keys = RecordKeys::<Aes128GcmSha256<A>>::derive::<H>(&s_hs_ts)?;
                 Ok(NegotiatedSuite::Aes128Gcm(TlsConnection {
                     transcript: self.transcript,
                     state: WaitServerFlight {

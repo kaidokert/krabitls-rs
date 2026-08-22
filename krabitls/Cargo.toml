@@ -90,6 +90,10 @@ dtls = ["cert-der", "x25519-kx"]
 # (drops `aes-gcm` + `aes` + `ghash` deps). At least one of `cipher-aes`
 # or `chacha20` must be active.
 cipher-aes = ["dep:aes-gcm"]
+# Allow a `ClientConfig` to select an external AES-128-GCM implementation that
+# satisfies the `aead 0.6` traits (for example, an MCU hardware accelerator).
+# The bundled RustCrypto implementation remains the default when this is off.
+custom-aes = ["cipher-aes"]
 # Sub-feature of `rsa`: drop the PKCS#1-v1.5 cert outer-signature path.
 # Cert parser rejects `sha256WithRSAEncryption`; only `rsassa-pss` is
 # accepted on cert outer signatures. Saves ~1 KiB .text vs the default

@@ -336,7 +336,13 @@ mod aes_mask {
     use aes_gcm::aes::Aes128;
     use aes_gcm::aes::cipher::{Array, BlockCipherEncrypt, KeyInit};
 
-    impl DtlsSuite for Aes128GcmSha256 {
+    impl<C> DtlsSuite for Aes128GcmSha256<C>
+    where
+        C: aead::AeadInOut
+            + aead::KeyInit
+            + aead::KeySizeUser<KeySize = aead::consts::U16>
+            + aead::AeadCore<NonceSize = aead::consts::U12, TagSize = aead::consts::U16>,
+    {
         const CIPHER_SUITE_ID: u16 = crate::consts::CIPHER_AES_128_GCM_SHA256;
         type Masker = Aes128;
 

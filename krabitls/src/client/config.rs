@@ -4,6 +4,27 @@
 use crate::backends::{DerCert, RustCrypto};
 use crate::traits::{CertParser, Ed25519VerifierProvider, HkdfSha256, RsaVerifierProvider};
 
+/// AES-128-GCM implementation usable by the TLS 1.3 record layer.
+///
+/// This is a blanket marker over the standard `aead 0.6` traits. Enable the
+/// `custom-aes` feature and set [`ClientConfig::Aes`] to a hardware-backed type
+/// to use it for handshake and application records.
+pub trait Aes128Gcm:
+    aead::AeadInOut
+    + aead::KeyInit
+    + aead::KeySizeUser<KeySize = aead::consts::U16>
+    + aead::AeadCore<NonceSize = aead::consts::U12, TagSize = aead::consts::U16>
+{
+}
+
+impl<T> Aes128Gcm for T where
+    T: aead::AeadInOut
+        + aead::KeyInit
+        + aead::KeySizeUser<KeySize = aead::consts::U16>
+        + aead::AeadCore<NonceSize = aead::consts::U12, TagSize = aead::consts::U16>
+{
+}
+
 /// Compile-time suite policy. Each variant exists only when its
 /// corresponding `feature = "cipher-aes"` / `feature = "chacha20"`
 /// pair is on.
@@ -30,6 +51,10 @@ pub trait ClientConfig {
     /// RSA verifier backend. Without `feature = "rsa"` the trait is empty
     /// and any marker type satisfies it.
     type Rsa: RsaVerifierProvider;
+    /// AES-128-GCM record backend. Present only when `custom-aes` is enabled;
+    /// otherwise the bundled RustCrypto backend is used without API changes.
+    #[cfg(feature = "custom-aes")]
+    type Aes: Aes128Gcm;
 
     const SUITES: ConfigSuitePolicy;
 }
@@ -43,6 +68,8 @@ impl ClientConfig for DefaultConfig {
     type CertParser = DerCert;
     type Ed25519 = RustCrypto;
     type Rsa = RustCrypto;
+    #[cfg(feature = "custom-aes")]
+    type Aes = aes_gcm::Aes128Gcm;
 
     #[cfg(all(feature = "cipher-aes", feature = "chacha20"))]
     const SUITES: ConfigSuitePolicy = ConfigSuitePolicy::AesAndChaCha;

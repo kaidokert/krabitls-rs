@@ -14,7 +14,7 @@ mod stream;
 mod transport;
 
 // Public facade surface — what real clients reach for to make a connection.
-pub use config::{ClientConfig, ConfigSuitePolicy, DefaultConfig};
+pub use config::{Aes128Gcm, ClientConfig, ConfigSuitePolicy, DefaultConfig};
 // Top-level convenience: outer error + the two it wraps + the
 // connection-level enum callers match on to distinguish parse / decrypt
 // / flight failures. Inner leaves stay under `client::error::*`.
