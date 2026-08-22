@@ -43,7 +43,7 @@ pub use crate::client_flight::{
     ClientAuthPolicy, ClientAuthSign, DeclineClientAuth, MAX_CLIENT_CERT_DER, NoClientAuth,
     WithClientAuth,
 };
-pub use crate::traits::{ClientAuth, ClientAuthError};
+pub use crate::traits::{ClientAuth, ClientAuthError, ClientSignature, MAX_CLIENT_SIG_LEN};
 
 // Strategy surface — what custom-verifier callers need to roll their own
 // trust-root decision (or instantiate the bundled `SafeStrategy`).

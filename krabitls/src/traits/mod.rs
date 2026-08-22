@@ -26,7 +26,7 @@ pub mod verify_strategy;
 
 pub use aead::AeadError;
 pub use cert::{CertParseError, CertParser, CertView};
-pub use client_auth::{ClientAuth, ClientAuthError};
+pub use client_auth::{ClientAuth, ClientAuthError, ClientSignature, MAX_CLIENT_SIG_LEN};
 // Used internally by der_cert.rs (the cert-parser backend); nothing
 // external uses the `crate::traits::RsaCertSigAlg` re-export path
 // because backends reach for `crate::traits::cert::RsaCertSigAlg`

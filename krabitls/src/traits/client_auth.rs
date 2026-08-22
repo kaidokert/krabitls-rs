@@ -13,7 +13,7 @@ pub const MAX_CLIENT_SIG_LEN: usize = if cfg!(feature = "rsa-4096") {
     384
 } else if cfg!(feature = "rsa") {
     256
-} else if cfg!(feature = "ecdsa") {
+} else if cfg!(feature = "client-auth-ecdsa") {
     112
 } else {
     64

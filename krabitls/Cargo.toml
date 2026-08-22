@@ -130,7 +130,10 @@ mlkem = ["dep:krabipqc", "x25519-kx"]
 # 6979 deterministic nonce; constant-time — see its docs for the threat model).
 # Signing links only when `EcdsaClientAuth` is constructed, so a verify-only
 # build stays byte-identical, same as `rsa`.
-ecdsa = ["dep:krabiecdsa", "fixed-bigint/cios"]
+ecdsa = ["client-auth-ecdsa", "dep:krabiecdsa", "fixed-bigint/cios"]
+# Protocol and buffer support for an external ECDSA `ClientAuth`
+# implementation, without linking the software ECDSA backend.
+client-auth-ecdsa = []
 # Deprecated compat alias: signing folded into `ecdsa` (see above). Kept so
 # downstream `--features ecdsa-sign` builds from 0.4.1 keep resolving without a
 # breaking (0.5.0) bump; remove at the next minor.
