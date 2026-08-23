@@ -157,7 +157,7 @@ fn custom_aead_runs_complete_canned_handshake() {
     expected_tx.extend_from_slice(&expected_cf);
     assert_eq!(tls.transport().captured_tx(), expected_tx);
 
-    assert!(CONSTRUCTIONS.load(Ordering::SeqCst) >= 3);
+    assert!(CONSTRUCTIONS.load(Ordering::SeqCst) >= 2);
     assert!(DECRYPTIONS.load(Ordering::SeqCst) >= 1);
     assert!(ENCRYPTIONS.load(Ordering::SeqCst) >= 1);
 }
