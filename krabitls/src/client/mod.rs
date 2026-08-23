@@ -57,7 +57,9 @@ pub use crate::traits::verify_strategy::{
     CertChainView, NoClock, PreparedVerifier, SafeStrategy, SafeStrategyError, TrustRootDecision,
     Trusted, VerifierKeyMaterial, VerifyStrategy,
 };
-pub use crate::traits::{Ed25519VerifierProvider, RsaVerifierProvider};
+pub use crate::traits::{
+    Ed25519VerifierProvider, HkdfExpandError, HkdfSha256, RsaVerifierProvider,
+};
 
 // In-crate-only: alternate config impls (samples, callers write their own),
 // the WriteAppError plumbing type, the InternalError variant the engine
