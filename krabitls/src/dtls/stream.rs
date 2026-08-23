@@ -5,14 +5,19 @@
 //! cipher suite at compile time — AES-128-GCM-SHA256 when `cipher-aes` is built,
 //! otherwise ChaCha20-Poly1305-SHA256 — leaving the trust decision to a caller
 //! [`VerifyStrategy`]. AES builds may supply a custom `aead` implementation as
-//! the second type parameter. This is the DTLS analogue of
+//! the second type parameter, and all builds may supply a custom
+//! [`HkdfSha256`](crate::client::HkdfSha256) implementation as the final type
+//! parameter. This is the DTLS analogue of
 //! [`TlsStream`](crate::client::TlsStream).
+
+use core::marker::PhantomData;
 
 use crate::backends::{DerCert, RustCrypto};
 #[cfg(feature = "cipher-aes")]
 use crate::client::Aes128Gcm;
 use crate::dtls::client::{DtlsClient, DtlsClientError};
 use crate::dtls::transport::DatagramTransport;
+use crate::traits::HkdfSha256;
 use crate::traits::verify_strategy::VerifyStrategy;
 
 /// The suite the façade speaks. A `no_std` client is built for one suite, so it
@@ -26,15 +31,22 @@ type FacadeSuite = crate::aead::ChaCha20Poly1305Sha256;
 pub struct DtlsStream<
     T: DatagramTransport,
     #[cfg(feature = "cipher-aes")] A: Aes128Gcm = aes_gcm::Aes128Gcm,
+    H: HkdfSha256 = RustCrypto,
 > {
     #[cfg(feature = "cipher-aes")]
     client: DtlsClient<crate::aead::Aes128GcmSha256<A>>,
     #[cfg(all(not(feature = "cipher-aes"), feature = "chacha20"))]
     client: DtlsClient<FacadeSuite>,
     transport: T,
+    _hkdf: PhantomData<H>,
 }
 
-impl<T: DatagramTransport, #[cfg(feature = "cipher-aes")] A: Aes128Gcm> DtlsStream<T, A> {
+impl<
+    T: DatagramTransport,
+    #[cfg(feature = "cipher-aes")] A: Aes128Gcm,
+    H: HkdfSha256,
+> DtlsStream<T, A, H>
+{
     /// Drive a full DTLS 1.3 handshake over `transport` and return a ready
     /// stream. `strategy` decides trust in the server certificate chain;
     /// `hostname`, when `Some`, is matched against the leaf SAN (`None` skips the
@@ -66,7 +78,7 @@ impl<T: DatagramTransport, #[cfg(feature = "cipher-aes")] A: Aes128Gcm> DtlsStre
         #[cfg(feature = "cipher-aes")]
         let client = DtlsClient::<crate::aead::Aes128GcmSha256<A>>::connect::<
             T,
-            RustCrypto,
+            H,
             V,
             RustCrypto,
             RustCrypto,
@@ -86,7 +98,7 @@ impl<T: DatagramTransport, #[cfg(feature = "cipher-aes")] A: Aes128Gcm> DtlsStre
         #[cfg(all(not(feature = "cipher-aes"), feature = "chacha20"))]
         let client = DtlsClient::<FacadeSuite>::connect::<
             T,
-            RustCrypto,
+            H,
             V,
             RustCrypto,
             RustCrypto,
@@ -103,7 +115,11 @@ impl<T: DatagramTransport, #[cfg(feature = "cipher-aes")] A: Aes128Gcm> DtlsStre
             flight_buf,
             reasm_buf,
         )?;
-        Ok(Self { client, transport })
+        Ok(Self {
+            client,
+            transport,
+            _hkdf: PhantomData,
+        })
     }
 
     /// Seal `payload` as an application_data record and send it. `out` is scratch
