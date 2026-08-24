@@ -512,18 +512,33 @@ where
 // ============================================================================
 
 /// Pre-known suite? Use `assume_*` to skip the runtime match.
+///
+/// `A` is the AES-128-GCM record backend (`ClientConfig::Aes`), defaulting to the
+/// bundled RustCrypto `aes_gcm::Aes128Gcm`. It is only present on `cipher-aes`
+/// builds — a ChaCha-only build has no AES variant to parameterize.
+#[cfg(feature = "cipher-aes")]
 #[allow(clippy::large_enum_variant)] // AES Aes128Gcm key schedule dominates
 pub enum NegotiatedSuite<H = RustCrypto, A = aes_gcm::Aes128Gcm>
 where
     H: HkdfSha256,
     A: crate::client::Aes128Gcm,
 {
-    #[cfg(feature = "cipher-aes")]
     Aes128Gcm(TlsConnection<WaitServerFlight<Aes128GcmSha256<A>>, H>),
     #[cfg(feature = "chacha20")]
     ChaCha20Poly1305(TlsConnection<WaitServerFlight<ChaCha20Poly1305Sha256>, H>),
 }
 
+/// ChaCha-only build: no AES variant, hence no `A` parameter.
+#[cfg(not(feature = "cipher-aes"))]
+pub enum NegotiatedSuite<H = RustCrypto>
+where
+    H: HkdfSha256,
+{
+    #[cfg(feature = "chacha20")]
+    ChaCha20Poly1305(TlsConnection<WaitServerFlight<ChaCha20Poly1305Sha256>, H>),
+}
+
+#[cfg(feature = "cipher-aes")]
 impl<H, A> NegotiatedSuite<H, A>
 where
     H: HkdfSha256,
@@ -560,23 +575,99 @@ impl<H> TlsConnection<WaitServerHello, H>
 where
     H: HkdfSha256,
 {
-    #[cfg_attr(feature = "custom-aes", allow(dead_code))]
+    // On `cipher-aes` builds the engine goes through `read_server_hello_with_aes`
+    // with the config's AES backend, so this convenience wrapper is only used by
+    // the ChaCha-only path (and callers who don't select a backend).
+    #[cfg_attr(feature = "cipher-aes", allow(dead_code))]
     pub fn read_server_hello(
         self,
         sh_record: &[u8],
     ) -> Result<NegotiatedSuite<H>, ConnectionError> {
-        self.read_server_hello_with_aes::<aes_gcm::Aes128Gcm>(sh_record)
+        #[cfg(feature = "cipher-aes")]
+        {
+            self.read_server_hello_with_aes::<aes_gcm::Aes128Gcm>(sh_record)
+        }
+        #[cfg(not(feature = "cipher-aes"))]
+        {
+            let (transcript, hs, c_hs_ts, s_hs_ts, cipher_suite) = self.negotiate_hs(sh_record)?;
+            match cipher_suite {
+                #[cfg(feature = "chacha20")]
+                CIPHER_CHACHA20_POLY1305_SHA256 => {
+                    let s_hs_keys = RecordKeys::<ChaCha20Poly1305Sha256>::derive::<H>(&s_hs_ts)?;
+                    Ok(NegotiatedSuite::ChaCha20Poly1305(TlsConnection {
+                        transcript,
+                        state: WaitServerFlight {
+                            hs,
+                            c_hs_ts,
+                            s_hs_ts,
+                            s_hs_keys,
+                            seq_in: 0,
+                            _mode: PhantomData,
+                        },
+                    }))
+                }
+                other => Err(ConnectionError::Parse(ParseError::UnsupportedCipherSuite(
+                    other,
+                ))),
+            }
+        }
     }
 
     /// Process `ServerHello` using an explicitly selected AES-128-GCM record
-    /// backend. Used by `ClientConfig` when `custom-aes` is enabled.
+    /// backend — the `ClientConfig::Aes` type. `cipher-aes` builds only.
+    #[cfg(feature = "cipher-aes")]
     pub fn read_server_hello_with_aes<A>(
-        mut self,
+        self,
         sh_record: &[u8],
     ) -> Result<NegotiatedSuite<H, A>, ConnectionError>
     where
         A: crate::client::Aes128Gcm,
     {
+        let (transcript, hs, c_hs_ts, s_hs_ts, cipher_suite) = self.negotiate_hs(sh_record)?;
+        match cipher_suite {
+            CIPHER_AES_128_GCM_SHA256 => {
+                let s_hs_keys = RecordKeys::<Aes128GcmSha256<A>>::derive::<H>(&s_hs_ts)?;
+                Ok(NegotiatedSuite::Aes128Gcm(TlsConnection {
+                    transcript,
+                    state: WaitServerFlight {
+                        hs,
+                        c_hs_ts,
+                        s_hs_ts,
+                        s_hs_keys,
+                        seq_in: 0,
+                        _mode: PhantomData,
+                    },
+                }))
+            }
+            #[cfg(feature = "chacha20")]
+            CIPHER_CHACHA20_POLY1305_SHA256 => {
+                let s_hs_keys = RecordKeys::<ChaCha20Poly1305Sha256>::derive::<H>(&s_hs_ts)?;
+                Ok(NegotiatedSuite::ChaCha20Poly1305(TlsConnection {
+                    transcript,
+                    state: WaitServerFlight {
+                        hs,
+                        c_hs_ts,
+                        s_hs_ts,
+                        s_hs_keys,
+                        seq_in: 0,
+                        _mode: PhantomData,
+                    },
+                }))
+            }
+            other => Err(ConnectionError::Parse(ParseError::UnsupportedCipherSuite(
+                other,
+            ))),
+        }
+    }
+
+    /// Parse the `ServerHello`, run the negotiated key exchange, and derive the
+    /// handshake-traffic secrets — everything before the suite-specific record
+    /// keys. Returns `(transcript, handshake_secret, client_hs_ts, server_hs_ts,
+    /// selected_cipher_suite)`; the caller builds the suite-typed connection.
+    fn negotiate_hs(
+        mut self,
+        sh_record: &[u8],
+    ) -> Result<(TranscriptHash<H>, Secret, Secret, Secret, u16), ConnectionError> {
         let sh = parse_server_hello(sh_record)?;
         // RFC 8446 §4.1.3: the server MUST echo our `legacy_session_id`
         // verbatim (the empty string when we sent none). A mismatch means the
@@ -698,41 +789,7 @@ where
         let hs = handshake_secret::<H>(&dhe[..dhe_len])?;
         let (c_hs_ts, s_hs_ts) = handshake_traffic_secrets::<H>(&hs, &th_ch_sh)?;
 
-        match sh.cipher_suite {
-            #[cfg(feature = "cipher-aes")]
-            CIPHER_AES_128_GCM_SHA256 => {
-                let s_hs_keys = RecordKeys::<Aes128GcmSha256<A>>::derive::<H>(&s_hs_ts)?;
-                Ok(NegotiatedSuite::Aes128Gcm(TlsConnection {
-                    transcript: self.transcript,
-                    state: WaitServerFlight {
-                        hs,
-                        c_hs_ts,
-                        s_hs_ts,
-                        s_hs_keys,
-                        seq_in: 0,
-                        _mode: PhantomData,
-                    },
-                }))
-            }
-            #[cfg(feature = "chacha20")]
-            CIPHER_CHACHA20_POLY1305_SHA256 => {
-                let s_hs_keys = RecordKeys::<ChaCha20Poly1305Sha256>::derive::<H>(&s_hs_ts)?;
-                Ok(NegotiatedSuite::ChaCha20Poly1305(TlsConnection {
-                    transcript: self.transcript,
-                    state: WaitServerFlight {
-                        hs,
-                        c_hs_ts,
-                        s_hs_ts,
-                        s_hs_keys,
-                        seq_in: 0,
-                        _mode: PhantomData,
-                    },
-                }))
-            }
-            other => Err(ConnectionError::Parse(ParseError::UnsupportedCipherSuite(
-                other,
-            ))),
-        }
+        Ok((self.transcript, hs, c_hs_ts, s_hs_ts, sh.cipher_suite))
     }
 }
 

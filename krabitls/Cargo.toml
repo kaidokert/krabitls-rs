@@ -1,6 +1,6 @@
 [package]
 name = "krabitls"
-version = "0.5.1"
+version = "0.6.0-alpha.1"
 edition = "2024"
 rust-version = "1.87"
 readme = "../README.md"
@@ -90,10 +90,6 @@ dtls = ["cert-der", "x25519-kx"]
 # (drops `aes-gcm` + `aes` + `ghash` deps). At least one of `cipher-aes`
 # or `chacha20` must be active.
 cipher-aes = ["dep:aes-gcm"]
-# Allow a `ClientConfig` to select an external AES-128-GCM implementation that
-# satisfies the `aead 0.6` traits (for example, an MCU hardware accelerator).
-# The bundled RustCrypto implementation remains the default when this is off.
-custom-aes = ["cipher-aes"]
 # Sub-feature of `rsa`: drop the PKCS#1-v1.5 cert outer-signature path.
 # Cert parser rejects `sha256WithRSAEncryption`; only `rsassa-pss` is
 # accepted on cert outer signatures. Saves ~1 KiB .text vs the default
@@ -130,10 +126,7 @@ mlkem = ["dep:krabipqc", "x25519-kx"]
 # 6979 deterministic nonce; constant-time — see its docs for the threat model).
 # Signing links only when `EcdsaClientAuth` is constructed, so a verify-only
 # build stays byte-identical, same as `rsa`.
-ecdsa = ["client-auth-ecdsa", "dep:krabiecdsa", "fixed-bigint/cios"]
-# Protocol and buffer support for an external ECDSA `ClientAuth`
-# implementation, without linking the software ECDSA backend.
-client-auth-ecdsa = []
+ecdsa = ["dep:krabiecdsa", "fixed-bigint/cios"]
 # Deprecated compat alias: signing folded into `ecdsa` (see above). Kept so
 # downstream `--features ecdsa-sign` builds from 0.4.1 keep resolving without a
 # breaking (0.5.0) bump; remove at the next minor.

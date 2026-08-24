@@ -1,8 +1,8 @@
-//! Proves the `custom-aes` gate drives an externally supplied `aead 0.6`
+//! Proves `ClientConfig::Aes` drives an externally supplied `aead 0.6`
 //! implementation through a complete TLS handshake and application record.
 
 #![cfg(all(
-    feature = "custom-aes",
+    feature = "cipher-aes",
     not(feature = "chacha20"),
     not(feature = "rsa"),
     not(feature = "mldsa"),

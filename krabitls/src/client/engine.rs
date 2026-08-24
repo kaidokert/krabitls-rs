@@ -28,17 +28,10 @@ use crate::traits::CertParser;
 use crate::traits::verify_strategy::{CertChainView, PreparedVerifier, VerifyStrategy};
 use rand_core::TryCryptoRng;
 
-#[cfg(feature = "custom-aes")]
+#[cfg(feature = "cipher-aes")]
 macro_rules! configured_aes_suite {
     ($config:ty) => {
         Aes128GcmSha256<<$config as ClientConfig>::Aes>
-    };
-}
-
-#[cfg(not(feature = "custom-aes"))]
-macro_rules! configured_aes_suite {
-    ($config:ty) => {
-        Aes128GcmSha256
     };
 }
 
@@ -481,14 +474,14 @@ impl<
         };
 
         let record = &self.scratch.recv_record[start..end];
-        #[cfg(feature = "custom-aes")]
+        #[cfg(feature = "cipher-aes")]
         let negotiated = conn
             .read_server_hello_with_aes::<C::Aes>(record)
             .map_err(|e| {
                 self.closed = true;
                 HandshakeError::Connection(e)
             })?;
-        #[cfg(not(feature = "custom-aes"))]
+        #[cfg(not(feature = "cipher-aes"))]
         let negotiated = conn.read_server_hello(record).map_err(|e| {
             self.closed = true;
             HandshakeError::Connection(e)
