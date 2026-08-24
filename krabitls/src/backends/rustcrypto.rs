@@ -81,6 +81,17 @@ impl crate::traits::RsaVerifierProvider for RustCrypto {
     }
 }
 
+impl crate::traits::P256VerifierProvider for RustCrypto {
+    #[cfg(feature = "ecdsa")]
+    fn verify_p256(
+        public_key_sec1: &[u8; 65],
+        prehash: &[u8; 32],
+        signature: &[u8; 64],
+    ) -> Result<(), crate::backends::ecdsa_verify::EcdsaVerifyError> {
+        crate::backends::ecdsa_verify::verify_p256_p1363(public_key_sec1, prehash, signature)
+    }
+}
+
 impl Ed25519VerifierProvider for RustCrypto {
     // Despite the marker name, the Ed25519 verify wired here is
     // `ed25519_heapless` (not from the RustCrypto org). Bundled with the

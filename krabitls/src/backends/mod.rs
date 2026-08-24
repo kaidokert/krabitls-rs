@@ -50,6 +50,8 @@ pub use der_cert::DerCert;
 pub use jedisct::JedisctCrypto;
 // Re-exports purely for the external API surface — nothing in-crate
 // uses these paths, so silence the unused-import lint.
+#[cfg(feature = "ecdsa")]
+pub use ecdsa_verify::EcdsaVerifyError;
 #[allow(unused_imports)]
 #[cfg(feature = "mldsa")]
 pub use mldsa_verify::{MlDsaSig, MlDsaVerifierKey, MlDsaVerifyError};

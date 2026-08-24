@@ -458,7 +458,7 @@ mod aes_only {
         assert_eq!(step, FlightStep::Ready);
 
         let done = conn
-            .finalize_server_flight::<512, RustCrypto, RustCrypto>(
+            .finalize_server_flight::<512, RustCrypto, RustCrypto, RustCrypto>(
                 &reassembler,
                 &fixture_prepared(),
                 &fixture_leaf_view(),
@@ -496,7 +496,7 @@ mod aes_only {
             .unwrap();
 
         let reassembler: ServerFlightReassembler<512> = ServerFlightReassembler::new();
-        let err = match conn.finalize_server_flight::<512, RustCrypto, RustCrypto>(
+        let err = match conn.finalize_server_flight::<512, RustCrypto, RustCrypto, RustCrypto>(
             &reassembler,
             &fixture_prepared(),
             &fixture_leaf_view(),
@@ -650,7 +650,7 @@ mod aes_only {
         conn.feed_server_record(&FIXTURE_PACKET_3, &mut reassembler, &mut scratch)
             .unwrap();
         let conn = conn
-            .finalize_server_flight::<512, RustCrypto, RustCrypto>(
+            .finalize_server_flight::<512, RustCrypto, RustCrypto, RustCrypto>(
                 &reassembler,
                 &fixture_prepared(),
                 &fixture_leaf_view(),
@@ -684,7 +684,7 @@ mod aes_only {
         conn.feed_server_record(&FIXTURE_PACKET_3, &mut reassembler, &mut scratch)
             .unwrap();
         let conn = conn
-            .finalize_server_flight::<512, RustCrypto, RustCrypto>(
+            .finalize_server_flight::<512, RustCrypto, RustCrypto, RustCrypto>(
                 &reassembler,
                 &fixture_prepared(),
                 &fixture_leaf_view(),
@@ -724,7 +724,7 @@ mod aes_only {
         conn.feed_server_record(&FIXTURE_PACKET_3, &mut reassembler, &mut scratch)
             .unwrap();
         let conn = conn
-            .finalize_server_flight::<512, RustCrypto, RustCrypto>(
+            .finalize_server_flight::<512, RustCrypto, RustCrypto, RustCrypto>(
                 &reassembler,
                 &fixture_prepared(),
                 &fixture_leaf_view(),
@@ -766,7 +766,7 @@ mod aes_only {
         conn.feed_server_record(&FIXTURE_PACKET_3, &mut reassembler, &mut scratch)
             .unwrap();
         let conn = conn
-            .finalize_server_flight::<512, RustCrypto, RustCrypto>(
+            .finalize_server_flight::<512, RustCrypto, RustCrypto, RustCrypto>(
                 &reassembler,
                 &fixture_prepared(),
                 &fixture_leaf_view(),

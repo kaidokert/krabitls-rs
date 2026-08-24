@@ -59,6 +59,7 @@ pub trait VerifierKeyMaterial<K> {
     fn matches(&self, candidate: K) -> subtle::Choice;
 }
 
+use crate::traits::P256VerifierProvider;
 use crate::traits::cert::{CertParseError, CertParser, CertView};
 use crate::traits::ed25519_verify::Ed25519VerifierProvider;
 use crate::traits::rsa_verify::RsaVerifierProvider;
@@ -180,7 +181,7 @@ pub trait VerifyStrategy<E: Ed25519VerifierProvider, R: RsaVerifierProvider> {
     /// Inspect `chain` and decide whether to accept it. On Ok, write the
     /// leaf's prepared verifier into `slot` and return a [`Trusted`]
     /// borrowing from it.
-    fn verify_chain<'chain, 'src, 'slot>(
+    fn verify_chain<'chain, 'src, 'slot, P: P256VerifierProvider>(
         &self,
         chain: CertChainView<'chain, 'src>,
         slot: &'slot mut Option<PreparedVerifier<E, R>>,
@@ -207,7 +208,10 @@ pub trait TrustRootDecision<E: Ed25519VerifierProvider, R: RsaVerifierProvider> 
     /// Cert time-validity is NOT decided here: it's a separate `Clock` slot
     /// owned by `SafeStrategy`, evaluated over the whole chain only after
     /// `accept_chain` returns Ok.
-    fn accept_chain<'src>(&self, chain: &[CertView<'src>]) -> Result<(), Self::Error>;
+    fn accept_chain<'src, P: P256VerifierProvider>(
+        &self,
+        chain: &[CertView<'src>],
+    ) -> Result<(), Self::Error>;
 }
 
 /// Cert time-validity check folded into the strategy as a type-level slot.
@@ -323,7 +327,7 @@ where
 {
     type Error = SafeStrategyError<T::Error>;
 
-    fn verify_chain<'chain, 'src, 'slot>(
+    fn verify_chain<'chain, 'src, 'slot, P: P256VerifierProvider>(
         &self,
         chain: CertChainView<'chain, 'src>,
         slot: &'slot mut Option<PreparedVerifier<E, R>>,
@@ -349,11 +353,11 @@ where
         }
 
         for i in 0..views.len().saturating_sub(1) {
-            verify_link::<E, R>(&views[i], &views[i + 1])?;
+            verify_link::<E, R, P>(&views[i], &views[i + 1])?;
         }
 
         self.decision
-            .accept_chain(&views)
+            .accept_chain::<P>(&views)
             .map_err(SafeStrategyError::Decision)?;
 
         // Validity applies to the whole presented path, mirroring the per-link
@@ -460,10 +464,14 @@ impl<TE> From<LinkErr> for SafeStrategyError<TE> {
 /// Verify `child`'s outer signature against `parent`'s public key. `parent` is
 /// any parsed cert — a chain entry or a `PinnedRoots` stored anchor parsed from
 /// flash — the dispatch is on `parent`'s key family, nothing is bound to "self".
-pub(crate) fn verify_link<E, R>(child: &CertView<'_>, parent: &CertView<'_>) -> Result<(), LinkErr>
+pub(crate) fn verify_link<E, R, P>(
+    child: &CertView<'_>,
+    parent: &CertView<'_>,
+) -> Result<(), LinkErr>
 where
     E: Ed25519VerifierProvider,
     R: RsaVerifierProvider,
+    P: P256VerifierProvider,
 {
     let _ = core::marker::PhantomData::<R>;
     let (child_tbs, child_sig): (&[u8], &[u8]) = match child {
@@ -527,7 +535,7 @@ where
         #[cfg(feature = "ecdsa")]
         CertView::EcdsaP256 { pubkey, .. } => {
             let digest = Sha256::digest(child_tbs);
-            crate::backends::ecdsa_verify::verify_p256(pubkey, &digest, child_sig)
+            crate::backends::ecdsa_verify::verify_p256_with::<P>(pubkey, &digest, child_sig)
                 .map_err(|_| LinkErr::LinkSignatureInvalid)
         }
         #[cfg(feature = "ecdsa")]
@@ -578,11 +586,12 @@ mod tests {
     impl VerifyStrategy<RustCrypto, RustCrypto> for ProduceEd25519 {
         type Error = ProduceErr;
 
-        fn verify_chain<'chain, 'src, 'slot>(
+        fn verify_chain<'chain, 'src, 'slot, P: P256VerifierProvider>(
             &self,
             chain: CertChainView<'chain, 'src>,
             slot: &'slot mut Option<PreparedVerifier<RustCrypto, RustCrypto>>,
         ) -> Result<Trusted<'slot, RustCrypto, RustCrypto>, ProduceErr> {
+            let _ = core::marker::PhantomData::<P>;
             if chain.certs.len() != 1 {
                 return Err(ProduceErr);
             }
@@ -670,7 +679,7 @@ mod tests {
         let mut slot: Option<PreparedVerifier<RustCrypto, RustCrypto>> = None;
 
         let trusted = strategy
-            .verify_chain(view, &mut slot)
+            .verify_chain::<RustCrypto>(view, &mut slot)
             .expect("strategy accepts");
 
         let cert = make_view(&LEAF_PUBKEY);
@@ -690,7 +699,7 @@ mod tests {
         let mut slot: Option<PreparedVerifier<RustCrypto, RustCrypto>> = None;
 
         let trusted = strategy
-            .verify_chain(view, &mut slot)
+            .verify_chain::<RustCrypto>(view, &mut slot)
             .expect("strategy returns");
 
         let real_leaf = make_view(&LEAF_PUBKEY);
@@ -709,7 +718,7 @@ mod tests {
         };
         let mut slot: Option<PreparedVerifier<RustCrypto, RustCrypto>> = None;
 
-        let result = strategy.verify_chain(view, &mut slot);
+        let result = strategy.verify_chain::<RustCrypto>(view, &mut slot);
         match result {
             Err(ProduceErr) => {}
             Ok(_) => panic!("strategy should reject 2-cert chain"),
@@ -731,7 +740,7 @@ mod tests {
             // A self-signed cert is its own issuer; exercises the EcdsaP384
             // SPKI parse + the conventional P-384 ↔ SHA-384 outer-sig pairing.
             let leaf = DerCert::parse(&P384_SELF_SIGNED).expect("parse P-384 self-signed leaf");
-            assert!(verify_link::<RustCrypto, RustCrypto>(&leaf, &leaf).is_ok());
+            assert!(verify_link::<RustCrypto, RustCrypto, RustCrypto>(&leaf, &leaf).is_ok());
         }
 
         // An ECDSA leaf whose outer signature is RSA (real chains put ECDSA
@@ -754,7 +763,7 @@ mod tests {
                 let leaf =
                     DerCert::parse(&LEAF_ECDSA_RSA_SIGNED).expect("parse RSA-signed ECDSA leaf");
                 let ca = DerCert::parse(&RSA_CA).expect("parse RSA CA");
-                assert!(verify_link::<RustCrypto, RustCrypto>(&leaf, &ca).is_ok());
+                assert!(verify_link::<RustCrypto, RustCrypto, RustCrypto>(&leaf, &ca).is_ok());
             }
 
             #[test]
@@ -766,7 +775,7 @@ mod tests {
                 // parses but the RSA issuer signature no longer covers it — a
                 // silent parse failure must not vacuously pass the test.
                 let verified = DerCert::parse(&der).map_err(|_| ()).and_then(|leaf| {
-                    verify_link::<RustCrypto, RustCrypto>(&leaf, &ca).map_err(|_| ())
+                    verify_link::<RustCrypto, RustCrypto, RustCrypto>(&leaf, &ca).map_err(|_| ())
                 });
                 assert!(verified.is_err());
             }

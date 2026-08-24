@@ -19,7 +19,8 @@ use crate::hkdf::{HkdfLabelError, TranscriptHash, hkdf_expand_label};
 use crate::newtype::{Secret, TranscriptDigest, ZeroBuf};
 use crate::traits::verify_strategy::PreparedVerifier;
 use crate::traits::{
-    CertParseError, CertView, Ed25519VerifierProvider, HkdfSha256, RsaVerifierProvider,
+    CertParseError, CertView, Ed25519VerifierProvider, HkdfSha256, P256VerifierProvider,
+    RsaVerifierProvider,
 };
 #[cfg(feature = "ecdsa")]
 use sha2::{Digest, Sha256, Sha384};
@@ -366,6 +367,7 @@ fn read_u24(b: &[u8]) -> u32 {
 pub(crate) fn verify_certificate_verify_with_prepared<
     E: Ed25519VerifierProvider,
     R: RsaVerifierProvider,
+    P: P256VerifierProvider,
 >(
     prepared: &PreparedVerifier<E, R>,
     transcript_hash_ch_through_cert: &TranscriptDigest,
@@ -415,7 +417,7 @@ pub(crate) fn verify_certificate_verify_with_prepared<
         #[cfg(feature = "ecdsa")]
         (SIG_SCHEME_ECDSA_P256, PreparedVerifier::EcdsaP256(pk)) => {
             let digest = Sha256::digest(&signed);
-            crate::backends::ecdsa_verify::verify_p256(pk, &digest, sig_bytes)
+            crate::backends::ecdsa_verify::verify_p256_with::<P>(pk, &digest, sig_bytes)
                 .map_err(|_| FlightError::CertVerifyInvalid)
         }
         #[cfg(feature = "ecdsa")]
@@ -475,7 +477,7 @@ pub(crate) struct ServerFlightVerified<'a> {
 // signature verify) in its own frame so it does not union into the handshake
 // driver's frame and inflate peak stack.
 #[inline(never)]
-pub(crate) fn verify_server_flight<'a, H: HkdfSha256, E, R>(
+pub(crate) fn verify_server_flight<'a, H: HkdfSha256, E, R, P>(
     transcript: &mut TranscriptHash<H>,
     plaintext: &'a [u8],
     s_hs_traffic_secret: &Secret,
@@ -485,6 +487,7 @@ pub(crate) fn verify_server_flight<'a, H: HkdfSha256, E, R>(
 where
     E: Ed25519VerifierProvider,
     R: RsaVerifierProvider,
+    P: P256VerifierProvider,
 {
     let flight = parse_server_flight(plaintext)?;
 
@@ -494,7 +497,7 @@ where
     }
     transcript.update(flight.cert_full);
     let th_after_cert = transcript.snapshot();
-    verify_certificate_verify_with_prepared::<E, R>(prepared, &th_after_cert, flight.cv_body)?;
+    verify_certificate_verify_with_prepared::<E, R, P>(prepared, &th_after_cert, flight.cv_body)?;
 
     transcript.update(flight.cv_full);
     let th_after_cv = transcript.snapshot();
@@ -997,7 +1000,7 @@ pub(crate) mod tests {
                         PreparedVerifier::MlDsa(MlDsaVerifierKey::new(&pk).unwrap());
 
                     let body = cv_body($scheme, &sig);
-                    verify_certificate_verify_with_prepared::<RustCrypto, RustCrypto>(
+                    verify_certificate_verify_with_prepared::<RustCrypto, RustCrypto, RustCrypto>(
                         &prepared, &td, &body,
                     )
                     .expect("ML-DSA CertificateVerify verifies");
@@ -1005,7 +1008,7 @@ pub(crate) mod tests {
                     let mut tampered = body.clone();
                     *tampered.last_mut().unwrap() ^= 0xFF;
                     assert!(matches!(
-                        verify_certificate_verify_with_prepared::<RustCrypto, RustCrypto>(
+                        verify_certificate_verify_with_prepared::<RustCrypto, RustCrypto, RustCrypto>(
                             &prepared, &td, &tampered
                         ),
                         Err(FlightError::CertVerifyInvalid)
@@ -1013,7 +1016,7 @@ pub(crate) mod tests {
 
                     let wrong_scheme = cv_body(SIG_SCHEME_ED25519, &sig);
                     assert!(matches!(
-                        verify_certificate_verify_with_prepared::<RustCrypto, RustCrypto>(
+                        verify_certificate_verify_with_prepared::<RustCrypto, RustCrypto, RustCrypto>(
                             &prepared,
                             &td,
                             &wrong_scheme
@@ -1045,7 +1048,7 @@ pub(crate) mod tests {
 
             let mislabelled = cv_body(SIG_SCHEME_MLDSA87, &sig);
             assert!(matches!(
-                verify_certificate_verify_with_prepared::<RustCrypto, RustCrypto>(
+                verify_certificate_verify_with_prepared::<RustCrypto, RustCrypto, RustCrypto>(
                     &prepared,
                     &td,
                     &mislabelled

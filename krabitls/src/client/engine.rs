@@ -620,7 +620,7 @@ impl<
         let mut slot: Option<PreparedVerifier<C::Ed25519, C::Rsa>> = None;
         let trusted = params
             .verify
-            .verify_chain(chain_view, &mut slot)
+            .verify_chain::<C::P256>(chain_view, &mut slot)
             .map_err(|_| HandshakeError::StrategyRejected)?;
 
         // Cross-check: a strategy that returns a prepared verifier built
@@ -649,7 +649,7 @@ impl<
             #[cfg(feature = "cipher-aes")]
             EngineState::WaitFlightAes(conn) => {
                 let d = conn
-                    .finalize_server_flight::<FLIGHT, C::Ed25519, C::Rsa>(
+                    .finalize_server_flight::<FLIGHT, C::Ed25519, C::Rsa, C::P256>(
                         &self.scratch.reassembler,
                         prepared,
                         &leaf_view,
@@ -660,7 +660,7 @@ impl<
             #[cfg(feature = "chacha20")]
             EngineState::WaitFlightChaCha(conn) => {
                 let d = conn
-                    .finalize_server_flight::<FLIGHT, C::Ed25519, C::Rsa>(
+                    .finalize_server_flight::<FLIGHT, C::Ed25519, C::Rsa, C::P256>(
                         &self.scratch.reassembler,
                         prepared,
                         &leaf_view,

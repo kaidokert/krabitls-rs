@@ -101,6 +101,7 @@ impl ClientConfig for HardwareConfig {
     type CertParser = DerCert;
     type Ed25519 = RustCrypto;
     type Rsa = RustCrypto;
+    type P256 = RustCrypto;
     type Aes = InstrumentedAes;
     const SUITES: ConfigSuitePolicy = ConfigSuitePolicy::AesOnly;
 }

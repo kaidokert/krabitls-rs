@@ -1502,7 +1502,7 @@ mod cipher_aes {
         let mut transcript = TranscriptHash::<RustCrypto>::new();
         transcript.update_record(&FIXTURE_CLIENT_HELLO).unwrap();
         transcript.update_record(&FIXTURE_SERVER_HELLO).unwrap();
-        verify_server_flight::<RustCrypto, RustCrypto, RustCrypto>(
+        verify_server_flight::<RustCrypto, RustCrypto, RustCrypto, RustCrypto>(
             &mut transcript,
             content,
             &make_fixture_s_hs_traffic_secret(),
@@ -1629,7 +1629,7 @@ mod cipher_aes {
             let mut transcript = TranscriptHash::<RustCrypto>::new();
             transcript.update_record(&FIXTURE_CLIENT_HELLO).unwrap();
             transcript.update_record(&FIXTURE_SERVER_HELLO).unwrap();
-            let result = verify_server_flight::<RustCrypto, RustCrypto, RustCrypto>(
+            let result = verify_server_flight::<RustCrypto, RustCrypto, RustCrypto, RustCrypto>(
                 &mut transcript,
                 content,
                 &make_fixture_s_hs_traffic_secret(),
@@ -1664,7 +1664,7 @@ mod cipher_aes {
             let mut transcript = TranscriptHash::<RustCrypto>::new();
             transcript.update_record(&FIXTURE_CLIENT_HELLO).unwrap();
             transcript.update_record(&FIXTURE_SERVER_HELLO).unwrap();
-            let err = verify_server_flight::<RustCrypto, AlwaysReject, RustCrypto>(
+            let err = verify_server_flight::<RustCrypto, AlwaysReject, RustCrypto, RustCrypto>(
                 &mut transcript,
                 content,
                 &make_fixture_s_hs_traffic_secret(),
@@ -1698,7 +1698,7 @@ mod cipher_aes {
             let mut transcript = TranscriptHash::<RustCrypto>::new();
             transcript.update_record(&FIXTURE_CLIENT_HELLO).unwrap();
             transcript.update_record(&FIXTURE_SERVER_HELLO).unwrap();
-            let err = verify_server_flight::<RustCrypto, RustCrypto, RustCrypto>(
+            let err = verify_server_flight::<RustCrypto, RustCrypto, RustCrypto, RustCrypto>(
                 &mut transcript,
                 &tampered[..content.len()],
                 &make_fixture_s_hs_traffic_secret(),
@@ -1775,7 +1775,7 @@ mod cipher_aes {
             let mut transcript = TranscriptHash::<RustCrypto>::new();
             transcript.update_record(&FIXTURE_CLIENT_HELLO).unwrap();
             transcript.update_record(&FIXTURE_SERVER_HELLO).unwrap();
-            verify_server_flight::<RustCrypto, RustCrypto, RustCrypto>(
+            verify_server_flight::<RustCrypto, RustCrypto, RustCrypto, RustCrypto>(
                 &mut transcript,
                 content,
                 &make_fixture_s_hs_traffic_secret(),
@@ -1815,7 +1815,7 @@ mod cipher_aes {
             let mut transcript = TranscriptHash::<RustCrypto>::new();
             transcript.update_record(&FIXTURE_CLIENT_HELLO).unwrap();
             transcript.update_record(&FIXTURE_SERVER_HELLO).unwrap();
-            verify_server_flight::<RustCrypto, RustCrypto, RustCrypto>(
+            verify_server_flight::<RustCrypto, RustCrypto, RustCrypto, RustCrypto>(
                 &mut transcript,
                 content,
                 &make_fixture_s_hs_traffic_secret(),
@@ -2029,7 +2029,7 @@ mod cipher_aes {
             let mut transcript = TranscriptHash::<RustCrypto>::new();
             transcript.update_record(&FIXTURE_RSA_CLIENT_HELLO).unwrap();
             transcript.update_record(&FIXTURE_RSA_SERVER_HELLO).unwrap();
-            verify_server_flight::<RustCrypto, RustCrypto, RustCrypto>(
+            verify_server_flight::<RustCrypto, RustCrypto, RustCrypto, RustCrypto>(
                 &mut transcript,
                 content,
                 &s_hs_ts,

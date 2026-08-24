@@ -89,6 +89,7 @@ fn der_sig_to_p1363(der: &[u8], eb: usize, out: &mut [u8]) -> Result<(), EcdsaVe
 /// Verify an ECDSA-P256 signature. `pubkey_sec1` is the 65-byte SEC1
 /// uncompressed point (`0x04 || X || Y`), `prehash` the SHA-256 digest,
 /// `der_sig` the DER `ECDSA-Sig-Value`.
+#[cfg(test)]
 pub fn verify_p256(
     pubkey_sec1: &[u8],
     prehash: &[u8],
@@ -101,9 +102,34 @@ pub fn verify_p256(
     pk.copy_from_slice(pubkey_sec1);
     let mut rs = [0u8; 64];
     der_sig_to_p1363(der_sig, 32, &mut rs)?;
-    p256::VerifyingKey::<EcdsaP256Bn>::from_sec1_bytes(pk)
-        .verify_prehash(prehash, &rs)
+    verify_p256_p1363(&pk, prehash.try_into().map_err(|_| EcdsaVerifyError)?, &rs)
+}
+
+pub(crate) fn verify_p256_p1363(
+    pubkey_sec1: &[u8; 65],
+    prehash: &[u8; 32],
+    signature: &[u8; 64],
+) -> Result<(), EcdsaVerifyError> {
+    p256::VerifyingKey::<EcdsaP256Bn>::from_sec1_bytes(*pubkey_sec1)
+        .verify_prehash(prehash, signature)
         .map_err(|_| EcdsaVerifyError)
+}
+
+pub(crate) fn decode_p256_signature(der: &[u8]) -> Result<[u8; 64], EcdsaVerifyError> {
+    let mut signature = [0; 64];
+    der_sig_to_p1363(der, 32, &mut signature)?;
+    Ok(signature)
+}
+
+pub(crate) fn verify_p256_with<P: crate::traits::P256VerifierProvider>(
+    pubkey_sec1: &[u8],
+    prehash: &[u8],
+    der_signature: &[u8],
+) -> Result<(), EcdsaVerifyError> {
+    let public_key: &[u8; 65] = pubkey_sec1.try_into().map_err(|_| EcdsaVerifyError)?;
+    let prehash: &[u8; 32] = prehash.try_into().map_err(|_| EcdsaVerifyError)?;
+    let signature = decode_p256_signature(der_signature)?;
+    P::verify_p256(public_key, prehash, &signature)
 }
 
 /// Verify an ECDSA-P384 signature. `pubkey_sec1` is the 97-byte SEC1
@@ -193,5 +219,25 @@ mod tests {
     fn malformed_der_rejects() {
         assert!(verify_p256(&P256_PK, &P256_DIGEST, &[0x30, 0x00]).is_err());
         assert!(verify_p256(&P256_PK, &P256_DIGEST, &[]).is_err());
+    }
+
+    #[test]
+    fn p256_provider_controls_verification() {
+        struct Reject;
+        impl crate::traits::P256VerifierProvider for Reject {
+            fn verify_p256(
+                _: &[u8; 65],
+                _: &[u8; 32],
+                _: &[u8; 64],
+            ) -> Result<(), EcdsaVerifyError> {
+                Err(EcdsaVerifyError)
+            }
+        }
+
+        assert!(verify_p256_with::<Reject>(&P256_PK, &P256_DIGEST, &P256_SIG).is_err());
+        assert!(
+            verify_p256_with::<crate::backends::RustCrypto>(&P256_PK, &P256_DIGEST, &P256_SIG)
+                .is_ok()
+        );
     }
 }

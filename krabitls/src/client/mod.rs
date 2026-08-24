@@ -60,7 +60,7 @@ pub use crate::traits::verify_strategy::{
     Trusted, VerifierKeyMaterial, VerifyStrategy,
 };
 pub use crate::traits::{
-    Ed25519VerifierProvider, HkdfExpandError, HkdfSha256, RsaVerifierProvider,
+    Ed25519VerifierProvider, HkdfExpandError, HkdfSha256, P256VerifierProvider, RsaVerifierProvider,
 };
 
 // In-crate-only: alternate config impls (samples, callers write their own),

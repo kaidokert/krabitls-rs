@@ -438,7 +438,7 @@ impl<S: DtlsSuite> DtlsClient<S> {
             .map_err(|_| DtlsClientError::Protocol)?;
         let mut slot: Option<PreparedVerifier<E, R>> = None;
         let trusted = strategy
-            .verify_chain(CertChainView { certs: &chain }, &mut slot)
+            .verify_chain::<crate::backends::RustCrypto>(CertChainView { certs: &chain }, &mut slot)
             .map_err(|_| DtlsClientError::StrategyRejected)?;
         let leaf_der = chain.first().copied().ok_or(DtlsClientError::Protocol)?;
         let leaf_view = P::parse(leaf_der).map_err(|_| DtlsClientError::Protocol)?;
@@ -455,7 +455,7 @@ impl<S: DtlsSuite> DtlsClient<S> {
         }
         transcript.update(flight_view.cert_full);
         let th_after_cert = transcript.snapshot();
-        verify_certificate_verify_with_prepared::<E, R>(
+        verify_certificate_verify_with_prepared::<E, R, crate::backends::RustCrypto>(
             trusted.prepared(),
             &th_after_cert,
             flight_view.cv_body,

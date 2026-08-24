@@ -2,7 +2,9 @@
 //! Buffer sizes live on [`super::Scratch`], not here.
 
 use crate::backends::{DerCert, RustCrypto};
-use crate::traits::{CertParser, Ed25519VerifierProvider, HkdfSha256, RsaVerifierProvider};
+use crate::traits::{
+    CertParser, Ed25519VerifierProvider, HkdfSha256, P256VerifierProvider, RsaVerifierProvider,
+};
 
 /// AES-128-GCM implementation usable by the TLS 1.3 record layer.
 ///
@@ -51,6 +53,9 @@ pub trait ClientConfig {
     /// RSA verifier backend. Without `feature = "rsa"` the trait is empty
     /// and any marker type satisfies it.
     type Rsa: RsaVerifierProvider;
+    /// P-256 ECDSA verifier backend. Without `feature = "ecdsa"` the trait is
+    /// empty and adds no code.
+    type P256: P256VerifierProvider;
     /// AES-128-GCM record backend, present on any `cipher-aes` build. Defaults
     /// to the bundled RustCrypto `aes_gcm::Aes128Gcm` (see `DefaultConfig`); set
     /// it to a hardware-backed [`Aes128Gcm`] to offload the record layer.
@@ -69,6 +74,7 @@ impl ClientConfig for DefaultConfig {
     type CertParser = DerCert;
     type Ed25519 = RustCrypto;
     type Rsa = RustCrypto;
+    type P256 = RustCrypto;
     #[cfg(feature = "cipher-aes")]
     type Aes = aes_gcm::Aes128Gcm;
 

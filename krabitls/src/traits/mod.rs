@@ -20,6 +20,7 @@ pub mod cert;
 pub mod client_auth;
 pub mod ed25519_verify;
 pub mod hkdf;
+pub mod p256_verify;
 pub mod rsa_verify;
 pub mod time;
 pub mod verify_strategy;
@@ -38,6 +39,7 @@ pub use client_auth::{ClientAuth, ClientAuthError, ClientSignature, MAX_CLIENT_S
 pub use cert::RsaCertSigAlg;
 pub use ed25519_verify::Ed25519VerifierProvider;
 pub use hkdf::{HkdfExpandError, HkdfSha256};
+pub use p256_verify::P256VerifierProvider;
 pub use rsa_verify::RsaVerifierProvider;
 pub use time::TimeSource;
 pub use verify_strategy::ServerPubkey;

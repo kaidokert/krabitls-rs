@@ -865,6 +865,7 @@ where
         const N: usize,
         E: Ed25519VerifierProvider,
         R: RsaVerifierProvider,
+        P: crate::traits::P256VerifierProvider,
     >(
         mut self,
         reassembler: &ServerFlightReassembler<N>,
@@ -877,7 +878,7 @@ where
         let plaintext = reassembler
             .flight_bytes()
             .ok_or(ConnectionError::IncompleteFlight)?;
-        let verified = verify_server_flight::<H, E, R>(
+        let verified = verify_server_flight::<H, E, R, P>(
             &mut self.transcript,
             plaintext,
             &self.state.s_hs_ts,
