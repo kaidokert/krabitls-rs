@@ -53,6 +53,8 @@ pub use crate::backends::{PinOrSelfSigned, PinnedPubkeyOwned};
 // `RsaVerifierProvider` in their `where` clauses.
 #[cfg(feature = "cert-der")]
 pub use crate::traits::verify_strategy::Clocked;
+#[cfg(feature = "rsa")]
+pub use crate::traits::verify_strategy::RsaKeyMaterial;
 pub use crate::traits::verify_strategy::{
     CertChainView, NoClock, PreparedVerifier, SafeStrategy, SafeStrategyError, TrustRootDecision,
     Trusted, VerifierKeyMaterial, VerifyStrategy,
