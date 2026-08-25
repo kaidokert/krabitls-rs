@@ -60,6 +60,14 @@ pub use crate::traits::verify_strategy::{
 pub use crate::traits::{
     Ed25519, SigAlgo, SigVerifierProvider, VerifierBackend, VerifyProviderError,
 };
+// Per-algorithm markers: a downstream backend names these to
+// `impl SigVerifierProvider<Rsa>` / `<EcdsaP256>` / etc. for one primitive.
+#[cfg(feature = "mldsa")]
+pub use crate::traits::MlDsa;
+#[cfg(feature = "rsa")]
+pub use crate::traits::Rsa;
+#[cfg(feature = "ecdsa")]
+pub use crate::traits::{EcdsaP256, EcdsaP384};
 
 // In-crate-only: alternate config impls (samples, callers write their own),
 // the WriteAppError plumbing type, the InternalError variant the engine

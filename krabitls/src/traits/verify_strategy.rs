@@ -69,8 +69,6 @@ use crate::traits::verify_provider::Rsa;
 #[cfg(feature = "ecdsa")]
 use crate::traits::verify_provider::{EcdsaP256, EcdsaP384};
 use crate::traits::verify_provider::{Ed25519, SigVerifierProvider, VerifierBackend};
-#[cfg(feature = "ecdsa")]
-use sha2::{Digest, Sha256, Sha384};
 use signature::Verifier;
 
 /// Prepared verifier the strategy hands back for the TLS stack to use in
@@ -491,7 +489,7 @@ where
         CertView::MlDsa { pubkey, .. } => {
             // ML-DSA cert sigs are pure ML-DSA over the child TBS, empty
             // context — no padding/hash discriminator to classify (unlike RSA).
-            let v = crate::backends::mldsa_verify::MlDsaVerifierKey::new(pubkey)
+            let v = <P as SigVerifierProvider<MlDsa>>::prepare(pubkey)
                 .map_err(|_| LinkErr::MlDsaVerifierInvalid)?;
             v.verify(
                 child_tbs,
@@ -537,15 +535,29 @@ where
         // signed under a non-conventional hash fails closed here.
         #[cfg(feature = "ecdsa")]
         CertView::EcdsaP256 { pubkey, .. } => {
-            let digest = Sha256::digest(child_tbs);
-            crate::backends::ecdsa_verify::verify_p256(pubkey, &digest, child_sig)
-                .map_err(|_| LinkErr::LinkSignatureInvalid)
+            let pk: [u8; 65] = (*pubkey)
+                .try_into()
+                .map_err(|_| LinkErr::LinkSignatureInvalid)?;
+            let v = <P as SigVerifierProvider<EcdsaP256>>::prepare(&pk)
+                .map_err(|_| LinkErr::LinkSignatureInvalid)?;
+            v.verify(
+                child_tbs,
+                &crate::backends::ecdsa_verify::EcdsaDerSig(child_sig),
+            )
+            .map_err(|_| LinkErr::LinkSignatureInvalid)
         }
         #[cfg(feature = "ecdsa")]
         CertView::EcdsaP384 { pubkey, .. } => {
-            let digest = Sha384::digest(child_tbs);
-            crate::backends::ecdsa_verify::verify_p384(pubkey, &digest, child_sig)
-                .map_err(|_| LinkErr::LinkSignatureInvalid)
+            let pk: [u8; 97] = (*pubkey)
+                .try_into()
+                .map_err(|_| LinkErr::LinkSignatureInvalid)?;
+            let v = <P as SigVerifierProvider<EcdsaP384>>::prepare(&pk)
+                .map_err(|_| LinkErr::LinkSignatureInvalid)?;
+            v.verify(
+                child_tbs,
+                &crate::backends::ecdsa_verify::EcdsaDerSig(child_sig),
+            )
+            .map_err(|_| LinkErr::LinkSignatureInvalid)
         }
     }
 }
