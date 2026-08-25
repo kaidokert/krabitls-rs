@@ -238,7 +238,7 @@ impl<
         rng: &mut R,
     ) -> Result<EngineEvent, HandshakeError>
     where
-        V: VerifyStrategy<C::Ed25519, C::Rsa>,
+        V: VerifyStrategy<C::Verifiers>,
         A: ClientAuthSign<R>,
         R: TryCryptoRng + ?Sized,
     {
@@ -403,7 +403,7 @@ impl<
         rng: &mut R,
     ) -> Result<(), HandshakeError>
     where
-        V: VerifyStrategy<C::Ed25519, C::Rsa>,
+        V: VerifyStrategy<C::Verifiers>,
         A: ClientAuthSign<R>,
         R: TryCryptoRng + ?Sized,
     {
@@ -495,7 +495,7 @@ impl<
         rng: &mut R,
     ) -> Result<(), HandshakeError>
     where
-        V: VerifyStrategy<C::Ed25519, C::Rsa>,
+        V: VerifyStrategy<C::Verifiers>,
         A: ClientAuthSign<R>,
         R: TryCryptoRng + ?Sized,
     {
@@ -546,7 +546,7 @@ impl<
         rng: &mut R,
     ) -> Result<(), HandshakeError>
     where
-        V: VerifyStrategy<C::Ed25519, C::Rsa>,
+        V: VerifyStrategy<C::Verifiers>,
         A: ClientAuthSign<R>,
         R: TryCryptoRng + ?Sized,
     {
@@ -602,7 +602,7 @@ impl<
             .map_err(|e| HandshakeError::Connection(ConnectionError::Flight(e)))?;
         let chain_view = CertChainView { certs: &chain };
 
-        let mut slot: Option<PreparedVerifier<C::Ed25519, C::Rsa>> = None;
+        let mut slot: Option<PreparedVerifier<C::Verifiers>> = None;
         let trusted = params
             .verify
             .verify_chain(chain_view, &mut slot)
@@ -634,7 +634,7 @@ impl<
             #[cfg(feature = "cipher-aes")]
             EngineState::WaitFlightAes(conn) => {
                 let d = conn
-                    .finalize_server_flight::<FLIGHT, C::Ed25519, C::Rsa>(
+                    .finalize_server_flight::<FLIGHT, C::Verifiers>(
                         &self.scratch.reassembler,
                         prepared,
                         &leaf_view,
@@ -645,7 +645,7 @@ impl<
             #[cfg(feature = "chacha20")]
             EngineState::WaitFlightChaCha(conn) => {
                 let d = conn
-                    .finalize_server_flight::<FLIGHT, C::Ed25519, C::Rsa>(
+                    .finalize_server_flight::<FLIGHT, C::Verifiers>(
                         &self.scratch.reassembler,
                         prepared,
                         &leaf_view,

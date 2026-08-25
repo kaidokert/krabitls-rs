@@ -35,8 +35,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use krabitls::backends::RustCrypto;
 use krabitls::client::{
     CertChainView, ClientParams, ConnectError, DefaultConfig, DefaultScratch, DefaultVerify,
-    Ed25519VerifierProvider, HandshakeError, PinOrSelfSigned, PreparedVerifier,
-    RsaVerifierProvider, SafeStrategy, TlsStream, Trusted, VerifyStrategy,
+    Ed25519, HandshakeError, PinOrSelfSigned, PreparedVerifier, SafeStrategy, SigVerifierProvider,
+    TlsStream, Trusted, VerifierBackend, VerifyStrategy,
 };
 use krabitls_fixtures::{CannedTransport, SeededRng};
 
@@ -103,19 +103,18 @@ struct CountingStrategy<S> {
     count: Arc<AtomicUsize>,
 }
 
-impl<S, E, R> VerifyStrategy<E, R> for CountingStrategy<S>
+impl<S, P> VerifyStrategy<P> for CountingStrategy<S>
 where
-    S: VerifyStrategy<E, R>,
-    E: Ed25519VerifierProvider,
-    R: RsaVerifierProvider,
+    S: VerifyStrategy<P>,
+    P: VerifierBackend,
 {
     type Error = S::Error;
 
     fn verify_chain<'chain, 'src, 'slot>(
         &self,
         chain: CertChainView<'chain, 'src>,
-        slot: &'slot mut Option<PreparedVerifier<E, R>>,
-    ) -> Result<Trusted<'slot, E, R>, Self::Error> {
+        slot: &'slot mut Option<PreparedVerifier<P>>,
+    ) -> Result<Trusted<'slot, P>, Self::Error> {
         self.count.fetch_add(1, Ordering::Relaxed);
         self.inner.verify_chain(chain, slot)
     }
@@ -167,18 +166,14 @@ struct AlwaysRejectError;
 
 struct AlwaysReject;
 
-impl<E, R> VerifyStrategy<E, R> for AlwaysReject
-where
-    E: Ed25519VerifierProvider,
-    R: RsaVerifierProvider,
-{
+impl<P: VerifierBackend> VerifyStrategy<P> for AlwaysReject {
     type Error = AlwaysRejectError;
 
     fn verify_chain<'chain, 'src, 'slot>(
         &self,
         _chain: CertChainView<'chain, 'src>,
-        _slot: &'slot mut Option<PreparedVerifier<E, R>>,
-    ) -> Result<Trusted<'slot, E, R>, Self::Error> {
+        _slot: &'slot mut Option<PreparedVerifier<P>>,
+    ) -> Result<Trusted<'slot, P>, Self::Error> {
         Err(AlwaysRejectError)
     }
 }
@@ -218,16 +213,17 @@ struct LyingStrategy {
 #[error("LyingStrategy")]
 struct LyingError;
 
-impl VerifyStrategy<RustCrypto, RustCrypto> for LyingStrategy {
+impl VerifyStrategy<RustCrypto> for LyingStrategy {
     type Error = LyingError;
 
     fn verify_chain<'chain, 'src, 'slot>(
         &self,
         _chain: CertChainView<'chain, 'src>,
-        slot: &'slot mut Option<PreparedVerifier<RustCrypto, RustCrypto>>,
-    ) -> Result<Trusted<'slot, RustCrypto, RustCrypto>, Self::Error> {
+        slot: &'slot mut Option<PreparedVerifier<RustCrypto>>,
+    ) -> Result<Trusted<'slot, RustCrypto>, Self::Error> {
         let prepared = PreparedVerifier::ed25519(
-            <RustCrypto as Ed25519VerifierProvider>::prepare_ed25519(&self.attacker_pubkey),
+            <RustCrypto as SigVerifierProvider<Ed25519>>::prepare(&self.attacker_pubkey)
+                .expect("Ed25519 prepare is infallible"),
         );
         *slot = Some(prepared);
         Ok(Trusted::new(slot.as_ref().expect("just wrote it")))

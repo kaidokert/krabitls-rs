@@ -35,7 +35,7 @@ use crate::server_flight::FlightError;
 use crate::server_flight::ServerPubkey;
 use crate::server_flight::verify_server_flight;
 use crate::traits::verify_strategy::PreparedVerifier;
-use crate::traits::{CertView, Ed25519VerifierProvider, HkdfSha256, RsaVerifierProvider};
+use crate::traits::{CertView, HkdfSha256, VerifierBackend};
 use rand_core::TryCryptoRng;
 
 /// Internal scratch for the outgoing ClientHello before it's forwarded to the
@@ -789,14 +789,10 @@ where
     /// defensively re-checks `prepared.matches_cert(leaf_view)` so a
     /// non-engine caller can't sneak in a verifier built from one cert
     /// while the stored `server_pubkey` comes from another.
-    pub fn finalize_server_flight<
-        const N: usize,
-        E: Ed25519VerifierProvider,
-        R: RsaVerifierProvider,
-    >(
+    pub fn finalize_server_flight<const N: usize, P: VerifierBackend>(
         mut self,
         reassembler: &ServerFlightReassembler<N>,
-        prepared: &PreparedVerifier<E, R>,
+        prepared: &PreparedVerifier<P>,
         leaf_view: &CertView<'_>,
     ) -> Result<TlsConnection<ServerFlightDone<S, M>, H>, ConnectionError> {
         if !bool::from(prepared.matches_cert(leaf_view)) {
@@ -805,7 +801,7 @@ where
         let plaintext = reassembler
             .flight_bytes()
             .ok_or(ConnectionError::IncompleteFlight)?;
-        let verified = verify_server_flight::<H, E, R>(
+        let verified = verify_server_flight::<H, P>(
             &mut self.transcript,
             plaintext,
             &self.state.s_hs_ts,

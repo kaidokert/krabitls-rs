@@ -9,19 +9,18 @@
 //! - [`HkdfSha256`] — HKDF over SHA-256 and the
 //!   matching incremental hasher (default: [`crate::RustCrypto`]).
 //! - [`CertParser`] — X.509 DER parser (default: [`crate::DerCert`]).
-//! - [`Ed25519VerifierProvider`] — builds per-key Ed25519 verifiers
-//!   (`signature::Verifier<[u8; 64]>`); default
-//!   [`crate::RustCrypto`] wraps `ed25519_heapless`.
+//! - [`SigVerifierProvider`] — builds per-key verifiers for one algorithm
+//!   ([`SigAlgo`]); [`VerifierBackend`] aggregates all algorithms behind one
+//!   type param. Default [`crate::RustCrypto`] wires every algorithm.
 //! - [`TimeSource`] — wall-clock for cert validity checks (supply one via a
 //!   `Clocked` strategy; the default `NoClock` skips the check).
 
 pub mod aead;
 pub mod cert;
 pub mod client_auth;
-pub mod ed25519_verify;
 pub mod hkdf;
-pub mod rsa_verify;
 pub mod time;
+pub mod verify_provider;
 pub mod verify_strategy;
 
 pub use aead::AeadError;
@@ -36,8 +35,21 @@ pub use client_auth::{ClientAuth, ClientAuthError};
 #[allow(unused_imports)]
 #[cfg(feature = "rsa")]
 pub use cert::RsaCertSigAlg;
-pub use ed25519_verify::Ed25519VerifierProvider;
 pub use hkdf::{HkdfExpandError, HkdfSha256};
-pub use rsa_verify::RsaVerifierProvider;
 pub use time::TimeSource;
+pub use verify_provider::{
+    Ed25519, SigAlgo, SigVerifierProvider, VerifierBackend, VerifyProviderError,
+};
+// The per-algorithm markers are part of the public custom-backend surface but
+// in-crate code reaches them via `verify_provider::` directly, so silence the
+// unused-import lint (same pattern as `RsaCertSigAlg` above).
+#[allow(unused_imports)]
+#[cfg(feature = "mldsa")]
+pub use verify_provider::MlDsa;
+#[allow(unused_imports)]
+#[cfg(feature = "rsa")]
+pub use verify_provider::Rsa;
+#[allow(unused_imports)]
+#[cfg(feature = "ecdsa")]
+pub use verify_provider::{EcdsaP256, EcdsaP384};
 pub use verify_strategy::ServerPubkey;

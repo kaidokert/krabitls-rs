@@ -84,7 +84,7 @@ where
     ) -> Result<Self, ConnectError<T::Error>>
     where
         R: rand_core::TryCryptoRng,
-        V: VerifyStrategy<C::Ed25519, C::Rsa>,
+        V: VerifyStrategy<C::Verifiers>,
         A: ClientAuthSign<R>,
     {
         validate_construction::<_, _, RECV, SEND>(params)?;
@@ -425,7 +425,7 @@ fn drive_handshake<
 where
     T: Transport,
     C: ClientConfig,
-    V: VerifyStrategy<C::Ed25519, C::Rsa>,
+    V: VerifyStrategy<C::Verifiers>,
     A: ClientAuthSign<R>,
     R: rand_core::TryCryptoRng + ?Sized,
 {

@@ -6,7 +6,7 @@ use sha2::Sha256;
 use zeroize::Zeroizing;
 
 use crate::bigint::Curve25519VerifyBn as Bn;
-use crate::traits::ed25519_verify::Ed25519VerifierProvider;
+use crate::traits::verify_provider::{Ed25519, SigVerifierProvider, VerifyProviderError};
 use crate::traits::{HkdfExpandError, HkdfSha256};
 use signature::Verifier;
 use subtle::ConstantTimeEq;
@@ -46,6 +46,19 @@ pub struct PreparedEd25519 {
     field: Option<ed25519_heapless::Curve25519Field<Bn>>,
 }
 
+impl PreparedEd25519 {
+    // Outlined so the curve precompute stays one shared symbol across the leaf-
+    // prep and self-sig-verify call sites rather than duplicating when `prepare`
+    // inlines.
+    #[inline(never)]
+    fn build(pubkey: &[u8; 32]) -> Self {
+        PreparedEd25519 {
+            pubkey: *pubkey,
+            field: ed25519_heapless::Curve25519Field::<Bn>::curve25519().ok(),
+        }
+    }
+}
+
 impl Verifier<[u8; 64]> for PreparedEd25519 {
     fn verify(&self, msg: &[u8], signature: &[u8; 64]) -> Result<(), signature::Error> {
         let Some(field) = self.field.as_ref() else {
@@ -65,34 +78,57 @@ impl crate::traits::verify_strategy::VerifierKeyMaterial<[u8; 32]> for PreparedE
     }
 }
 
-impl crate::traits::RsaVerifierProvider for RustCrypto {
-    // `RsaVerifierKey` enums over modulus size and impls
-    // `signature::Verifier<RsaPssSig<'_>>` (always) plus
-    // `signature::Verifier<RsaPkcs1Sig<'_>>` (unless `rsa_pss_only`).
-    #[cfg(feature = "rsa")]
-    type Verifier = crate::backends::rsa_verify::RsaVerifierKey;
+// Despite the marker name, the Ed25519 verify wired here is `ed25519_heapless`
+// (not from the RustCrypto org). Bundled with the default `RustCrypto` marker
+// because that's the "pick the defaults" ergonomic entry point — pairing
+// `TlsStream::connect` with the existing HKDF + AEAD impls.
+impl SigVerifierProvider<Ed25519> for RustCrypto {
+    type Verifier = PreparedEd25519;
 
-    #[cfg(feature = "rsa")]
-    fn prepare_rsa(
-        modulus: &[u8],
-        exponent: u32,
-    ) -> Result<Self::Verifier, crate::backends::rsa_verify::RsaVerifyError> {
-        crate::backends::rsa_verify::RsaVerifierKey::new(modulus, exponent)
+    #[inline]
+    fn prepare(pubkey: &[u8; 32]) -> Result<Self::Verifier, VerifyProviderError> {
+        Ok(PreparedEd25519::build(pubkey))
     }
 }
 
-impl Ed25519VerifierProvider for RustCrypto {
-    // Despite the marker name, the Ed25519 verify wired here is
-    // `ed25519_heapless` (not from the RustCrypto org). Bundled with the
-    // default `RustCrypto` marker because that's the "pick the defaults"
-    // ergonomic entry point — pairing `verify_server_flight::<RustCrypto,
-    // RustCrypto, DerCert>(...)` with the existing HKDF + AEAD impls.
-    type Verifier = PreparedEd25519;
+// `RsaVerifierKey` enums over modulus size and impls `Verifier<RsaSig>`,
+// dispatching PSS vs PKCS#1-v1.5 on the sig's carried scheme.
+#[cfg(feature = "rsa")]
+impl SigVerifierProvider<crate::traits::verify_provider::Rsa> for RustCrypto {
+    type Verifier = crate::backends::rsa_verify::RsaVerifierKey;
 
-    fn prepare_ed25519(pubkey: &[u8; 32]) -> Self::Verifier {
-        PreparedEd25519 {
-            pubkey: *pubkey,
-            field: ed25519_heapless::Curve25519Field::<Bn>::curve25519().ok(),
-        }
+    fn prepare(
+        pubkey: crate::traits::verify_strategy::RsaKeyMaterial<'_>,
+    ) -> Result<Self::Verifier, VerifyProviderError> {
+        crate::backends::rsa_verify::RsaVerifierKey::new(pubkey.modulus, pubkey.exponent)
+            .map_err(|_| VerifyProviderError)
+    }
+}
+
+#[cfg(feature = "ecdsa")]
+impl SigVerifierProvider<crate::traits::verify_provider::EcdsaP256> for RustCrypto {
+    type Verifier = crate::backends::ecdsa_verify::PreparedEcdsaP256;
+
+    fn prepare(pubkey: &[u8; 65]) -> Result<Self::Verifier, VerifyProviderError> {
+        Ok(crate::backends::ecdsa_verify::PreparedEcdsaP256(*pubkey))
+    }
+}
+
+#[cfg(feature = "ecdsa")]
+impl SigVerifierProvider<crate::traits::verify_provider::EcdsaP384> for RustCrypto {
+    type Verifier = crate::backends::ecdsa_verify::PreparedEcdsaP384;
+
+    fn prepare(pubkey: &[u8; 97]) -> Result<Self::Verifier, VerifyProviderError> {
+        Ok(crate::backends::ecdsa_verify::PreparedEcdsaP384(*pubkey))
+    }
+}
+
+#[cfg(feature = "mldsa")]
+impl SigVerifierProvider<crate::traits::verify_provider::MlDsa> for RustCrypto {
+    type Verifier = crate::backends::mldsa_verify::MlDsaVerifierKey;
+
+    fn prepare(pubkey: &[u8]) -> Result<Self::Verifier, VerifyProviderError> {
+        crate::backends::mldsa_verify::MlDsaVerifierKey::new(pubkey)
+            .map_err(|_| VerifyProviderError)
     }
 }

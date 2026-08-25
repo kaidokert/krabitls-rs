@@ -48,16 +48,18 @@ pub use crate::traits::{ClientAuth, ClientAuthError};
 // Strategy surface — what custom-verifier callers need to roll their own
 // trust-root decision (or instantiate the bundled `SafeStrategy`).
 pub use crate::backends::{PinOrSelfSigned, PinnedPubkeyOwned};
-// Provider traits are part of the strategy's generic bounds — custom
-// `VerifyStrategy<E, R>` impls have to name `Ed25519VerifierProvider` /
-// `RsaVerifierProvider` in their `where` clauses.
+// The backend trait is part of the strategy's generic bound — custom
+// `VerifyStrategy<P>` impls name `VerifierBackend` in their `where` clauses, and
+// custom backends impl `SigVerifierProvider<A>` per algorithm.
 #[cfg(feature = "cert-der")]
 pub use crate::traits::verify_strategy::Clocked;
 pub use crate::traits::verify_strategy::{
     CertChainView, NoClock, PreparedVerifier, SafeStrategy, SafeStrategyError, TrustRootDecision,
     Trusted, VerifierKeyMaterial, VerifyStrategy,
 };
-pub use crate::traits::{Ed25519VerifierProvider, RsaVerifierProvider};
+pub use crate::traits::{
+    Ed25519, SigAlgo, SigVerifierProvider, VerifierBackend, VerifyProviderError,
+};
 
 // In-crate-only: alternate config impls (samples, callers write their own),
 // the WriteAppError plumbing type, the InternalError variant the engine

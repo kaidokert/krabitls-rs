@@ -5,8 +5,10 @@
 //! Both are single-cert-chain only; rejects anything longer.
 
 use crate::traits::cert::CertView;
+#[cfg(feature = "rsa")]
+use crate::traits::verify_provider::Rsa;
+use crate::traits::verify_provider::{Ed25519, SigVerifierProvider, VerifierBackend};
 use crate::traits::verify_strategy::TrustRootDecision;
-use crate::traits::{Ed25519VerifierProvider, RsaVerifierProvider};
 #[cfg(feature = "ecdsa")]
 use sha2::{Digest, Sha256, Sha384};
 use signature::Verifier;
@@ -157,11 +159,7 @@ pub enum PinOrSelfSignedError {
     UnknownSigAlg,
 }
 
-impl<E, R> TrustRootDecision<E, R> for PinOrSelfSigned
-where
-    E: Ed25519VerifierProvider,
-    R: RsaVerifierProvider,
-{
+impl<P: VerifierBackend> TrustRootDecision<P> for PinOrSelfSigned {
     type Error = PinOrSelfSignedError;
 
     fn accept_chain<'src>(&self, chain: &[CertView<'src>]) -> Result<(), Self::Error> {
@@ -187,7 +185,7 @@ where
                 if chain.len() != 1 {
                     return Err(PinOrSelfSignedError::MultiCertChain);
                 }
-                verify_self_sig::<E, R>(leaf)?;
+                verify_self_sig::<P>(leaf)?;
             }
         }
 
@@ -257,15 +255,10 @@ fn verify_pin(leaf: &CertView<'_>, pin: &PinnedPubkeyOwned) -> Result<(), PinOrS
     }
 }
 
-fn verify_self_sig<E, R>(leaf: &CertView<'_>) -> Result<(), PinOrSelfSignedError>
+fn verify_self_sig<P>(leaf: &CertView<'_>) -> Result<(), PinOrSelfSignedError>
 where
-    E: Ed25519VerifierProvider,
-    R: RsaVerifierProvider,
+    P: VerifierBackend,
 {
-    // `R` is bound even without `feature = "rsa"` so callers can specify
-    // both backends in one go; mark it used so clippy's
-    // `extra_unused_type_parameters` doesn't fire under non-rsa builds.
-    let _ = core::marker::PhantomData::<R>;
     match leaf {
         CertView::Ed25519 {
             tbs,
@@ -273,7 +266,8 @@ where
             pubkey,
             ..
         } => {
-            let v = E::prepare_ed25519(pubkey);
+            let v = <P as SigVerifierProvider<Ed25519>>::prepare(pubkey)
+                .map_err(|_| PinOrSelfSignedError::SelfSignatureInvalid)?;
             v.verify(tbs, signature)
                 .map_err(|_| PinOrSelfSignedError::SelfSignatureInvalid)
         }
@@ -287,10 +281,21 @@ where
             ..
         } => {
             let alg = outer_sig_alg.ok_or(PinOrSelfSignedError::UnknownSigAlg)?;
-            let v = R::prepare_rsa(modulus, *exponent)
-                .map_err(|_| PinOrSelfSignedError::RsaVerifierInvalid)?;
-            crate::traits::rsa_verify::verify_cert_sig(&v, tbs, signature, alg)
-                .map_err(|_| PinOrSelfSignedError::SelfSignatureInvalid)
+            let v = <P as SigVerifierProvider<Rsa>>::prepare(
+                crate::traits::verify_strategy::RsaKeyMaterial {
+                    modulus,
+                    exponent: *exponent,
+                },
+            )
+            .map_err(|_| PinOrSelfSignedError::RsaVerifierInvalid)?;
+            v.verify(
+                tbs,
+                &crate::backends::rsa_verify::RsaSig {
+                    scheme: alg,
+                    bytes: signature,
+                },
+            )
+            .map_err(|_| PinOrSelfSignedError::SelfSignatureInvalid)
         }
         #[cfg(feature = "mldsa")]
         CertView::MlDsa {
@@ -366,9 +371,8 @@ mod tests {
         let strategy = PinOrSelfSigned::pinned(PinnedPubkeyOwned::ed25519(PK_A));
         let leaf = ed25519_view(&PK_A);
         let chain = [leaf];
-        let result = <PinOrSelfSigned as TrustRootDecision<RustCrypto, RustCrypto>>::accept_chain(
-            &strategy, &chain,
-        );
+        let result =
+            <PinOrSelfSigned as TrustRootDecision<RustCrypto>>::accept_chain(&strategy, &chain);
         assert!(result.is_ok());
     }
 
@@ -377,10 +381,9 @@ mod tests {
         let strategy = PinOrSelfSigned::pinned(PinnedPubkeyOwned::ed25519(PK_A));
         let leaf = ed25519_view(&PK_B);
         let chain = [leaf];
-        let err = <PinOrSelfSigned as TrustRootDecision<RustCrypto, RustCrypto>>::accept_chain(
-            &strategy, &chain,
-        )
-        .expect_err("must reject mismatched pin");
+        let err =
+            <PinOrSelfSigned as TrustRootDecision<RustCrypto>>::accept_chain(&strategy, &chain)
+                .expect_err("must reject mismatched pin");
         assert_eq!(err, PinOrSelfSignedError::PinMismatch);
     }
 
@@ -392,10 +395,9 @@ mod tests {
             let strategy = PinOrSelfSigned::pinned(pin);
             let leaf = ed25519_view(&PK_A);
             let chain = [leaf];
-            let err = <PinOrSelfSigned as TrustRootDecision<RustCrypto, RustCrypto>>::accept_chain(
-                &strategy, &chain,
-            )
-            .expect_err("must reject algorithm mismatch");
+            let err =
+                <PinOrSelfSigned as TrustRootDecision<RustCrypto>>::accept_chain(&strategy, &chain)
+                    .expect_err("must reject algorithm mismatch");
             assert_eq!(err, PinOrSelfSignedError::PinAlgorithmMismatch);
         }
     }
@@ -409,9 +411,8 @@ mod tests {
         let v1 = ed25519_view(&PK_A);
         let v2 = ed25519_view(&PK_B);
         let chain = [v1, v2];
-        let result = <PinOrSelfSigned as TrustRootDecision<RustCrypto, RustCrypto>>::accept_chain(
-            &strategy, &chain,
-        );
+        let result =
+            <PinOrSelfSigned as TrustRootDecision<RustCrypto>>::accept_chain(&strategy, &chain);
         assert!(result.is_ok());
     }
 
@@ -424,17 +425,14 @@ mod tests {
         let strategy = PinOrSelfSigned::pinned(PinnedPubkeyOwned::mldsa(&pk).unwrap());
         let leaf = mldsa_view(&pk, &[], &[]);
         assert!(
-            <PinOrSelfSigned as TrustRootDecision<RustCrypto, RustCrypto>>::accept_chain(
-                &strategy,
-                &[leaf],
-            )
-            .is_ok()
+            <PinOrSelfSigned as TrustRootDecision<RustCrypto>>::accept_chain(&strategy, &[leaf],)
+                .is_ok()
         );
 
         let (other, _) = ml_dsa_44::keygen_from_seed(&KeyGenSeed([4; 32])).unwrap();
         let mismatch = mldsa_view(&other, &[], &[]);
         assert_eq!(
-            <PinOrSelfSigned as TrustRootDecision<RustCrypto, RustCrypto>>::accept_chain(
+            <PinOrSelfSigned as TrustRootDecision<RustCrypto>>::accept_chain(
                 &strategy,
                 &[mismatch],
             )
@@ -455,16 +453,13 @@ mod tests {
 
         let leaf = mldsa_view(&pk, &sig, tbs);
         assert!(
-            <PinOrSelfSigned as TrustRootDecision<RustCrypto, RustCrypto>>::accept_chain(
-                &strategy,
-                &[leaf],
-            )
-            .is_ok()
+            <PinOrSelfSigned as TrustRootDecision<RustCrypto>>::accept_chain(&strategy, &[leaf],)
+                .is_ok()
         );
 
         let tampered = mldsa_view(&pk, &sig, b"different tbs");
         assert_eq!(
-            <PinOrSelfSigned as TrustRootDecision<RustCrypto, RustCrypto>>::accept_chain(
+            <PinOrSelfSigned as TrustRootDecision<RustCrypto>>::accept_chain(
                 &strategy,
                 &[tampered],
             )
@@ -480,10 +475,9 @@ mod tests {
         let v1 = ed25519_view(&PK_A);
         let v2 = ed25519_view(&PK_B);
         let chain = [v1, v2];
-        let err = <PinOrSelfSigned as TrustRootDecision<RustCrypto, RustCrypto>>::accept_chain(
-            &strategy, &chain,
-        )
-        .expect_err("self-signed must reject multi-cert");
+        let err =
+            <PinOrSelfSigned as TrustRootDecision<RustCrypto>>::accept_chain(&strategy, &chain)
+                .expect_err("self-signed must reject multi-cert");
         assert_eq!(err, PinOrSelfSignedError::MultiCertChain);
     }
 }

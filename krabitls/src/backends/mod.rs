@@ -66,6 +66,9 @@ pub use rsa_verify::RsaPkcs1Sig;
 #[allow(unused_imports)]
 #[cfg(feature = "rsa")]
 pub use rsa_verify::RsaPssSig;
+#[allow(unused_imports)]
+#[cfg(feature = "rsa")]
+pub use rsa_verify::RsaSig;
 #[cfg(feature = "rsa")]
 pub use rsa_verify::{RsaVerifierKey, RsaVerifyError};
 pub use rustcrypto::RustCrypto;

@@ -52,14 +52,13 @@ impl<T: DatagramTransport> DtlsStream<T> {
         reasm_buf: &mut [u8],
     ) -> Result<Self, DtlsClientError<T::Error>>
     where
-        V: VerifyStrategy<RustCrypto, RustCrypto>,
+        V: VerifyStrategy<RustCrypto>,
         Rng: rand_core::TryCryptoRng + ?Sized,
     {
         let client = DtlsClient::<FacadeSuite>::connect::<
             T,
             RustCrypto,
             V,
-            RustCrypto,
             RustCrypto,
             Rng,
             DerCert,

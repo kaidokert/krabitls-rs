@@ -1,9 +1,11 @@
 //! Parse and verify the encrypted TLS 1.3 server flight.
 
+#[cfg(feature = "ecdsa")]
+use crate::backends::ecdsa_verify::EcdsaDerSig;
 #[cfg(feature = "mldsa")]
-use crate::backends::mldsa_verify::{MlDsaSig, MlDsaVerifierKey};
+use crate::backends::mldsa_verify::MlDsaSig;
 #[cfg(feature = "rsa")]
-use crate::backends::rsa_verify::RsaPssSig;
+use crate::backends::rsa_verify::RsaSig;
 use crate::consts::SIG_SCHEME_ED25519;
 #[cfg(feature = "rsa")]
 use crate::consts::SIG_SCHEME_RSA_PSS_RSAE_SHA256;
@@ -18,11 +20,9 @@ use crate::consts::{SIG_SCHEME_MLDSA44, SIG_SCHEME_MLDSA65, SIG_SCHEME_MLDSA87};
 use crate::hkdf::{HkdfLabelError, TranscriptHash, hkdf_expand_label};
 use crate::newtype::{Secret, TranscriptDigest, ZeroBuf};
 use crate::traits::verify_strategy::PreparedVerifier;
-use crate::traits::{
-    CertParseError, CertView, Ed25519VerifierProvider, HkdfSha256, RsaVerifierProvider,
-};
-#[cfg(feature = "ecdsa")]
-use sha2::{Digest, Sha256, Sha384};
+use crate::traits::{CertParseError, CertView, HkdfSha256, VerifierBackend};
+#[cfg(feature = "mldsa")]
+use krabipqc::{ml_dsa_44, ml_dsa_65, ml_dsa_87};
 use signature::Verifier as _;
 use subtle::ConstantTimeEq;
 
@@ -363,11 +363,8 @@ fn read_u24(b: &[u8]) -> u32 {
 /// matches the leaf's SPKI ([`PreparedVerifier::matches_cert`]), so the
 /// `(scheme, prepared)` pairing here suffices to bind the signature to
 /// the certified leaf.
-pub(crate) fn verify_certificate_verify_with_prepared<
-    E: Ed25519VerifierProvider,
-    R: RsaVerifierProvider,
->(
-    prepared: &PreparedVerifier<E, R>,
+pub(crate) fn verify_certificate_verify_with_prepared<P: VerifierBackend>(
+    prepared: &PreparedVerifier<P>,
     transcript_hash_ch_through_cert: &TranscriptDigest,
     cv_body: &[u8],
 ) -> Result<(), FlightError> {
@@ -390,7 +387,7 @@ pub(crate) fn verify_certificate_verify_with_prepared<
     signed.extend_from_slice(transcript_hash_ch_through_cert.as_bytes())?;
 
     match (scheme, prepared) {
-        (SIG_SCHEME_ED25519, PreparedVerifier::Ed25519(v, _)) => {
+        (SIG_SCHEME_ED25519, PreparedVerifier::Ed25519(v)) => {
             let Ok(signature) = <&[u8; 64]>::try_from(sig_bytes) else {
                 return Err(FlightError::WrongSignatureLength);
             };
@@ -399,31 +396,45 @@ pub(crate) fn verify_certificate_verify_with_prepared<
         }
         #[cfg(feature = "rsa")]
         (SIG_SCHEME_RSA_PSS_RSAE_SHA256, PreparedVerifier::Rsa(v)) => v
-            .verify(&signed, &RsaPssSig(sig_bytes))
+            .verify(
+                &signed,
+                &RsaSig {
+                    scheme: crate::traits::cert::RsaCertSigAlg::PssSha256,
+                    bytes: sig_bytes,
+                },
+            )
             .map_err(|_| FlightError::CertVerifyInvalid),
-        // Bind each scheme codepoint to its parameter set: a peer must not
-        // label the CertificateVerify with a different ML-DSA scheme than the
-        // leaf key's. A mismatch falls through to `UnexpectedSignatureScheme`.
+        // Bind each scheme codepoint to its parameter set: a peer must not label
+        // the CertificateVerify with a different ML-DSA scheme than the leaf key
+        // signs. The leaf key's genuine signature length reflects its parameter
+        // set, so a scheme whose expected length differs is rejected as an
+        // unexpected scheme before the verify.
         #[cfg(feature = "mldsa")]
-        (SIG_SCHEME_MLDSA44, PreparedVerifier::MlDsa(v @ MlDsaVerifierKey::MlDsa44(_)))
-        | (SIG_SCHEME_MLDSA65, PreparedVerifier::MlDsa(v @ MlDsaVerifierKey::MlDsa65(_)))
-        | (SIG_SCHEME_MLDSA87, PreparedVerifier::MlDsa(v @ MlDsaVerifierKey::MlDsa87(_))) => v
-            .verify(&signed, &MlDsaSig(sig_bytes))
+        (
+            SIG_SCHEME_MLDSA44 | SIG_SCHEME_MLDSA65 | SIG_SCHEME_MLDSA87,
+            PreparedVerifier::MlDsa(v),
+        ) => {
+            let expected = match scheme {
+                SIG_SCHEME_MLDSA44 => ml_dsa_44::SIG_BYTES,
+                SIG_SCHEME_MLDSA65 => ml_dsa_65::SIG_BYTES,
+                _ => ml_dsa_87::SIG_BYTES,
+            };
+            if sig_bytes.len() != expected {
+                return Err(FlightError::UnexpectedSignatureScheme(scheme));
+            }
+            v.verify(&signed, &MlDsaSig(sig_bytes))
+                .map_err(|_| FlightError::CertVerifyInvalid)
+        }
+        // ECDSA prehashes the signed content internally (SHA-256 for P-256,
+        // SHA-384 for P-384); `sig_bytes` is the DER `ECDSA-Sig-Value`.
+        #[cfg(feature = "ecdsa")]
+        (SIG_SCHEME_ECDSA_P256, PreparedVerifier::EcdsaP256(v)) => v
+            .verify(&signed, &EcdsaDerSig(sig_bytes))
             .map_err(|_| FlightError::CertVerifyInvalid),
-        // ECDSA signs H(signed_content): pass the digest, not the content.
-        // `sig_bytes` is the DER `ECDSA-Sig-Value` (decoded inside verify_p*).
         #[cfg(feature = "ecdsa")]
-        (SIG_SCHEME_ECDSA_P256, PreparedVerifier::EcdsaP256(pk)) => {
-            let digest = Sha256::digest(&signed);
-            crate::backends::ecdsa_verify::verify_p256(pk, &digest, sig_bytes)
-                .map_err(|_| FlightError::CertVerifyInvalid)
-        }
-        #[cfg(feature = "ecdsa")]
-        (SIG_SCHEME_ECDSA_P384, PreparedVerifier::EcdsaP384(pk)) => {
-            let digest = Sha384::digest(&signed);
-            crate::backends::ecdsa_verify::verify_p384(pk, &digest, sig_bytes)
-                .map_err(|_| FlightError::CertVerifyInvalid)
-        }
+        (SIG_SCHEME_ECDSA_P384, PreparedVerifier::EcdsaP384(v)) => v
+            .verify(&signed, &EcdsaDerSig(sig_bytes))
+            .map_err(|_| FlightError::CertVerifyInvalid),
         _ => Err(FlightError::UnexpectedSignatureScheme(scheme)),
     }
 }
@@ -475,17 +486,13 @@ pub(crate) struct ServerFlightVerified<'a> {
 // signature verify) in its own frame so it does not union into the handshake
 // driver's frame and inflate peak stack.
 #[inline(never)]
-pub(crate) fn verify_server_flight<'a, H: HkdfSha256, E, R>(
+pub(crate) fn verify_server_flight<'a, H: HkdfSha256, P: VerifierBackend>(
     transcript: &mut TranscriptHash<H>,
     plaintext: &'a [u8],
     s_hs_traffic_secret: &Secret,
-    prepared: &PreparedVerifier<E, R>,
+    prepared: &PreparedVerifier<P>,
     leaf_view: &CertView<'a>,
-) -> Result<ServerFlightVerified<'a>, FlightError>
-where
-    E: Ed25519VerifierProvider,
-    R: RsaVerifierProvider,
-{
+) -> Result<ServerFlightVerified<'a>, FlightError> {
     let flight = parse_server_flight(plaintext)?;
 
     transcript.update(flight.ee_full);
@@ -494,7 +501,7 @@ where
     }
     transcript.update(flight.cert_full);
     let th_after_cert = transcript.snapshot();
-    verify_certificate_verify_with_prepared::<E, R>(prepared, &th_after_cert, flight.cv_body)?;
+    verify_certificate_verify_with_prepared::<P>(prepared, &th_after_cert, flight.cv_body)?;
 
     transcript.update(flight.cv_full);
     let th_after_cv = transcript.snapshot();
@@ -745,209 +752,34 @@ pub(crate) mod tests {
         chain.first().copied().ok_or(FlightError::Truncated)
     }
 
-    /// Parse + verify a self-signed cert in one shot. Test-only helper.
+    /// Parse + verify a self-signed cert in one shot. Test-only helper: a
+    /// self-signed cert is its own issuer, so the outer-signature check reuses
+    /// [`verify_link`] against the leaf itself.
     #[cfg(feature = "cipher-aes")]
-    pub(crate) fn verify_self_signed_cert<
-        C: CertParser,
-        E: Ed25519VerifierProvider,
-        R: RsaVerifierProvider,
-    >(
+    pub(crate) fn verify_self_signed_cert<C: CertParser, P: VerifierBackend>(
         cert_der: &[u8],
     ) -> Result<CertView<'_>, FlightError> {
         let view = C::parse(cert_der)?;
-        let ed25519_v = match &view {
-            CertView::Ed25519 { pubkey, .. } => Some(E::prepare_ed25519(pubkey)),
-            #[cfg(feature = "rsa")]
-            CertView::Rsa { .. } => None,
-            #[cfg(feature = "mldsa")]
-            CertView::MlDsa { .. } => None,
-            #[cfg(feature = "ecdsa")]
-            CertView::EcdsaP256 { .. } | CertView::EcdsaP384 { .. } => None,
-        };
-        #[cfg(feature = "rsa")]
-        let rsa_v = match &view {
-            CertView::Rsa {
-                modulus, exponent, ..
-            } => Some(
-                R::prepare_rsa(modulus, *exponent)
-                    .map_err(|_| FlightError::CertSelfSignatureInvalid)?,
-            ),
-            _ => None,
-        };
-        verify_self_signed_cert_with_cache::<E, R>(
-            &view,
-            ed25519_v.as_ref(),
-            #[cfg(feature = "rsa")]
-            rsa_v.as_ref(),
-        )?;
+        crate::traits::verify_strategy::verify_link::<P>(&view, &view)
+            .map_err(|_| FlightError::CertSelfSignatureInvalid)?;
         Ok(view)
     }
 
-    /// Verify the cert's outer self-signature against its own pubkey.
-    /// Test-only — production uses
-    /// [`crate::backends::PinOrSelfSigned`] via the strategy.
-    #[cfg(feature = "cipher-aes")]
-    pub(crate) fn verify_self_signed_cert_with_cache<
-        E: Ed25519VerifierProvider,
-        R: RsaVerifierProvider,
-    >(
-        view: &CertView<'_>,
-        ed25519_v: Option<&E::Verifier>,
-        #[cfg(feature = "rsa")] rsa_v: Option<&R::Verifier>,
-    ) -> Result<(), FlightError> {
-        // `R` is bound even without `feature = "rsa"` so callers can specify a
-        // backend choice once at the typestate boundary. The bound is satisfiable
-        // trivially since the trait is empty in that configuration.
-        let _ = core::marker::PhantomData::<R>;
-        match view {
-            CertView::Ed25519 { tbs, signature, .. } => {
-                let v = ed25519_v.ok_or(FlightError::CertSelfSignatureInvalid)?;
-                v.verify(tbs, signature)
-                    .map_err(|_| FlightError::CertSelfSignatureInvalid)?;
-            }
-            #[cfg(feature = "rsa")]
-            CertView::Rsa {
-                tbs,
-                signature,
-                outer_sig_alg,
-                ..
-            } => {
-                // `outer_sig_alg = None` means the cert's outer signatureAlgorithm
-                // isn't one we know how to verify (e.g. RSA leaf signed by an
-                // ECDSA issuer). Self-sig verify can't proceed.
-                let alg = outer_sig_alg.ok_or(FlightError::CertSelfSignatureInvalid)?;
-                let v = rsa_v.ok_or(FlightError::CertSelfSignatureInvalid)?;
-                crate::traits::rsa_verify::verify_cert_sig(v, tbs, signature, alg)
-                    .map_err(|_| FlightError::CertSelfSignatureInvalid)?;
-            }
-            #[cfg(feature = "mldsa")]
-            CertView::MlDsa {
-                tbs,
-                signature,
-                pubkey,
-                ..
-            } => {
-                let v = crate::backends::mldsa_verify::MlDsaVerifierKey::new(pubkey)
-                    .map_err(|_| FlightError::CertSelfSignatureInvalid)?;
-                v.verify(tbs, &crate::backends::mldsa_verify::MlDsaSig(signature))
-                    .map_err(|_| FlightError::CertSelfSignatureInvalid)?;
-            }
-            #[cfg(feature = "ecdsa")]
-            CertView::EcdsaP256 {
-                tbs,
-                signature,
-                pubkey,
-                ..
-            } => {
-                let digest = Sha256::digest(tbs);
-                crate::backends::ecdsa_verify::verify_p256(pubkey, &digest, signature)
-                    .map_err(|_| FlightError::CertSelfSignatureInvalid)?;
-            }
-            #[cfg(feature = "ecdsa")]
-            CertView::EcdsaP384 {
-                tbs,
-                signature,
-                pubkey,
-                ..
-            } => {
-                let digest = Sha384::digest(tbs);
-                crate::backends::ecdsa_verify::verify_p384(pubkey, &digest, signature)
-                    .map_err(|_| FlightError::CertSelfSignatureInvalid)?;
-            }
-        }
-        Ok(())
-    }
-
-    /// Verify a `CertificateVerify` body against the transcript hash and public key.
-    /// Non-cached CertificateVerify wrapper. Test-only.
-    pub(crate) fn verify_certificate_verify<E: Ed25519VerifierProvider, R: RsaVerifierProvider>(
+    /// Verify a `CertificateVerify` body against a cert's SPKI. Test-only wrapper
+    /// that prepares the leaf verifier then defers to
+    /// [`verify_certificate_verify_with_prepared`].
+    pub(crate) fn verify_certificate_verify<P: VerifierBackend>(
         cert_view: &CertView<'_>,
         transcript_hash_ch_through_cert: &TranscriptDigest,
         cv_body: &[u8],
     ) -> Result<(), FlightError> {
-        let ed25519_v = match cert_view {
-            CertView::Ed25519 { pubkey, .. } => Some(E::prepare_ed25519(pubkey)),
-            #[cfg(feature = "rsa")]
-            CertView::Rsa { .. } => None,
-            #[cfg(feature = "mldsa")]
-            CertView::MlDsa { .. } => None,
-            #[cfg(feature = "ecdsa")]
-            CertView::EcdsaP256 { .. } | CertView::EcdsaP384 { .. } => None,
-        };
-        #[cfg(feature = "rsa")]
-        let rsa_v = match cert_view {
-            CertView::Rsa {
-                modulus, exponent, ..
-            } => Some(
-                R::prepare_rsa(modulus, *exponent).map_err(|_| FlightError::CertVerifyInvalid)?,
-            ),
-            _ => None,
-        };
-        verify_certificate_verify_with_cache::<E, R>(
-            cert_view,
+        let prepared = crate::traits::verify_strategy::prepare_leaf::<P>(cert_view)
+            .map_err(|_| FlightError::CertVerifyInvalid)?;
+        verify_certificate_verify_with_prepared::<P>(
+            &prepared,
             transcript_hash_ch_through_cert,
             cv_body,
-            ed25519_v.as_ref(),
-            #[cfg(feature = "rsa")]
-            rsa_v.as_ref(),
         )
-    }
-
-    /// Test-only — production uses [`verify_certificate_verify_with_prepared`]
-    /// against a strategy-supplied prepared verifier.
-    pub(crate) fn verify_certificate_verify_with_cache<
-        E: Ed25519VerifierProvider,
-        R: RsaVerifierProvider,
-    >(
-        cert_view: &CertView<'_>,
-        transcript_hash_ch_through_cert: &TranscriptDigest,
-        cv_body: &[u8],
-        ed25519_v: Option<&E::Verifier>,
-        #[cfg(feature = "rsa")] rsa_v: Option<&R::Verifier>,
-    ) -> Result<(), FlightError> {
-        let _ = core::marker::PhantomData::<R>;
-        if cv_body.len() < 4 {
-            return Err(FlightError::Truncated);
-        }
-        let scheme = u16::from_be_bytes([cv_body[0], cv_body[1]]);
-        let sig_len = u16::from_be_bytes([cv_body[2], cv_body[3]]) as usize;
-        if cv_body.len() - 4 != sig_len {
-            return Err(FlightError::TrailingBytes);
-        }
-        let sig_bytes = &cv_body[4..];
-
-        // Domain separation for TLS 1.3 CertificateVerify.
-        const CTX: &[u8] = b"TLS 1.3, server CertificateVerify";
-        const SIGNED_LEN: usize = 64 + CTX.len() + 1 + 32;
-        let mut signed: heapless::Vec<u8, SIGNED_LEN> = heapless::Vec::new();
-        signed.extend_from_slice(&[0x20u8; 64])?;
-        signed.extend_from_slice(CTX)?;
-        signed.extend_from_slice(&[0u8])?;
-        signed.extend_from_slice(transcript_hash_ch_through_cert.as_bytes())?;
-
-        match (scheme, cert_view) {
-            (SIG_SCHEME_ED25519, CertView::Ed25519 { .. }) => {
-                let Ok(signature) = <&[u8; 64]>::try_from(sig_bytes) else {
-                    return Err(FlightError::WrongSignatureLength);
-                };
-                let v = ed25519_v.ok_or(FlightError::CertVerifyInvalid)?;
-                v.verify(&signed, signature)
-                    .map_err(|_| FlightError::CertVerifyInvalid)?;
-                Ok(())
-            }
-            #[cfg(feature = "rsa")]
-            (SIG_SCHEME_RSA_PSS_RSAE_SHA256, CertView::Rsa { modulus, .. }) => {
-                // PSS signature length equals the RSA modulus length.
-                if sig_len != modulus.len() {
-                    return Err(FlightError::WrongSignatureLength);
-                }
-                let v = rsa_v.ok_or(FlightError::CertVerifyInvalid)?;
-                v.verify(&signed, &RsaPssSig(sig_bytes))
-                    .map_err(|_| FlightError::CertVerifyInvalid)?;
-                Ok(())
-            }
-            _ => Err(FlightError::UnexpectedSignatureScheme(scheme)),
-        }
     }
 
     #[cfg(feature = "mldsa")]
@@ -993,19 +825,17 @@ pub(crate) mod tests {
                         krabipqc::$facade::sign(&sk, &signed, &[], &SigningRandomness([9; 32]))
                             .unwrap();
 
-                    let prepared: PreparedVerifier<RustCrypto, RustCrypto> =
+                    let prepared: PreparedVerifier<RustCrypto> =
                         PreparedVerifier::MlDsa(MlDsaVerifierKey::new(&pk).unwrap());
 
                     let body = cv_body($scheme, &sig);
-                    verify_certificate_verify_with_prepared::<RustCrypto, RustCrypto>(
-                        &prepared, &td, &body,
-                    )
-                    .expect("ML-DSA CertificateVerify verifies");
+                    verify_certificate_verify_with_prepared::<RustCrypto>(&prepared, &td, &body)
+                        .expect("ML-DSA CertificateVerify verifies");
 
                     let mut tampered = body.clone();
                     *tampered.last_mut().unwrap() ^= 0xFF;
                     assert!(matches!(
-                        verify_certificate_verify_with_prepared::<RustCrypto, RustCrypto>(
+                        verify_certificate_verify_with_prepared::<RustCrypto>(
                             &prepared, &td, &tampered
                         ),
                         Err(FlightError::CertVerifyInvalid)
@@ -1013,7 +843,7 @@ pub(crate) mod tests {
 
                     let wrong_scheme = cv_body(SIG_SCHEME_ED25519, &sig);
                     assert!(matches!(
-                        verify_certificate_verify_with_prepared::<RustCrypto, RustCrypto>(
+                        verify_certificate_verify_with_prepared::<RustCrypto>(
                             &prepared,
                             &td,
                             &wrong_scheme
@@ -1040,16 +870,12 @@ pub(crate) mod tests {
             let sig =
                 krabipqc::ml_dsa_44::sign(&sk, &signed, &[], &SigningRandomness([9; 32])).unwrap();
 
-            let prepared: PreparedVerifier<RustCrypto, RustCrypto> =
+            let prepared: PreparedVerifier<RustCrypto> =
                 PreparedVerifier::MlDsa(MlDsaVerifierKey::new(&pk).unwrap());
 
             let mislabelled = cv_body(SIG_SCHEME_MLDSA87, &sig);
             assert!(matches!(
-                verify_certificate_verify_with_prepared::<RustCrypto, RustCrypto>(
-                    &prepared,
-                    &td,
-                    &mislabelled
-                ),
+                verify_certificate_verify_with_prepared::<RustCrypto>(&prepared, &td, &mislabelled),
                 Err(FlightError::UnexpectedSignatureScheme(_))
             ));
         }

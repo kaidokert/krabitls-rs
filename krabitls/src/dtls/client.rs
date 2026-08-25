@@ -44,7 +44,7 @@ use crate::server_flight::{
     extract_chain, parse_server_flight, verify_certificate_verify_with_prepared,
 };
 use crate::traits::verify_strategy::{CertChainView, PreparedVerifier, VerifyStrategy};
-use crate::traits::{CertParser, Ed25519VerifierProvider, HkdfSha256, RsaVerifierProvider};
+use crate::traits::{CertParser, HkdfSha256, VerifierBackend};
 use subtle::ConstantTimeEq;
 
 /// The two DTLS 1.3 epochs this driver produces after the handshake plus the
@@ -172,7 +172,7 @@ impl<S: DtlsSuite> DtlsClient<S> {
     /// must be large enough for the whole flight (a few KiB for a typical
     /// certificate chain).
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn connect<T, H, V, E, R, Rng, P, const MAX_CHAIN: usize>(
+    pub(crate) fn connect<T, H, V, B, Rng, P, const MAX_CHAIN: usize>(
         transport: &mut T,
         strategy: &V,
         hostname: Option<&str>,
@@ -185,9 +185,8 @@ impl<S: DtlsSuite> DtlsClient<S> {
     where
         T: DatagramTransport,
         H: HkdfSha256,
-        V: VerifyStrategy<E, R>,
-        E: Ed25519VerifierProvider,
-        R: RsaVerifierProvider,
+        V: VerifyStrategy<B>,
+        B: VerifierBackend,
         Rng: rand_core::TryCryptoRng + ?Sized,
         P: CertParser,
     {
@@ -436,7 +435,7 @@ impl<S: DtlsSuite> DtlsClient<S> {
             .map_err(|_| DtlsClientError::Handshake)?;
         let chain = extract_chain::<MAX_CHAIN>(flight_view.cert_body)
             .map_err(|_| DtlsClientError::Protocol)?;
-        let mut slot: Option<PreparedVerifier<E, R>> = None;
+        let mut slot: Option<PreparedVerifier<B>> = None;
         let trusted = strategy
             .verify_chain(CertChainView { certs: &chain }, &mut slot)
             .map_err(|_| DtlsClientError::StrategyRejected)?;
@@ -455,7 +454,7 @@ impl<S: DtlsSuite> DtlsClient<S> {
         }
         transcript.update(flight_view.cert_full);
         let th_after_cert = transcript.snapshot();
-        verify_certificate_verify_with_prepared::<E, R>(
+        verify_certificate_verify_with_prepared::<B>(
             trusted.prepared(),
             &th_after_cert,
             flight_view.cv_body,
@@ -928,26 +927,18 @@ mod tests {
 
         let mut flight_buf = [0u8; 4096];
         let mut reasm_buf = [0u8; 4096];
-        let mut client = DtlsClient::<Suite>::connect::<
-            _,
-            RustCrypto,
-            _,
-            RustCrypto,
-            RustCrypto,
-            _,
-            DerCert,
-            4,
-        >(
-            &mut transport,
-            &strategy,
-            None,
-            None,
-            &mut FixedRng(0x42),
-            &[0x77u8; 32],
-            &mut flight_buf,
-            &mut reasm_buf,
-        )
-        .expect("handshake completes");
+        let mut client =
+            DtlsClient::<Suite>::connect::<_, RustCrypto, _, RustCrypto, _, DerCert, 4>(
+                &mut transport,
+                &strategy,
+                None,
+                None,
+                &mut FixedRng(0x42),
+                &[0x77u8; 32],
+                &mut flight_buf,
+                &mut reasm_buf,
+            )
+            .expect("handshake completes");
 
         let mut out = [0u8; 128];
         client
@@ -989,7 +980,7 @@ mod tests {
 
         let mut flight_buf = [0u8; 4096];
         let mut reasm_buf = [0u8; 4096];
-        DtlsClient::<Suite>::connect::<_, RustCrypto, _, RustCrypto, RustCrypto, _, DerCert, 4>(
+        DtlsClient::<Suite>::connect::<_, RustCrypto, _, RustCrypto, _, DerCert, 4>(
             &mut transport,
             &strategy,
             None,
@@ -1031,26 +1022,18 @@ mod tests {
 
         let mut flight_buf = [0u8; 8192];
         let mut reasm_buf = [0u8; 8192];
-        let mut client = DtlsClient::<Suite>::connect::<
-            _,
-            RustCrypto,
-            _,
-            RustCrypto,
-            RustCrypto,
-            _,
-            DerCert,
-            4,
-        >(
-            &mut transport,
-            &strategy,
-            None,
-            Some(b"cl01"),
-            &mut FixedRng(0x42),
-            &[0x77u8; 32],
-            &mut flight_buf,
-            &mut reasm_buf,
-        )
-        .expect("handshake completes with a negotiated connection id");
+        let mut client =
+            DtlsClient::<Suite>::connect::<_, RustCrypto, _, RustCrypto, _, DerCert, 4>(
+                &mut transport,
+                &strategy,
+                None,
+                Some(b"cl01"),
+                &mut FixedRng(0x42),
+                &[0x77u8; 32],
+                &mut flight_buf,
+                &mut reasm_buf,
+            )
+            .expect("handshake completes with a negotiated connection id");
 
         // Epoch-3 app data now rides CID-tagged records in both directions.
         let mut out = [0u8; 128];
@@ -1097,26 +1080,18 @@ mod tests {
 
         let mut flight_buf = [0u8; 8192];
         let mut reasm_buf = [0u8; 8192];
-        let mut client = DtlsClient::<Suite>::connect::<
-            _,
-            RustCrypto,
-            _,
-            RustCrypto,
-            RustCrypto,
-            _,
-            DerCert,
-            4,
-        >(
-            &mut transport,
-            &strategy,
-            None,
-            None,
-            &mut FixedRng(0x42),
-            &[0x77u8; 32],
-            &mut flight_buf,
-            &mut reasm_buf,
-        )
-        .expect("handshake completes over a fragmented flight");
+        let mut client =
+            DtlsClient::<Suite>::connect::<_, RustCrypto, _, RustCrypto, _, DerCert, 4>(
+                &mut transport,
+                &strategy,
+                None,
+                None,
+                &mut FixedRng(0x42),
+                &[0x77u8; 32],
+                &mut flight_buf,
+                &mut reasm_buf,
+            )
+            .expect("handshake completes over a fragmented flight");
 
         let mut out = [0u8; 128];
         client
@@ -1178,16 +1153,7 @@ mod tests {
         let strategy = SafeStrategy::<_, DerCert>::new(PinOrSelfSigned::self_signed());
         let mut flight_buf = [0u8; 2048];
         let mut reasm_buf = [0u8; 2048];
-        let res = DtlsClient::<Suite>::connect::<
-            _,
-            RustCrypto,
-            _,
-            RustCrypto,
-            RustCrypto,
-            _,
-            DerCert,
-            4,
-        >(
+        let res = DtlsClient::<Suite>::connect::<_, RustCrypto, _, RustCrypto, _, DerCert, 4>(
             &mut transport,
             &strategy,
             None,
@@ -1547,26 +1513,18 @@ mod tests {
 
         let mut flight_buf = [0u8; 4096];
         let mut reasm_buf = [0u8; 4096];
-        let mut client = DtlsClient::<Suite>::connect::<
-            _,
-            RustCrypto,
-            _,
-            RustCrypto,
-            RustCrypto,
-            _,
-            DerCert,
-            4,
-        >(
-            &mut transport,
-            &strategy,
-            None,
-            None,
-            &mut FixedRng(0x42),
-            &[0x77u8; 32],
-            &mut flight_buf,
-            &mut reasm_buf,
-        )
-        .expect("handshake completes despite the dropped CH1");
+        let mut client =
+            DtlsClient::<Suite>::connect::<_, RustCrypto, _, RustCrypto, _, DerCert, 4>(
+                &mut transport,
+                &strategy,
+                None,
+                None,
+                &mut FixedRng(0x42),
+                &[0x77u8; 32],
+                &mut flight_buf,
+                &mut reasm_buf,
+            )
+            .expect("handshake completes despite the dropped CH1");
 
         let mut out = [0u8; 128];
         client
@@ -1623,7 +1581,7 @@ mod tests {
 
         let mut flight_buf = [0u8; 4096];
         let mut reasm_buf = [0u8; 4096];
-        DtlsClient::<Suite>::connect::<_, RustCrypto, _, RustCrypto, RustCrypto, _, DerCert, 4>(
+        DtlsClient::<Suite>::connect::<_, RustCrypto, _, RustCrypto, _, DerCert, 4>(
             &mut transport,
             &strategy,
             None,
