@@ -1,6 +1,6 @@
 [package]
 name = "krabitls"
-version = "0.6.0-alpha.3"
+version = "0.6.0-alpha.4"
 edition = "2024"
 rust-version = "1.87"
 readme = "../README.md"
