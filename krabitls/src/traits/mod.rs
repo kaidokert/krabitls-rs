@@ -23,7 +23,7 @@ pub mod time;
 pub mod verify_provider;
 pub mod verify_strategy;
 
-pub use aead::AeadError;
+pub use aead::{AeadBackend, AeadError};
 pub use cert::{CertParseError, CertParser, CertView};
 pub use client_auth::{ClientAuth, ClientAuthError};
 // Used internally by der_cert.rs (the cert-parser backend); nothing

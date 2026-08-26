@@ -58,7 +58,7 @@ pub use crate::traits::verify_strategy::{
     Trusted, VerifierKeyMaterial, VerifyStrategy,
 };
 pub use crate::traits::{
-    Ed25519, SigAlgo, SigVerifierProvider, VerifierBackend, VerifyProviderError,
+    AeadBackend, Ed25519, SigAlgo, SigVerifierProvider, VerifierBackend, VerifyProviderError,
 };
 // Per-algorithm markers: a downstream backend names these to
 // `impl SigVerifierProvider<Rsa>` / `<EcdsaP256>` / etc. for one primitive.

@@ -6,10 +6,6 @@ use core::marker::PhantomData;
 
 use embedded_io::Write;
 
-#[cfg(feature = "cipher-aes")]
-use crate::aead::Aes128GcmSha256;
-#[cfg(feature = "chacha20")]
-use crate::aead::ChaCha20Poly1305Sha256;
 use crate::aead::split_inner_plaintext;
 use crate::aead::{CipherSuite, RecordKeys};
 use crate::aead::{DecryptError, EncryptError};
@@ -35,7 +31,7 @@ use crate::server_flight::FlightError;
 use crate::server_flight::ServerPubkey;
 use crate::server_flight::verify_server_flight;
 use crate::traits::verify_strategy::PreparedVerifier;
-use crate::traits::{CertView, HkdfSha256, VerifierBackend};
+use crate::traits::{AeadBackend, CertView, HkdfSha256, VerifierBackend};
 use rand_core::TryCryptoRng;
 
 /// Internal scratch for the outgoing ClientHello before it's forwarded to the
@@ -513,19 +509,21 @@ where
 
 /// Pre-known suite? Use `assume_*` to skip the runtime match.
 #[allow(clippy::large_enum_variant)] // AES Aes128Gcm key schedule dominates
-pub enum NegotiatedSuite<H = RustCrypto>
+pub enum NegotiatedSuite<H = RustCrypto, AB = RustCrypto>
 where
     H: HkdfSha256,
+    AB: AeadBackend,
 {
     #[cfg(feature = "cipher-aes")]
-    Aes128Gcm(TlsConnection<WaitServerFlight<Aes128GcmSha256>, H>),
+    Aes128Gcm(TlsConnection<WaitServerFlight<AB::Aes>, H>),
     #[cfg(feature = "chacha20")]
-    ChaCha20Poly1305(TlsConnection<WaitServerFlight<ChaCha20Poly1305Sha256>, H>),
+    ChaCha20Poly1305(TlsConnection<WaitServerFlight<AB::ChaCha>, H>),
 }
 
-impl<H> NegotiatedSuite<H>
+impl<H, AB> NegotiatedSuite<H, AB>
 where
     H: HkdfSha256,
+    AB: AeadBackend,
 {
     // Test-only; production matches on `NegotiatedSuite`. Sole consumer is the
     // seed-0 AES fixture replay, which is gated off when extra
@@ -542,7 +540,7 @@ where
     ))]
     pub fn assume_aes_128_gcm(
         self,
-    ) -> Result<TlsConnection<WaitServerFlight<Aes128GcmSha256>, H>, ConnectionError> {
+    ) -> Result<TlsConnection<WaitServerFlight<AB::Aes>, H>, ConnectionError> {
         match self {
             Self::Aes128Gcm(c) => Ok(c),
             #[cfg(feature = "chacha20")]
@@ -558,10 +556,27 @@ impl<H> TlsConnection<WaitServerHello, H>
 where
     H: HkdfSha256,
 {
+    // Test-only default-backend form; production dispatch threads the config's
+    // backend via `read_server_hello_with_backend`.
+    #[cfg(test)]
     pub fn read_server_hello(
-        mut self,
+        self,
         sh_record: &[u8],
     ) -> Result<NegotiatedSuite<H>, ConnectionError> {
+        self.read_server_hello_with_backend::<RustCrypto>(sh_record)
+    }
+
+    /// Process `ServerHello` binding each negotiated suite to backend `AB`'s
+    /// cipher. The [`ClientConfig`](crate::client::ClientConfig)-threaded entry
+    /// point; [`read_server_hello`](Self::read_server_hello) is the
+    /// default-backend convenience.
+    pub fn read_server_hello_with_backend<AB>(
+        mut self,
+        sh_record: &[u8],
+    ) -> Result<NegotiatedSuite<H, AB>, ConnectionError>
+    where
+        AB: AeadBackend,
+    {
         let sh = parse_server_hello(sh_record)?;
         // RFC 8446 §4.1.3: the server MUST echo our `legacy_session_id`
         // verbatim (the empty string when we sent none). A mismatch means the
@@ -686,7 +701,7 @@ where
         match sh.cipher_suite {
             #[cfg(feature = "cipher-aes")]
             CIPHER_AES_128_GCM_SHA256 => {
-                let s_hs_keys = RecordKeys::<Aes128GcmSha256>::derive::<H>(&s_hs_ts)?;
+                let s_hs_keys = RecordKeys::<AB::Aes>::derive::<H>(&s_hs_ts)?;
                 Ok(NegotiatedSuite::Aes128Gcm(TlsConnection {
                     transcript: self.transcript,
                     state: WaitServerFlight {
@@ -701,7 +716,7 @@ where
             }
             #[cfg(feature = "chacha20")]
             CIPHER_CHACHA20_POLY1305_SHA256 => {
-                let s_hs_keys = RecordKeys::<ChaCha20Poly1305Sha256>::derive::<H>(&s_hs_ts)?;
+                let s_hs_keys = RecordKeys::<AB::ChaCha>::derive::<H>(&s_hs_ts)?;
                 Ok(NegotiatedSuite::ChaCha20Poly1305(TlsConnection {
                     transcript: self.transcript,
                     state: WaitServerFlight {

@@ -13,6 +13,13 @@ use subtle::ConstantTimeEq;
 
 pub struct RustCrypto;
 
+impl crate::traits::AeadBackend for RustCrypto {
+    #[cfg(feature = "cipher-aes")]
+    type Aes = crate::aead::Aes128GcmSha256;
+    #[cfg(feature = "chacha20")]
+    type ChaCha = crate::aead::ChaCha20Poly1305Sha256;
+}
+
 impl HkdfSha256 for RustCrypto {
     type Hasher = Sha256;
 
