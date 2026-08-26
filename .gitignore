@@ -5,3 +5,4 @@ notes/
 target/
 repro/
 footprint/handshakes/Cargo.lock
+krabitls_backend_probe/Cargo.lock

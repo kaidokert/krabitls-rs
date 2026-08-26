@@ -30,7 +30,7 @@ dtls = ["krabitls/dtls", "host", "dep:coap-lite"]
 
 [dependencies]
 # Lib deps — no_std, buildable for a bare target.
-krabitls = { version = "0.6.0-alpha.4", path = "../krabitls", features = ["ip-host"] }
+krabitls = { version = "0.6.0-alpha.5", path = "../krabitls", features = ["ip-host"] }
 embedded-nal = "0.9"
 embedded-io = "0.7"
 nb = "1"

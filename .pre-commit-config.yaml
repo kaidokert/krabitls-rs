@@ -32,6 +32,9 @@ repos:
     -   id: fmt
         name: Fmt for footprint risc-v
         args: ['--manifest-path=footprint/risc-v/Cargo.toml', '--']
+    -   id: fmt
+        name: Fmt for krabitls_backend_probe
+        args: ['--manifest-path=krabitls_backend_probe/Cargo.toml', '--']
 
 # Local hooks: fmt + clippy + the unit-test suite. `--lib` runs the ~220 lib
 # unit tests (fast, one binary) but skips the `tests/*.rs` integration binaries
@@ -60,3 +63,13 @@ repos:
         language: system
         pass_filenames: false
         files: ^(krabitls_fixtures|krabitls)/.*\.(rs|toml)$
+    # External-consumer guard: compiles a custom backend against krabitls's
+    # PUBLIC api only. In-crate code uses `crate::` paths, so this is the sole
+    # check that a `pub use` removal breaks a downstream integrator. Runs on any
+    # krabitls change, not just the probe's.
+    -   id: krabitls-backend-probe
+        name: clippy krabitls_backend_probe (public-surface guard)
+        entry: cargo clippy --manifest-path=krabitls_backend_probe/Cargo.toml --all-targets -- -D warnings
+        language: system
+        pass_filenames: false
+        files: ^(krabitls|krabitls_backend_probe)/.*\.(rs|toml)$

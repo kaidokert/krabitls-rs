@@ -80,6 +80,19 @@ pub use crate::backends::RsaSig;
 #[cfg(feature = "rsa")]
 pub use crate::traits::RsaCertSigAlg;
 
+// Backend-author surface: types a downstream custom `ClientConfig` names to
+// implement or delegate a backend — the HKDF trait + its error, the client-auth
+// signature type + cap, the cert-parser trait, and the concrete AEAD suite
+// markers a custom `AeadBackend` substitutes a cipher into. The bundled
+// `RustCrypto` / `DerCert` defaults live in `krabitls::backends`.
+#[cfg(feature = "cipher-aes")]
+pub use crate::aead::Aes128GcmSha256;
+#[cfg(feature = "chacha20")]
+pub use crate::aead::ChaCha20Poly1305Sha256;
+pub use crate::aead::CipherSuite;
+pub use crate::traits::client_auth::{ClientSignature, MAX_CLIENT_SIG_LEN};
+pub use crate::traits::{CertParser, HkdfExpandError, HkdfSha256};
+
 // In-crate-only: alternate config impls (samples, callers write their own),
 // the WriteAppError plumbing type, the InternalError variant the engine
 // surfaces upstream, the scratch-tuning knobs, and the in-progress
