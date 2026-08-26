@@ -99,7 +99,7 @@ impl<P: VerifierBackend> PreparedVerifier<P> {
     /// Cross-check this prepared verifier matches `view`'s pubkey. The stack
     /// runs this after the strategy returns — a lying strategy can't sneak in
     /// a verifier built from non-chain bytes. Algorithm mismatch (rsa / mldsa
-    /// builds) returns `Choice::from(0)`. Under
+    /// / ecdsa builds) returns `Choice::from(0)`. Under
     /// `not(any(feature = "rsa", feature = "mldsa", feature = "ecdsa"))` the
     /// leaf match is exhaustive (Ed25519 only), so no catch-all is needed.
     pub fn matches_cert(&self, view: &CertView<'_>) -> subtle::Choice {

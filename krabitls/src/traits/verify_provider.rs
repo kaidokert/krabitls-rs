@@ -72,8 +72,7 @@ impl SigAlgo for MlDsa {
 }
 
 // Per-feature gating lives in these empty helper traits so [`VerifierBackend`]'s
-// supertrait list stays cfg-free: each is `: SigVerifierProvider<Algo>` when the
-// feature is on and empty otherwise, with a blanket impl either way.
+// supertrait list stays cfg-free.
 #[cfg(feature = "rsa")]
 pub trait MaybeRsaBackend: SigVerifierProvider<Rsa> {}
 #[cfg(feature = "rsa")]

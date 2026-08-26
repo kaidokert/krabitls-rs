@@ -33,7 +33,7 @@ impl HkdfSha256 for RustCrypto {
 }
 
 /// `Ed25519` verifying key with the curve precompute bundled in. Construct
-/// once per cert via [`RustCrypto::prepare_ed25519`]; subsequent
+/// once per cert via [`SigVerifierProvider::prepare`]; subsequent
 /// `signature::Verifier::verify` calls reuse the precompute (~100-150 k cycles
 /// on M3 to build, amortized across the 2 verifies per TLS handshake).
 pub struct PreparedEd25519 {
@@ -91,8 +91,7 @@ impl SigVerifierProvider<Ed25519> for RustCrypto {
     }
 }
 
-// `RsaVerifierKey` enums over modulus size and impls `Verifier<RsaSig>`,
-// dispatching PSS vs PKCS#1-v1.5 on the sig's carried scheme.
+// PSS vs PKCS#1-v1.5 is chosen from the sig's carried scheme, not the key.
 #[cfg(feature = "rsa")]
 impl SigVerifierProvider<crate::traits::verify_provider::Rsa> for RustCrypto {
     type Verifier = crate::backends::rsa_verify::RsaVerifierKey;

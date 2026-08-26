@@ -406,9 +406,7 @@ pub(crate) fn verify_certificate_verify_with_prepared<P: VerifierBackend>(
             .map_err(|_| FlightError::CertVerifyInvalid),
         // Bind each scheme codepoint to its parameter set: a peer must not label
         // the CertificateVerify with a different ML-DSA scheme than the leaf key
-        // signs. The leaf key's genuine signature length reflects its parameter
-        // set, so a scheme whose expected length differs is rejected as an
-        // unexpected scheme before the verify.
+        // signs.
         #[cfg(feature = "mldsa")]
         (
             SIG_SCHEME_MLDSA44 | SIG_SCHEME_MLDSA65 | SIG_SCHEME_MLDSA87,
