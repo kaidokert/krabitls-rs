@@ -382,17 +382,25 @@ fn client_hello_advertises_mldsa_schemes() {
     let n = write_client_hello_with(&mut cursor, &random, &x25519, &opts).unwrap();
     let ch = &buf[..n];
 
-    // The exact `supported_signature_algorithms` list in RFC 8446 order:
-    // ed25519, rsa_pss when enabled, then mldsa44/65/87.
-    #[cfg(feature = "rsa")]
+    // The exact `supported_signature_algorithms` list in writer order:
+    // ed25519, ecdsa_p256/p384 when enabled, rsa_pss when enabled, mldsa44/65/87.
+    #[cfg(all(feature = "ecdsa", feature = "rsa"))]
+    const SCHEMES: &[u8] = &[
+        0x08, 0x07, 0x04, 0x03, 0x05, 0x03, 0x08, 0x04, 0x09, 0x04, 0x09, 0x05, 0x09, 0x06,
+    ];
+    #[cfg(all(feature = "ecdsa", not(feature = "rsa")))]
+    const SCHEMES: &[u8] = &[
+        0x08, 0x07, 0x04, 0x03, 0x05, 0x03, 0x09, 0x04, 0x09, 0x05, 0x09, 0x06,
+    ];
+    #[cfg(all(not(feature = "ecdsa"), feature = "rsa"))]
     const SCHEMES: &[u8] = &[0x08, 0x07, 0x08, 0x04, 0x09, 0x04, 0x09, 0x05, 0x09, 0x06];
-    #[cfg(not(feature = "rsa"))]
+    #[cfg(all(not(feature = "ecdsa"), not(feature = "rsa")))]
     const SCHEMES: &[u8] = &[0x08, 0x07, 0x09, 0x04, 0x09, 0x05, 0x09, 0x06];
     assert_eq!(SCHEMES.len(), 2 * SIG_SCHEME_COUNT as usize);
 
     // Match the list together with its 2-byte length prefix, so the assertion
     // pins ordering and rejects any extra/duplicate/missing scheme.
-    let mut needle = [0u8; 2 + 10];
+    let mut needle = [0u8; 2 + 14];
     needle[..2].copy_from_slice(&(SCHEMES.len() as u16).to_be_bytes());
     needle[2..2 + SCHEMES.len()].copy_from_slice(SCHEMES);
     let needle = &needle[..2 + SCHEMES.len()];
