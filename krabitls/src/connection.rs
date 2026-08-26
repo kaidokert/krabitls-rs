@@ -557,8 +557,10 @@ where
     H: HkdfSha256,
 {
     // Test-only default-backend form; production dispatch threads the config's
-    // backend via `read_server_hello_with_backend`.
+    // backend via `read_server_hello_with_backend`. Dead in feature combos
+    // whose sole caller (the pure-AES fixture replay) is cfg'd out.
     #[cfg(test)]
+    #[allow(dead_code)]
     pub fn read_server_hello(
         self,
         sh_record: &[u8],
