@@ -46,6 +46,9 @@ pub use client_auth::Ed25519ClientAuth;
 pub use client_auth::RsaClientAuth;
 #[cfg(feature = "cert-der")]
 pub use der_cert::DerCert;
+#[allow(unused_imports)]
+#[cfg(feature = "ecdsa")]
+pub use ecdsa_verify::EcdsaDerSig;
 #[cfg(feature = "jedisct")]
 pub use jedisct::JedisctCrypto;
 // Re-exports purely for the external API surface — nothing in-crate

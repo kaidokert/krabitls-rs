@@ -24,6 +24,16 @@ pub struct EcdsaVerifyError;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EcdsaDerSig<'a>(pub &'a [u8]);
 
+impl<'a> EcdsaDerSig<'a> {
+    /// The DER `ECDSA-Sig-Value` (`SEQUENCE { r, s }`) as it arrived on the
+    /// wire — what an external `SigVerifierProvider` verifier hands to its
+    /// backend (e.g. a hardware PKA).
+    #[must_use]
+    pub const fn as_der(&self) -> &'a [u8] {
+        self.0
+    }
+}
+
 /// Prepared ECDSA-P256 verifier: the leaf / pinned 65-byte SEC1 point. Verifying
 /// computes the SHA-256 prehash of the message internally, so the caller does a
 /// uniform `verify(message, sig)` (the conventional P-256 ↔ SHA-256 pairing).

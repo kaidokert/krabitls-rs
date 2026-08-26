@@ -68,6 +68,17 @@ pub use crate::traits::MlDsa;
 pub use crate::traits::Rsa;
 #[cfg(feature = "ecdsa")]
 pub use crate::traits::{EcdsaP256, EcdsaP384};
+// Wire-signature material an external provider's `Verifier` impl consumes —
+// the `A::Sig` types it is handed. Read via `EcdsaDerSig::as_der` /
+// `MlDsaSig::as_bytes` / `RsaSig`'s public `scheme`/`bytes` fields.
+#[cfg(feature = "ecdsa")]
+pub use crate::backends::EcdsaDerSig;
+#[cfg(feature = "mldsa")]
+pub use crate::backends::MlDsaSig;
+#[cfg(feature = "rsa")]
+pub use crate::backends::RsaSig;
+#[cfg(feature = "rsa")]
+pub use crate::traits::RsaCertSigAlg;
 
 // In-crate-only: alternate config impls (samples, callers write their own),
 // the WriteAppError plumbing type, the InternalError variant the engine

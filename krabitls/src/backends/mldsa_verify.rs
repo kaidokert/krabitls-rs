@@ -16,6 +16,15 @@ use subtle::ConstantTimeEq;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MlDsaSig<'a>(pub &'a [u8]);
 
+impl<'a> MlDsaSig<'a> {
+    /// The raw ML-DSA signature bytes as they arrived on the wire — what an
+    /// external `SigVerifierProvider` verifier hands to its backend.
+    #[must_use]
+    pub const fn as_bytes(&self) -> &'a [u8] {
+        self.0
+    }
+}
+
 /// Public-key bytes matched no FIPS 204 parameter set's encoded length.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MlDsaVerifyError;
