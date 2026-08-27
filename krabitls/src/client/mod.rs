@@ -84,7 +84,9 @@ pub use crate::traits::RsaCertSigAlg;
 // implement or delegate a backend — the HKDF trait + its error, the client-auth
 // signature type + cap, the cert-parser trait, and the concrete AEAD suite
 // markers a custom `AeadBackend` substitutes a cipher into. The bundled
-// `RustCrypto` / `DerCert` defaults live in `krabitls::backends`.
+// `RustCrypto` / `DerCert` defaults live in `krabitls::backends`. The
+// `krabitls_backend_probe` crate compiles a custom backend against exactly this
+// surface, so dropping an export here fails that build.
 #[cfg(feature = "cipher-aes")]
 pub use crate::aead::Aes128GcmSha256;
 #[cfg(feature = "chacha20")]
