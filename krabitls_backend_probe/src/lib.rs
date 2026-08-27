@@ -134,3 +134,29 @@ impl ClientConfig for ProbeConfig {
     type Aead = ProbeAead;
     const SUITES: ConfigSuitePolicy = ConfigSuitePolicy::AesOnly;
 }
+
+/// Guards the custom verify-strategy / RSA trust-anchor surface — the seam a
+/// hardware anchor-pin strategy uses, and the gap alpha.5 missed. Constructing
+/// an RSA verifier from pinned key material via the public provider path forces
+/// every named type to stay exported.
+pub mod verify_surface {
+    use krabitls::backends::{DerCert, RustCrypto};
+    use krabitls::client::{
+        Anchor, PinnedRoots, PinnedRootsError, Rsa, RsaCertSigAlg, RsaKeyMaterial, RsaSig,
+        SigVerifierProvider, VerifyProviderError,
+    };
+
+    /// Turn a pinned RSA modulus/exponent into a verifier via the public
+    /// provider — exactly what a custom RSA anchor strategy does per chain link.
+    pub fn build_rsa_verifier(modulus: &[u8], exponent: u32) -> Result<(), VerifyProviderError> {
+        <RustCrypto as SigVerifierProvider<Rsa>>::prepare(RsaKeyMaterial { modulus, exponent })
+            .map(|_| ())
+    }
+
+    // The wire-signature + anchor-walk types a strategy names (export guard).
+    pub type RsaWireSig<'a> = RsaSig<'a>;
+    pub type RsaScheme = RsaCertSigAlg;
+    pub type ChainAnchor<'a> = Anchor<'a>;
+    pub type AnchorWalkErr = PinnedRootsError;
+    pub type AnchorWalk<'a> = PinnedRoots<'a, DerCert>;
+}

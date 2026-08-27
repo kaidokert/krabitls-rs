@@ -48,6 +48,10 @@ pub use crate::traits::{ClientAuth, ClientAuthError};
 // Strategy surface — what custom-verifier callers need to roll their own
 // trust-root decision (or instantiate the bundled `SafeStrategy`).
 pub use crate::backends::{PinOrSelfSigned, PinnedPubkeyOwned};
+// Anchor-walk chain strategy: pin a root/intermediate and validate a multi-cert
+// chain up to it — the counterpart to leaf-pin `PinOrSelfSigned`. Wire either
+// through `ClientParams::with_strategy`.
+pub use crate::backends::{Anchor, DEFAULT_CHAIN_DEPTH, PinnedRoots, PinnedRootsError};
 // The backend trait is part of the strategy's generic bound — custom
 // `VerifyStrategy<P>` impls name `VerifierBackend` in their `where` clauses, and
 // custom backends impl `SigVerifierProvider<A>` per algorithm.
@@ -57,6 +61,13 @@ pub use crate::traits::verify_strategy::{
     CertChainView, NoClock, PreparedVerifier, SafeStrategy, SafeStrategyError, TrustRootDecision,
     Trusted, VerifierKeyMaterial, VerifyStrategy,
 };
+// Key material a custom `VerifyStrategy` hands to `SigVerifierProvider::prepare`
+// to build a verifier for a pinned anchor or chain link (ed25519 and ECDSA key
+// material are plain byte arrays; RSA and ML-DSA need these named types).
+#[cfg(feature = "mldsa")]
+pub use crate::traits::verify_strategy::MlDsaKeyMaterial;
+#[cfg(feature = "rsa")]
+pub use crate::traits::verify_strategy::RsaKeyMaterial;
 pub use crate::traits::{
     AeadBackend, Ed25519, SigAlgo, SigVerifierProvider, VerifierBackend, VerifyProviderError,
 };
