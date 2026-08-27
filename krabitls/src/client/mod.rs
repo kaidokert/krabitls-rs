@@ -48,16 +48,63 @@ pub use crate::traits::{ClientAuth, ClientAuthError};
 // Strategy surface — what custom-verifier callers need to roll their own
 // trust-root decision (or instantiate the bundled `SafeStrategy`).
 pub use crate::backends::{PinOrSelfSigned, PinnedPubkeyOwned};
-// Provider traits are part of the strategy's generic bounds — custom
-// `VerifyStrategy<E, R>` impls have to name `Ed25519VerifierProvider` /
-// `RsaVerifierProvider` in their `where` clauses.
+// Anchor-walk chain strategy: pin a root/intermediate and validate a multi-cert
+// chain up to it — the counterpart to leaf-pin `PinOrSelfSigned`. Wire either
+// through `ClientParams::with_strategy`.
+pub use crate::backends::{Anchor, DEFAULT_CHAIN_DEPTH, PinnedRoots, PinnedRootsError};
+// The backend trait is part of the strategy's generic bound — custom
+// `VerifyStrategy<P>` impls name `VerifierBackend` in their `where` clauses, and
+// custom backends impl `SigVerifierProvider<A>` per algorithm.
 #[cfg(feature = "cert-der")]
 pub use crate::traits::verify_strategy::Clocked;
 pub use crate::traits::verify_strategy::{
     CertChainView, NoClock, PreparedVerifier, SafeStrategy, SafeStrategyError, TrustRootDecision,
     Trusted, VerifierKeyMaterial, VerifyStrategy,
 };
-pub use crate::traits::{Ed25519VerifierProvider, RsaVerifierProvider};
+// Key material a custom `VerifyStrategy` hands to `SigVerifierProvider::prepare`
+// to build a verifier for a pinned anchor or chain link (ed25519 and ECDSA key
+// material are plain byte arrays; RSA and ML-DSA need these named types).
+#[cfg(feature = "mldsa")]
+pub use crate::traits::verify_strategy::MlDsaKeyMaterial;
+#[cfg(feature = "rsa")]
+pub use crate::traits::verify_strategy::RsaKeyMaterial;
+pub use crate::traits::{
+    AeadBackend, Ed25519, SigAlgo, SigVerifierProvider, VerifierBackend, VerifyProviderError,
+};
+// Per-algorithm markers: a downstream backend names these to
+// `impl SigVerifierProvider<Rsa>` / `<EcdsaP256>` / etc. for one primitive.
+#[cfg(feature = "mldsa")]
+pub use crate::traits::MlDsa;
+#[cfg(feature = "rsa")]
+pub use crate::traits::Rsa;
+#[cfg(feature = "ecdsa")]
+pub use crate::traits::{EcdsaP256, EcdsaP384};
+// Wire-signature material an external provider's `Verifier` impl consumes —
+// the `A::Sig` types it is handed. Read via `EcdsaDerSig::as_der` /
+// `MlDsaSig::as_bytes` / `RsaSig`'s public `scheme`/`bytes` fields.
+#[cfg(feature = "ecdsa")]
+pub use crate::backends::EcdsaDerSig;
+#[cfg(feature = "mldsa")]
+pub use crate::backends::MlDsaSig;
+#[cfg(feature = "rsa")]
+pub use crate::backends::RsaSig;
+#[cfg(feature = "rsa")]
+pub use crate::traits::RsaCertSigAlg;
+
+// Backend-author surface: types a downstream custom `ClientConfig` names to
+// implement or delegate a backend — the HKDF trait + its error, the client-auth
+// signature type + cap, the cert-parser trait, and the concrete AEAD suite
+// markers a custom `AeadBackend` substitutes a cipher into. The bundled
+// `RustCrypto` / `DerCert` defaults live in `krabitls::backends`. The
+// `krabitls_backend_probe` crate compiles a custom backend against exactly this
+// surface, so dropping an export here fails that build.
+#[cfg(feature = "cipher-aes")]
+pub use crate::aead::Aes128GcmSha256;
+#[cfg(feature = "chacha20")]
+pub use crate::aead::ChaCha20Poly1305Sha256;
+pub use crate::aead::CipherSuite;
+pub use crate::traits::client_auth::{ClientSignature, MAX_CLIENT_SIG_LEN};
+pub use crate::traits::{CertParser, HkdfExpandError, HkdfSha256};
 
 // In-crate-only: alternate config impls (samples, callers write their own),
 // the WriteAppError plumbing type, the InternalError variant the engine

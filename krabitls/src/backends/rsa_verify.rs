@@ -52,6 +52,16 @@ pub struct RsaPssSig<'a>(pub &'a [u8]);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RsaPkcs1Sig<'a>(pub &'a [u8]);
 
+/// Cert / CertificateVerify RSA signature carrying its padding scheme alongside
+/// the raw bytes, so one prepared [`RsaVerifierKey`] serves the unified
+/// [`signature::Verifier`] surface across PSS and PKCS#1-v1.5 without the caller
+/// picking the wrapper.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RsaSig<'a> {
+    pub scheme: crate::traits::cert::RsaCertSigAlg,
+    pub bytes: &'a [u8],
+}
+
 #[cfg(feature = "rsa-1024")]
 use crate::bigint::RsaU1024 as U1024;
 use crate::bigint::RsaU2048 as U2048;
@@ -302,6 +312,23 @@ impl<'a> signature::Verifier<RsaPkcs1Sig<'a>> for RsaVerifierKey {
     fn verify(&self, msg: &[u8], sig: &RsaPkcs1Sig<'a>) -> Result<(), signature::Error> {
         self.verify_pkcs1v15_sha256(msg, sig.0)
             .map_err(|_| signature::Error::new())
+    }
+}
+
+impl<'a> signature::Verifier<RsaSig<'a>> for RsaVerifierKey {
+    fn verify(&self, msg: &[u8], sig: &RsaSig<'a>) -> Result<(), signature::Error> {
+        // Centralizes the PKCS#1-v1.5 / PSS dispatch (and the `rsa_pss_only`
+        // gate) shared by the self-signed, chain-link, and CertificateVerify
+        // paths; under `rsa_pss_only` `RsaCertSigAlg` has only the PSS variant.
+        match sig.scheme {
+            #[cfg(not(feature = "rsa_pss_only"))]
+            crate::traits::cert::RsaCertSigAlg::Pkcs1v15Sha256 => self
+                .verify_pkcs1v15_sha256(msg, sig.bytes)
+                .map_err(|_| signature::Error::new()),
+            crate::traits::cert::RsaCertSigAlg::PssSha256 => self
+                .verify_pss_sha256(msg, sig.bytes)
+                .map_err(|_| signature::Error::new()),
+        }
     }
 }
 

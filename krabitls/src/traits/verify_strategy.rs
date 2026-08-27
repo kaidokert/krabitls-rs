@@ -60,72 +60,51 @@ pub trait VerifierKeyMaterial<K> {
 }
 
 use crate::traits::cert::{CertParseError, CertParser, CertView};
-use crate::traits::ed25519_verify::Ed25519VerifierProvider;
-use crate::traits::rsa_verify::RsaVerifierProvider;
 #[cfg(feature = "cert-der")]
 use crate::traits::time::TimeSource;
+#[cfg(feature = "mldsa")]
+use crate::traits::verify_provider::MlDsa;
+#[cfg(feature = "rsa")]
+use crate::traits::verify_provider::Rsa;
 #[cfg(feature = "ecdsa")]
-use sha2::{Digest, Sha256, Sha384};
+use crate::traits::verify_provider::{EcdsaP256, EcdsaP384};
+use crate::traits::verify_provider::{Ed25519, SigVerifierProvider, VerifierBackend};
 use signature::Verifier;
-#[cfg(feature = "ecdsa")]
-use subtle::ConstantTimeEq;
-
-/// Constant-time equality of a stored SEC1 point against a candidate. Length
-/// mismatch short-circuits to `Choice::from(0)`.
-#[cfg(feature = "ecdsa")]
-fn ct_eq_sec1(stored: &[u8], candidate: &[u8]) -> subtle::Choice {
-    if stored.len() != candidate.len() {
-        return subtle::Choice::from(0);
-    }
-    stored.ct_eq(candidate)
-}
 
 /// Prepared verifier the strategy hands back for the TLS stack to use in
-/// CertificateVerify. Stored by value in a caller-supplied slot so the
-/// `Trusted` return can borrow it.
+/// CertificateVerify. Every algorithm holds the backend's prepared verifier for
+/// that algorithm, so a single `P: VerifierBackend` threads the whole stack.
+/// Stored by value in a caller-supplied slot so the `Trusted` return can borrow
+/// it.
 // no_alloc: the ML-DSA variant inlines a ~2.6 KiB public key; Box isn't
 // available to shrink it.
 #[allow(clippy::large_enum_variant)]
-pub enum PreparedVerifier<E: Ed25519VerifierProvider, R: RsaVerifierProvider> {
-    Ed25519(E::Verifier, core::marker::PhantomData<fn() -> R>),
+pub enum PreparedVerifier<P: VerifierBackend> {
+    Ed25519(<P as SigVerifierProvider<Ed25519>>::Verifier),
     #[cfg(feature = "rsa")]
-    Rsa(R::Verifier),
-    /// ML-DSA has a single backend (krabipqc), so unlike Ed25519/RSA it isn't
-    /// parameterized by a provider — the concrete verifier is held directly.
+    Rsa(<P as SigVerifierProvider<Rsa>>::Verifier),
     #[cfg(feature = "mldsa")]
-    MlDsa(crate::backends::mldsa_verify::MlDsaVerifierKey),
-    /// ECDSA has a single backend (krabiecdsa); the leaf/pinned SEC1 point is
-    /// held inline by value.
+    MlDsa(<P as SigVerifierProvider<MlDsa>>::Verifier),
     #[cfg(feature = "ecdsa")]
-    EcdsaP256([u8; 65]),
+    EcdsaP256(<P as SigVerifierProvider<EcdsaP256>>::Verifier),
     #[cfg(feature = "ecdsa")]
-    EcdsaP384([u8; 97]),
+    EcdsaP384(<P as SigVerifierProvider<EcdsaP384>>::Verifier),
 }
 
-impl<E, R> PreparedVerifier<E, R>
-where
-    E: Ed25519VerifierProvider,
-    R: RsaVerifierProvider,
-{
-    pub fn ed25519(verifier: E::Verifier) -> Self {
-        PreparedVerifier::Ed25519(verifier, core::marker::PhantomData)
+impl<P: VerifierBackend> PreparedVerifier<P> {
+    pub fn ed25519(verifier: <P as SigVerifierProvider<Ed25519>>::Verifier) -> Self {
+        PreparedVerifier::Ed25519(verifier)
     }
-}
 
-impl<E, R> PreparedVerifier<E, R>
-where
-    E: Ed25519VerifierProvider,
-    R: RsaVerifierProvider,
-{
     /// Cross-check this prepared verifier matches `view`'s pubkey. The stack
     /// runs this after the strategy returns — a lying strategy can't sneak in
     /// a verifier built from non-chain bytes. Algorithm mismatch (rsa / mldsa
-    /// builds) returns `Choice::from(0)`. Under
-    /// `not(any(feature = "rsa", feature = "mldsa"))` the leaf match is
-    /// exhaustive (Ed25519 only), so no catch-all is needed.
+    /// / ecdsa builds) returns `Choice::from(0)`. Under
+    /// `not(any(feature = "rsa", feature = "mldsa", feature = "ecdsa"))` the
+    /// leaf match is exhaustive (Ed25519 only), so no catch-all is needed.
     pub fn matches_cert(&self, view: &CertView<'_>) -> subtle::Choice {
         match (self, view) {
-            (Self::Ed25519(v, _), CertView::Ed25519 { pubkey, .. }) => v.matches(**pubkey),
+            (Self::Ed25519(v), CertView::Ed25519 { pubkey, .. }) => v.matches(**pubkey),
             #[cfg(feature = "rsa")]
             (
                 Self::Rsa(v),
@@ -139,9 +118,19 @@ where
             #[cfg(feature = "mldsa")]
             (Self::MlDsa(v), CertView::MlDsa { pubkey, .. }) => v.matches(MlDsaKeyMaterial(pubkey)),
             #[cfg(feature = "ecdsa")]
-            (Self::EcdsaP256(pk), CertView::EcdsaP256 { pubkey, .. }) => ct_eq_sec1(pk, pubkey),
+            (Self::EcdsaP256(v), CertView::EcdsaP256 { pubkey, .. }) => {
+                match <[u8; 65]>::try_from(*pubkey) {
+                    Ok(pk) => v.matches(pk),
+                    Err(_) => subtle::Choice::from(0),
+                }
+            }
             #[cfg(feature = "ecdsa")]
-            (Self::EcdsaP384(pk), CertView::EcdsaP384 { pubkey, .. }) => ct_eq_sec1(pk, pubkey),
+            (Self::EcdsaP384(v), CertView::EcdsaP384 { pubkey, .. }) => {
+                match <[u8; 97]>::try_from(*pubkey) {
+                    Ok(pk) => v.matches(pk),
+                    Err(_) => subtle::Choice::from(0),
+                }
+            }
             #[cfg(any(feature = "rsa", feature = "mldsa", feature = "ecdsa"))]
             _ => subtle::Choice::from(0),
         }
@@ -150,20 +139,16 @@ where
 
 /// Strategy verdict — the TLS stack uses `prepared` for CertificateVerify
 /// after a [`PreparedVerifier::matches_cert`] cross-check against chain[0].
-pub struct Trusted<'slot, E: Ed25519VerifierProvider, R: RsaVerifierProvider> {
-    prepared: &'slot PreparedVerifier<E, R>,
+pub struct Trusted<'slot, P: VerifierBackend> {
+    prepared: &'slot PreparedVerifier<P>,
 }
 
-impl<'slot, E, R> Trusted<'slot, E, R>
-where
-    E: Ed25519VerifierProvider,
-    R: RsaVerifierProvider,
-{
-    pub fn new(prepared: &'slot PreparedVerifier<E, R>) -> Self {
+impl<'slot, P: VerifierBackend> Trusted<'slot, P> {
+    pub fn new(prepared: &'slot PreparedVerifier<P>) -> Self {
         Self { prepared }
     }
 
-    pub fn prepared(&self) -> &PreparedVerifier<E, R> {
+    pub fn prepared(&self) -> &PreparedVerifier<P> {
         self.prepared
     }
 }
@@ -174,7 +159,7 @@ where
 /// the strategy's job — the TLS stack runs `verify_hostname` against
 /// `chain[0]` unconditionally after the strategy returns. The trait
 /// omits `hostname` from the signature so this is enforced structurally.
-pub trait VerifyStrategy<E: Ed25519VerifierProvider, R: RsaVerifierProvider> {
+pub trait VerifyStrategy<P: VerifierBackend> {
     type Error: core::error::Error + Clone + PartialEq;
 
     /// Inspect `chain` and decide whether to accept it. On Ok, write the
@@ -183,8 +168,8 @@ pub trait VerifyStrategy<E: Ed25519VerifierProvider, R: RsaVerifierProvider> {
     fn verify_chain<'chain, 'src, 'slot>(
         &self,
         chain: CertChainView<'chain, 'src>,
-        slot: &'slot mut Option<PreparedVerifier<E, R>>,
-    ) -> Result<Trusted<'slot, E, R>, Self::Error>;
+        slot: &'slot mut Option<PreparedVerifier<P>>,
+    ) -> Result<Trusted<'slot, P>, Self::Error>;
 }
 
 /// The safe path: answer "do I accept this chain" and let
@@ -196,17 +181,32 @@ pub trait VerifyStrategy<E: Ed25519VerifierProvider, R: RsaVerifierProvider> {
 /// returning a [`PreparedVerifier`] built from material outside the
 /// chain, forgetting to verify per-link signatures, and tangling the
 /// slot-lifetime plumbing.
-pub trait TrustRootDecision<E: Ed25519VerifierProvider, R: RsaVerifierProvider> {
+pub trait TrustRootDecision<P: VerifierBackend> {
     type Error: core::error::Error + Clone + PartialEq;
 
-    /// `chain` has already been parsed and structurally validated by
-    /// [`SafeStrategy`] (each link `chain[i]`'s outer sig verified
-    /// against `chain[i+1]`'s pubkey). Return Ok if `chain[chain.len()-1]`
-    /// is an acceptable trust root.
+    /// `true` when this decision authenticates `chain[0]` directly — e.g. a
+    /// pinned leaf SPKI. [`SafeStrategy`] then parses ONLY `chain[0]` and treats
+    /// the certs above it as opaque transport: their bytes are never parsed,
+    /// their links are not verified, and their validity is not checked. A pinned
+    /// leaf is thus accepted even when an upper cert can't be parsed at all
+    /// under the current build (e.g. an RSA-4096 root in an `rsa`-2048-only
+    /// binary). `false` (the default) parses and verifies the whole presented
+    /// chain before `accept_chain` runs. Per-value, so one decision type may
+    /// answer differently across variants (pin anchors at the leaf; self-signed
+    /// keeps the full-chain path).
+    fn anchors_at_leaf(&self) -> bool {
+        false
+    }
+
+    /// Decide whether the presented `chain` is trusted. When
+    /// [`anchors_at_leaf`](Self::anchors_at_leaf) is false, [`SafeStrategy`] has
+    /// already verified each link (`chain[i]`'s outer sig against
+    /// `chain[i+1]`'s pubkey); return Ok if `chain[chain.len()-1]` is an
+    /// acceptable trust root. When it is true, `chain` holds only the parsed
+    /// leaf.
     ///
     /// Cert time-validity is NOT decided here: it's a separate `Clock` slot
-    /// owned by `SafeStrategy`, evaluated over the whole chain only after
-    /// `accept_chain` returns Ok.
+    /// owned by `SafeStrategy`.
     fn accept_chain<'src>(&self, chain: &[CertView<'src>]) -> Result<(), Self::Error>;
 }
 
@@ -289,6 +289,8 @@ pub enum SafeStrategyError<TE> {
     EmptyChain,
     #[error("per-link signature did not verify")]
     LinkSignatureInvalid,
+    #[error("Ed25519 verifier construction failed for the leaf")]
+    Ed25519VerifierInvalid,
     #[cfg(feature = "rsa")]
     #[error("intermediate cert outer signatureAlgorithm not recognized")]
     UnknownLinkSigAlg,
@@ -313,21 +315,20 @@ pub enum SafeStrategyError<TE> {
 /// (leaf + intermediate + cross-sign + root); 8 leaves slack.
 const SAFE_STRATEGY_CHAIN_CAP: usize = 8;
 
-impl<T, C, K, E, R> VerifyStrategy<E, R> for SafeStrategy<T, C, K>
+impl<T, C, K, P> VerifyStrategy<P> for SafeStrategy<T, C, K>
 where
-    T: TrustRootDecision<E, R>,
+    T: TrustRootDecision<P>,
     C: CertParser,
     K: Clock,
-    E: Ed25519VerifierProvider,
-    R: RsaVerifierProvider,
+    P: VerifierBackend,
 {
     type Error = SafeStrategyError<T::Error>;
 
     fn verify_chain<'chain, 'src, 'slot>(
         &self,
         chain: CertChainView<'chain, 'src>,
-        slot: &'slot mut Option<PreparedVerifier<E, R>>,
-    ) -> Result<Trusted<'slot, E, R>, Self::Error> {
+        slot: &'slot mut Option<PreparedVerifier<P>>,
+    ) -> Result<Trusted<'slot, P>, Self::Error> {
         // Reject empty chains up front. Without this guard a permissive
         // `TrustRootDecision::accept_chain(&[])` would let the `&views[0]`
         // access below panic.
@@ -339,33 +340,53 @@ where
             return Err(SafeStrategyError::ChainTooLong);
         }
 
+        // A leaf-anchored decision (pinned leaf SPKI) authenticates `views[0]`
+        // directly, so the certs above it are opaque transport: parse ONLY the
+        // leaf. An upper cert with a key width the build can't parse (e.g. an
+        // RSA-4096 root in an `rsa`-2048 binary) must not fail the connection,
+        // and its link/validity are irrelevant to a pinned leaf. A chain-
+        // anchored decision parses and verifies the whole presented path.
+        let leaf_only = self.decision.anchors_at_leaf();
+        let to_parse = if leaf_only {
+            &chain.certs[..1]
+        } else {
+            chain.certs
+        };
+
         let mut views: heapless::Vec<CertView<'src>, SAFE_STRATEGY_CHAIN_CAP> =
             heapless::Vec::new();
-        for cert_der in chain.certs {
+        for cert_der in to_parse {
             let view = C::parse(cert_der).map_err(SafeStrategyError::Parse)?;
             views
                 .push(view)
                 .map_err(|_| SafeStrategyError::ChainTooLong)?;
         }
 
-        for i in 0..views.len().saturating_sub(1) {
-            verify_link::<E, R>(&views[i], &views[i + 1])?;
+        if !leaf_only {
+            for i in 0..views.len().saturating_sub(1) {
+                verify_link::<P>(&views[i], &views[i + 1])?;
+            }
         }
 
         self.decision
             .accept_chain(&views)
             .map_err(SafeStrategyError::Decision)?;
 
-        // Validity applies to the whole presented path, mirroring the per-link
-        // signature check above: an expired/not-yet-valid intermediate fails
-        // the chain, not just the leaf. Empty under `NoClock`, so DCE'd to zero.
-        for cert in views.iter() {
+        // Validity mirrors the parse/link scope: leaf-only when anchored at the
+        // leaf, else the whole presented path. Empty under `NoClock`.
+        if leaf_only {
             self.clock
-                .check_validity(cert)
+                .check_validity(&views[0])
                 .map_err(|_| SafeStrategyError::Validity)?;
+        } else {
+            for cert in views.iter() {
+                self.clock
+                    .check_validity(cert)
+                    .map_err(|_| SafeStrategyError::Validity)?;
+            }
         }
 
-        let leaf_prepared = prepare_leaf::<E, R>(&views[0])?;
+        let leaf_prepared = prepare_leaf::<P>(&views[0])?;
         *slot = Some(leaf_prepared);
         Ok(Trusted::new(slot.as_ref().unwrap()))
     }
@@ -376,6 +397,7 @@ where
 /// firing once all three are enabled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PrepareLeafErr {
+    Ed25519,
     #[cfg(feature = "rsa")]
     Rsa,
     #[cfg(feature = "mldsa")]
@@ -387,6 +409,7 @@ pub(crate) enum PrepareLeafErr {
 impl<TE> From<PrepareLeafErr> for SafeStrategyError<TE> {
     fn from(e: PrepareLeafErr) -> Self {
         match e {
+            PrepareLeafErr::Ed25519 => SafeStrategyError::Ed25519VerifierInvalid,
             #[cfg(feature = "rsa")]
             PrepareLeafErr::Rsa => SafeStrategyError::RsaVerifierInvalid,
             #[cfg(feature = "mldsa")]
@@ -400,33 +423,45 @@ impl<TE> From<PrepareLeafErr> for SafeStrategyError<TE> {
 /// Build the `PreparedVerifier` for a leaf from its parsed SPKI. Shared by
 /// [`SafeStrategy`] and [`PinnedRoots`](crate::backends::PinnedRoots) so both
 /// hand the stack a verifier the engine's `matches_cert` cross-check accepts.
-pub(crate) fn prepare_leaf<E, R>(
-    leaf: &CertView<'_>,
-) -> Result<PreparedVerifier<E, R>, PrepareLeafErr>
+pub(crate) fn prepare_leaf<P>(leaf: &CertView<'_>) -> Result<PreparedVerifier<P>, PrepareLeafErr>
 where
-    E: Ed25519VerifierProvider,
-    R: RsaVerifierProvider,
+    P: VerifierBackend,
 {
     Ok(match leaf {
-        CertView::Ed25519 { pubkey, .. } => PreparedVerifier::ed25519(E::prepare_ed25519(pubkey)),
+        CertView::Ed25519 { pubkey, .. } => PreparedVerifier::ed25519(
+            <P as SigVerifierProvider<Ed25519>>::prepare(pubkey)
+                .map_err(|_| PrepareLeafErr::Ed25519)?,
+        ),
         #[cfg(feature = "rsa")]
         CertView::Rsa {
             modulus, exponent, ..
         } => PreparedVerifier::Rsa(
-            R::prepare_rsa(modulus, *exponent).map_err(|_| PrepareLeafErr::Rsa)?,
+            <P as SigVerifierProvider<Rsa>>::prepare(RsaKeyMaterial {
+                modulus,
+                exponent: *exponent,
+            })
+            .map_err(|_| PrepareLeafErr::Rsa)?,
         ),
         #[cfg(feature = "mldsa")]
         CertView::MlDsa { pubkey, .. } => PreparedVerifier::MlDsa(
-            crate::backends::mldsa_verify::MlDsaVerifierKey::new(pubkey)
+            <P as SigVerifierProvider<MlDsa>>::prepare(pubkey)
                 .map_err(|_| PrepareLeafErr::MlDsa)?,
         ),
         #[cfg(feature = "ecdsa")]
         CertView::EcdsaP256 { pubkey, .. } => {
-            PreparedVerifier::EcdsaP256((*pubkey).try_into().map_err(|_| PrepareLeafErr::Ecdsa)?)
+            let pk: [u8; 65] = (*pubkey).try_into().map_err(|_| PrepareLeafErr::Ecdsa)?;
+            PreparedVerifier::EcdsaP256(
+                <P as SigVerifierProvider<EcdsaP256>>::prepare(&pk)
+                    .map_err(|_| PrepareLeafErr::Ecdsa)?,
+            )
         }
         #[cfg(feature = "ecdsa")]
         CertView::EcdsaP384 { pubkey, .. } => {
-            PreparedVerifier::EcdsaP384((*pubkey).try_into().map_err(|_| PrepareLeafErr::Ecdsa)?)
+            let pk: [u8; 97] = (*pubkey).try_into().map_err(|_| PrepareLeafErr::Ecdsa)?;
+            PreparedVerifier::EcdsaP384(
+                <P as SigVerifierProvider<EcdsaP384>>::prepare(&pk)
+                    .map_err(|_| PrepareLeafErr::Ecdsa)?,
+            )
         }
     })
 }
@@ -460,12 +495,10 @@ impl<TE> From<LinkErr> for SafeStrategyError<TE> {
 /// Verify `child`'s outer signature against `parent`'s public key. `parent` is
 /// any parsed cert — a chain entry or a `PinnedRoots` stored anchor parsed from
 /// flash — the dispatch is on `parent`'s key family, nothing is bound to "self".
-pub(crate) fn verify_link<E, R>(child: &CertView<'_>, parent: &CertView<'_>) -> Result<(), LinkErr>
+pub(crate) fn verify_link<P>(child: &CertView<'_>, parent: &CertView<'_>) -> Result<(), LinkErr>
 where
-    E: Ed25519VerifierProvider,
-    R: RsaVerifierProvider,
+    P: VerifierBackend,
 {
-    let _ = core::marker::PhantomData::<R>;
     let (child_tbs, child_sig): (&[u8], &[u8]) = match child {
         CertView::Ed25519 { tbs, signature, .. } => (*tbs, &signature[..]),
         #[cfg(feature = "rsa")]
@@ -479,7 +512,8 @@ where
     };
     match parent {
         CertView::Ed25519 { pubkey, .. } => {
-            let v = E::prepare_ed25519(pubkey);
+            let v = <P as SigVerifierProvider<Ed25519>>::prepare(pubkey)
+                .map_err(|_| LinkErr::LinkSignatureInvalid)?;
             let sig: &[u8; 64] = child_sig
                 .try_into()
                 .map_err(|_| LinkErr::LinkSignatureInvalid)?;
@@ -490,7 +524,7 @@ where
         CertView::MlDsa { pubkey, .. } => {
             // ML-DSA cert sigs are pure ML-DSA over the child TBS, empty
             // context — no padding/hash discriminator to classify (unlike RSA).
-            let v = crate::backends::mldsa_verify::MlDsaVerifierKey::new(pubkey)
+            let v = <P as SigVerifierProvider<MlDsa>>::prepare(pubkey)
                 .map_err(|_| LinkErr::MlDsaVerifierInvalid)?;
             v.verify(
                 child_tbs,
@@ -516,9 +550,19 @@ where
                 }
                 _ => return Err(LinkErr::UnknownLinkSigAlg),
             };
-            let v = R::prepare_rsa(modulus, *exponent).map_err(|_| LinkErr::RsaVerifierInvalid)?;
-            crate::traits::rsa_verify::verify_cert_sig(&v, child_tbs, child_sig, alg)
-                .map_err(|_| LinkErr::LinkSignatureInvalid)
+            let v = <P as SigVerifierProvider<Rsa>>::prepare(RsaKeyMaterial {
+                modulus,
+                exponent: *exponent,
+            })
+            .map_err(|_| LinkErr::RsaVerifierInvalid)?;
+            v.verify(
+                child_tbs,
+                &crate::backends::rsa_verify::RsaSig {
+                    scheme: alg,
+                    bytes: child_sig,
+                },
+            )
+            .map_err(|_| LinkErr::LinkSignatureInvalid)
         }
         // ECDSA cert outer sigs carry no padding/hash discriminator in the
         // CertView; the issuer's curve fixes the conventional hash pairing
@@ -526,15 +570,29 @@ where
         // signed under a non-conventional hash fails closed here.
         #[cfg(feature = "ecdsa")]
         CertView::EcdsaP256 { pubkey, .. } => {
-            let digest = Sha256::digest(child_tbs);
-            crate::backends::ecdsa_verify::verify_p256(pubkey, &digest, child_sig)
-                .map_err(|_| LinkErr::LinkSignatureInvalid)
+            let pk: [u8; 65] = (*pubkey)
+                .try_into()
+                .map_err(|_| LinkErr::LinkSignatureInvalid)?;
+            let v = <P as SigVerifierProvider<EcdsaP256>>::prepare(&pk)
+                .map_err(|_| LinkErr::LinkSignatureInvalid)?;
+            v.verify(
+                child_tbs,
+                &crate::backends::ecdsa_verify::EcdsaDerSig(child_sig),
+            )
+            .map_err(|_| LinkErr::LinkSignatureInvalid)
         }
         #[cfg(feature = "ecdsa")]
         CertView::EcdsaP384 { pubkey, .. } => {
-            let digest = Sha384::digest(child_tbs);
-            crate::backends::ecdsa_verify::verify_p384(pubkey, &digest, child_sig)
-                .map_err(|_| LinkErr::LinkSignatureInvalid)
+            let pk: [u8; 97] = (*pubkey)
+                .try_into()
+                .map_err(|_| LinkErr::LinkSignatureInvalid)?;
+            let v = <P as SigVerifierProvider<EcdsaP384>>::prepare(&pk)
+                .map_err(|_| LinkErr::LinkSignatureInvalid)?;
+            v.verify(
+                child_tbs,
+                &crate::backends::ecdsa_verify::EcdsaDerSig(child_sig),
+            )
+            .map_err(|_| LinkErr::LinkSignatureInvalid)
         }
     }
 }
@@ -575,19 +633,20 @@ mod tests {
     #[error("ProduceEd25519 only takes single-cert chains")]
     struct ProduceErr;
 
-    impl VerifyStrategy<RustCrypto, RustCrypto> for ProduceEd25519 {
+    impl VerifyStrategy<RustCrypto> for ProduceEd25519 {
         type Error = ProduceErr;
 
         fn verify_chain<'chain, 'src, 'slot>(
             &self,
             chain: CertChainView<'chain, 'src>,
-            slot: &'slot mut Option<PreparedVerifier<RustCrypto, RustCrypto>>,
-        ) -> Result<Trusted<'slot, RustCrypto, RustCrypto>, ProduceErr> {
+            slot: &'slot mut Option<PreparedVerifier<RustCrypto>>,
+        ) -> Result<Trusted<'slot, RustCrypto>, ProduceErr> {
             if chain.certs.len() != 1 {
                 return Err(ProduceErr);
             }
             let prepared = PreparedVerifier::ed25519(
-                <RustCrypto as Ed25519VerifierProvider>::prepare_ed25519(&self.pubkey),
+                <RustCrypto as SigVerifierProvider<Ed25519>>::prepare(&self.pubkey)
+                    .expect("Ed25519 prepare is infallible"),
             );
             *slot = Some(prepared);
             Ok(Trusted::new(slot.as_ref().unwrap()))
@@ -667,7 +726,7 @@ mod tests {
         let strategy = ProduceEd25519 {
             pubkey: LEAF_PUBKEY,
         };
-        let mut slot: Option<PreparedVerifier<RustCrypto, RustCrypto>> = None;
+        let mut slot: Option<PreparedVerifier<RustCrypto>> = None;
 
         let trusted = strategy
             .verify_chain(view, &mut slot)
@@ -687,7 +746,7 @@ mod tests {
         let strategy = ProduceEd25519 {
             pubkey: attacker_pubkey,
         };
-        let mut slot: Option<PreparedVerifier<RustCrypto, RustCrypto>> = None;
+        let mut slot: Option<PreparedVerifier<RustCrypto>> = None;
 
         let trusted = strategy
             .verify_chain(view, &mut slot)
@@ -707,7 +766,7 @@ mod tests {
         let strategy = ProduceEd25519 {
             pubkey: LEAF_PUBKEY,
         };
-        let mut slot: Option<PreparedVerifier<RustCrypto, RustCrypto>> = None;
+        let mut slot: Option<PreparedVerifier<RustCrypto>> = None;
 
         let result = strategy.verify_chain(view, &mut slot);
         match result {
@@ -731,7 +790,7 @@ mod tests {
             // A self-signed cert is its own issuer; exercises the EcdsaP384
             // SPKI parse + the conventional P-384 ↔ SHA-384 outer-sig pairing.
             let leaf = DerCert::parse(&P384_SELF_SIGNED).expect("parse P-384 self-signed leaf");
-            assert!(verify_link::<RustCrypto, RustCrypto>(&leaf, &leaf).is_ok());
+            assert!(verify_link::<RustCrypto>(&leaf, &leaf).is_ok());
         }
 
         // An ECDSA leaf whose outer signature is RSA (real chains put ECDSA
@@ -754,7 +813,7 @@ mod tests {
                 let leaf =
                     DerCert::parse(&LEAF_ECDSA_RSA_SIGNED).expect("parse RSA-signed ECDSA leaf");
                 let ca = DerCert::parse(&RSA_CA).expect("parse RSA CA");
-                assert!(verify_link::<RustCrypto, RustCrypto>(&leaf, &ca).is_ok());
+                assert!(verify_link::<RustCrypto>(&leaf, &ca).is_ok());
             }
 
             #[test]
@@ -765,9 +824,9 @@ mod tests {
                 // The mutated TBS must be rejected whether it fails to parse or
                 // parses but the RSA issuer signature no longer covers it — a
                 // silent parse failure must not vacuously pass the test.
-                let verified = DerCert::parse(&der).map_err(|_| ()).and_then(|leaf| {
-                    verify_link::<RustCrypto, RustCrypto>(&leaf, &ca).map_err(|_| ())
-                });
+                let verified = DerCert::parse(&der)
+                    .map_err(|_| ())
+                    .and_then(|leaf| verify_link::<RustCrypto>(&leaf, &ca).map_err(|_| ()));
                 assert!(verified.is_err());
             }
         }

@@ -7,12 +7,68 @@
 //! here bridges the two before every verify.
 
 use crate::bigint::{EcdsaP256Bn, EcdsaP384Bn};
+use crate::traits::verify_strategy::VerifierKeyMaterial;
 use krabiecdsa::{p256, p384};
+use sha2::{Digest, Sha256, Sha384};
+use signature::Verifier;
 use signature::hazmat::PrehashVerifier;
+use subtle::ConstantTimeEq;
 
 /// Verification failure (kept opaque — surfaces upstream as a cert / CV error).
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct EcdsaVerifyError;
+
+/// Wire DER `ECDSA-Sig-Value` (`SEQUENCE { r, s }`) as carried by a cert outer
+/// signature or a CertificateVerify. Borrows the signature bytes; decoded to
+/// fixed-width `r || s` inside [`verify_p256`] / [`verify_p384`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EcdsaDerSig<'a>(pub &'a [u8]);
+
+impl<'a> EcdsaDerSig<'a> {
+    /// The DER `ECDSA-Sig-Value` (`SEQUENCE { r, s }`) as it arrived on the
+    /// wire — what an external `SigVerifierProvider` verifier hands to its
+    /// backend (e.g. a hardware PKA).
+    #[must_use]
+    pub const fn as_der(&self) -> &'a [u8] {
+        self.0
+    }
+}
+
+/// Prepared ECDSA-P256 verifier: the leaf / pinned 65-byte SEC1 point. Verifying
+/// computes the SHA-256 prehash of the message internally, so the caller does a
+/// uniform `verify(message, sig)` (the conventional P-256 ↔ SHA-256 pairing).
+#[derive(Debug, Clone, Copy)]
+pub struct PreparedEcdsaP256(pub [u8; p256::PUBKEY_BYTES]);
+
+impl<'a> Verifier<EcdsaDerSig<'a>> for PreparedEcdsaP256 {
+    fn verify(&self, msg: &[u8], sig: &EcdsaDerSig<'a>) -> Result<(), signature::Error> {
+        let digest = Sha256::digest(msg);
+        verify_p256(&self.0, &digest, sig.0).map_err(|_| signature::Error::new())
+    }
+}
+
+impl VerifierKeyMaterial<[u8; p256::PUBKEY_BYTES]> for PreparedEcdsaP256 {
+    fn matches(&self, candidate: [u8; p256::PUBKEY_BYTES]) -> subtle::Choice {
+        self.0[..].ct_eq(&candidate[..])
+    }
+}
+
+/// Prepared ECDSA-P384 verifier: the 97-byte SEC1 point; SHA-384 prehash inside.
+#[derive(Debug, Clone, Copy)]
+pub struct PreparedEcdsaP384(pub [u8; p384::PUBKEY_BYTES]);
+
+impl<'a> Verifier<EcdsaDerSig<'a>> for PreparedEcdsaP384 {
+    fn verify(&self, msg: &[u8], sig: &EcdsaDerSig<'a>) -> Result<(), signature::Error> {
+        let digest = Sha384::digest(msg);
+        verify_p384(&self.0, &digest, sig.0).map_err(|_| signature::Error::new())
+    }
+}
+
+impl VerifierKeyMaterial<[u8; p384::PUBKEY_BYTES]> for PreparedEcdsaP384 {
+    fn matches(&self, candidate: [u8; p384::PUBKEY_BYTES]) -> subtle::Choice {
+        self.0[..].ct_eq(&candidate[..])
+    }
+}
 
 fn take<'a>(p: &mut &'a [u8], n: usize) -> Result<&'a [u8], EcdsaVerifyError> {
     if p.len() < n {

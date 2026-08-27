@@ -329,14 +329,17 @@ pub(crate) trait DtlsSuite: CipherSuite {
 
 #[cfg(feature = "cipher-aes")]
 mod aes_mask {
-    use super::{DtlsSuite, HkdfLabelError, RecordKeys, SN_SAMPLE_LEN, Secret};
+    use super::{CipherSuite, DtlsSuite, HkdfLabelError, RecordKeys, SN_SAMPLE_LEN, Secret};
     use crate::aead::Aes128GcmSha256;
     use crate::hkdf::{dtls_traffic_keys, sn_key};
     use crate::traits::HkdfSha256;
     use aes_gcm::aes::Aes128;
     use aes_gcm::aes::cipher::{Array, BlockCipherEncrypt, KeyInit};
 
-    impl DtlsSuite for Aes128GcmSha256 {
+    impl<C> DtlsSuite for Aes128GcmSha256<C>
+    where
+        Aes128GcmSha256<C>: CipherSuite<KeyBytes = [u8; 16]>,
+    {
         const CIPHER_SUITE_ID: u16 = crate::consts::CIPHER_AES_128_GCM_SHA256;
         type Masker = Aes128;
 
@@ -367,7 +370,7 @@ mod aes_mask {
 
 #[cfg(feature = "chacha20")]
 mod chacha_mask {
-    use super::{DtlsSuite, HkdfLabelError, RecordKeys, SN_SAMPLE_LEN, Secret};
+    use super::{CipherSuite, DtlsSuite, HkdfLabelError, RecordKeys, SN_SAMPLE_LEN, Secret};
     use crate::aead::ChaCha20Poly1305Sha256;
     use crate::hkdf::{dtls_traffic_keys, sn_key};
     use crate::newtype::ZeroBuf;
@@ -375,7 +378,10 @@ mod chacha_mask {
     use chacha20::cipher::{Array, KeyIvInit, StreamCipher, StreamCipherSeek};
     use chacha20::{ChaCha20, Key};
 
-    impl DtlsSuite for ChaCha20Poly1305Sha256 {
+    impl<C> DtlsSuite for ChaCha20Poly1305Sha256<C>
+    where
+        ChaCha20Poly1305Sha256<C>: CipherSuite<KeyBytes = [u8; 32]>,
+    {
         const CIPHER_SUITE_ID: u16 = crate::consts::CIPHER_CHACHA20_POLY1305_SHA256;
         type Masker = ZeroBuf<32>;
 

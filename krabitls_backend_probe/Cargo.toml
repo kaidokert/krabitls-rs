@@ -1,0 +1,23 @@
+# Compile-only guard: a *truly external* consumer that implements a custom
+# backend against krabitls's PUBLIC api. In-crate code reaches types via
+# `crate::` paths and never exercises the export surface, so this crate is the
+# only thing that catches a missing `pub use`. Not published; CI builds it.
+[package]
+name = "krabitls_backend_probe"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.87"
+publish = false
+
+[lib]
+doctest = false
+
+[dependencies]
+krabitls = { path = "../krabitls", features = ["rsa"] }
+aead = { version = "0.6", default-features = false }
+aes-gcm = { version = "0.11", default-features = false, features = ["aes"] }
+sha2 = { version = "0.11", default-features = false }
+hkdf = { version = "0.13", default-features = false }
+zeroize = { version = "1.8", default-features = false }
+rand_core = { version = "0.10", default-features = false }
+heapless = { version = "0.9", default-features = false }

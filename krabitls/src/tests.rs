@@ -382,17 +382,25 @@ fn client_hello_advertises_mldsa_schemes() {
     let n = write_client_hello_with(&mut cursor, &random, &x25519, &opts).unwrap();
     let ch = &buf[..n];
 
-    // The exact `supported_signature_algorithms` list in RFC 8446 order:
-    // ed25519, rsa_pss when enabled, then mldsa44/65/87.
-    #[cfg(feature = "rsa")]
+    // The exact `supported_signature_algorithms` list in writer order:
+    // ed25519, ecdsa_p256/p384 when enabled, rsa_pss when enabled, mldsa44/65/87.
+    #[cfg(all(feature = "ecdsa", feature = "rsa"))]
+    const SCHEMES: &[u8] = &[
+        0x08, 0x07, 0x04, 0x03, 0x05, 0x03, 0x08, 0x04, 0x09, 0x04, 0x09, 0x05, 0x09, 0x06,
+    ];
+    #[cfg(all(feature = "ecdsa", not(feature = "rsa")))]
+    const SCHEMES: &[u8] = &[
+        0x08, 0x07, 0x04, 0x03, 0x05, 0x03, 0x09, 0x04, 0x09, 0x05, 0x09, 0x06,
+    ];
+    #[cfg(all(not(feature = "ecdsa"), feature = "rsa"))]
     const SCHEMES: &[u8] = &[0x08, 0x07, 0x08, 0x04, 0x09, 0x04, 0x09, 0x05, 0x09, 0x06];
-    #[cfg(not(feature = "rsa"))]
+    #[cfg(all(not(feature = "ecdsa"), not(feature = "rsa")))]
     const SCHEMES: &[u8] = &[0x08, 0x07, 0x09, 0x04, 0x09, 0x05, 0x09, 0x06];
     assert_eq!(SCHEMES.len(), 2 * SIG_SCHEME_COUNT as usize);
 
     // Match the list together with its 2-byte length prefix, so the assertion
     // pins ordering and rejects any extra/duplicate/missing scheme.
-    let mut needle = [0u8; 2 + 10];
+    let mut needle = [0u8; 2 + 14];
     needle[..2].copy_from_slice(&(SCHEMES.len() as u16).to_be_bytes());
     needle[2..2 + SCHEMES.len()].copy_from_slice(SCHEMES);
     let needle = &needle[..2 + SCHEMES.len()];
@@ -1176,10 +1184,8 @@ fn certificate_verify_rejects_trailing_bytes() {
         validity_der: &[],
     };
     let th = TranscriptDigest::new([0u8; 32]);
-    let err = server_flight::tests::verify_certificate_verify::<RustCrypto, RustCrypto>(
-        &view, &th, &body,
-    )
-    .unwrap_err();
+    let err = server_flight::tests::verify_certificate_verify::<RustCrypto>(&view, &th, &body)
+        .unwrap_err();
     assert_eq!(err, FlightError::TrailingBytes);
 }
 
@@ -1246,7 +1252,10 @@ mod cipher_aes {
 
     use crate::traits::verify_strategy::PreparedVerifier;
 
-    use crate::traits::{CertParseError, CertParser, Ed25519VerifierProvider};
+    use crate::traits::verify_provider::{
+        Ed25519, SigVerifierProvider, VerifierBackend, VerifyProviderError,
+    };
+    use crate::traits::{CertParseError, CertParser};
 
     /// Ed25519 pubkey in the seed-0 self-signed leaf cert. Same constant
     /// as in connection.rs::tests; hoisted here so the verify-helper
@@ -1257,8 +1266,11 @@ mod cipher_aes {
         0x4c, 0x3f,
     ];
 
-    fn fixture_prepared_ed25519<E: Ed25519VerifierProvider>() -> PreparedVerifier<E, RustCrypto> {
-        PreparedVerifier::ed25519(E::prepare_ed25519(&FIXTURE_LEAF_ED25519_PUB))
+    fn fixture_prepared_ed25519<P: VerifierBackend>() -> PreparedVerifier<P> {
+        PreparedVerifier::ed25519(
+            <P as SigVerifierProvider<Ed25519>>::prepare(&FIXTURE_LEAF_ED25519_PUB)
+                .expect("Ed25519 prepare is infallible"),
+        )
     }
 
     fn fixture_leaf_ed25519() -> CertView<'static> {
@@ -1303,9 +1315,11 @@ mod cipher_aes {
         AeadIv::new(ZeroBuf::<12>::new(FIXTURE_S_HS_IV_BYTES))
     }
 
-    /// Stub Ed25519VerifierProvider backend that always rejects. Swapping it
-    /// in at the `E` generic must flip verify results even with identical
-    /// cert / signature bytes.
+    /// Backend whose Ed25519 verifier always rejects. Swapping it in at the
+    /// backend generic must flip verify results even with identical cert /
+    /// signature bytes. Only the Ed25519 path is exercised; the other algorithms
+    /// delegate to `RustCrypto` so `AlwaysReject` still satisfies
+    /// `VerifierBackend`.
     struct AlwaysReject;
 
     struct AlwaysRejectVerifier;
@@ -1322,10 +1336,58 @@ mod cipher_aes {
         }
     }
 
-    impl crate::traits::Ed25519VerifierProvider for AlwaysReject {
+    impl SigVerifierProvider<Ed25519> for AlwaysReject {
         type Verifier = AlwaysRejectVerifier;
-        fn prepare_ed25519(_: &[u8; 32]) -> Self::Verifier {
-            AlwaysRejectVerifier
+        fn prepare(_: &[u8; 32]) -> Result<Self::Verifier, VerifyProviderError> {
+            Ok(AlwaysRejectVerifier)
+        }
+    }
+
+    #[cfg(feature = "rsa")]
+    impl SigVerifierProvider<crate::traits::verify_provider::Rsa> for AlwaysReject {
+        type Verifier =
+            <RustCrypto as SigVerifierProvider<crate::traits::verify_provider::Rsa>>::Verifier;
+        fn prepare(
+            pubkey: crate::traits::verify_strategy::RsaKeyMaterial<'_>,
+        ) -> Result<Self::Verifier, VerifyProviderError> {
+            <RustCrypto as SigVerifierProvider<crate::traits::verify_provider::Rsa>>::prepare(
+                pubkey,
+            )
+        }
+    }
+
+    #[cfg(feature = "ecdsa")]
+    impl SigVerifierProvider<crate::traits::verify_provider::EcdsaP256> for AlwaysReject {
+        type Verifier = <RustCrypto as SigVerifierProvider<
+            crate::traits::verify_provider::EcdsaP256,
+        >>::Verifier;
+        fn prepare(pubkey: &[u8; 65]) -> Result<Self::Verifier, VerifyProviderError> {
+            <RustCrypto as SigVerifierProvider<crate::traits::verify_provider::EcdsaP256>>::prepare(
+                pubkey,
+            )
+        }
+    }
+
+    #[cfg(feature = "ecdsa")]
+    impl SigVerifierProvider<crate::traits::verify_provider::EcdsaP384> for AlwaysReject {
+        type Verifier = <RustCrypto as SigVerifierProvider<
+            crate::traits::verify_provider::EcdsaP384,
+        >>::Verifier;
+        fn prepare(pubkey: &[u8; 97]) -> Result<Self::Verifier, VerifyProviderError> {
+            <RustCrypto as SigVerifierProvider<crate::traits::verify_provider::EcdsaP384>>::prepare(
+                pubkey,
+            )
+        }
+    }
+
+    #[cfg(feature = "mldsa")]
+    impl SigVerifierProvider<crate::traits::verify_provider::MlDsa> for AlwaysReject {
+        type Verifier =
+            <RustCrypto as SigVerifierProvider<crate::traits::verify_provider::MlDsa>>::Verifier;
+        fn prepare(pubkey: &[u8]) -> Result<Self::Verifier, VerifyProviderError> {
+            <RustCrypto as SigVerifierProvider<crate::traits::verify_provider::MlDsa>>::prepare(
+                pubkey,
+            )
         }
     }
 
@@ -1336,8 +1398,7 @@ mod cipher_aes {
         let mut buf = [0u8; 512];
         let len = fixture_cert_der_copy(&mut buf);
         let cert_der = &buf[..len];
-        let err =
-            verify_self_signed_cert::<DerCert, AlwaysReject, RustCrypto>(cert_der).unwrap_err();
+        let err = verify_self_signed_cert::<DerCert, AlwaysReject>(cert_der).unwrap_err();
         assert_eq!(err, FlightError::CertSelfSignatureInvalid);
     }
 
@@ -1502,7 +1563,7 @@ mod cipher_aes {
         let mut transcript = TranscriptHash::<RustCrypto>::new();
         transcript.update_record(&FIXTURE_CLIENT_HELLO).unwrap();
         transcript.update_record(&FIXTURE_SERVER_HELLO).unwrap();
-        verify_server_flight::<RustCrypto, RustCrypto, RustCrypto>(
+        verify_server_flight::<RustCrypto, RustCrypto>(
             &mut transcript,
             content,
             &make_fixture_s_hs_traffic_secret(),
@@ -1617,8 +1678,8 @@ mod cipher_aes {
                 _ => panic!("fixture cert is Ed25519"),
             }
 
-            let view = verify_self_signed_cert::<DerCert, RustCrypto, RustCrypto>(cert_der)
-                .expect("cert self-sig");
+            let view =
+                verify_self_signed_cert::<DerCert, RustCrypto>(cert_der).expect("cert self-sig");
             let pk = match view {
                 CertView::Ed25519 { pubkey, .. } => *pubkey,
                 #[cfg(any(feature = "rsa", feature = "mldsa", feature = "ecdsa"))]
@@ -1629,7 +1690,7 @@ mod cipher_aes {
             let mut transcript = TranscriptHash::<RustCrypto>::new();
             transcript.update_record(&FIXTURE_CLIENT_HELLO).unwrap();
             transcript.update_record(&FIXTURE_SERVER_HELLO).unwrap();
-            let result = verify_server_flight::<RustCrypto, RustCrypto, RustCrypto>(
+            let result = verify_server_flight::<RustCrypto, RustCrypto>(
                 &mut transcript,
                 content,
                 &make_fixture_s_hs_traffic_secret(),
@@ -1664,7 +1725,7 @@ mod cipher_aes {
             let mut transcript = TranscriptHash::<RustCrypto>::new();
             transcript.update_record(&FIXTURE_CLIENT_HELLO).unwrap();
             transcript.update_record(&FIXTURE_SERVER_HELLO).unwrap();
-            let err = verify_server_flight::<RustCrypto, AlwaysReject, RustCrypto>(
+            let err = verify_server_flight::<RustCrypto, AlwaysReject>(
                 &mut transcript,
                 content,
                 &make_fixture_s_hs_traffic_secret(),
@@ -1698,7 +1759,7 @@ mod cipher_aes {
             let mut transcript = TranscriptHash::<RustCrypto>::new();
             transcript.update_record(&FIXTURE_CLIENT_HELLO).unwrap();
             transcript.update_record(&FIXTURE_SERVER_HELLO).unwrap();
-            let err = verify_server_flight::<RustCrypto, RustCrypto, RustCrypto>(
+            let err = verify_server_flight::<RustCrypto, RustCrypto>(
                 &mut transcript,
                 &tampered[..content.len()],
                 &make_fixture_s_hs_traffic_secret(),
@@ -1775,7 +1836,7 @@ mod cipher_aes {
             let mut transcript = TranscriptHash::<RustCrypto>::new();
             transcript.update_record(&FIXTURE_CLIENT_HELLO).unwrap();
             transcript.update_record(&FIXTURE_SERVER_HELLO).unwrap();
-            verify_server_flight::<RustCrypto, RustCrypto, RustCrypto>(
+            verify_server_flight::<RustCrypto, RustCrypto>(
                 &mut transcript,
                 content,
                 &make_fixture_s_hs_traffic_secret(),
@@ -1815,7 +1876,7 @@ mod cipher_aes {
             let mut transcript = TranscriptHash::<RustCrypto>::new();
             transcript.update_record(&FIXTURE_CLIENT_HELLO).unwrap();
             transcript.update_record(&FIXTURE_SERVER_HELLO).unwrap();
-            verify_server_flight::<RustCrypto, RustCrypto, RustCrypto>(
+            verify_server_flight::<RustCrypto, RustCrypto>(
                 &mut transcript,
                 content,
                 &make_fixture_s_hs_traffic_secret(),
@@ -2014,22 +2075,30 @@ mod cipher_aes {
             let flight_pre = parse_server_flight(content).expect("parse_server_flight");
             let leaf_der = extract_cert_der(flight_pre.cert_body).expect("extract_cert_der");
             let leaf_view = <DerCert as CertParser>::parse(leaf_der).expect("parse RSA leaf");
-            let prepared = match &leaf_view {
-                CertView::Rsa {
-                    modulus, exponent, ..
-                } => PreparedVerifier::Rsa(
-                    <RustCrypto as crate::traits::RsaVerifierProvider>::prepare_rsa(
-                        modulus, *exponent,
-                    )
-                    .expect("prepare_rsa"),
-                ),
-                _ => panic!("fixture is RSA"),
-            };
+            let prepared =
+                match &leaf_view {
+                    CertView::Rsa {
+                        modulus, exponent, ..
+                    } => {
+                        PreparedVerifier::Rsa(
+                            <RustCrypto as SigVerifierProvider<
+                                crate::traits::verify_provider::Rsa,
+                            >>::prepare(
+                                crate::traits::verify_strategy::RsaKeyMaterial {
+                                    modulus,
+                                    exponent: *exponent,
+                                },
+                            )
+                            .expect("prepare RSA verifier"),
+                        )
+                    }
+                    _ => panic!("fixture is RSA"),
+                };
 
             let mut transcript = TranscriptHash::<RustCrypto>::new();
             transcript.update_record(&FIXTURE_RSA_CLIENT_HELLO).unwrap();
             transcript.update_record(&FIXTURE_RSA_SERVER_HELLO).unwrap();
-            verify_server_flight::<RustCrypto, RustCrypto, RustCrypto>(
+            verify_server_flight::<RustCrypto, RustCrypto>(
                 &mut transcript,
                 content,
                 &s_hs_ts,

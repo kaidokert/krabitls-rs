@@ -20,11 +20,11 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
 use crate::traits::cert::{CertParseError, CertParser, CertView};
+use crate::traits::verify_provider::VerifierBackend;
 use crate::traits::verify_strategy::{
     CertChainView, Clock, LinkErr, NoClock, PrepareLeafErr, PreparedVerifier, Trusted,
     VerifyStrategy, prepare_leaf, verify_link,
 };
-use crate::traits::{Ed25519VerifierProvider, RsaVerifierProvider};
 
 /// A trust anchor in the on-board ledger.
 #[derive(Debug, Clone, Copy)]
@@ -242,12 +242,11 @@ fn require_issuer_ca<C: CertParser>(
     Ok(())
 }
 
-impl<'a, C, K, E, R, const CAP: usize> VerifyStrategy<E, R> for PinnedRoots<'a, C, K, CAP>
+impl<'a, C, K, P, const CAP: usize> VerifyStrategy<P> for PinnedRoots<'a, C, K, CAP>
 where
     C: CertParser,
     K: Clock,
-    E: Ed25519VerifierProvider,
-    R: RsaVerifierProvider,
+    P: VerifierBackend,
 {
     type Error = PinnedRootsError;
 
@@ -259,8 +258,8 @@ where
     fn verify_chain<'chain, 'src, 'slot>(
         &self,
         chain: CertChainView<'chain, 'src>,
-        slot: &'slot mut Option<PreparedVerifier<E, R>>,
-    ) -> Result<Trusted<'slot, E, R>, Self::Error> {
+        slot: &'slot mut Option<PreparedVerifier<P>>,
+    ) -> Result<Trusted<'slot, P>, Self::Error> {
         let certs = chain.certs;
         if certs.is_empty() {
             return Err(PinnedRootsError::EmptyChain);
@@ -296,7 +295,7 @@ where
                 break;
             }
             let parent = C::parse(certs[i + 1])?;
-            verify_link::<E, R>(&child, &parent)?;
+            verify_link::<P>(&child, &parent)?;
             require_issuer_ca::<C>(certs[i + 1], i)?;
             child = parent;
             i += 1;
@@ -316,7 +315,7 @@ where
                     continue;
                 };
                 if require_issuer_ca::<C>(anchor_der, i).is_ok()
-                    && verify_link::<E, R>(&child, &anchor_view).is_ok()
+                    && verify_link::<P>(&child, &anchor_view).is_ok()
                     && self.check_validity_of(anchor_der, &anchor_view).is_ok()
                 {
                     anchored = true;
@@ -328,7 +327,7 @@ where
             }
         }
 
-        *slot = Some(prepare_leaf::<E, R>(&leaf_view)?);
+        *slot = Some(prepare_leaf::<P>(&leaf_view)?);
         Ok(Trusted::new(slot.as_ref().unwrap()))
     }
 }
@@ -394,13 +393,9 @@ mod tests {
         chain: &[&[u8]],
     ) -> Result<(), PinnedRootsError> {
         let pr: PinnedRoots<DerCert, NoClock, CAP> = PinnedRoots::new(anchors);
-        let mut slot: Option<PreparedVerifier<RustCrypto, RustCrypto>> = None;
-        VerifyStrategy::<RustCrypto, RustCrypto>::verify_chain(
-            &pr,
-            CertChainView { certs: chain },
-            &mut slot,
-        )
-        .map(|_| ())
+        let mut slot: Option<PreparedVerifier<RustCrypto>> = None;
+        VerifyStrategy::<RustCrypto>::verify_chain(&pr, CertChainView { certs: chain }, &mut slot)
+            .map(|_| ())
     }
 
     #[test]
@@ -556,9 +551,9 @@ mod tests {
             PinnedRoots::with_clock(&anchors, Clocked(FixedTime(1_800_000_000)));
         let expired: PinnedRoots<DerCert, _, 10> =
             PinnedRoots::with_clock(&anchors, Clocked(FixedTime(6_000_000_000)));
-        let mut slot: Option<PreparedVerifier<RustCrypto, RustCrypto>> = None;
+        let mut slot: Option<PreparedVerifier<RustCrypto>> = None;
         assert!(
-            VerifyStrategy::<RustCrypto, RustCrypto>::verify_chain(
+            VerifyStrategy::<RustCrypto>::verify_chain(
                 &in_window,
                 CertChainView {
                     certs: &NO_ROOT_CHAIN
@@ -567,9 +562,9 @@ mod tests {
             )
             .is_ok()
         );
-        let mut slot2: Option<PreparedVerifier<RustCrypto, RustCrypto>> = None;
+        let mut slot2: Option<PreparedVerifier<RustCrypto>> = None;
         assert_eq!(
-            VerifyStrategy::<RustCrypto, RustCrypto>::verify_chain(
+            VerifyStrategy::<RustCrypto>::verify_chain(
                 &expired,
                 CertChainView {
                     certs: &NO_ROOT_CHAIN
@@ -598,9 +593,9 @@ mod tests {
         let anchors = [Anchor::Fingerprint(fp(LEAF))];
         let expired: PinnedRoots<DerCert, _, 10> =
             PinnedRoots::with_clock(&anchors, Clocked(FixedTime(6_000_000_000)));
-        let mut slot: Option<PreparedVerifier<RustCrypto, RustCrypto>> = None;
+        let mut slot: Option<PreparedVerifier<RustCrypto>> = None;
         assert_eq!(
-            VerifyStrategy::<RustCrypto, RustCrypto>::verify_chain(
+            VerifyStrategy::<RustCrypto>::verify_chain(
                 &expired,
                 CertChainView { certs: &FULL_CHAIN },
                 &mut slot,
@@ -610,9 +605,9 @@ mod tests {
         );
         let in_window: PinnedRoots<DerCert, _, 10> =
             PinnedRoots::with_clock(&anchors, Clocked(FixedTime(1_800_000_000)));
-        let mut slot2: Option<PreparedVerifier<RustCrypto, RustCrypto>> = None;
+        let mut slot2: Option<PreparedVerifier<RustCrypto>> = None;
         assert!(
-            VerifyStrategy::<RustCrypto, RustCrypto>::verify_chain(
+            VerifyStrategy::<RustCrypto>::verify_chain(
                 &in_window,
                 CertChainView { certs: &FULL_CHAIN },
                 &mut slot2,

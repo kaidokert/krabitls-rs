@@ -836,8 +836,8 @@ fn connect_check_aes_ed25519_jedisct(
     impl ClientConfig for JedisctConfig {
         type Hkdf = JedisctCrypto;
         type CertParser = DerCert;
-        type Ed25519 = RustCrypto;
-        type Rsa = RustCrypto;
+        type Verifiers = RustCrypto;
+        type Aead = RustCrypto;
         const SUITES: ConfigSuitePolicy = ConfigSuitePolicy::AesOnly;
     }
 

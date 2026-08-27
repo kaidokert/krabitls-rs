@@ -185,10 +185,7 @@ pub fn connect<'s, S, R, V, A>(
 where
     S: TcpClientStack,
     R: rand_core::TryCryptoRng,
-    V: VerifyStrategy<
-            <DefaultConfig as ClientConfig>::Ed25519,
-            <DefaultConfig as ClientConfig>::Rsa,
-        >,
+    V: VerifyStrategy<<DefaultConfig as ClientConfig>::Verifiers>,
     A: ClientAuthSign<R>,
 {
     let transport = PollNal::new(NalTransport::open(stack, remote).map_err(ConnectError::Io)?);

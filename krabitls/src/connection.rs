@@ -6,10 +6,6 @@ use core::marker::PhantomData;
 
 use embedded_io::Write;
 
-#[cfg(feature = "cipher-aes")]
-use crate::aead::Aes128GcmSha256;
-#[cfg(feature = "chacha20")]
-use crate::aead::ChaCha20Poly1305Sha256;
 use crate::aead::split_inner_plaintext;
 use crate::aead::{CipherSuite, RecordKeys};
 use crate::aead::{DecryptError, EncryptError};
@@ -35,7 +31,7 @@ use crate::server_flight::FlightError;
 use crate::server_flight::ServerPubkey;
 use crate::server_flight::verify_server_flight;
 use crate::traits::verify_strategy::PreparedVerifier;
-use crate::traits::{CertView, Ed25519VerifierProvider, HkdfSha256, RsaVerifierProvider};
+use crate::traits::{AeadBackend, CertView, HkdfSha256, VerifierBackend};
 use rand_core::TryCryptoRng;
 
 /// Internal scratch for the outgoing ClientHello before it's forwarded to the
@@ -513,19 +509,21 @@ where
 
 /// Pre-known suite? Use `assume_*` to skip the runtime match.
 #[allow(clippy::large_enum_variant)] // AES Aes128Gcm key schedule dominates
-pub enum NegotiatedSuite<H = RustCrypto>
+pub enum NegotiatedSuite<H = RustCrypto, AB = RustCrypto>
 where
     H: HkdfSha256,
+    AB: AeadBackend,
 {
     #[cfg(feature = "cipher-aes")]
-    Aes128Gcm(TlsConnection<WaitServerFlight<Aes128GcmSha256>, H>),
+    Aes128Gcm(TlsConnection<WaitServerFlight<AB::Aes>, H>),
     #[cfg(feature = "chacha20")]
-    ChaCha20Poly1305(TlsConnection<WaitServerFlight<ChaCha20Poly1305Sha256>, H>),
+    ChaCha20Poly1305(TlsConnection<WaitServerFlight<AB::ChaCha>, H>),
 }
 
-impl<H> NegotiatedSuite<H>
+impl<H, AB> NegotiatedSuite<H, AB>
 where
     H: HkdfSha256,
+    AB: AeadBackend,
 {
     // Test-only; production matches on `NegotiatedSuite`. Sole consumer is the
     // seed-0 AES fixture replay, which is gated off when extra
@@ -542,7 +540,7 @@ where
     ))]
     pub fn assume_aes_128_gcm(
         self,
-    ) -> Result<TlsConnection<WaitServerFlight<Aes128GcmSha256>, H>, ConnectionError> {
+    ) -> Result<TlsConnection<WaitServerFlight<AB::Aes>, H>, ConnectionError> {
         match self {
             Self::Aes128Gcm(c) => Ok(c),
             #[cfg(feature = "chacha20")]
@@ -558,10 +556,28 @@ impl<H> TlsConnection<WaitServerHello, H>
 where
     H: HkdfSha256,
 {
+    // Test-only default-backend form; production dispatch threads the config's
+    // backend via `read_server_hello_with_backend`. Dead in feature combos
+    // whose sole caller (the pure-AES fixture replay) is cfg'd out.
+    #[cfg(test)]
+    #[allow(dead_code)]
     pub fn read_server_hello(
-        mut self,
+        self,
         sh_record: &[u8],
     ) -> Result<NegotiatedSuite<H>, ConnectionError> {
+        self.read_server_hello_with_backend::<RustCrypto>(sh_record)
+    }
+
+    /// Process `ServerHello`, binding each negotiated suite to backend `AB`'s
+    /// cipher. The [`ClientConfig`](crate::client::ClientConfig)-threaded entry
+    /// point for the ServerHello read.
+    pub fn read_server_hello_with_backend<AB>(
+        mut self,
+        sh_record: &[u8],
+    ) -> Result<NegotiatedSuite<H, AB>, ConnectionError>
+    where
+        AB: AeadBackend,
+    {
         let sh = parse_server_hello(sh_record)?;
         // RFC 8446 §4.1.3: the server MUST echo our `legacy_session_id`
         // verbatim (the empty string when we sent none). A mismatch means the
@@ -686,7 +702,7 @@ where
         match sh.cipher_suite {
             #[cfg(feature = "cipher-aes")]
             CIPHER_AES_128_GCM_SHA256 => {
-                let s_hs_keys = RecordKeys::<Aes128GcmSha256>::derive::<H>(&s_hs_ts)?;
+                let s_hs_keys = RecordKeys::<AB::Aes>::derive::<H>(&s_hs_ts)?;
                 Ok(NegotiatedSuite::Aes128Gcm(TlsConnection {
                     transcript: self.transcript,
                     state: WaitServerFlight {
@@ -701,7 +717,7 @@ where
             }
             #[cfg(feature = "chacha20")]
             CIPHER_CHACHA20_POLY1305_SHA256 => {
-                let s_hs_keys = RecordKeys::<ChaCha20Poly1305Sha256>::derive::<H>(&s_hs_ts)?;
+                let s_hs_keys = RecordKeys::<AB::ChaCha>::derive::<H>(&s_hs_ts)?;
                 Ok(NegotiatedSuite::ChaCha20Poly1305(TlsConnection {
                     transcript: self.transcript,
                     state: WaitServerFlight {
@@ -789,14 +805,10 @@ where
     /// defensively re-checks `prepared.matches_cert(leaf_view)` so a
     /// non-engine caller can't sneak in a verifier built from one cert
     /// while the stored `server_pubkey` comes from another.
-    pub fn finalize_server_flight<
-        const N: usize,
-        E: Ed25519VerifierProvider,
-        R: RsaVerifierProvider,
-    >(
+    pub fn finalize_server_flight<const N: usize, P: VerifierBackend>(
         mut self,
         reassembler: &ServerFlightReassembler<N>,
-        prepared: &PreparedVerifier<E, R>,
+        prepared: &PreparedVerifier<P>,
         leaf_view: &CertView<'_>,
     ) -> Result<TlsConnection<ServerFlightDone<S, M>, H>, ConnectionError> {
         if !bool::from(prepared.matches_cert(leaf_view)) {
@@ -805,7 +817,7 @@ where
         let plaintext = reassembler
             .flight_bytes()
             .ok_or(ConnectionError::IncompleteFlight)?;
-        let verified = verify_server_flight::<H, E, R>(
+        let verified = verify_server_flight::<H, P>(
             &mut self.transcript,
             plaintext,
             &self.state.s_hs_ts,

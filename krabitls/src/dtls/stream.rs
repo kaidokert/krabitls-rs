@@ -1,32 +1,46 @@
 //! Public blocking DTLS 1.3 client over a [`DatagramTransport`].
 //!
-//! [`DtlsStream`] is the outward-facing façade over the internal driver: it fixes
-//! the crypto backend to `RustCrypto`, the certificate parser to DER, and the
-//! cipher suite at compile time — AES-128-GCM-SHA256 when `cipher-aes` is built,
-//! otherwise ChaCha20-Poly1305-SHA256 — leaving the trust decision to a caller
-//! [`VerifyStrategy`]. This is the DTLS analogue of
+//! [`DtlsStream`] is the outward-facing façade over the internal driver: it takes
+//! its crypto backends and certificate parser from a [`ClientConfig`] (default
+//! [`DefaultConfig`], the bundled RustCrypto + DER) and fixes the cipher suite at
+//! compile time — the config's AES-128-GCM-SHA256 when `cipher-aes` is built,
+//! otherwise its ChaCha20-Poly1305-SHA256 — leaving the trust decision to a
+//! caller [`VerifyStrategy`]. This is the DTLS analogue of
 //! [`TlsStream`](crate::client::TlsStream).
 
-use crate::backends::{DerCert, RustCrypto};
+use crate::client::{ClientConfig, DefaultConfig};
 use crate::dtls::client::{DtlsClient, DtlsClientError};
+use crate::dtls::record::DtlsSuite;
 use crate::dtls::transport::DatagramTransport;
+use crate::traits::AeadBackend;
 use crate::traits::verify_strategy::VerifyStrategy;
 
-/// The suite the façade speaks. A `no_std` client is built for one suite, so it
-/// is selected at compile time — AES when present, else ChaCha20-Poly1305.
+/// The single compile-time suite the façade speaks for config `C`: its AEAD
+/// backend's AES suite when `cipher-aes` is built, else its ChaCha suite. A
+/// `no_std` DTLS client is built for exactly one suite.
 #[cfg(feature = "cipher-aes")]
-type FacadeSuite = crate::aead::Aes128GcmSha256;
+type ConfiguredDtlsSuite<C> = <<C as ClientConfig>::Aead as AeadBackend>::Aes;
 #[cfg(all(not(feature = "cipher-aes"), feature = "chacha20"))]
-type FacadeSuite = crate::aead::ChaCha20Poly1305Sha256;
+type ConfiguredDtlsSuite<C> = <<C as ClientConfig>::Aead as AeadBackend>::ChaCha;
 
 /// A connected DTLS 1.3 client: owns the datagram transport and the negotiated
 /// epoch-3 application keys.
-pub struct DtlsStream<T: DatagramTransport> {
-    client: DtlsClient<FacadeSuite>,
+// `DtlsSuite` is a crate-internal sealed trait; the bound is an implementation
+// detail of which suite the config selects, not caller-nameable surface.
+#[allow(private_bounds)]
+pub struct DtlsStream<T: DatagramTransport, C: ClientConfig = DefaultConfig>
+where
+    ConfiguredDtlsSuite<C>: DtlsSuite,
+{
+    client: DtlsClient<ConfiguredDtlsSuite<C>>,
     transport: T,
 }
 
-impl<T: DatagramTransport> DtlsStream<T> {
+#[allow(private_bounds)]
+impl<T: DatagramTransport, C: ClientConfig> DtlsStream<T, C>
+where
+    ConfiguredDtlsSuite<C>: DtlsSuite,
+{
     /// Drive a full DTLS 1.3 handshake over `transport` and return a ready
     /// stream. `strategy` decides trust in the server certificate chain;
     /// `hostname`, when `Some`, is matched against the leaf SAN (`None` skips the
@@ -52,17 +66,16 @@ impl<T: DatagramTransport> DtlsStream<T> {
         reasm_buf: &mut [u8],
     ) -> Result<Self, DtlsClientError<T::Error>>
     where
-        V: VerifyStrategy<RustCrypto, RustCrypto>,
+        V: VerifyStrategy<C::Verifiers>,
         Rng: rand_core::TryCryptoRng + ?Sized,
     {
-        let client = DtlsClient::<FacadeSuite>::connect::<
+        let client = DtlsClient::<ConfiguredDtlsSuite<C>>::connect::<
             T,
-            RustCrypto,
+            C::Hkdf,
             V,
-            RustCrypto,
-            RustCrypto,
+            C::Verifiers,
             Rng,
-            DerCert,
+            C::CertParser,
             MAX_CHAIN,
         >(
             &mut transport,

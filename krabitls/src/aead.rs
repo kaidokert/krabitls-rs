@@ -196,15 +196,25 @@ pub trait CipherSuite: sealed::Sealed + Sized {
 #[cfg(feature = "cipher-aes")]
 mod aes {
     use super::*;
+    use core::marker::PhantomData;
 
-    /// `TLS_AES_128_GCM_SHA256` (`0x1301`).
-    pub struct Aes128GcmSha256;
-    impl sealed::Sealed for Aes128GcmSha256 {}
-    impl CipherSuite for Aes128GcmSha256 {
+    /// `TLS_AES_128_GCM_SHA256` (`0x1301`). The cipher `C` defaults to the
+    /// bundled `aes_gcm` software AEAD; a `ClientConfig` swaps in a hardware
+    /// AES-128-GCM by naming a different `C` (see
+    /// [`AeadBackend`](crate::traits::AeadBackend)).
+    pub struct Aes128GcmSha256<C = aes_gcm::Aes128Gcm>(PhantomData<C>);
+    impl<C> sealed::Sealed for Aes128GcmSha256<C> {}
+    impl<C> CipherSuite for Aes128GcmSha256<C>
+    where
+        C: AeadInOut
+            + KeyInit
+            + ::aead::KeySizeUser<KeySize = ::aead::consts::U16>
+            + AeadCore<NonceSize = ::aead::consts::U12, TagSize = ::aead::consts::U16>,
+    {
         type KeyBytes = [u8; 16];
-        type Cipher = aes_gcm::Aes128Gcm;
+        type Cipher = C;
         fn make_cipher(key: &zeroize::Zeroizing<[u8; 16]>) -> Self::Cipher {
-            aes_gcm::Aes128Gcm::new(&Array::from(**key))
+            C::new(&Array::from(**key))
         }
         fn derive_keys<H: crate::traits::HkdfSha256>(
             traffic_secret: &crate::newtype::Secret,
@@ -220,15 +230,25 @@ pub use aes::Aes128GcmSha256;
 #[cfg(feature = "chacha20")]
 mod chacha {
     use super::*;
+    use core::marker::PhantomData;
 
-    /// `TLS_CHACHA20_POLY1305_SHA256` (`0x1303`).
-    pub struct ChaCha20Poly1305Sha256;
-    impl sealed::Sealed for ChaCha20Poly1305Sha256 {}
-    impl CipherSuite for ChaCha20Poly1305Sha256 {
+    /// `TLS_CHACHA20_POLY1305_SHA256` (`0x1303`). The cipher `C` defaults to the
+    /// bundled `chacha20poly1305` software AEAD; a `ClientConfig` swaps in a
+    /// hardware implementation by naming a different `C` (see
+    /// [`AeadBackend`](crate::traits::AeadBackend)).
+    pub struct ChaCha20Poly1305Sha256<C = chacha20poly1305::ChaCha20Poly1305>(PhantomData<C>);
+    impl<C> sealed::Sealed for ChaCha20Poly1305Sha256<C> {}
+    impl<C> CipherSuite for ChaCha20Poly1305Sha256<C>
+    where
+        C: AeadInOut
+            + KeyInit
+            + ::aead::KeySizeUser<KeySize = ::aead::consts::U32>
+            + AeadCore<NonceSize = ::aead::consts::U12, TagSize = ::aead::consts::U16>,
+    {
         type KeyBytes = [u8; 32];
-        type Cipher = chacha20poly1305::ChaCha20Poly1305;
+        type Cipher = C;
         fn make_cipher(key: &zeroize::Zeroizing<[u8; 32]>) -> Self::Cipher {
-            chacha20poly1305::ChaCha20Poly1305::new(&Array::from(**key))
+            C::new(&Array::from(**key))
         }
         fn derive_keys<H: crate::traits::HkdfSha256>(
             traffic_secret: &crate::newtype::Secret,

@@ -7,10 +7,6 @@ use super::scratch::{
     TLS_HEADER,
 };
 use super::{ClientConfig, ClientParams, Scratch};
-#[cfg(feature = "cipher-aes")]
-use crate::aead::Aes128GcmSha256;
-#[cfg(feature = "chacha20")]
-use crate::aead::ChaCha20Poly1305Sha256;
 use crate::client_flight::ClientAuthSign;
 use crate::connection::{
     AppData, FlightStep, NegotiatedSuite, ServerFlightDone, WaitServerFlight, WaitServerHello,
@@ -24,9 +20,18 @@ use crate::identity::verify_hostname;
 use crate::server_flight::{
     certificate_request_context, certificate_request_sig_algs, extract_chain, parse_server_flight,
 };
+use crate::traits::AeadBackend;
 use crate::traits::CertParser;
 use crate::traits::verify_strategy::{CertChainView, PreparedVerifier, VerifyStrategy};
 use rand_core::TryCryptoRng;
+
+/// The config's negotiated AES / ChaCha suites, routed through its
+/// [`AeadBackend`]. Keeps the typestate dispatch readable where it would
+/// otherwise spell out the full projection.
+#[cfg(feature = "cipher-aes")]
+type ConfAes<C> = <<C as ClientConfig>::Aead as AeadBackend>::Aes;
+#[cfg(feature = "chacha20")]
+type ConfChaCha<C> = <<C as ClientConfig>::Aead as AeadBackend>::ChaCha;
 
 /// Recv-buffer cursor state.
 ///
@@ -93,13 +98,13 @@ impl PostHandshakeReasm {
 pub(crate) enum EngineState<C: ClientConfig> {
     WaitServerHello(TlsConnection<WaitServerHello, C::Hkdf>),
     #[cfg(feature = "cipher-aes")]
-    WaitFlightAes(TlsConnection<WaitServerFlight<Aes128GcmSha256>, C::Hkdf>),
+    WaitFlightAes(TlsConnection<WaitServerFlight<ConfAes<C>>, C::Hkdf>),
     #[cfg(feature = "chacha20")]
-    WaitFlightChaCha(TlsConnection<WaitServerFlight<ChaCha20Poly1305Sha256>, C::Hkdf>),
+    WaitFlightChaCha(TlsConnection<WaitServerFlight<ConfChaCha<C>>, C::Hkdf>),
     #[cfg(feature = "cipher-aes")]
-    AppAes(TlsConnection<AppData<Aes128GcmSha256>, C::Hkdf>),
+    AppAes(TlsConnection<AppData<ConfAes<C>>, C::Hkdf>),
     #[cfg(feature = "chacha20")]
-    AppChaCha(TlsConnection<AppData<ChaCha20Poly1305Sha256>, C::Hkdf>),
+    AppChaCha(TlsConnection<AppData<ConfChaCha<C>>, C::Hkdf>),
     /// Terminal sentinel; also used as the `mem::replace` placeholder
     /// during state transitions.
     Closed,
@@ -238,7 +243,7 @@ impl<
         rng: &mut R,
     ) -> Result<EngineEvent, HandshakeError>
     where
-        V: VerifyStrategy<C::Ed25519, C::Rsa>,
+        V: VerifyStrategy<C::Verifiers>,
         A: ClientAuthSign<R>,
         R: TryCryptoRng + ?Sized,
     {
@@ -403,7 +408,7 @@ impl<
         rng: &mut R,
     ) -> Result<(), HandshakeError>
     where
-        V: VerifyStrategy<C::Ed25519, C::Rsa>,
+        V: VerifyStrategy<C::Verifiers>,
         A: ClientAuthSign<R>,
         R: TryCryptoRng + ?Sized,
     {
@@ -467,10 +472,12 @@ impl<
         };
 
         let record = &self.scratch.recv_record[start..end];
-        let negotiated = conn.read_server_hello(record).map_err(|e| {
-            self.closed = true;
-            HandshakeError::Connection(e)
-        })?;
+        let negotiated = conn
+            .read_server_hello_with_backend::<C::Aead>(record)
+            .map_err(|e| {
+                self.closed = true;
+                HandshakeError::Connection(e)
+            })?;
 
         // The advertised-suites check lives in the typestate's
         // `read_server_hello`; by the time we reach this match the
@@ -495,7 +502,7 @@ impl<
         rng: &mut R,
     ) -> Result<(), HandshakeError>
     where
-        V: VerifyStrategy<C::Ed25519, C::Rsa>,
+        V: VerifyStrategy<C::Verifiers>,
         A: ClientAuthSign<R>,
         R: TryCryptoRng + ?Sized,
     {
@@ -546,7 +553,7 @@ impl<
         rng: &mut R,
     ) -> Result<(), HandshakeError>
     where
-        V: VerifyStrategy<C::Ed25519, C::Rsa>,
+        V: VerifyStrategy<C::Verifiers>,
         A: ClientAuthSign<R>,
         R: TryCryptoRng + ?Sized,
     {
@@ -602,7 +609,7 @@ impl<
             .map_err(|e| HandshakeError::Connection(ConnectionError::Flight(e)))?;
         let chain_view = CertChainView { certs: &chain };
 
-        let mut slot: Option<PreparedVerifier<C::Ed25519, C::Rsa>> = None;
+        let mut slot: Option<PreparedVerifier<C::Verifiers>> = None;
         let trusted = params
             .verify
             .verify_chain(chain_view, &mut slot)
@@ -634,7 +641,7 @@ impl<
             #[cfg(feature = "cipher-aes")]
             EngineState::WaitFlightAes(conn) => {
                 let d = conn
-                    .finalize_server_flight::<FLIGHT, C::Ed25519, C::Rsa>(
+                    .finalize_server_flight::<FLIGHT, C::Verifiers>(
                         &self.scratch.reassembler,
                         prepared,
                         &leaf_view,
@@ -645,7 +652,7 @@ impl<
             #[cfg(feature = "chacha20")]
             EngineState::WaitFlightChaCha(conn) => {
                 let d = conn
-                    .finalize_server_flight::<FLIGHT, C::Ed25519, C::Rsa>(
+                    .finalize_server_flight::<FLIGHT, C::Verifiers>(
                         &self.scratch.reassembler,
                         prepared,
                         &leaf_view,
@@ -715,9 +722,9 @@ impl<
 
 enum FlightDone<C: ClientConfig> {
     #[cfg(feature = "cipher-aes")]
-    Aes(TlsConnection<ServerFlightDone<Aes128GcmSha256>, C::Hkdf>),
+    Aes(TlsConnection<ServerFlightDone<ConfAes<C>>, C::Hkdf>),
     #[cfg(feature = "chacha20")]
-    ChaCha(TlsConnection<ServerFlightDone<ChaCha20Poly1305Sha256>, C::Hkdf>),
+    ChaCha(TlsConnection<ServerFlightDone<ConfChaCha<C>>, C::Hkdf>),
 }
 
 // ============================================================================
