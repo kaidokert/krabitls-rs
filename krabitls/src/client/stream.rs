@@ -125,9 +125,8 @@ where
         let (ecdhe, p256_share) = <<C::Kx as KxBackend>::P256 as KxGroup>::generate(rng)
             .map_err(|_| HandshakeError::Rng)?;
 
-        // Split the hybrid client share (`ML-KEM ek || X25519 pub`) back into the
-        // two pieces the ClientHello writer emits: the ek prefix and the trailing
-        // 32-byte X25519 point.
+        // Hybrid share layout is `ML-KEM ek || X25519 pub`; the writer emits each
+        // piece separately.
         #[cfg(feature = "mlkem")]
         let mlkem_ek: &[u8; crate::backends::mlkem::MLKEM768_EK_BYTES] = hybrid_share
             .as_slice()

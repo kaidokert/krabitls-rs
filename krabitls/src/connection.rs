@@ -237,11 +237,9 @@ impl<E: core::error::Error + 'static> core::error::Error for ConnectionError<E> 
 // State markers
 // ============================================================================
 
-// The ephemeral key-exchange secrets carried through the handshake are the
-// backend `KX`'s per-group `Secret` types. Under `mlkem` the X25519MLKEM768
-// composite `Secret` bundles the X25519 and ML-KEM ephemerals in one value, so
-// the standalone X25519 field is gated off there (it would double-generate the
-// X25519 keypair).
+// Under `mlkem` the X25519MLKEM768 composite `Secret` already bundles the X25519
+// ephemeral, so the standalone X25519 field is gated off there (else the X25519
+// keypair is generated twice).
 pub struct Init<KX: KxBackend = RustCrypto> {
     pub(crate) client_random: [u8; 32],
     #[cfg(all(feature = "x25519-kx", not(feature = "mlkem")))]

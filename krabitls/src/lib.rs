@@ -873,7 +873,6 @@ pub(crate) fn parse_server_hello(input: &[u8]) -> Result<ServerHelloView<'_>, Pa
     #[cfg(feature = "x25519-kx")]
     let mut x25519_share: Option<&[u8; 32]> = None;
     #[cfg(feature = "mlkem")]
-    #[cfg(feature = "mlkem")]
     let mut hybrid_share: Option<&[u8]> = None;
     #[cfg(feature = "p256-kx")]
     let mut p256_share: Option<&[u8; backends::ecdhe::P256_SHARE_BYTES]> = None;

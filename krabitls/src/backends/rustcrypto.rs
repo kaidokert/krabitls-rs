@@ -106,7 +106,7 @@ pub struct X25519MlKem768Secret {
     mlkem: crate::backends::mlkem::MlKem768,
 }
 
-// Both components clear themselves on drop, so the marker is honest — required
+// Both components clear themselves on drop, so the marker is sound — required
 // by the `KxGroup::Secret: ZeroizeOnDrop` bound.
 #[cfg(feature = "mlkem")]
 impl zeroize::ZeroizeOnDrop for X25519MlKem768Secret {}
@@ -142,7 +142,6 @@ impl KxGroup for X25519MlKem768Group {
             .map_err(|_| X25519MlKem768Error::X25519)?;
         let (mlkem, ek) = crate::backends::mlkem::MlKem768::generate(rng)
             .map_err(|_| X25519MlKem768Error::MlKem)?;
-        // Wire order: ML-KEM ek ‖ X25519 pub.
         let mut share = ClientShareBuf::new();
         share
             .extend_from_slice(&ek)
@@ -162,8 +161,8 @@ impl KxGroup for X25519MlKem768Group {
             ct.try_into().map_err(|_| X25519MlKem768Error::Malformed)?;
         let x: &[u8; crate::backends::ecdhe_x25519::X25519_SHARE_BYTES] =
             x.try_into().map_err(|_| X25519MlKem768Error::Malformed)?;
-        // X25519 first, matching the pre-refactor abort precedence: a low-order
-        // server point aborts before ML-KEM decapsulation runs.
+        // Run X25519 agreement first: a low-order server point must abort before
+        // ML-KEM decapsulation runs.
         let x25519_ss = secret
             .x25519
             .agree(x)
@@ -172,7 +171,6 @@ impl KxGroup for X25519MlKem768Group {
             .mlkem
             .decapsulate(ct)
             .map_err(|_| X25519MlKem768Error::MlKem)?;
-        // IKM: ML-KEM ss ‖ X25519 ss.
         let mut ikm = Zeroizing::new(
             [0u8; crate::backends::mlkem::MLKEM768_SS_BYTES
                 + crate::backends::ecdhe_x25519::X25519_SS_BYTES],

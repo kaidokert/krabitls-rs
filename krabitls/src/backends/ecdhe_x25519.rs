@@ -37,7 +37,7 @@ pub struct EcdheX25519 {
     secret: X25519DecapKey,
 }
 
-// `secret` clears itself when the struct drops, so the marker is honest — it
+// `secret` clears itself when the struct drops, so the marker is sound — it
 // lets `KxGroup::Secret` require zeroize-on-drop of every backend.
 impl zeroize::ZeroizeOnDrop for EcdheX25519 {}
 
