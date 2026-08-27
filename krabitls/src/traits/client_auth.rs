@@ -5,18 +5,17 @@ use rand_core::TryCryptoRng;
 
 /// Largest client-auth signature krabitls buffers. RSA-PSS is modulus-width, so
 /// this tracks the widest enabled RSA width (512 for 4096, 384 for 3072, 256 for
-/// 2048); an `ecdsa` build needs 104 for a DER-encoded P-384 `ECDSA-Sig-Value`
-/// (SEQUENCE of two ≤49-byte INTEGERs); with both off only Ed25519 (64 B) signs.
+/// 2048). Below RSA it floors at 112 — a DER-encoded P-384 `ECDSA-Sig-Value`
+/// (SEQUENCE of two ≤49-byte INTEGERs) — so a caller-supplied ECDSA/HSM signer
+/// fits with no `ecdsa` cargo feature toggled; Ed25519 (64 B) fits within it.
 pub const MAX_CLIENT_SIG_LEN: usize = if cfg!(feature = "rsa-4096") {
     512
 } else if cfg!(feature = "rsa-3072") {
     384
 } else if cfg!(feature = "rsa") {
     256
-} else if cfg!(feature = "ecdsa") {
-    112
 } else {
-    64
+    112
 };
 
 /// A `CertificateVerify` signature produced by a [`ClientAuth`] implementation.
