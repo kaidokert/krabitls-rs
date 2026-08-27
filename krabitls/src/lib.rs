@@ -786,6 +786,12 @@ pub(crate) struct ServerHelloView<'a> {
     /// iff the hybrid group was selected.
     #[cfg(feature = "mlkem")]
     pub mlkem_ct: Option<&'a [u8; backends::mlkem::MLKEM768_CT_BYTES]>,
+    /// The full `X25519MLKEM768` server key_share (`ML-KEM ct || X25519 pub`) as
+    /// one contiguous slice, `Some` iff the hybrid group was selected. This is
+    /// exactly the `server_share` the hybrid `KxGroup::derive` consumes; the
+    /// split `mlkem_ct` / `x25519_share` views above alias the same bytes.
+    #[cfg(feature = "mlkem")]
+    pub hybrid_share: Option<&'a [u8]>,
     /// Server's secp256r1 SEC1 point (65 bytes), `Some` iff the server selected
     /// secp256r1.
     #[cfg(feature = "p256-kx")]
@@ -873,6 +879,8 @@ pub(crate) fn parse_server_hello(input: &[u8]) -> Result<ServerHelloView<'_>, Pa
     let mut x25519_share: Option<&[u8; 32]> = None;
     #[cfg(feature = "mlkem")]
     let mut mlkem_ct: Option<&[u8; backends::mlkem::MLKEM768_CT_BYTES]> = None;
+    #[cfg(feature = "mlkem")]
+    let mut hybrid_share: Option<&[u8]> = None;
     #[cfg(feature = "p256-kx")]
     let mut p256_share: Option<&[u8; backends::ecdhe::P256_SHARE_BYTES]> = None;
 
@@ -915,6 +923,7 @@ pub(crate) fn parse_server_hello(input: &[u8]) -> Result<ServerHelloView<'_>, Pa
                             .ok_or(ParseError::BadKeyShare)?;
                         mlkem_ct = Some(ct.try_into().map_err(|_| ParseError::BadKeyShare)?);
                         x25519_share = Some(x.try_into().map_err(|_| ParseError::BadKeyShare)?);
+                        hybrid_share = Some(key);
                     }
                     #[cfg(all(not(feature = "mlkem"), feature = "x25519-kx"))]
                     {
@@ -970,6 +979,8 @@ pub(crate) fn parse_server_hello(input: &[u8]) -> Result<ServerHelloView<'_>, Pa
         x25519_share,
         #[cfg(feature = "mlkem")]
         mlkem_ct,
+        #[cfg(feature = "mlkem")]
+        hybrid_share,
         #[cfg(feature = "p256-kx")]
         p256_share,
     })

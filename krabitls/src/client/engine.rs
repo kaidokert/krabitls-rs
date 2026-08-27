@@ -96,7 +96,7 @@ impl PostHandshakeReasm {
 /// plus pre-suite and terminal states.
 #[allow(clippy::large_enum_variant)] // post-handshake variants carry app keys; size is dominated by the typestate, not the enum tag
 pub(crate) enum EngineState<C: ClientConfig> {
-    WaitServerHello(TlsConnection<WaitServerHello, C::Hkdf>),
+    WaitServerHello(TlsConnection<WaitServerHello<C::Kx>, C::Hkdf>),
     #[cfg(feature = "cipher-aes")]
     WaitFlightAes(TlsConnection<WaitServerFlight<ConfAes<C>>, C::Hkdf>),
     #[cfg(feature = "chacha20")]

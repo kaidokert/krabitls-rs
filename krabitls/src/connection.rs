@@ -31,7 +31,7 @@ use crate::server_flight::FlightError;
 use crate::server_flight::ServerPubkey;
 use crate::server_flight::verify_server_flight;
 use crate::traits::verify_strategy::PreparedVerifier;
-use crate::traits::{AeadBackend, CertView, HkdfSha256, VerifierBackend};
+use crate::traits::{AeadBackend, CertView, HkdfSha256, KxBackend, KxGroup, VerifierBackend};
 use rand_core::TryCryptoRng;
 
 /// Internal scratch for the outgoing ClientHello before it's forwarded to the
@@ -237,30 +237,35 @@ impl<E: core::error::Error + 'static> core::error::Error for ConnectionError<E> 
 // State markers
 // ============================================================================
 
-pub struct Init {
+// The ephemeral key-exchange secrets carried through the handshake are the
+// backend `KX`'s per-group `Secret` types. Under `mlkem` the X25519MLKEM768
+// composite `Secret` bundles the X25519 and ML-KEM ephemerals in one value, so
+// the standalone X25519 field is gated off there (it would double-generate the
+// X25519 keypair).
+pub struct Init<KX: KxBackend = RustCrypto> {
     pub(crate) client_random: [u8; 32],
-    #[cfg(feature = "x25519-kx")]
-    pub(crate) x25519_ecdhe: crate::backends::ecdhe_x25519::EcdheX25519,
-    /// Ephemeral ML-KEM-768 decapsulator for the `X25519MLKEM768` hybrid; held
+    #[cfg(all(feature = "x25519-kx", not(feature = "mlkem")))]
+    pub(crate) x25519_ecdhe: <KX::X25519 as KxGroup>::Secret,
+    /// Ephemeral X25519MLKEM768 composite secret (X25519 + ML-KEM-768), held
     /// from ClientHello until the server's ciphertext arrives in ServerHello.
     #[cfg(feature = "mlkem")]
-    pub(crate) mlkem: crate::backends::mlkem::MlKem768,
+    pub(crate) mlkem: <KX::X25519MlKem768 as KxGroup>::Secret,
     /// Ephemeral secp256r1 ECDHE secret, held from ClientHello until the
     /// server's P-256 share arrives (if it selects secp256r1).
     #[cfg(feature = "p256-kx")]
-    pub(crate) ecdhe: crate::backends::ecdhe::EcdheP256,
+    pub(crate) ecdhe: <KX::P256 as KxGroup>::Secret,
 }
 
-pub struct WaitServerHello {
+pub struct WaitServerHello<KX: KxBackend = RustCrypto> {
     /// `legacy_session_id` we sent (`None` = empty), retained to verify the
     /// ServerHello echoes it back verbatim (RFC 8446 §4.1.3).
     pub(crate) session_id: Option<[u8; LEGACY_SESSION_ID_LEN]>,
-    #[cfg(feature = "x25519-kx")]
-    pub(crate) x25519_ecdhe: crate::backends::ecdhe_x25519::EcdheX25519,
+    #[cfg(all(feature = "x25519-kx", not(feature = "mlkem")))]
+    pub(crate) x25519_ecdhe: <KX::X25519 as KxGroup>::Secret,
     #[cfg(feature = "mlkem")]
-    pub(crate) mlkem: crate::backends::mlkem::MlKem768,
+    pub(crate) mlkem: <KX::X25519MlKem768 as KxGroup>::Secret,
     #[cfg(feature = "p256-kx")]
-    pub(crate) ecdhe: crate::backends::ecdhe::EcdheP256,
+    pub(crate) ecdhe: <KX::P256 as KxGroup>::Secret,
     /// Cipher suites we advertised in the ClientHello. `read_server_hello`
     /// rejects a selected suite that wasn't on this list. Only consulted
     /// under `feature = "chacha20"` — without it, AES is the only suite.
@@ -394,26 +399,28 @@ where
 // ============================================================================
 
 /// Carries `written_len` rather than `&buf[..n]` so the borrow ends before the next state.
-pub type WriteClientHelloToSliceWithResult<H> = Result<
-    (usize, TlsConnection<WaitServerHello, H>),
+pub type WriteClientHelloToSliceWithResult<KX, H> = Result<
+    (usize, TlsConnection<WaitServerHello<KX>, H>),
     ConnectionError<embedded_io::SliceWriteError>,
 >;
 
-impl<H> TlsConnection<Init, H>
+impl<KX, H> TlsConnection<Init<KX>, H>
 where
+    KX: KxBackend,
     H: HkdfSha256,
 {
     pub fn new(
         client_random: [u8; 32],
-        #[cfg(feature = "x25519-kx")] x25519_ecdhe: crate::backends::ecdhe_x25519::EcdheX25519,
-        #[cfg(feature = "mlkem")] mlkem: crate::backends::mlkem::MlKem768,
-        #[cfg(feature = "p256-kx")] ecdhe: crate::backends::ecdhe::EcdheP256,
+        #[cfg(all(feature = "x25519-kx", not(feature = "mlkem")))]
+        x25519_ecdhe: <KX::X25519 as KxGroup>::Secret,
+        #[cfg(feature = "mlkem")] mlkem: <KX::X25519MlKem768 as KxGroup>::Secret,
+        #[cfg(feature = "p256-kx")] ecdhe: <KX::P256 as KxGroup>::Secret,
     ) -> Self {
         Self {
             transcript: TranscriptHash::<H>::new(),
             state: Init {
                 client_random,
-                #[cfg(feature = "x25519-kx")]
+                #[cfg(all(feature = "x25519-kx", not(feature = "mlkem")))]
                 x25519_ecdhe,
                 #[cfg(feature = "mlkem")]
                 mlkem,
@@ -428,7 +435,7 @@ where
         out: &mut W,
         primary_pub: &[u8],
         opts: &crate::ClientHelloOptions<'_>,
-    ) -> Result<TlsConnection<WaitServerHello, H>, ConnectionError<W::Error>> {
+    ) -> Result<TlsConnection<WaitServerHello<KX>, H>, ConnectionError<W::Error>> {
         // Scratch first so the transcript sees the exact wire bytes.
         let mut scratch = [0u8; CH_SCRATCH];
         let mut cursor: &mut [u8] = &mut scratch[..];
@@ -475,7 +482,7 @@ where
             transcript: self.transcript,
             state: WaitServerHello {
                 session_id: opts.session_id.copied(),
-                #[cfg(feature = "x25519-kx")]
+                #[cfg(all(feature = "x25519-kx", not(feature = "mlkem")))]
                 x25519_ecdhe: self.state.x25519_ecdhe,
                 #[cfg(feature = "mlkem")]
                 mlkem: self.state.mlkem,
@@ -494,7 +501,7 @@ where
         buf: &mut [u8],
         primary_pub: &[u8],
         opts: &crate::ClientHelloOptions<'_>,
-    ) -> WriteClientHelloToSliceWithResult<H> {
+    ) -> WriteClientHelloToSliceWithResult<KX, H> {
         let total = buf.len();
         let mut cursor = &mut *buf;
         let next = self.write_client_hello_with(&mut cursor, primary_pub, opts)?;
@@ -552,8 +559,9 @@ where
     }
 }
 
-impl<H> TlsConnection<WaitServerHello, H>
+impl<KX, H> TlsConnection<WaitServerHello<KX>, H>
 where
+    KX: KxBackend,
     H: HkdfSha256,
 {
     // Test-only default-backend form; production dispatch threads the config's
@@ -616,36 +624,31 @@ where
             });
         }
 
-        // ECDHE input keying material for whichever group the server selected.
-        // Buffer holds up to the 64-byte X25519MLKEM768 IKM; `dhe_len` marks the
-        // used prefix (32 for X25519 or P-256, 64 for the hybrid).
-        let mut dhe = zeroize::Zeroizing::new([0u8; 64]);
-        let dhe_len: usize;
+        // ECDHE/KEM input keying material for whichever group the server
+        // selected, produced by the `KX` backend's `KxGroup::derive` (single-use,
+        // zeroize-on-drop). For the X25519MLKEM768 hybrid the composite group
+        // assembles the `ML-KEM ss || X25519 ss` IKM itself.
         #[cfg(feature = "p256-kx")]
         let p256_selected = sh.selected_group == crate::NAMED_GROUP_SECP256R1;
         #[cfg(not(feature = "p256-kx"))]
         let p256_selected = false;
 
-        if p256_selected {
+        let ikm: crate::traits::kx::SharedSecretBuf = if p256_selected {
             #[cfg(feature = "p256-kx")]
             {
-                // krabiecdsa validates the peer point (on-curve, not identity)
-                // and returns `Err` — the P-256 analogue of the X25519 all-zero
-                // low-order abort below.
-                let ss = self
-                    .state
-                    .ecdhe
-                    .agree(
-                        sh.p256_share
-                            .ok_or(ConnectionError::Parse(ParseError::BadKeyShare))?,
-                    )
-                    .map_err(|_| ConnectionError::Parse(ParseError::DhAllZero))?;
-                dhe[..32].copy_from_slice(&ss[..]);
-                dhe_len = 32;
+                // `KxGroup::derive` validates the peer point (on-curve, not
+                // identity) and returns `Err` — the P-256 analogue of the X25519
+                // all-zero low-order abort below.
+                let server_share = sh
+                    .p256_share
+                    .ok_or(ConnectionError::Parse(ParseError::BadKeyShare))?;
+                <KX::P256 as KxGroup>::derive(self.state.ecdhe, server_share)
+                    .map_err(|_| ConnectionError::Parse(ParseError::DhAllZero))?
             }
             #[cfg(not(feature = "p256-kx"))]
             {
-                dhe_len = 0; // unreachable: p256_selected is always false here
+                // unreachable: p256_selected is always false here.
+                return Err(ConnectionError::Parse(ParseError::BadKeyShare));
             }
         } else {
             // X25519 (or the X25519MLKEM768 hybrid) primary path. With `x25519-kx`
@@ -655,48 +658,38 @@ where
             {
                 return Err(ConnectionError::Parse(ParseError::BadKeyShare));
             }
-            #[cfg(feature = "x25519-kx")]
+            #[cfg(all(feature = "x25519-kx", feature = "mlkem"))]
             {
+                // The composite `derive` runs X25519 first (a low-order / all-zero
+                // server share aborts here, RFC 7748 §6.1 / RFC 8446 §7.4.2.1),
+                // then ML-KEM decapsulation, and returns `ML-KEM ss || X25519 ss`.
+                // The backend's error type is opaque, so the reachable X25519
+                // rejection surfaces as `DhAllZero`; ML-KEM decapsulation is
+                // structurally unreachable (implicit rejection).
+                let server_share = sh
+                    .hybrid_share
+                    .ok_or(ConnectionError::Parse(ParseError::BadKeyShare))?;
+                <KX::X25519MlKem768 as KxGroup>::derive(self.state.mlkem, server_share)
+                    .map_err(|_| ConnectionError::Parse(ParseError::DhAllZero))?
+            }
+            #[cfg(all(feature = "x25519-kx", not(feature = "mlkem")))]
+            {
+                // The KEM rejects a low-order / all-zero shared secret internally
+                // (RFC 7748 §6.1, RFC 8446 §7.4.2.1 `illegal_parameter`), so a bad
+                // server share aborts here.
                 let server_share = sh
                     .x25519_share
                     .ok_or(ConnectionError::Parse(ParseError::BadKeyShare))?;
-                // The KEM rejects a low-order / all-zero shared secret internally
-                // (RFC 7748 §6.1, RFC 8446 §7.4.2.1 `illegal_parameter`), so a bad
-                // server share aborts here. ML-KEM has no equivalent — implicit
-                // rejection yields a deterministic secret.
-                let x25519_ss = self
-                    .state
-                    .x25519_ecdhe
-                    .agree(server_share)
-                    .map_err(|_| ConnectionError::Parse(ParseError::DhAllZero))?;
-                // X25519MLKEM768 IKM (draft-ietf-tls-ecdhe-mlkem): ML-KEM ss || X25519 ss.
-                #[cfg(feature = "mlkem")]
-                {
-                    let mlkem_ss = self
-                        .state
-                        .mlkem
-                        .decapsulate(
-                            sh.mlkem_ct
-                                .ok_or(ConnectionError::Parse(ParseError::BadKeyShare))?,
-                        )
-                        .map_err(|_| ConnectionError::MlKemDecapsulation)?;
-                    dhe[..32].copy_from_slice(&mlkem_ss[..]);
-                    dhe[32..64].copy_from_slice(&x25519_ss[..]);
-                    dhe_len = 64;
-                }
-                #[cfg(not(feature = "mlkem"))]
-                {
-                    dhe[..32].copy_from_slice(&x25519_ss[..]);
-                    dhe_len = 32;
-                }
+                <KX::X25519 as KxGroup>::derive(self.state.x25519_ecdhe, server_share)
+                    .map_err(|_| ConnectionError::Parse(ParseError::DhAllZero))?
             }
-        }
+        };
 
         // handshake_traffic_secrets needs H(CH‖SH).
         self.transcript.update_record(sh_record)?;
         let th_ch_sh = self.transcript.snapshot();
 
-        let hs = handshake_secret::<H>(&dhe[..dhe_len])?;
+        let hs = handshake_secret::<H>(ikm.as_slice())?;
         let (c_hs_ts, s_hs_ts) = handshake_traffic_secrets::<H>(&hs, &th_ch_sh)?;
 
         match sh.cipher_suite {

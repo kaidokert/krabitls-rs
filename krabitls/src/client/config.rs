@@ -2,7 +2,7 @@
 //! Buffer sizes live on [`super::Scratch`], not here.
 
 use crate::backends::{DerCert, RustCrypto};
-use crate::traits::{AeadBackend, CertParser, HkdfSha256, VerifierBackend};
+use crate::traits::{AeadBackend, CertParser, HkdfSha256, KxBackend, VerifierBackend};
 
 /// Compile-time suite policy. Each variant exists only when its
 /// corresponding `feature = "cipher-aes"` / `feature = "chacha20"`
@@ -31,6 +31,9 @@ pub trait ClientConfig {
     /// AEAD record backend naming the cipher suite each TLS 1.3 record cipher
     /// binds to (see [`AeadBackend`]).
     type Aead: AeadBackend;
+    /// Key-exchange backend naming the [`KxGroup`](crate::traits::KxGroup) for
+    /// each named group the build advertises (see [`KxBackend`]).
+    type Kx: KxBackend;
 
     const SUITES: ConfigSuitePolicy;
 }
@@ -44,6 +47,7 @@ impl ClientConfig for DefaultConfig {
     type CertParser = DerCert;
     type Verifiers = RustCrypto;
     type Aead = RustCrypto;
+    type Kx = RustCrypto;
 
     #[cfg(all(feature = "cipher-aes", feature = "chacha20"))]
     const SUITES: ConfigSuitePolicy = ConfigSuitePolicy::AesAndChaCha;

@@ -6,6 +6,7 @@ use crate::connection::ConnectionError;
 use crate::connection::Init;
 use crate::connection::TlsConnection;
 use crate::traits::verify_strategy::VerifyStrategy;
+use crate::traits::{KxBackend, KxGroup};
 
 use super::engine::{EngineEvent, EngineState, TlsEngine};
 use super::error::{ConfigError, ConnectError, HandshakeError, InternalError, WriteAppError};
@@ -92,15 +93,21 @@ where
         let mut client_random = [0u8; 32];
         rng.try_fill_bytes(&mut client_random)
             .map_err(|_| HandshakeError::Rng)?;
-        // X25519 ephemeral keypair (via the X25519-as-KEM). Skipped entirely in a
-        // P-256-primary build (`x25519-kx` off). Generated before `session_id` so
-        // the deterministic fixture entropy stream keeps its stable prefix — the
-        // unblinded personality draws exactly the 32-byte scalar, as before.
-        #[cfg(feature = "x25519-kx")]
-        let (x25519_ecdhe, x25519_pub) = crate::backends::ecdhe_x25519::EcdheX25519::generate(rng)
+        // Primary key-exchange keypair, drawn via the config's `KX` backend.
+        // Generated before `session_id` so the deterministic fixture entropy
+        // stream keeps its stable prefix. Under `mlkem` the X25519MLKEM768
+        // composite group draws the X25519 scalar then the ML-KEM keypair in one
+        // `generate` and yields the `ek || X25519 pub` client share; the standalone
+        // X25519 group covers the non-hybrid build.
+        #[cfg(all(feature = "x25519-kx", not(feature = "mlkem")))]
+        let (x25519_ecdhe, x25519_share) = <<C::Kx as KxBackend>::X25519 as KxGroup>::generate(rng)
             .map_err(|_| HandshakeError::Rng)?;
+        #[cfg(feature = "mlkem")]
+        let (mlkem, hybrid_share) =
+            <<C::Kx as KxBackend>::X25519MlKem768 as KxGroup>::generate(rng)
+                .map_err(|_| HandshakeError::Rng)?;
         // 32-byte legacy_session_id for middlebox-compatibility mode (RFC 8446
-        // §D.4), only when opted in. Drawn after the always-present keys so the
+        // §D.4), only when opted in. Drawn after the primary keypair so the
         // deterministic fixture entropy stream stays a stable prefix.
         let session_id = if params.middlebox_compat {
             let mut id = [0u8; 32];
@@ -111,26 +118,40 @@ where
             None
         };
 
-        // Ephemeral ML-KEM-768 keypair for the X25519MLKEM768 key_share: the
-        // decapsulator moves into the connection state; the public ek is
-        // borrowed into the ClientHello options.
-        #[cfg(feature = "mlkem")]
-        let (mlkem, mlkem_ek) =
-            crate::backends::mlkem::MlKem768::generate(rng).map_err(|_| HandshakeError::Rng)?;
-
-        // Ephemeral secp256r1 keypair for the P-256 key_share: the secret moves
-        // into the connection state, the SEC1 point borrows into the options.
-        // Drawn after the ML-KEM keypair so existing entropy streams stay stable.
+        // Ephemeral secp256r1 keypair for the P-256 key_share (a second group
+        // when X25519 is primary, or the primary group when `x25519-kx` is off).
+        // Drawn last so existing entropy streams stay stable.
         #[cfg(feature = "p256-kx")]
-        let (ecdhe, p256_pub) =
-            crate::backends::ecdhe::EcdheP256::generate(rng).map_err(|_| HandshakeError::Rng)?;
+        let (ecdhe, p256_share) = <<C::Kx as KxBackend>::P256 as KxGroup>::generate(rng)
+            .map_err(|_| HandshakeError::Rng)?;
+
+        // Split the hybrid client share (`ML-KEM ek || X25519 pub`) back into the
+        // two pieces the ClientHello writer emits: the ek prefix and the trailing
+        // 32-byte X25519 point.
+        #[cfg(feature = "mlkem")]
+        let mlkem_ek: &[u8; crate::backends::mlkem::MLKEM768_EK_BYTES] = hybrid_share
+            .as_slice()
+            .get(..crate::backends::mlkem::MLKEM768_EK_BYTES)
+            .and_then(|s| s.try_into().ok())
+            .ok_or(HandshakeError::Rng)?;
+        #[cfg(feature = "mlkem")]
+        let x25519_pub: &[u8; 32] = hybrid_share
+            .as_slice()
+            .get(crate::backends::mlkem::MLKEM768_EK_BYTES..)
+            .and_then(|s| s.try_into().ok())
+            .ok_or(HandshakeError::Rng)?;
+        #[cfg(all(feature = "p256-kx", feature = "x25519-kx"))]
+        let p256_pub: &[u8; crate::backends::ecdhe::P256_SHARE_BYTES] = p256_share
+            .as_slice()
+            .try_into()
+            .map_err(|_| HandshakeError::Rng)?;
 
         let our_recv_limit =
             TlsEngine::<'_, C, FLIGHT, RECV, SEND, MAX_CHAIN>::default_our_recv_limit();
         let suites = effective_suite_list::<C>(params.suite_policy);
-        let init = TlsConnection::<Init, C::Hkdf>::new(
+        let init = TlsConnection::<Init<C::Kx>, C::Hkdf>::new(
             client_random,
-            #[cfg(feature = "x25519-kx")]
+            #[cfg(all(feature = "x25519-kx", not(feature = "mlkem")))]
             x25519_ecdhe,
             #[cfg(feature = "mlkem")]
             mlkem,
@@ -145,19 +166,22 @@ where
             alpn: params.alpn,
             suites,
             #[cfg(feature = "mlkem")]
-            mlkem_ek: Some(&mlkem_ek),
+            mlkem_ek: Some(mlkem_ek),
             // P-256 rides as a second key_share only when X25519 is primary;
             // when it IS the primary group it's passed as `primary_pub` instead
             // (and the `p256_pub` field doesn't exist in that config).
             #[cfg(all(feature = "p256-kx", feature = "x25519-kx"))]
-            p256_pub: Some(&p256_pub),
+            p256_pub: Some(p256_pub),
         };
-        // Primary key_share DH public: X25519 (32 B) by default, else the P-256
-        // SEC1 point (65 B) in a P-256-primary build.
-        #[cfg(feature = "x25519-kx")]
-        let primary_pub: &[u8] = &x25519_pub;
+        // Primary key_share DH public: the trailing X25519 point of the hybrid
+        // share under `mlkem`, the 32-byte X25519 point otherwise, or the 65-byte
+        // P-256 SEC1 point in a P-256-primary build.
+        #[cfg(all(feature = "x25519-kx", not(feature = "mlkem")))]
+        let primary_pub: &[u8] = x25519_share.as_slice();
+        #[cfg(feature = "mlkem")]
+        let primary_pub: &[u8] = x25519_pub;
         #[cfg(not(feature = "x25519-kx"))]
-        let primary_pub: &[u8] = &p256_pub;
+        let primary_pub: &[u8] = p256_share.as_slice();
         let (ch_len, wait_sh) = init
             .write_client_hello_to_slice_with(&mut scratch.ch, primary_pub, &opts)
             .map_err(map_client_hello_error)?;

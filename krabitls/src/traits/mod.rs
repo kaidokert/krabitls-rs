@@ -19,6 +19,7 @@ pub mod aead;
 pub mod cert;
 pub mod client_auth;
 pub mod hkdf;
+pub mod kx;
 pub mod time;
 pub mod verify_provider;
 pub mod verify_strategy;
@@ -36,6 +37,7 @@ pub use client_auth::{ClientAuth, ClientAuthError};
 #[cfg(feature = "rsa")]
 pub use cert::RsaCertSigAlg;
 pub use hkdf::{HkdfExpandError, HkdfSha256};
+pub use kx::{KxBackend, KxGroup};
 pub use time::TimeSource;
 pub use verify_provider::{
     Ed25519, SigAlgo, SigVerifierProvider, VerifierBackend, VerifyProviderError,

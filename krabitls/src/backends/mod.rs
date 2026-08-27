@@ -75,5 +75,13 @@ pub use rsa_verify::RsaSig;
 #[cfg(feature = "rsa")]
 pub use rsa_verify::{RsaVerifierKey, RsaVerifyError};
 pub use rustcrypto::RustCrypto;
+// Bundled key-exchange group markers a downstream `KxBackend` names, cfg-gated
+// like the primitives they wrap.
+#[cfg(feature = "p256-kx")]
+pub use rustcrypto::P256Group;
+#[cfg(feature = "x25519-kx")]
+pub use rustcrypto::X25519Group;
+#[cfg(feature = "mlkem")]
+pub use rustcrypto::{X25519MlKem768Error, X25519MlKem768Group};
 #[cfg(not(feature = "cert-der"))]
 pub use tlv_cert::DerCert;

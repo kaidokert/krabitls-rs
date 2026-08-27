@@ -17,8 +17,9 @@ use zeroize::Zeroizing;
 // The backend-author surface, entirely through the public facade.
 use krabitls::backends::{DerCert, RustCrypto};
 use krabitls::client::{
-    AeadBackend, Aes128GcmSha256, ClientAuth, ClientAuthError, ClientConfig, ClientSignature,
-    ConfigSuitePolicy, HkdfExpandError, HkdfSha256,
+    AeadBackend, Aes128GcmSha256, ClientAuth, ClientAuthError, ClientConfig, ClientShareBuf,
+    ClientSignature, ConfigSuitePolicy, HkdfExpandError, HkdfSha256, KxBackend, KxGroup,
+    SharedSecretBuf, X25519Group,
 };
 
 // The types are `pub` so the impls (the actual export test) are reachable and
@@ -123,15 +124,46 @@ impl<R: TryCryptoRng + ?Sized> ClientAuth<R> for ProbeSigner {
     }
 }
 
+/// A custom key-exchange group implemented against the public [`KxGroup`]
+/// trait — the seam a hardware ECDHE accelerator slots into. It delegates to the
+/// bundled [`X25519Group`] (the probe build advertises X25519 only), naming the
+/// public [`ClientShareBuf`] / [`SharedSecretBuf`] holders in the process.
+pub struct ProbeX25519;
+impl KxGroup for ProbeX25519 {
+    const NAMED_GROUP: u16 = <X25519Group as KxGroup>::NAMED_GROUP;
+    const CLIENT_SHARE_LEN: usize = <X25519Group as KxGroup>::CLIENT_SHARE_LEN;
+    const SHARED_SECRET_LEN: usize = <X25519Group as KxGroup>::SHARED_SECRET_LEN;
+    type Secret = <X25519Group as KxGroup>::Secret;
+    type Error = <X25519Group as KxGroup>::Error;
+
+    fn generate<R: TryCryptoRng + ?Sized>(
+        rng: &mut R,
+    ) -> Result<(Self::Secret, ClientShareBuf), Self::Error> {
+        <X25519Group as KxGroup>::generate(rng)
+    }
+
+    fn derive(secret: Self::Secret, server_share: &[u8]) -> Result<SharedSecretBuf, Self::Error> {
+        <X25519Group as KxGroup>::derive(secret, server_share)
+    }
+}
+
+/// A custom [`KxBackend`] aggregating the probe's group. The probe build enables
+/// only `x25519-kx`, so X25519 is the sole named group.
+pub struct ProbeKx;
+impl KxBackend for ProbeKx {
+    type X25519 = ProbeX25519;
+}
+
 /// The whole reason for the crate: a downstream `ClientConfig` mixing a custom
-/// AEAD + custom HKDF with the bundled verifier/parser defaults. Compiling this
-/// impl forces every named public type to resolve.
+/// AEAD + custom HKDF + custom key exchange with the bundled verifier/parser
+/// defaults. Compiling this impl forces every named public type to resolve.
 pub struct ProbeConfig;
 impl ClientConfig for ProbeConfig {
     type Hkdf = ProbeHkdf;
     type CertParser = DerCert;
     type Verifiers = RustCrypto;
     type Aead = ProbeAead;
+    type Kx = ProbeKx;
     const SUITES: ConfigSuitePolicy = ConfigSuitePolicy::AesOnly;
 }
 
