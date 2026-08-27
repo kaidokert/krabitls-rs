@@ -9,7 +9,7 @@
 //! the bundled X25519 / P-256 / ML-KEM primitives.
 
 use rand_core::TryCryptoRng;
-use zeroize::Zeroizing;
+use zeroize::{ZeroizeOnDrop, Zeroizing};
 
 // Longest client `key_share` this build can emit — the largest enabled group's
 // `CLIENT_SHARE_LEN`. X25519MLKEM768 (ML-KEM ek ‖ X25519 pub) dominates when
@@ -101,8 +101,12 @@ pub trait KxGroup {
     /// IKM length (32 for X25519 / P-256, 64 for the hybrid).
     const SHARED_SECRET_LEN: usize;
 
-    /// Ephemeral private holder; moved (not copied) through the typestate.
-    type Secret;
+    /// Ephemeral private holder; moved (not copied) through the typestate and
+    /// dropped in place on any handshake abort. The [`ZeroizeOnDrop`] bound keeps
+    /// a backend from parking the raw scalar in a plain buffer that leaks on drop
+    /// — the holder must clear the secret when it falls (e.g. wrap it in
+    /// [`Zeroizing`], the pattern the bundled groups use).
+    type Secret: ZeroizeOnDrop;
     type Error;
 
     fn generate<R: TryCryptoRng + ?Sized>(

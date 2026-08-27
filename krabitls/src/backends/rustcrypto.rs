@@ -106,6 +106,11 @@ pub struct X25519MlKem768Secret {
     mlkem: crate::backends::mlkem::MlKem768,
 }
 
+// Both components clear themselves on drop, so the marker is honest — required
+// by the `KxGroup::Secret: ZeroizeOnDrop` bound.
+#[cfg(feature = "mlkem")]
+impl zeroize::ZeroizeOnDrop for X25519MlKem768Secret {}
+
 /// Which component of the hybrid rejected the exchange.
 #[cfg(feature = "mlkem")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

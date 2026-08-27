@@ -23,7 +23,6 @@
 //! retransmitted epoch-2 server flight (detected by the record's epoch bits, no
 //! decrypt) triggers a resend of the buffered Finished.
 
-use crate::backends::ecdhe_x25519::EcdheX25519;
 use crate::consts::{CT_ACK, CT_APPLICATION_DATA, CT_HANDSHAKE, HS_FINISHED};
 use crate::dtls::ack::{MAX_ACK_BODY_LEN, MAX_ACK_RECORDS, write_ack_bitmap};
 use crate::dtls::framing::{HS_HEADER_LEN, HandshakeHeader, PlaintextRecord};
@@ -44,8 +43,9 @@ use crate::server_flight::{
     extract_chain, parse_server_flight, verify_certificate_verify_with_prepared,
 };
 use crate::traits::verify_strategy::{CertChainView, PreparedVerifier, VerifyStrategy};
-use crate::traits::{CertParser, HkdfSha256, VerifierBackend};
+use crate::traits::{CertParser, HkdfSha256, KxGroup, VerifierBackend};
 use subtle::ConstantTimeEq;
+use zeroize::Zeroizing;
 
 /// The two DTLS 1.3 epochs this driver produces after the handshake plus the
 /// per-epoch send/receive counters. Epoch 2 (handshake) keys are consumed during
@@ -172,7 +172,7 @@ impl<S: DtlsSuite> DtlsClient<S> {
     /// must be large enough for the whole flight (a few KiB for a typical
     /// certificate chain).
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn connect<T, H, V, B, Rng, P, const MAX_CHAIN: usize>(
+    pub(crate) fn connect<T, H, V, B, Rng, P, X, const MAX_CHAIN: usize>(
         transport: &mut T,
         strategy: &V,
         hostname: Option<&str>,
@@ -189,11 +189,18 @@ impl<S: DtlsSuite> DtlsClient<S> {
         B: VerifierBackend,
         Rng: rand_core::TryCryptoRng + ?Sized,
         P: CertParser,
+        X: KxGroup,
     {
-        // X25519 ephemeral via the shared KEM backend — blinded under the
-        // `blinding` feature (blinder drawn from `rng` at generation), same path
-        // TLS uses. `ecdhe` holds the secret until the server share arrives.
-        let (ecdhe, pub_key) = EcdheX25519::generate(rng).map_err(|_| DtlsClientError::Rng)?;
+        // Ephemeral X25519 via the config's pluggable KX backend (`C::Kx::X25519`),
+        // the same seam TLS uses — so a hardware accelerator handles the private
+        // scalar here too. `kx_secret` holds it until the server share arrives.
+        // DTLS 1.3 is X25519-only, so the 32-byte conversions below are infallible;
+        // the error arms guard against a mis-wired non-X25519 group.
+        let (kx_secret, client_share) = X::generate(rng).map_err(|_| DtlsClientError::Rng)?;
+        let pub_key: [u8; 32] = client_share
+            .as_slice()
+            .try_into()
+            .map_err(|_| DtlsClientError::Rng)?;
 
         // A single reused receive buffer + a reused flight buffer carry both
         // ClientHello exchanges; each flight is retransmitted on timeout. The
@@ -339,9 +346,12 @@ impl<S: DtlsSuite> DtlsClient<S> {
         // The encrypted flight's messages are numbered from one past ServerHello.
         let base_seq = sh_seq.wrapping_add(1);
 
-        let shared_secret = ecdhe
-            .agree(&server_share)
-            .map_err(|_| DtlsClientError::KeySchedule)?;
+        let ikm = X::derive(kx_secret, &server_share).map_err(|_| DtlsClientError::KeySchedule)?;
+        let shared_secret: Zeroizing<[u8; 32]> = Zeroizing::new(
+            ikm.as_slice()
+                .try_into()
+                .map_err(|_| DtlsClientError::KeySchedule)?,
+        );
         let hk = derive_handshake_keys::<S, H>(&shared_secret, &transcript.snapshot())
             .map_err(|_| DtlsClientError::KeySchedule)?;
 
@@ -927,18 +937,26 @@ mod tests {
 
         let mut flight_buf = [0u8; 4096];
         let mut reasm_buf = [0u8; 4096];
-        let mut client =
-            DtlsClient::<Suite>::connect::<_, RustCrypto, _, RustCrypto, _, DerCert, 4>(
-                &mut transport,
-                &strategy,
-                None,
-                None,
-                &mut FixedRng(0x42),
-                &[0x77u8; 32],
-                &mut flight_buf,
-                &mut reasm_buf,
-            )
-            .expect("handshake completes");
+        let mut client = DtlsClient::<Suite>::connect::<
+            _,
+            RustCrypto,
+            _,
+            RustCrypto,
+            _,
+            DerCert,
+            crate::backends::rustcrypto::X25519Group,
+            4,
+        >(
+            &mut transport,
+            &strategy,
+            None,
+            None,
+            &mut FixedRng(0x42),
+            &[0x77u8; 32],
+            &mut flight_buf,
+            &mut reasm_buf,
+        )
+        .expect("handshake completes");
 
         let mut out = [0u8; 128];
         client
@@ -980,7 +998,16 @@ mod tests {
 
         let mut flight_buf = [0u8; 4096];
         let mut reasm_buf = [0u8; 4096];
-        DtlsClient::<Suite>::connect::<_, RustCrypto, _, RustCrypto, _, DerCert, 4>(
+        DtlsClient::<Suite>::connect::<
+            _,
+            RustCrypto,
+            _,
+            RustCrypto,
+            _,
+            DerCert,
+            crate::backends::rustcrypto::X25519Group,
+            4,
+        >(
             &mut transport,
             &strategy,
             None,
@@ -1022,18 +1049,26 @@ mod tests {
 
         let mut flight_buf = [0u8; 8192];
         let mut reasm_buf = [0u8; 8192];
-        let mut client =
-            DtlsClient::<Suite>::connect::<_, RustCrypto, _, RustCrypto, _, DerCert, 4>(
-                &mut transport,
-                &strategy,
-                None,
-                Some(b"cl01"),
-                &mut FixedRng(0x42),
-                &[0x77u8; 32],
-                &mut flight_buf,
-                &mut reasm_buf,
-            )
-            .expect("handshake completes with a negotiated connection id");
+        let mut client = DtlsClient::<Suite>::connect::<
+            _,
+            RustCrypto,
+            _,
+            RustCrypto,
+            _,
+            DerCert,
+            crate::backends::rustcrypto::X25519Group,
+            4,
+        >(
+            &mut transport,
+            &strategy,
+            None,
+            Some(b"cl01"),
+            &mut FixedRng(0x42),
+            &[0x77u8; 32],
+            &mut flight_buf,
+            &mut reasm_buf,
+        )
+        .expect("handshake completes with a negotiated connection id");
 
         // Epoch-3 app data now rides CID-tagged records in both directions.
         let mut out = [0u8; 128];
@@ -1080,18 +1115,26 @@ mod tests {
 
         let mut flight_buf = [0u8; 8192];
         let mut reasm_buf = [0u8; 8192];
-        let mut client =
-            DtlsClient::<Suite>::connect::<_, RustCrypto, _, RustCrypto, _, DerCert, 4>(
-                &mut transport,
-                &strategy,
-                None,
-                None,
-                &mut FixedRng(0x42),
-                &[0x77u8; 32],
-                &mut flight_buf,
-                &mut reasm_buf,
-            )
-            .expect("handshake completes over a fragmented flight");
+        let mut client = DtlsClient::<Suite>::connect::<
+            _,
+            RustCrypto,
+            _,
+            RustCrypto,
+            _,
+            DerCert,
+            crate::backends::rustcrypto::X25519Group,
+            4,
+        >(
+            &mut transport,
+            &strategy,
+            None,
+            None,
+            &mut FixedRng(0x42),
+            &[0x77u8; 32],
+            &mut flight_buf,
+            &mut reasm_buf,
+        )
+        .expect("handshake completes over a fragmented flight");
 
         let mut out = [0u8; 128];
         client
@@ -1153,7 +1196,16 @@ mod tests {
         let strategy = SafeStrategy::<_, DerCert>::new(PinOrSelfSigned::self_signed());
         let mut flight_buf = [0u8; 2048];
         let mut reasm_buf = [0u8; 2048];
-        let res = DtlsClient::<Suite>::connect::<_, RustCrypto, _, RustCrypto, _, DerCert, 4>(
+        let res = DtlsClient::<Suite>::connect::<
+            _,
+            RustCrypto,
+            _,
+            RustCrypto,
+            _,
+            DerCert,
+            crate::backends::rustcrypto::X25519Group,
+            4,
+        >(
             &mut transport,
             &strategy,
             None,
@@ -1513,18 +1565,26 @@ mod tests {
 
         let mut flight_buf = [0u8; 4096];
         let mut reasm_buf = [0u8; 4096];
-        let mut client =
-            DtlsClient::<Suite>::connect::<_, RustCrypto, _, RustCrypto, _, DerCert, 4>(
-                &mut transport,
-                &strategy,
-                None,
-                None,
-                &mut FixedRng(0x42),
-                &[0x77u8; 32],
-                &mut flight_buf,
-                &mut reasm_buf,
-            )
-            .expect("handshake completes despite the dropped CH1");
+        let mut client = DtlsClient::<Suite>::connect::<
+            _,
+            RustCrypto,
+            _,
+            RustCrypto,
+            _,
+            DerCert,
+            crate::backends::rustcrypto::X25519Group,
+            4,
+        >(
+            &mut transport,
+            &strategy,
+            None,
+            None,
+            &mut FixedRng(0x42),
+            &[0x77u8; 32],
+            &mut flight_buf,
+            &mut reasm_buf,
+        )
+        .expect("handshake completes despite the dropped CH1");
 
         let mut out = [0u8; 128];
         client
@@ -1581,7 +1641,16 @@ mod tests {
 
         let mut flight_buf = [0u8; 4096];
         let mut reasm_buf = [0u8; 4096];
-        DtlsClient::<Suite>::connect::<_, RustCrypto, _, RustCrypto, _, DerCert, 4>(
+        DtlsClient::<Suite>::connect::<
+            _,
+            RustCrypto,
+            _,
+            RustCrypto,
+            _,
+            DerCert,
+            crate::backends::rustcrypto::X25519Group,
+            4,
+        >(
             &mut transport,
             &strategy,
             None,

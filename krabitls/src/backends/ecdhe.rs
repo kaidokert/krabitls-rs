@@ -38,6 +38,10 @@ pub struct EcdheP256 {
     secret: P256DecapKey,
 }
 
+// `secret` clears itself when the struct drops, so the marker is honest — it
+// lets `KxGroup::Secret` require zeroize-on-drop of every backend.
+impl zeroize::ZeroizeOnDrop for EcdheP256 {}
+
 impl EcdheP256 {
     /// Generate an ephemeral keypair. Returns the secret holder plus the
     /// SEC1-uncompressed public point (`d·G`) to advertise in the key_share.
