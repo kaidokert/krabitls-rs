@@ -568,10 +568,9 @@ where
         self.read_server_hello_with_backend::<RustCrypto>(sh_record)
     }
 
-    /// Process `ServerHello` binding each negotiated suite to backend `AB`'s
+    /// Process `ServerHello`, binding each negotiated suite to backend `AB`'s
     /// cipher. The [`ClientConfig`](crate::client::ClientConfig)-threaded entry
-    /// point; [`read_server_hello`](Self::read_server_hello) is the
-    /// default-backend convenience.
+    /// point for the ServerHello read.
     pub fn read_server_hello_with_backend<AB>(
         mut self,
         sh_record: &[u8],
