@@ -184,14 +184,24 @@ pub trait VerifyStrategy<P: VerifierBackend> {
 pub trait TrustRootDecision<P: VerifierBackend> {
     type Error: core::error::Error + Clone + PartialEq;
 
-    /// `chain` has already been parsed and structurally validated by
-    /// [`SafeStrategy`] (each link `chain[i]`'s outer sig verified
-    /// against `chain[i+1]`'s pubkey). Return Ok if `chain[chain.len()-1]`
-    /// is an acceptable trust root.
+    /// `true` when the decision authenticates `chain[0]` directly — e.g. a
+    /// pinned leaf SPKI. [`SafeStrategy`] then treats the certs above the leaf
+    /// as transport and skips their link-signature and time-validity checks, so
+    /// a pinned leaf is accepted regardless of which intermediates/root the
+    /// server includes (or whether those key widths are even built — e.g. an
+    /// RSA-4096 root under an `rsa`-2048-only build). `false` (the default)
+    /// keeps the full check: every link (`chain[i]` signed by `chain[i+1]`) and
+    /// every cert's validity are verified before `accept_chain` runs.
+    const ANCHORS_AT_LEAF: bool = false;
+
+    /// Decide whether the presented `chain` is trusted. Unless
+    /// [`ANCHORS_AT_LEAF`](Self::ANCHORS_AT_LEAF) is set, [`SafeStrategy`] has
+    /// already verified each link (`chain[i]`'s outer sig against
+    /// `chain[i+1]`'s pubkey) first; return Ok if `chain[chain.len()-1]` is an
+    /// acceptable trust root.
     ///
     /// Cert time-validity is NOT decided here: it's a separate `Clock` slot
-    /// owned by `SafeStrategy`, evaluated over the whole chain only after
-    /// `accept_chain` returns Ok.
+    /// owned by `SafeStrategy`.
     fn accept_chain<'src>(&self, chain: &[CertView<'src>]) -> Result<(), Self::Error>;
 }
 
@@ -334,21 +344,33 @@ where
                 .map_err(|_| SafeStrategyError::ChainTooLong)?;
         }
 
-        for i in 0..views.len().saturating_sub(1) {
-            verify_link::<P>(&views[i], &views[i + 1])?;
+        // A leaf-anchored decision (pinned leaf SPKI) authenticates `views[0]`
+        // directly, so the certs above it are transport: skip their link
+        // signatures. A chain-anchored decision needs every link verified
+        // before it can pick a trust root. `const`, so one arm DCEs per config.
+        if !<T as TrustRootDecision<P>>::ANCHORS_AT_LEAF {
+            for i in 0..views.len().saturating_sub(1) {
+                verify_link::<P>(&views[i], &views[i + 1])?;
+            }
         }
 
         self.decision
             .accept_chain(&views)
             .map_err(SafeStrategyError::Decision)?;
 
-        // Validity applies to the whole presented path, mirroring the per-link
-        // signature check above: an expired/not-yet-valid intermediate fails
-        // the chain, not just the leaf. Empty under `NoClock`, so DCE'd to zero.
-        for cert in views.iter() {
+        // Validity scope mirrors the link scope: leaf-only when the decision
+        // anchors at the leaf, else the whole presented path (an expired
+        // intermediate fails a chain-anchored path). Empty under `NoClock`.
+        if <T as TrustRootDecision<P>>::ANCHORS_AT_LEAF {
             self.clock
-                .check_validity(cert)
+                .check_validity(&views[0])
                 .map_err(|_| SafeStrategyError::Validity)?;
+        } else {
+            for cert in views.iter() {
+                self.clock
+                    .check_validity(cert)
+                    .map_err(|_| SafeStrategyError::Validity)?;
+            }
         }
 
         let leaf_prepared = prepare_leaf::<P>(&views[0])?;

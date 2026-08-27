@@ -162,6 +162,11 @@ pub enum PinOrSelfSignedError {
 impl<P: VerifierBackend> TrustRootDecision<P> for PinOrSelfSigned {
     type Error = PinOrSelfSignedError;
 
+    // Both modes authenticate the leaf directly (pin = SPKI match; self-signed =
+    // single-cert self-signature), so SafeStrategy skips verifying links and
+    // validity above `chain[0]`.
+    const ANCHORS_AT_LEAF: bool = true;
+
     fn accept_chain<'src>(&self, chain: &[CertView<'src>]) -> Result<(), Self::Error> {
         // SafeStrategy guarantees non-empty (its own `EmptyChain` guard
         // fires first); `first()` is defense in depth for any
@@ -170,10 +175,10 @@ impl<P: VerifierBackend> TrustRootDecision<P> for PinOrSelfSigned {
 
         match &self.mode {
             Mode::Pinned(pin) => {
-                // Pin constrains the leaf; chain depth is irrelevant.
-                // SafeStrategy already chain-verified `chain[0..n-1]`
-                // links, so a `[leaf, intermediate, root]` chain
-                // reaches here with the link structure validated.
+                // The pin authenticates the leaf directly, so any
+                // `[leaf, intermediate, root]` chain is accepted on the leaf
+                // SPKI match alone — SafeStrategy does not verify the links or
+                // validity above `chain[0]` (see `ANCHORS_AT_LEAF`).
                 verify_pin(leaf, pin)?;
             }
             Mode::SelfSigned => {
@@ -374,6 +379,52 @@ mod tests {
         let result =
             <PinOrSelfSigned as TrustRootDecision<RustCrypto>>::accept_chain(&strategy, &chain);
         assert!(result.is_ok());
+    }
+
+    // A leaf-pin must accept a chain even when the certs above the leaf can't be
+    // verified — the RSA-4096-root-under-`rsa`-2048-only case that reddened
+    // hardware bring-up. Uses the ECDSA `certs_chain` fixture: the leaf is signed
+    // by ca8, so presenting it under the root (ca0) makes the leaf←ca0 link fail;
+    // a leaf-pin skips it (`ANCHORS_AT_LEAF`) and accepts on the SPKI match.
+    #[cfg(all(feature = "cert-der", feature = "ecdsa"))]
+    #[test]
+    fn leaf_pin_accepts_chain_with_unverifiable_upper_link() {
+        use crate::backends::DerCert;
+        use crate::traits::CertParser;
+        use crate::traits::verify_strategy::{
+            CertChainView, SafeStrategy, VerifyStrategy, verify_link,
+        };
+
+        const LEAF: &[u8] = include_bytes!("../../../testdata/certs_chain/leaf.der");
+        const ROOT: &[u8] = include_bytes!("../../../testdata/certs_chain/ca0.der");
+
+        let CertView::EcdsaP256 { pubkey, .. } = DerCert::parse(LEAF).unwrap() else {
+            panic!("fixture leaf is ECDSA-P256");
+        };
+        let pin = PinnedPubkeyOwned::ecdsa_p256(pubkey.try_into().unwrap());
+
+        // The link is genuinely unverifiable, so an accept can only come from
+        // the skip — not from the link happening to pass.
+        let leaf_v = DerCert::parse(LEAF).unwrap();
+        let root_v = DerCert::parse(ROOT).unwrap();
+        assert!(
+            verify_link::<RustCrypto>(&leaf_v, &root_v).is_err(),
+            "leaf<-root must not verify for this test to be meaningful",
+        );
+
+        let strat = SafeStrategy::<_, DerCert>::new(PinOrSelfSigned::pinned(pin));
+        let mut slot = None;
+        let accepted = VerifyStrategy::<RustCrypto>::verify_chain(
+            &strat,
+            CertChainView {
+                certs: &[LEAF, ROOT],
+            },
+            &mut slot,
+        );
+        assert!(
+            accepted.is_ok(),
+            "leaf-pin must accept despite the unverifiable upper link",
+        );
     }
 
     #[test]
