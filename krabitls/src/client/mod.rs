@@ -83,7 +83,7 @@ pub use crate::backends::P256Group;
 pub use crate::backends::X25519Group;
 #[cfg(feature = "mlkem")]
 pub use crate::backends::X25519MlKem768Group;
-pub use crate::traits::kx::{ClientShareBuf, SharedSecretBuf};
+pub use crate::traits::kx::{CapacityError, ClientShareBuf, SharedSecretBuf};
 // Per-algorithm markers: a downstream backend names these to
 // `impl SigVerifierProvider<Rsa>` / `<EcdsaP256>` / etc. for one primitive.
 #[cfg(feature = "mldsa")]

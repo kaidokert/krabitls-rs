@@ -29,6 +29,11 @@ pub const MAX_SHARED_SECRET_LEN: usize = 64;
 /// Fixed-capacity holder for a client `key_share`, sized to the largest group
 /// this build can emit ([`MAX_CLIENT_SHARE_LEN`]). Filled by
 /// [`KxGroup::generate`] and read by the ClientHello writer.
+/// A [`ClientShareBuf::extend_from_slice`] would exceed [`MAX_CLIENT_SHARE_LEN`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("client key_share exceeds the maximum length")]
+pub struct CapacityError;
+
 #[derive(Clone)]
 pub struct ClientShareBuf {
     buf: [u8; MAX_CLIENT_SHARE_LEN],
@@ -43,14 +48,11 @@ impl ClientShareBuf {
         }
     }
 
-    /// Append `bytes`; `Err(())` if it would exceed [`MAX_CLIENT_SHARE_LEN`].
-    // The sole failure is capacity overflow; a `KxGroup::generate` impl maps it
-    // straight to its own `Error`, so a richer error type carries no signal.
-    #[allow(clippy::result_unit_err)]
-    pub fn extend_from_slice(&mut self, bytes: &[u8]) -> Result<(), ()> {
-        let end = self.len.checked_add(bytes.len()).ok_or(())?;
+    /// Append `bytes`; `Err` if it would exceed [`MAX_CLIENT_SHARE_LEN`].
+    pub fn extend_from_slice(&mut self, bytes: &[u8]) -> Result<(), CapacityError> {
+        let end = self.len.checked_add(bytes.len()).ok_or(CapacityError)?;
         if end > MAX_CLIENT_SHARE_LEN {
-            return Err(());
+            return Err(CapacityError);
         }
         self.buf[self.len..end].copy_from_slice(bytes);
         self.len = end;
