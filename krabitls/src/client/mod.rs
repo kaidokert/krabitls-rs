@@ -71,6 +71,19 @@ pub use crate::traits::verify_strategy::RsaKeyMaterial;
 pub use crate::traits::{
     AeadBackend, Ed25519, SigAlgo, SigVerifierProvider, VerifierBackend, VerifyProviderError,
 };
+// Key-exchange backend surface, symmetric with `AeadBackend`: the aggregate a
+// custom `ClientConfig::Kx` names, the per-group trait it wires, and the bundled
+// `RustCrypto` group markers a downstream `KxBackend` can delegate to.
+pub use crate::traits::{KxBackend, KxGroup};
+// Wire-share / shared-secret holders a custom `KxGroup::generate` / `derive`
+// fills and returns.
+#[cfg(feature = "p256-kx")]
+pub use crate::backends::P256Group;
+#[cfg(feature = "x25519-kx")]
+pub use crate::backends::X25519Group;
+#[cfg(feature = "mlkem")]
+pub use crate::backends::X25519MlKem768Group;
+pub use crate::traits::kx::{CapacityError, ClientShareBuf, SharedSecretBuf};
 // Per-algorithm markers: a downstream backend names these to
 // `impl SigVerifierProvider<Rsa>` / `<EcdsaP256>` / etc. for one primitive.
 #[cfg(feature = "mldsa")]

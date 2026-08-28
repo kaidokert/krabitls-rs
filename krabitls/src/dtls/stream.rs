@@ -12,8 +12,8 @@ use crate::client::{ClientConfig, DefaultConfig};
 use crate::dtls::client::{DtlsClient, DtlsClientError};
 use crate::dtls::record::DtlsSuite;
 use crate::dtls::transport::DatagramTransport;
-use crate::traits::AeadBackend;
 use crate::traits::verify_strategy::VerifyStrategy;
+use crate::traits::{AeadBackend, KxBackend};
 
 /// The single compile-time suite the façade speaks for config `C`: its AEAD
 /// backend's AES suite when `cipher-aes` is built, else its ChaCha suite. A
@@ -76,6 +76,7 @@ where
             C::Verifiers,
             Rng,
             C::CertParser,
+            <C::Kx as KxBackend>::X25519,
             MAX_CHAIN,
         >(
             &mut transport,

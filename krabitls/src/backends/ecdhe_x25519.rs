@@ -37,6 +37,10 @@ pub struct EcdheX25519 {
     secret: X25519DecapKey,
 }
 
+// `secret` clears itself when the struct drops, so the marker is sound — it
+// lets `KxGroup::Secret` require zeroize-on-drop of every backend.
+impl zeroize::ZeroizeOnDrop for EcdheX25519 {}
+
 impl EcdheX25519 {
     /// Generate an ephemeral keypair. Returns the secret holder plus the 32-byte
     /// public point (`d·G`) to advertise in the key_share. Under `blinding` the

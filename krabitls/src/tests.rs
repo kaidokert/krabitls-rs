@@ -2751,9 +2751,10 @@ mod mlkem_keyshare {
         let x25519 = [0xBBu8; 32];
         let sh = hybrid_server_hello(&ct, &x25519);
         let v = parse_server_hello(&sh).expect("parse hybrid ServerHello");
+        let share = v.hybrid_share.expect("hybrid share present");
         assert_eq!(
-            v.mlkem_ct,
-            Some(&ct),
+            &share[..MLKEM768_CT_BYTES],
+            &ct,
             "ML-KEM ciphertext is the leading 1088 bytes"
         );
         assert_eq!(
