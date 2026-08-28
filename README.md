@@ -14,7 +14,7 @@ A hobby `no_std` TLS 1.3 client for microcontrollers. Don't use it for anything 
 - Optional mutual-TLS client certificates (Ed25519, ECDSA-P256, or RSA-PSS)
 - Optional DTLS 1.3 (RFC 9147) over UDP for CoAP / datagram links (`dtls` feature)
 - Bundled trust is pin-a-pubkey, trust-SAN, or `PinnedRoots` (walks an intermediate chain to a stored root ledger: full-cert or SPKI fingerprint, or a stored anchor cert). No CA bundle or path building; verification is a pluggable `VerifyStrategy`, so a build that doesn't use one links none of it
-- Hand-rolled and unaudited; constant-time primitives, with opt-in power/EM-DPA blinding (key exchange + signing) behind the `blinding` feature
+- Hand-rolled and unaudited; constant-time primitives, with opt-in power/EM-DPA blinding (key exchange + signing) behind the `blinding` feature. A pluggable backend (custom `Kx`, `Verifiers`, or client signer) supplies its own side-channel properties — the API does not distinguish a hardened provider from a merely functional one
 
 No heap allocations, no `unsafe` code, and prefer reduced flash + stack size over
 speed. On builds that use several signature algorithms, the `bigint-heapless`
