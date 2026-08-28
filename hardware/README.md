@@ -12,6 +12,8 @@ seeding, linker configuration, and networking.
   SAM D5x/E5x AES plus the ROM-resident PUKCL/PUKCC P-256 key-exchange path.
   SAM4 and SAM E/S/V7x parts do not share that PUKCL facility; future support
   belongs behind separate family features rather than the SAME5x implementation.
+- `stm32` groups STM32 adapters behind exact device features. Its initial H533
+  backend provides native AES-GCM and PKA-backed X25519/P-256 key exchange.
 
 The crates are initially unpublished and independently addressable with
 `--manifest-path`; the repository deliberately has no root Cargo workspace.
