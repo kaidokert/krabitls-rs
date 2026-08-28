@@ -616,6 +616,145 @@ pub fn baseline_aes_ed25519_facade() -> bool {
     true
 }
 
+// ============================================================================
+// mTLS (client-cert) variant of the AES/Ed25519 facade.
+//
+// Same seed-0 suite as `run_aes_ed25519_facade`, but the server flight carries
+// a CertificateRequest, so the client answers with
+// `Certificate || CertificateVerify || Finished` — i.e. it performs an Ed25519
+// *sign* the server-only path never does. The server-only-vs-mTLS timing delta
+// is the cost of client-certificate authentication. Fixtures referenced via
+// their module path (not a glob) so their `CLIENT_HELLO`/`SERVER_*` names don't
+// collide with the server-only fixtures.
+// ============================================================================
+
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "cipher-aes",
+    not(feature = "chacha20"),
+    not(feature = "rsa"),
+    not(feature = "mlkem"),
+    not(feature = "mldsa"),
+    not(feature = "ecdsa"),
+))]
+mod fixture_aes_ed25519_mtls {
+    pub const CLIENT_HELLO: [u8; 150] = krabitls::hex_decode(include_str!(
+        "../../../testdata/packets_mtls/001_c2s_ClientHello.hex"
+    ));
+    pub const SERVER_HELLO: [u8; 95] = krabitls::hex_decode(include_str!(
+        "../../../testdata/packets_mtls/002_s2c_ServerHello.hex"
+    ));
+    pub const SERVER_FLIGHT: [u8; 715] = krabitls::hex_decode(include_str!(
+        "../../../testdata/packets_mtls/003_s2c_ServerFlight_encrypted.hex"
+    ));
+    // Coalesced client second flight: Certificate || CertificateVerify || Finished.
+    pub const CLIENT_SECOND_FLIGHT: [u8; 479] = krabitls::hex_decode(include_str!(
+        "../../../testdata/packets_mtls/004_c2s_ClientSecondFlight_encrypted.hex"
+    ));
+    pub const CLIENT_LEAF_DER: &[u8] =
+        include_bytes!("../../../testdata/packets_mtls/client_leaf.der");
+    // Throwaway Ed25519 seed deriving the pubkey in `client_leaf.der` — a test
+    // vector, not a credential.
+    pub const CLIENT_SEED: [u8; 32] = [
+        0xf2, 0x7f, 0x8c, 0xfc, 0xe9, 0x94, 0x5f, 0x91, 0x13, 0xab, 0xbb, 0xd4, 0x1a, 0x35, 0x94,
+        0x91, 0xe6, 0x95, 0xaf, 0x92, 0x35, 0x65, 0xf8, 0xda, 0xc6, 0x25, 0xd1, 0xdd, 0x98, 0x80,
+        0x1b, 0xc9,
+    ];
+    pub const SERVER_STREAM: [u8; SERVER_HELLO.len() + SERVER_FLIGHT.len()] =
+        concat_sh_sf!(SERVER_HELLO.len(), SERVER_FLIGHT.len());
+}
+
+/// mTLS AES/Ed25519 handshake with static-placed scratch (QEMU harness).
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "cipher-aes",
+    not(feature = "chacha20"),
+    not(feature = "rsa"),
+    not(feature = "mlkem"),
+    not(feature = "mldsa"),
+    not(feature = "ecdsa"),
+))]
+pub fn run_aes_ed25519_mtls_facade() -> Result<(), ()> {
+    facade_scratch::with(run_aes_ed25519_mtls_facade_with_scratch)
+}
+
+/// Same, with scratch in the current stack frame so the SysTick overflow
+/// handler stays live during hardware cycle measurement (mirrors
+/// `run_aes_ed25519_facade_on_stack`).
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "cipher-aes",
+    not(feature = "chacha20"),
+    not(feature = "rsa"),
+    not(feature = "mlkem"),
+    not(feature = "mldsa"),
+    not(feature = "ecdsa"),
+))]
+pub fn run_aes_ed25519_mtls_facade_on_stack() -> Result<(), ()> {
+    let mut scratch = krabitls::client::DefaultScratch::new();
+    run_aes_ed25519_mtls_facade_with_scratch(&mut scratch)
+}
+
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "cipher-aes",
+    not(feature = "chacha20"),
+    not(feature = "rsa"),
+    not(feature = "mlkem"),
+    not(feature = "mldsa"),
+    not(feature = "ecdsa"),
+))]
+fn run_aes_ed25519_mtls_facade_with_scratch(
+    scratch: &mut krabitls::client::DefaultScratch,
+) -> Result<(), ()> {
+    let signer = krabitls::client::Ed25519ClientAuth::from_seed(
+        &fixture_aes_ed25519_mtls::CLIENT_SEED,
+        fixture_aes_ed25519_mtls::CLIENT_LEAF_DER,
+    )
+    .map_err(|_| ())?;
+    let params = ClientParams::self_signed("mtls-fixture.local")
+        .suite_policy(RuntimeSuitePolicy::Default)
+        .with_client_auth(&signer);
+    let mut rng = SeededRng::new(0);
+    let transport = CannedTransport::<2048>::new(&fixture_aes_ed25519_mtls::SERVER_STREAM);
+
+    let tls = DefaultStream::connect(&params, scratch, transport, &mut rng).map_err(|_| ())?;
+
+    // Captured TX = ClientHello || (Certificate || CertificateVerify || Finished);
+    // proves the engine parsed the CertificateRequest and emitted a conformant,
+    // correctly-signed client flight.
+    let captured = tls.transport().captured_tx();
+    let ch = &fixture_aes_ed25519_mtls::CLIENT_HELLO;
+    let cf = &fixture_aes_ed25519_mtls::CLIENT_SECOND_FLIGHT;
+    if captured.len() != ch.len() + cf.len()
+        || captured[..ch.len()] != ch[..]
+        || captured[ch.len()..] != cf[..]
+    {
+        return Err(());
+    }
+    Ok(())
+}
+
+/// Baseline stub for the mTLS facade — same rodata footprint, no crypto.
+#[cfg(all(
+    feature = "canned-replay",
+    feature = "cipher-aes",
+    not(feature = "chacha20"),
+    not(feature = "rsa"),
+    not(feature = "mlkem"),
+    not(feature = "mldsa"),
+    not(feature = "ecdsa"),
+))]
+#[inline(never)]
+pub fn baseline_aes_ed25519_mtls_facade() -> bool {
+    black_box(&fixture_aes_ed25519_mtls::CLIENT_HELLO);
+    black_box(&fixture_aes_ed25519_mtls::SERVER_HELLO);
+    black_box(&fixture_aes_ed25519_mtls::SERVER_FLIGHT);
+    black_box(&fixture_aes_ed25519_mtls::CLIENT_SECOND_FLIGHT);
+    black_box(&fixture_aes_ed25519_mtls::CLIENT_LEAF_DER);
+    true
+}
+
 /// ChaCha20-Poly1305 + Ed25519 facade variant, chacha-only build.
 ///
 /// Drives `DefaultStream::connect` against the seed-0 fixtures generated
