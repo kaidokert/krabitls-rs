@@ -108,6 +108,49 @@ jobs:
     - name: Test
       run: cargo test --manifest-path=krabitls/Cargo.toml --no-default-features --features "${{ matrix.features }}"
 
+  hardware-adapters:
+    name: hardware adapters [${{ matrix.adapter }}]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - adapter: nrf52833
+            manifest: hardware/nrf52833/Cargo.toml
+            features: ""
+          - adapter: samd51
+            manifest: hardware/sam/Cargo.toml
+            features: samd51j,aes,p256-kx
+          - adapter: same51
+            manifest: hardware/sam/Cargo.toml
+            features: same51j,aes,p256-kx
+          - adapter: same54
+            manifest: hardware/sam/Cargo.toml
+            features: same54p,aes,p256-kx
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: thumbv7em-none-eabihf
+        components: clippy
+    - uses: Swatinem/rust-cache@v2
+      with:
+        key: hardware-${{ matrix.adapter }}
+    - name: Check
+      run: |
+        FEATURES="${{ matrix.features }}"
+        ARGS=""
+        [ -n "$FEATURES" ] && ARGS="--features $FEATURES"
+        cargo check --manifest-path="${{ matrix.manifest }}" --target thumbv7em-none-eabihf $ARGS
+    - name: Clippy
+      run: |
+        FEATURES="${{ matrix.features }}"
+        ARGS=""
+        [ -n "$FEATURES" ] && ARGS="--features $FEATURES"
+        cargo clippy --manifest-path="${{ matrix.manifest }}" --target thumbv7em-none-eabihf $ARGS -- -D warnings
+
   krabitls-cli:
     name: krabitls_cli [${{ matrix.features || 'default' }}]
     runs-on: ubuntu-latest
