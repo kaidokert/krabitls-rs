@@ -1,0 +1,35 @@
+[package]
+name = "krabitls-hw-sam"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.87"
+publish = false
+license = "Apache-2.0"
+description = "Microchip SAM hardware cryptography backends for KrabiTLS"
+
+[features]
+default = []
+samd51g = ["atsamd-hal/samd51g"]
+samd51j = ["atsamd-hal/samd51j"]
+samd51n = ["atsamd-hal/samd51n"]
+samd51p = ["atsamd-hal/samd51p"]
+same51g = ["atsamd-hal/same51g"]
+same51j = ["atsamd-hal/same51j"]
+same51n = ["atsamd-hal/same51n"]
+same53j = ["atsamd-hal/same53j"]
+same53n = ["atsamd-hal/same53n"]
+same54n = ["atsamd-hal/same54n"]
+same54p = ["atsamd-hal/same54p"]
+aes = ["dep:aead", "dep:aes-gcm", "dep:krabitls", "krabitls/cipher-aes"]
+p256-kx = ["dep:hex-literal", "dep:krabitls", "dep:rand_core", "dep:subtle", "krabitls/cipher-aes", "krabitls/p256-kx"]
+
+[dependencies]
+aead = { version = "0.6", default-features = false, optional = true }
+aes-gcm = { version = "0.11", default-features = false, optional = true }
+atsamd-hal = { version = "0.23.3", default-features = false }
+cortex-m = "0.7.8"
+hex-literal = { version = "1", optional = true }
+krabitls = { path = "../../krabitls", default-features = false, optional = true }
+rand_core = { version = "0.10", default-features = false, optional = true }
+subtle = { version = "2.6", default-features = false, optional = true }
+zeroize = { version = "1.8", default-features = false }
