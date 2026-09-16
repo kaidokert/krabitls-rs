@@ -58,9 +58,13 @@ pub use crate::backends::{Anchor, DEFAULT_CHAIN_DEPTH, PinnedRoots, PinnedRootsE
 #[cfg(feature = "cert-der")]
 pub use crate::traits::verify_strategy::Clocked;
 pub use crate::traits::verify_strategy::{
-    CertChainView, NoClock, PreparedVerifier, SafeStrategy, SafeStrategyError, TrustRootDecision,
-    Trusted, VerifierKeyMaterial, VerifyStrategy,
+    CertChainView, Clock, NoClock, PreparedVerifier, SafeStrategy, SafeStrategyError,
+    TrustRootDecision, Trusted, ValidityRejected, VerifierKeyMaterial, VerifyStrategy,
 };
+// The parsed-cert surface every custom `Clock`, `VerifyStrategy` or `CertParser`
+// has to name: `CertView` is what they are handed, `Validity` what a clock
+// decides on, and `CaConstraints` what a parser reports for chain validation.
+pub use crate::traits::cert::{CaConstraints, CertParseError, CertView, Validity};
 // Key material a custom `VerifyStrategy` hands to `SigVerifierProvider::prepare`
 // to build a verifier for a pinned anchor or chain link (ed25519 and ECDSA key
 // material are plain byte arrays; RSA and ML-DSA need these named types).

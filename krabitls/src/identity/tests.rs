@@ -407,12 +407,15 @@ mod rsa_tests {
 #[cfg(feature = "cert-der")]
 mod validity_tests {
     use super::super::*;
-    use crate::traits::cert::CertView;
+    use crate::traits::cert::{CertView, Validity};
     use crate::traits::time::TimeSource;
     use crate::traits::time::tests::FixedTime;
+    use crate::traits::verify_strategy::{Clock, Clocked, ValidityRejected};
 
     /// 2030-01-15T00:00:00Z = 1894665600.
     const T_2030_01_15: u64 = 1894665600;
+    /// 2020-01-15T00:00:00Z = 1579046400.
+    const T_2020_01_15: u64 = 1579046400;
     /// 2024-06-15T12:34:56Z = 1718454896.
     const T_2024_06_15_LATE: u64 = 1718454896;
 
@@ -476,6 +479,50 @@ mod validity_tests {
             verify_validity(&view, &FixedTime(T_2024_06_15_LATE)),
             Err(ValidityError::Expired { .. })
         ));
+    }
+
+    #[test]
+    fn validity_accessor_decodes_window() {
+        let der = validity_der(b"200115000000Z", b"300115000000Z");
+        let view = cert_view_with_validity(&der);
+        assert_eq!(
+            view.validity(),
+            Ok(Validity {
+                not_before: T_2020_01_15,
+                not_after: T_2030_01_15,
+            })
+        );
+    }
+
+    /// A clockless device floors on `notAfter` alone. The window below opens in
+    /// 2030, so a `Clocked` at a 2024 build time rejects it as not-yet-valid
+    /// while the floor accepts — the split that needs a caller-written `Clock`.
+    #[test]
+    fn notafter_floor_accepts_what_clocked_rejects() {
+        struct ExpiryFloor(u64);
+        impl Clock for ExpiryFloor {
+            fn check_validity(&self, leaf: &CertView<'_>) -> Result<(), ValidityRejected> {
+                let window = leaf.validity().map_err(|_| ValidityRejected)?;
+                if window.not_after < self.0 {
+                    return Err(ValidityRejected);
+                }
+                Ok(())
+            }
+        }
+        let floor = ExpiryFloor(T_2024_06_15_LATE);
+
+        let future = validity_der(b"300115000000Z", b"400115000000Z");
+        let view = cert_view_with_validity(&future);
+        assert_eq!(floor.check_validity(&view), Ok(()));
+        assert!(
+            Clocked(FixedTime(T_2024_06_15_LATE))
+                .check_validity(&view)
+                .is_err()
+        );
+
+        let expired = validity_der(b"100115000000Z", b"200115000000Z");
+        let view = cert_view_with_validity(&expired);
+        assert_eq!(floor.check_validity(&view), Err(ValidityRejected));
     }
 
     #[test]

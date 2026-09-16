@@ -44,7 +44,13 @@ pub struct CaConstraints {
 }
 
 /// Parsed view of a self-signed X.509 cert.
+///
+/// Non-exhaustive: new key/signature algorithms are added here as krabitls
+/// gains them, so downstream matches need a `_` arm and keep compiling. The
+/// variants themselves stay constructible so a custom [`CertParser`] can build
+/// one.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub enum CertView<'a> {
     /// Ed25519 server identity (RFC 8410). The standard krabitls profile.
     Ed25519 {
@@ -162,6 +168,18 @@ pub enum RsaCertSigAlg {
     PssSha256,
 }
 
+/// A cert's decoded validity window, Unix epoch seconds.
+///
+/// Handed to a [`Clock`](crate::client::Clock) policy so it can decide on
+/// numbers instead of re-decoding X.509 time DER.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Validity {
+    /// `notBefore`: the cert is not valid earlier than this.
+    pub not_before: u64,
+    /// `notAfter`: the cert is not valid later than this.
+    pub not_after: u64,
+}
+
 impl<'a> CertView<'a> {
     /// Borrow the bytes that were signed.
     pub fn tbs(&self) -> &'a [u8] {
@@ -206,6 +224,21 @@ impl<'a> CertView<'a> {
             #[cfg(feature = "ecdsa")]
             CertView::EcdsaP384 { validity_der, .. } => validity_der,
         }
+    }
+
+    /// Decode the validity window into epoch seconds.
+    ///
+    /// Only a [`Clock`](crate::client::Clock) that calls this pulls in the
+    /// X.509 time decoder, so a [`NoClock`](crate::client::NoClock) build still
+    /// drops it entirely.
+    #[cfg(feature = "cert-der")]
+    pub fn validity(&self) -> Result<Validity, CertParseError> {
+        crate::identity::parse_validity_der(self.validity_der())
+            .map(|(not_before, not_after)| Validity {
+                not_before,
+                not_after,
+            })
+            .map_err(|_| CertParseError::Malformed)
     }
 }
 

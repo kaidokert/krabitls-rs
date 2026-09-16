@@ -167,6 +167,58 @@ impl ClientConfig for ProbeConfig {
     const SUITES: ConfigSuitePolicy = ConfigSuitePolicy::AesOnly;
 }
 
+/// Guards the cert-validity policy seam: a downstream must be able to write its
+/// own [`Clock`](krabitls::client::Clock), not merely pick a bundled one. A
+/// device with no RTC needs exactly the policy below — reject what was already
+/// expired when the firmware was built, and skip `notBefore` so a cert issued
+/// after that build still validates.
+pub mod clock_surface {
+    use krabitls::backends::RustCrypto;
+    use krabitls::client::{CertView, Clock, TrustRootDecision, Validity, ValidityRejected};
+
+    /// `notAfter`-only validity policy for a clockless device.
+    pub struct ExpiryFloor {
+        /// Firmware build time; certs that expired before it are rejected.
+        pub floor_unix_secs: u64,
+    }
+
+    impl Clock for ExpiryFloor {
+        fn check_validity(&self, leaf: &CertView<'_>) -> Result<(), ValidityRejected> {
+            let Validity { not_after, .. } = leaf.validity().map_err(|_| ValidityRejected)?;
+            if not_after < self.floor_unix_secs {
+                return Err(ValidityRejected);
+            }
+            Ok(())
+        }
+    }
+
+    /// The chain rejected by [`AnyEd25519`].
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct Rejected;
+
+    impl core::fmt::Display for Rejected {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            f.write_str("chain rejected")
+        }
+    }
+    impl core::error::Error for Rejected {}
+
+    /// A custom trust-root decision, which forces [`CertView`] to stay matchable
+    /// downstream — and keeps a `_` arm compiling as new variants land.
+    pub struct AnyEd25519;
+
+    impl TrustRootDecision<RustCrypto> for AnyEd25519 {
+        type Error = Rejected;
+
+        fn accept_chain<'src>(&self, chain: &[CertView<'src>]) -> Result<(), Self::Error> {
+            match chain.last().ok_or(Rejected)? {
+                CertView::Ed25519 { .. } => Ok(()),
+                _ => Err(Rejected),
+            }
+        }
+    }
+}
+
 /// Guards the custom verify-strategy / RSA trust-anchor surface — the seam a
 /// hardware anchor-pin strategy uses, and the gap alpha.5 missed. Constructing
 /// an RSA verifier from pinned key material via the public provider path forces
