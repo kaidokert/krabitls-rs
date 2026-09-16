@@ -346,7 +346,7 @@ mod validity {
     /// default API surface). The leap-year math, two-digit-year pivot (RFC
     /// 5280 §4.1.2.5.1), and per-month day limits all live in `der` instead
     /// of the previous hand-rolled `days_to_epoch_secs`.
-    fn parse_validity_der(der_bytes: &[u8]) -> Result<(u64, u64), ValidityError> {
+    pub fn parse_validity_der(der_bytes: &[u8]) -> Result<(u64, u64), ValidityError> {
         let mut outer = SliceReader::new(der_bytes).map_err(|_| ValidityError::Malformed)?;
         let result: der::Result<(u64, u64)> = outer.sequence(|inner| {
             let nb = decode_time_to_unix(inner)?;
@@ -390,6 +390,8 @@ mod validity {
         Ok(secs)
     }
 }
+#[cfg(feature = "cert-der")]
+pub(crate) use validity::parse_validity_der;
 #[cfg(feature = "cert-der")]
 pub use validity::{ValidityError, verify_validity};
 
