@@ -244,3 +244,31 @@ pub mod verify_surface {
     pub type AnchorWalkErr = PinnedRootsError;
     pub type AnchorWalk<'a> = PinnedRoots<'a, DerCert>;
 }
+
+/// Guards the custom-parser seam, and with it the other half of the `CertView`
+/// contract: the enum is `#[non_exhaustive]`, which constrains *matching* only,
+/// so a downstream parser must still be able to *construct* a variant. This impl
+/// is what holds that — if the variants ever became non-constructible from
+/// outside, it stops compiling.
+pub mod parser_surface {
+    use krabitls::client::{CertParseError, CertParser, CertView};
+
+    static SIGNATURE: [u8; 64] = [0u8; 64];
+    static PUBKEY: [u8; 32] = [0u8; 32];
+
+    /// Returns a fixed view rather than decoding anything — the export surface
+    /// is the subject here, not the parsing.
+    pub struct ProbeCertParser;
+
+    impl CertParser for ProbeCertParser {
+        fn parse<'a>(cert_der: &'a [u8]) -> Result<CertView<'a>, CertParseError> {
+            Ok(CertView::Ed25519 {
+                tbs: cert_der,
+                signature: &SIGNATURE,
+                pubkey: &PUBKEY,
+                san: None,
+                validity_der: &[],
+            })
+        }
+    }
+}
