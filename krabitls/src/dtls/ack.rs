@@ -41,11 +41,11 @@ pub(crate) fn write_ack(records: &[(u64, u64)], out: &mut [u8]) -> Result<usize,
     if out.len() < total {
         return Err(AckError::BufferTooSmall);
     }
-    out[..2].copy_from_slice(&(list_len as u16).to_be_bytes());
+    crate::bytecopy::copy_bytes(&mut out[..2], &(list_len as u16).to_be_bytes());
     let mut p = 2;
     for &(epoch, seq) in records {
-        out[p..p + 8].copy_from_slice(&epoch.to_be_bytes());
-        out[p + 8..p + 16].copy_from_slice(&seq.to_be_bytes());
+        crate::bytecopy::copy_bytes(&mut out[p..p + 8], &epoch.to_be_bytes());
+        crate::bytecopy::copy_bytes(&mut out[p + 8..p + 16], &seq.to_be_bytes());
         p += RECORD_NUMBER_LEN;
     }
     Ok(total)
@@ -61,14 +61,14 @@ pub(crate) fn write_ack_bitmap(epoch: u64, seqs: u128, out: &mut [u8]) -> Result
     if out.len() < total {
         return Err(AckError::BufferTooSmall);
     }
-    out[..2].copy_from_slice(&(list_len as u16).to_be_bytes());
+    crate::bytecopy::copy_bytes(&mut out[..2], &(list_len as u16).to_be_bytes());
     let mut p = 2;
     let mut bits = seqs;
     while bits != 0 {
         let seq = bits.trailing_zeros() as u64;
         bits &= bits - 1;
-        out[p..p + 8].copy_from_slice(&epoch.to_be_bytes());
-        out[p + 8..p + 16].copy_from_slice(&seq.to_be_bytes());
+        crate::bytecopy::copy_bytes(&mut out[p..p + 8], &epoch.to_be_bytes());
+        crate::bytecopy::copy_bytes(&mut out[p + 8..p + 16], &seq.to_be_bytes());
         p += RECORD_NUMBER_LEN;
     }
     Ok(total)

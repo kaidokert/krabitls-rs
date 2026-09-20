@@ -21,20 +21,6 @@ use digest::Digest;
 /// every standard label.
 const HKDF_LABEL_MAX: usize = 64;
 
-// These inputs are often string literals with alignment 1.  A plain
-// `extend_from_slice` permits LLVM to widen the copy into an unaligned word
-// load on Cortex-M targets that trap `UNALIGN_TRP`.
-#[inline(never)]
-fn extend_bytes<const N: usize>(
-    out: &mut heapless::Vec<u8, N>,
-    bytes: &[u8],
-) -> Result<(), heapless::CapacityError> {
-    for &byte in bytes {
-        out.push(byte).map_err(|_| heapless::CapacityError::default())?;
-    }
-    Ok(())
-}
-
 /// Errors while encoding a TLS 1.3 `HkdfLabel`.
 #[derive(Debug, PartialEq, Eq, Clone, Copy, thiserror::Error)]
 pub enum HkdfLabelError {
@@ -112,14 +98,14 @@ fn hkdf_expand_label_prefixed<H: HkdfSha256>(
 
     let mut info: heapless::Vec<u8, HKDF_LABEL_MAX> = heapless::Vec::new();
     let output_len = (out.len() as u16).to_be_bytes();
-    extend_bytes(&mut info, &output_len)?;
+    crate::bytecopy::push_bytes(&mut info, &output_len)?;
     let label_len = [label_total as u8];
-    extend_bytes(&mut info, &label_len)?;
-    extend_bytes(&mut info, prefix)?;
-    extend_bytes(&mut info, label)?;
+    crate::bytecopy::push_bytes(&mut info, &label_len)?;
+    crate::bytecopy::push_bytes(&mut info, prefix)?;
+    crate::bytecopy::push_bytes(&mut info, label)?;
     let context_len = [context.len() as u8];
-    extend_bytes(&mut info, &context_len)?;
-    extend_bytes(&mut info, context)?;
+    crate::bytecopy::push_bytes(&mut info, &context_len)?;
+    crate::bytecopy::push_bytes(&mut info, context)?;
 
     H::expand(secret, &info, out)?;
     Ok(())

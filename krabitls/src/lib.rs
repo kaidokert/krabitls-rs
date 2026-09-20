@@ -52,6 +52,7 @@
 pub(crate) mod aead;
 pub mod backends;
 pub(crate) mod bigint;
+pub(crate) mod bytecopy;
 pub mod client;
 pub(crate) mod client_flight;
 pub(crate) mod connection;
