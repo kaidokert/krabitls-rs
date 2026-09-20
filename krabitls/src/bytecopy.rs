@@ -5,13 +5,9 @@
 //! `#[inline(never)]` is what makes that work. Inlined into a caller that knows
 //! the length, LLVM folds the loop straight back into the store being avoided.
 
-/// Copies nothing on a width mismatch, where `copy_from_slice` would panic.
 #[inline(never)]
 pub(crate) fn copy_bytes(dst: &mut [u8], src: &[u8]) {
-    debug_assert_eq!(dst.len(), src.len());
-    if src.len() > dst.len() {
-        return;
-    }
+    assert_eq!(dst.len(), src.len());
     let mut i = 0;
     while i < src.len() {
         dst[i] = src[i];
