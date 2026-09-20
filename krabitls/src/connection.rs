@@ -309,6 +309,9 @@ pub struct ServerFlightDone<S: CipherSuite, M: HandshakeMode = Live> {
 #[allow(clippy::large_enum_variant)]
 // Carries a concrete pubkey for replay tooling.
 #[allow(dead_code)]
+// 4-aligned: an all-byte payload may otherwise be placed at an odd offset,
+// where a merged field write becomes an unaligned store.
+#[repr(align(4))]
 pub enum ServerPubkeyOwned {
     Ed25519([u8; 32]),
     #[cfg(feature = "rsa")]

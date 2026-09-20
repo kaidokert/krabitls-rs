@@ -6,6 +6,9 @@
 
 /// The server public key carried by the verified certificate.
 #[derive(Debug, Clone, Copy)]
+// 4-aligned: an all-byte payload may otherwise be placed at an odd offset,
+// where a merged field write becomes an unaligned store.
+#[repr(align(4))]
 pub enum ServerPubkey<'a> {
     Ed25519([u8; 32], core::marker::PhantomData<&'a ()>),
     #[cfg(feature = "rsa")]

@@ -31,6 +31,9 @@ pub enum IdentityError {
 
 /// Public key material pinned out-of-band.
 #[derive(Debug, Clone, Copy)]
+// 4-aligned: an all-byte payload may otherwise be placed at an odd offset,
+// where a merged field write becomes an unaligned store.
+#[repr(align(4))]
 pub enum PinnedPubkey<'a> {
     /// 32-byte raw Ed25519 public key.
     Ed25519([u8; 32]),
