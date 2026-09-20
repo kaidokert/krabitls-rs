@@ -228,7 +228,8 @@ pub fn build_client_certificate_verify<'a, R: TryCryptoRng + ?Sized, A: ClientAu
     out[0] = HS_CERTIFICATE_VERIFY;
     crate::bytecopy::copy_bytes(&mut out[1..4], &u24(body_len));
     crate::bytecopy::copy_bytes(&mut out[4..6], &auth.scheme().to_be_bytes());
-    out[6..8].copy_from_slice(
+    crate::bytecopy::copy_bytes(
+        &mut out[6..8],
         &u16::try_from(sig.len())
             .map_err(|_| ClientAuthFlightError::BufferTooSmall)?
             .to_be_bytes(),

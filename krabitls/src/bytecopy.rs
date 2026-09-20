@@ -6,8 +6,12 @@
 //! destination offset is usually a runtime value (a cursor into a record
 //! buffer), so that store lands on an odd address roughly half the time, which
 //! faults on M-class parts that trap unaligned access; Cortex-M7 traps by
-//! default. Writing a byte at a time emits the same bytes and cannot be merged
-//! back into a wide store, because the offset's alignment is not provable.
+//! default.
+//!
+//! Both helpers are `#[inline(never)]` on purpose: the length has to stay
+//! opaque to the caller. Inlined into a caller that knows it is copying two
+//! bytes, LLVM folds the byte loop straight back into the `strh` this exists to
+//! avoid.
 //!
 //! Only statically-sized copies need this. A runtime-length copy already goes
 //! through `memcpy`, which aligns its own accesses.
@@ -17,6 +21,7 @@
 /// Every caller slices `dst` to the exact width, so the lengths match by
 /// construction. A mismatch trips the debug assertion, and copies nothing in
 /// release — where `copy_from_slice` would panic.
+#[inline(never)]
 pub(crate) fn copy_bytes(dst: &mut [u8], src: &[u8]) {
     debug_assert_eq!(dst.len(), src.len());
     if src.len() > dst.len() {
@@ -30,6 +35,7 @@ pub(crate) fn copy_bytes(dst: &mut [u8], src: &[u8]) {
 }
 
 /// Append `bytes` to `out`, one byte at a time.
+#[inline(never)]
 pub(crate) fn push_bytes<const N: usize>(
     out: &mut heapless::Vec<u8, N>,
     bytes: &[u8],
