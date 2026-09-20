@@ -27,7 +27,7 @@ pub(crate) fn build_finished_plaintext<H: HkdfSha256>(
         finished_mac::<H>(c_hs_traffic_secret, transcript_hash_through_server_finished)?;
     let mut finished_msg = ZeroBuf::<{ 4 + 32 }>::new([0; 4 + 32]);
     finished_msg[0] = HS_FINISHED;
-    finished_msg[1..4].copy_from_slice(&[0x00, 0x00, 0x20]);
+    crate::bytecopy::copy_bytes(&mut finished_msg[1..4], &[0x00, 0x00, 0x20]);
     finished_msg[4..].copy_from_slice(&verify_data[..]);
     Ok(finished_msg)
 }
@@ -165,19 +165,19 @@ pub fn build_client_certificate<'a>(
         .ok_or(ClientAuthFlightError::BufferTooSmall)?;
 
     out[0] = HS_CERTIFICATE;
-    out[1..4].copy_from_slice(&u24(body_len));
+    crate::bytecopy::copy_bytes(&mut out[1..4], &u24(body_len));
     let mut p = 4;
     out[p] = cert_request_context.len() as u8; // validated <= 255 above
     p += 1;
     out[p..p + cert_request_context.len()].copy_from_slice(cert_request_context);
     p += cert_request_context.len();
-    out[p..p + 3].copy_from_slice(&u24(entry_len));
+    crate::bytecopy::copy_bytes(&mut out[p..p + 3], &u24(entry_len));
     p += 3;
-    out[p..p + 3].copy_from_slice(&u24(cert_der.len()));
+    crate::bytecopy::copy_bytes(&mut out[p..p + 3], &u24(cert_der.len()));
     p += 3;
     out[p..p + cert_der.len()].copy_from_slice(cert_der);
     p += cert_der.len();
-    out[p..p + 2].copy_from_slice(&[0x00, 0x00]); // empty CertificateEntry extensions
+    crate::bytecopy::copy_bytes(&mut out[p..p + 2], &[0x00, 0x00]); // empty CertificateEntry extensions
     Ok(out)
 }
 
@@ -199,11 +199,11 @@ pub fn build_client_empty_certificate<'a>(
         .ok_or(ClientAuthFlightError::BufferTooSmall)?;
 
     out[0] = HS_CERTIFICATE;
-    out[1..4].copy_from_slice(&u24(body_len));
+    crate::bytecopy::copy_bytes(&mut out[1..4], &u24(body_len));
     out[4] = cert_request_context.len() as u8; // validated <= 255 above
     out[5..5 + cert_request_context.len()].copy_from_slice(cert_request_context);
     let list_at = 5 + cert_request_context.len();
-    out[list_at..list_at + 3].copy_from_slice(&[0, 0, 0]); // empty certificate_list
+    crate::bytecopy::copy_bytes(&mut out[list_at..list_at + 3], &[0, 0, 0]); // empty certificate_list
     Ok(out)
 }
 
@@ -226,9 +226,10 @@ pub fn build_client_certificate_verify<'a, R: TryCryptoRng + ?Sized, A: ClientAu
         .ok_or(ClientAuthFlightError::BufferTooSmall)?;
 
     out[0] = HS_CERTIFICATE_VERIFY;
-    out[1..4].copy_from_slice(&u24(body_len));
-    out[4..6].copy_from_slice(&auth.scheme().to_be_bytes());
-    out[6..8].copy_from_slice(
+    crate::bytecopy::copy_bytes(&mut out[1..4], &u24(body_len));
+    crate::bytecopy::copy_bytes(&mut out[4..6], &auth.scheme().to_be_bytes());
+    crate::bytecopy::copy_bytes(
+        &mut out[6..8],
         &u16::try_from(sig.len())
             .map_err(|_| ClientAuthFlightError::BufferTooSmall)?
             .to_be_bytes(),

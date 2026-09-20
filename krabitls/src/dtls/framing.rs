@@ -83,10 +83,10 @@ impl<'a> PlaintextRecord<'a> {
             return Err(FramingError::BufferTooSmall);
         }
         out[0] = content_type;
-        out[1..3].copy_from_slice(&DTLS_1_2_LEGACY_VERSION.to_be_bytes());
-        out[3..5].copy_from_slice(&epoch.to_be_bytes());
+        crate::bytecopy::copy_bytes(&mut out[1..3], &DTLS_1_2_LEGACY_VERSION.to_be_bytes());
+        crate::bytecopy::copy_bytes(&mut out[3..5], &epoch.to_be_bytes());
         write_u48(&mut out[5..11], seq);
-        out[11..13].copy_from_slice(&(fragment.len() as u16).to_be_bytes());
+        crate::bytecopy::copy_bytes(&mut out[11..13], &(fragment.len() as u16).to_be_bytes());
         out[PLAINTEXT_HEADER_LEN..total].copy_from_slice(fragment);
         Ok(&out[..total])
     }
@@ -123,7 +123,7 @@ impl HandshakeHeader {
         }
         out[0] = self.msg_type;
         write_u24(&mut out[1..4], self.length)?;
-        out[4..6].copy_from_slice(&self.message_seq.to_be_bytes());
+        crate::bytecopy::copy_bytes(&mut out[4..6], &self.message_seq.to_be_bytes());
         write_u24(&mut out[6..9], self.fragment_offset)?;
         write_u24(&mut out[9..12], self.fragment_length)?;
         Ok(())
@@ -139,7 +139,7 @@ fn write_u24(out: &mut [u8], v: u32) -> Result<(), FramingError> {
         return Err(FramingError::FieldTooLarge);
     }
     let be = v.to_be_bytes();
-    out[..3].copy_from_slice(&be[1..4]);
+    crate::bytecopy::copy_bytes(&mut out[..3], &be[1..4]);
     Ok(())
 }
 
@@ -153,7 +153,7 @@ fn read_u48(b: &[u8]) -> u64 {
 
 fn write_u48(out: &mut [u8], v: u64) {
     let be = v.to_be_bytes();
-    out[..6].copy_from_slice(&be[2..8]);
+    crate::bytecopy::copy_bytes(&mut out[..6], &be[2..8]);
 }
 
 #[cfg(test)]

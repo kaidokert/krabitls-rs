@@ -97,12 +97,15 @@ fn hkdf_expand_label_prefixed<H: HkdfSha256>(
     }
 
     let mut info: heapless::Vec<u8, HKDF_LABEL_MAX> = heapless::Vec::new();
-    info.extend_from_slice(&(out.len() as u16).to_be_bytes())?;
-    info.extend_from_slice(&[label_total as u8])?;
-    info.extend_from_slice(prefix)?;
-    info.extend_from_slice(label)?;
-    info.extend_from_slice(&[context.len() as u8])?;
-    info.extend_from_slice(context)?;
+    let output_len = (out.len() as u16).to_be_bytes();
+    crate::bytecopy::push_bytes(&mut info, &output_len)?;
+    let label_len = [label_total as u8];
+    crate::bytecopy::push_bytes(&mut info, &label_len)?;
+    crate::bytecopy::push_bytes(&mut info, prefix)?;
+    crate::bytecopy::push_bytes(&mut info, label)?;
+    let context_len = [context.len() as u8];
+    crate::bytecopy::push_bytes(&mut info, &context_len)?;
+    crate::bytecopy::push_bytes(&mut info, context)?;
 
     H::expand(secret, &info, out)?;
     Ok(())

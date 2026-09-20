@@ -153,8 +153,10 @@ impl<S: DtlsSuite> EpochKeys<S> {
             out[1..1 + cid_len].copy_from_slice(cid);
         }
         write_seq(&mut out[seq_pos..seq_pos + seq_len.bytes()], seq);
-        out[seq_pos + seq_len.bytes()..header_len]
-            .copy_from_slice(&(body_len as u16).to_be_bytes());
+        crate::bytecopy::copy_bytes(
+            &mut out[seq_pos + seq_len.bytes()..header_len],
+            &(body_len as u16).to_be_bytes(),
+        );
 
         out[header_len..header_len + content.len()].copy_from_slice(content);
         out[header_len + content.len()] = content_type;
@@ -271,7 +273,7 @@ pub(crate) struct Opened<'r> {
 fn write_seq(out: &mut [u8], seq: u64) {
     match out.len() {
         1 => out[0] = seq as u8,
-        _ => out.copy_from_slice(&(seq as u16).to_be_bytes()),
+        _ => crate::bytecopy::copy_bytes(out, &(seq as u16).to_be_bytes()),
     }
 }
 

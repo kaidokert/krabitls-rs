@@ -20,6 +20,9 @@ use subtle::ConstantTimeEq;
 // available in no_std/no_alloc builds).
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
+// 4-aligned: an all-byte payload may otherwise be placed at an odd offset,
+// where a merged field write becomes an unaligned store.
+#[repr(align(4))]
 pub enum PinnedPubkeyOwned {
     Ed25519([u8; 32]),
     #[cfg(feature = "rsa")]

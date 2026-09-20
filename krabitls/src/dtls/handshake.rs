@@ -62,7 +62,7 @@ impl<'a> Cursor<'a> {
     fn put(&mut self, bytes: &[u8]) {
         match self.buf.get_mut(self.pos..self.pos + bytes.len()) {
             Some(slot) => {
-                slot.copy_from_slice(bytes);
+                crate::bytecopy::copy_bytes(slot, bytes);
                 self.pos += bytes.len();
             }
             None => self.overflow = true,
@@ -87,7 +87,7 @@ impl<'a> Cursor<'a> {
 
     fn patch_u16(&mut self, at: usize, v: u16) {
         if let Some(slot) = self.buf.get_mut(at..at + 2) {
-            slot.copy_from_slice(&v.to_be_bytes());
+            crate::bytecopy::copy_bytes(slot, &v.to_be_bytes());
         }
     }
 }
