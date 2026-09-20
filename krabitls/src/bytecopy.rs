@@ -1,26 +1,11 @@
-//! Byte-addressed copies for small fixed-size fields.
+//! Byte-addressed copies for fields whose length is known at compile time:
+//! those lower to one wide store, which faults at an odd destination offset on
+//! M-class parts that trap unaligned access.
 //!
-//! A `copy_from_slice` / `extend_from_slice` whose source length is known at
-//! compile time is lowered to one wide store — a 2-byte copy becomes a single
-//! `strh` — because the ARMv7-M target declares unaligned access supported. The
-//! destination offset is usually a runtime value (a cursor into a record
-//! buffer), so that store lands on an odd address roughly half the time, which
-//! faults on M-class parts that trap unaligned access; Cortex-M7 traps by
-//! default.
-//!
-//! Both helpers are `#[inline(never)]` on purpose: the length has to stay
-//! opaque to the caller. Inlined into a caller that knows it is copying two
-//! bytes, LLVM folds the byte loop straight back into the `strh` this exists to
-//! avoid.
-//!
-//! Only statically-sized copies need this. A runtime-length copy already goes
-//! through `memcpy`, which aligns its own accesses.
+//! `#[inline(never)]` is what makes that work. Inlined into a caller that knows
+//! the length, LLVM folds the loop straight back into the store being avoided.
 
-/// Copy `src` into `dst`, one byte at a time.
-///
-/// Every caller slices `dst` to the exact width, so the lengths match by
-/// construction. A mismatch trips the debug assertion, and copies nothing in
-/// release — where `copy_from_slice` would panic.
+/// Copies nothing on a width mismatch, where `copy_from_slice` would panic.
 #[inline(never)]
 pub(crate) fn copy_bytes(dst: &mut [u8], src: &[u8]) {
     debug_assert_eq!(dst.len(), src.len());
@@ -34,15 +19,13 @@ pub(crate) fn copy_bytes(dst: &mut [u8], src: &[u8]) {
     }
 }
 
-/// Append `bytes` to `out`, one byte at a time.
 #[inline(never)]
 pub(crate) fn push_bytes<const N: usize>(
     out: &mut heapless::Vec<u8, N>,
     bytes: &[u8],
 ) -> Result<(), heapless::CapacityError> {
     for &byte in bytes {
-        // `CapacityError`'s constructor is private; `default()` is the only way
-        // to build one.
+        // `CapacityError`'s constructor is private.
         out.push(byte)
             .map_err(|_| heapless::CapacityError::default())?;
     }
