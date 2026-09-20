@@ -14,10 +14,11 @@
 
 /// Copy `src` into `dst`, one byte at a time.
 ///
-/// Copies `src.len()` bytes and does nothing when `dst` is shorter, where
-/// `copy_from_slice` would panic; every caller slices `dst` to the exact width
-/// first, so the lengths match by construction.
+/// Every caller slices `dst` to the exact width, so the lengths match by
+/// construction. A mismatch trips the debug assertion, and copies nothing in
+/// release — where `copy_from_slice` would panic.
 pub(crate) fn copy_bytes(dst: &mut [u8], src: &[u8]) {
+    debug_assert_eq!(dst.len(), src.len());
     if src.len() > dst.len() {
         return;
     }
@@ -34,6 +35,8 @@ pub(crate) fn push_bytes<const N: usize>(
     bytes: &[u8],
 ) -> Result<(), heapless::CapacityError> {
     for &byte in bytes {
+        // `CapacityError`'s constructor is private; `default()` is the only way
+        // to build one.
         out.push(byte)
             .map_err(|_| heapless::CapacityError::default())?;
     }
