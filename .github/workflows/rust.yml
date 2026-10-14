@@ -119,6 +119,11 @@ jobs:
             manifest: hardware/nrf52833/Cargo.toml
             features: ""
             target: thumbv7em-none-eabihf
+          - adapter: nrf5340
+            manifest: hardware/nrf5340/Cargo.toml
+            features: qualification
+            target: thumbv8m.main-none-eabihf
+            extra: --examples
           - adapter: samd51
             manifest: hardware/sam/Cargo.toml
             features: samd51j,aes,p256-kx
@@ -151,13 +156,13 @@ jobs:
         FEATURES="${{ matrix.features }}"
         ARGS=""
         [ -n "$FEATURES" ] && ARGS="--features $FEATURES"
-        cargo check --manifest-path="${{ matrix.manifest }}" --target "${{ matrix.target }}" $ARGS
+        cargo check --manifest-path="${{ matrix.manifest }}" --target "${{ matrix.target }}" $ARGS ${{ matrix.extra }}
     - name: Clippy
       run: |
         FEATURES="${{ matrix.features }}"
         ARGS=""
         [ -n "$FEATURES" ] && ARGS="--features $FEATURES"
-        cargo clippy --manifest-path="${{ matrix.manifest }}" --target "${{ matrix.target }}" $ARGS -- -D warnings
+        cargo clippy --manifest-path="${{ matrix.manifest }}" --target "${{ matrix.target }}" $ARGS ${{ matrix.extra }} -- -D warnings
 
   krabitls-cli:
     name: krabitls_cli [${{ matrix.features || 'default' }}]

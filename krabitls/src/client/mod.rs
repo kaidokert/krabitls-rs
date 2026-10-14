@@ -119,6 +119,77 @@ pub use crate::aead::CipherSuite;
 pub use crate::traits::client_auth::{ClientSignature, MAX_CLIENT_SIG_LEN};
 pub use crate::traits::{CertParser, HkdfExpandError, HkdfSha256};
 
+#[cfg(all(feature = "dev-utils", feature = "cipher-aes"))]
+pub use qualification::{AeadQualificationError, qualify_aes_record_backend};
+
+#[cfg(all(feature = "dev-utils", feature = "cipher-aes"))]
+mod qualification {
+    use crate::aead::RecordKeys;
+    use crate::backends::RustCrypto;
+    use crate::newtype::Secret;
+    use crate::traits::AeadBackend;
+
+    /// Failure from the backend-author TLS record qualification helper.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub enum AeadQualificationError {
+        KeyDerivation,
+        Encrypt,
+        Decrypt,
+        PlaintextMismatch,
+        AuthenticationAccepted,
+    }
+
+    /// Exercises an AES backend through KrabiTLS's TLS 1.3 record layer.
+    ///
+    /// This helper is gated behind `dev-utils`; it exists for hardware adapter
+    /// qualification images and is not part of the connection API.
+    pub fn qualify_aes_record_backend<B: AeadBackend>() -> Result<(), AeadQualificationError> {
+        const CONTENT: &[u8] = b"KrabiTLS AEAD record path";
+        const SEQUENCE: u64 = 7;
+
+        let traffic_secret = Secret::from([0x5a; 32]);
+        let keys = RecordKeys::<B::Aes>::derive::<RustCrypto>(&traffic_secret)
+            .map_err(|_| AeadQualificationError::KeyDerivation)?;
+        let mut record = [0u8; 128];
+        let record_len = keys
+            .encrypt_record(
+                CONTENT,
+                crate::consts::CT_APPLICATION_DATA,
+                SEQUENCE,
+                &mut record,
+            )
+            .map_err(|_| AeadQualificationError::Encrypt)?
+            .len();
+
+        let mut opened = record;
+        let inner_len = keys
+            .decrypt_record_inplace(&mut opened[..record_len], SEQUENCE)
+            .map_err(|_| AeadQualificationError::Decrypt)?;
+        let (content, content_type) = crate::aead::split_inner_plaintext(&opened[5..5 + inner_len])
+            .map_err(|_| AeadQualificationError::PlaintextMismatch)?;
+        if content != CONTENT || content_type != crate::consts::CT_APPLICATION_DATA {
+            return Err(AeadQualificationError::PlaintextMismatch);
+        }
+
+        record[record_len - 1] ^= 1;
+        if keys
+            .decrypt_record_inplace(&mut record[..record_len], SEQUENCE)
+            .is_ok()
+        {
+            return Err(AeadQualificationError::AuthenticationAccepted);
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        #[test]
+        fn bundled_backend_passes_record_qualification() {
+            super::qualify_aes_record_backend::<crate::backends::RustCrypto>().unwrap();
+        }
+    }
+}
+
 // In-crate-only: alternate config impls (samples, callers write their own),
 // the WriteAppError plumbing type, the InternalError variant the engine
 // surfaces upstream, the scratch-tuning knobs, and the in-progress
