@@ -8,6 +8,8 @@ seeding, linker configuration, and networking.
 - `nrf52833` exposes the nRF52833 ECB engine as an AES-128 block primitive and
   TLS AES-GCM backend. The chip has no public-key accelerator, so key exchange
   remains software.
+- `nrf5340` provides native CryptoCell-312 AES-128-GCM and a bare-metal
+  qualification image for the nRF5340 application core.
 - `sam` groups Microchip SAM hardware by silicon family. Its first backend is
   SAM D5x/E5x AES plus the ROM-resident PUKCL/PUKCC P-256 key-exchange path.
   SAM4 and SAM E/S/V7x parts do not share that PUKCL facility; future support
