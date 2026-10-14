@@ -119,6 +119,8 @@ pub use crate::aead::CipherSuite;
 pub use crate::traits::client_auth::{ClientSignature, MAX_CLIENT_SIG_LEN};
 pub use crate::traits::{CertParser, HkdfExpandError, HkdfSha256};
 
+#[cfg(all(feature = "dev-utils", feature = "cipher-aes", feature = "p256-kx"))]
+pub use qualification::qualify_p256_aes_backends;
 #[cfg(all(feature = "dev-utils", feature = "cipher-aes"))]
 pub use qualification::{AeadQualificationError, qualify_aes_record_backend};
 
@@ -129,9 +131,11 @@ mod qualification {
     use crate::newtype::Secret;
     use crate::traits::AeadBackend;
 
-    /// Failure from the backend-author TLS record qualification helper.
+    /// Failure from a backend-author TLS qualification helper.
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     pub enum AeadQualificationError {
+        KeyExchange,
+        AgreementMismatch,
         KeyDerivation,
         Encrypt,
         Decrypt,
@@ -144,11 +148,52 @@ mod qualification {
     /// This helper is gated behind `dev-utils`; it exists for hardware adapter
     /// qualification images and is not part of the connection API.
     pub fn qualify_aes_record_backend<B: AeadBackend>() -> Result<(), AeadQualificationError> {
+        let traffic_secret = Secret::from([0x5a; 32]);
+        qualify_record_with_traffic_secret::<B>(&traffic_secret)
+    }
+
+    /// Cross-check a custom P-256 group against the bundled implementation,
+    /// then feed its result through the TLS 1.3 handshake key schedule and a
+    /// record encrypt/decrypt cycle using `B`.
+    #[cfg(feature = "p256-kx")]
+    pub fn qualify_p256_aes_backends<G, B, R>(rng: &mut R) -> Result<(), AeadQualificationError>
+    where
+        G: crate::traits::KxGroup,
+        B: AeadBackend,
+        R: rand_core::TryCryptoRng + ?Sized,
+    {
+        use crate::traits::KxGroup;
+
+        let (client_secret, client_share) =
+            G::generate(rng).map_err(|_| AeadQualificationError::KeyExchange)?;
+        let (server_secret, server_share) = crate::backends::P256Group::generate(rng)
+            .map_err(|_| AeadQualificationError::KeyExchange)?;
+        let client_shared = G::derive(client_secret, server_share.as_slice())
+            .map_err(|_| AeadQualificationError::KeyExchange)?;
+        let server_shared =
+            crate::backends::P256Group::derive(server_secret, client_share.as_slice())
+                .map_err(|_| AeadQualificationError::KeyExchange)?;
+        if client_shared.as_slice() != server_shared.as_slice() {
+            return Err(AeadQualificationError::AgreementMismatch);
+        }
+
+        let handshake_secret =
+            crate::hkdf::handshake_secret::<RustCrypto>(client_shared.as_slice())
+                .map_err(|_| AeadQualificationError::KeyDerivation)?;
+        let transcript = crate::newtype::TranscriptDigest::from([0x42; 32]);
+        let (client_traffic, _) =
+            crate::hkdf::handshake_traffic_secrets::<RustCrypto>(&handshake_secret, &transcript)
+                .map_err(|_| AeadQualificationError::KeyDerivation)?;
+        qualify_record_with_traffic_secret::<B>(&client_traffic)
+    }
+
+    fn qualify_record_with_traffic_secret<B: AeadBackend>(
+        traffic_secret: &Secret,
+    ) -> Result<(), AeadQualificationError> {
         const CONTENT: &[u8] = b"KrabiTLS AEAD record path";
         const SEQUENCE: u64 = 7;
 
-        let traffic_secret = Secret::from([0x5a; 32]);
-        let keys = RecordKeys::<B::Aes>::derive::<RustCrypto>(&traffic_secret)
+        let keys = RecordKeys::<B::Aes>::derive::<RustCrypto>(traffic_secret)
             .map_err(|_| AeadQualificationError::KeyDerivation)?;
         let mut record = [0u8; 128];
         let record_len = keys
@@ -183,9 +228,49 @@ mod qualification {
 
     #[cfg(test)]
     mod tests {
+        #[cfg(feature = "p256-kx")]
+        struct CounterRng(u8);
+
+        #[cfg(feature = "p256-kx")]
+        impl rand_core::TryRng for CounterRng {
+            type Error = core::convert::Infallible;
+
+            fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
+                let mut bytes = [0; 4];
+                self.try_fill_bytes(&mut bytes)?;
+                Ok(u32::from_le_bytes(bytes))
+            }
+
+            fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
+                let mut bytes = [0; 8];
+                self.try_fill_bytes(&mut bytes)?;
+                Ok(u64::from_le_bytes(bytes))
+            }
+
+            fn try_fill_bytes(&mut self, destination: &mut [u8]) -> Result<(), Self::Error> {
+                destination.fill(self.0);
+                self.0 = self.0.wrapping_add(1).max(1);
+                Ok(())
+            }
+        }
+
+        #[cfg(feature = "p256-kx")]
+        impl rand_core::TryCryptoRng for CounterRng {}
+
         #[test]
         fn bundled_backend_passes_record_qualification() {
             super::qualify_aes_record_backend::<crate::backends::RustCrypto>().unwrap();
+        }
+
+        #[cfg(feature = "p256-kx")]
+        #[test]
+        fn bundled_backends_pass_combined_qualification() {
+            super::qualify_p256_aes_backends::<
+                crate::backends::P256Group,
+                crate::backends::RustCrypto,
+                _,
+            >(&mut CounterRng(1))
+            .unwrap();
         }
     }
 }

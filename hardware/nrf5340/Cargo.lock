@@ -344,6 +344,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "krabiecdsa"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8e338eadc59a97dd771d3c2414b6e53d25efd9b49f27ed53169036239f028718"
+dependencies = [
+ "const-num-traits",
+ "digest",
+ "kem",
+ "modmath",
+ "signature",
+ "subtle",
+ "zeroize",
+]
+
+[[package]]
 name = "krabitls"
 version = "0.6.0"
 dependencies = [
@@ -358,6 +373,7 @@ dependencies = [
  "hkdf",
  "hmac",
  "kem",
+ "krabiecdsa",
  "rand_core",
  "sha2",
  "signature",
@@ -376,6 +392,7 @@ dependencies = [
  "krabitls",
  "nrf-pac",
  "panic-halt",
+ "rand_core",
  "rtt-target",
  "zeroize",
 ]
@@ -529,6 +546,7 @@ version = "3.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "28d567dcbaf0049cb8ac2608a76cd95ff9e4412e1899d389ee400918ca7537f5"
 dependencies = [
+ "digest",
  "rand_core",
 ]
 

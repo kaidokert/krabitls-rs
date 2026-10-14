@@ -15,6 +15,18 @@ use zeroize::{Zeroize, Zeroizing};
 
 mod raw;
 
+#[cfg(feature = "p256")]
+mod ffi;
+#[cfg(feature = "p256")]
+mod kx;
+#[cfg(feature = "p256")]
+mod rng;
+
+#[cfg(feature = "p256")]
+pub use kx::{Nrf5340Kx, Nrf5340KxError, Nrf5340P256Group};
+#[cfg(feature = "p256")]
+pub use rng::Nrf5340Rng;
+
 /// Hardware AES-128-GCM provider for the nRF5340 CryptoCell-312.
 pub struct Aes128GcmHw {
     key: Zeroizing<[u8; 16]>,
@@ -133,6 +145,8 @@ pub enum CryptoCellError {
     Timeout,
     Hardware,
     Authentication,
+    InvalidArgument,
+    Entropy,
 }
 
 impl CryptoCellError {
@@ -143,6 +157,8 @@ impl CryptoCellError {
             Self::Timeout => 3,
             Self::Hardware => 4,
             Self::Authentication => 5,
+            Self::InvalidArgument => 6,
+            Self::Entropy => 7,
         }
     }
 
@@ -153,10 +169,20 @@ impl CryptoCellError {
             3 => Some(Self::Timeout),
             4 => Some(Self::Hardware),
             5 => Some(Self::Authentication),
+            6 => Some(Self::InvalidArgument),
+            7 => Some(Self::Entropy),
             _ => None,
         }
     }
 }
+
+impl core::fmt::Display for CryptoCellError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(formatter, "CryptoCell failure: {self:?}")
+    }
+}
+
+impl core::error::Error for CryptoCellError {}
 
 static LAST_ERROR: AtomicU8 = AtomicU8::new(0);
 
@@ -206,6 +232,12 @@ impl EngineGuard {
         result
     }
 
+    #[cfg(feature = "p256")]
+    fn finish_vendor_call(mut self) {
+        ENGINE_LOCKED.store(false, Ordering::Release);
+        self.released = true;
+    }
+
     fn release(&mut self) {
         CLEANUP_COUNT.fetch_add(1, Ordering::Relaxed);
         ENGINE_LOCKED.store(false, Ordering::Release);
@@ -221,7 +253,12 @@ impl EngineGuard {
 /// such as immediately before entering a terminal low-power state.
 pub fn shutdown() -> Result<(), CryptoCellError> {
     let mut guard = EngineGuard::acquire()?;
-    let result = raw::shutdown();
+    #[cfg(feature = "p256")]
+    let vendor_result = ffi::deinit_locked();
+    #[cfg(not(feature = "p256"))]
+    let vendor_result = Ok(());
+    let raw_result = raw::shutdown();
+    let result = vendor_result.and(raw_result);
     // A failed terminal cleanup force-disables the block as a fail-safe too;
     // neither outcome permits this ownership period to resume.
     ENGINE_SHUT_DOWN.store(true, Ordering::Release);
@@ -250,6 +287,15 @@ pub mod qualification {
         raw::FORCE_TIMEOUT.store(true, Ordering::Release);
     }
 
+    /// Makes the next Nordic-library operation fail at the adapter boundary.
+    ///
+    /// The pre-call injection is necessary because Nordic's binary library
+    /// does not expose its internal PKA polling loop or a cancellation hook.
+    #[cfg(feature = "p256")]
+    pub fn force_next_vendor_timeout() {
+        ffi::force_next_timeout();
+    }
+
     /// Counts completed peripheral cleanup paths, including failed operations.
     pub fn cleanup_count() -> u32 {
         CLEANUP_COUNT.load(Ordering::Acquire)
@@ -259,6 +305,13 @@ pub mod qualification {
     pub fn exercise_key_wipe(cipher: &mut Aes128GcmHw) -> bool {
         cipher.zeroize();
         cipher.key.iter().all(|byte| *byte == 0)
+    }
+
+    #[cfg(feature = "p256")]
+    pub fn exercise_p256_secret_wipe() -> bool {
+        let mut secret = Zeroizing::new([0xa5; 32]);
+        secret.zeroize();
+        secret.iter().all(|byte| *byte == 0)
     }
 
     /// Checks cleanup state exposed by readable peripheral registers.
