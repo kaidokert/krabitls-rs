@@ -27,6 +27,9 @@ peripheral-lifetime hook in which to perform it. The application must call
 `shutdown()` when it knows no later backend call can occur. A successful
 shutdown follows the documented idle, interrupt-clear, power-down-request, and
 disable sequence and makes later adapter calls fail without touching hardware.
+A cleanup that remains non-idle even after DMA reset also force-disables and
+permanently poisons the adapter; apparently successful record output is rejected
+when cleanup cannot establish that sensitive state was cleared.
 
 CryptoCell DMA reads 16-byte RAM blocks. The adapter therefore bounces every
 AES/GHASH input block through aligned stack storage. Callers may supply

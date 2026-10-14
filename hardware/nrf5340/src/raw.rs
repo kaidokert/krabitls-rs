@@ -46,8 +46,16 @@ pub(crate) fn gcm(
     power(true);
 
     let result = gcm_inner(key, iv, aad, data, direction);
-    guard.finish()?;
-    result
+    let cleanup = guard.finish();
+    match (result, cleanup) {
+        // Preserve the operation's more specific diagnostic if cleanup also
+        // fails. A cleanup failure still poisons the adapter in EngineGuard.
+        (Err(error), _) => Err(error),
+        (Ok(value), Ok(())) => Ok(value),
+        // Never release apparently successful output when sensitive-state
+        // cleanup could not be established.
+        (Ok(_), Err(error)) => Err(error),
+    }
 }
 
 fn gcm_inner(
@@ -316,11 +324,24 @@ pub(crate) fn cleanup() -> Result<(), CryptoCellError> {
                 == HostCcIsIdle::Idle
     });
     if idle.is_err() {
+        // DMA reset has already removed memory ownership. Even if a wedged
+        // host-idle indication prevents normal cleanup, make a best-effort
+        // wipe before force-disabling the subsystem. EngineGuard permanently
+        // rejects later operations after this error.
+        wipe_sensitive_state();
         clear_all_interrupts();
         power(false);
         return Err(CryptoCellError::Hardware);
     }
 
+    wipe_sensitive_state();
+    clear_all_interrupts();
+    enable_aes_dma_clocks(false);
+    enable_hash_dma_clocks(false);
+    Ok(())
+}
+
+fn wipe_sensitive_state() {
     for index in 0..4 {
         pac::CC_AES_S.aes_key_0(index).write_value(0);
     }
@@ -329,10 +350,6 @@ pub(crate) fn cleanup() -> Result<(), CryptoCellError> {
         pac::CC_GHASH_S.ghash_subkey(index).write_value(0);
         pac::CC_GHASH_S.ghash_iv(index).write_value(0);
     }
-    clear_all_interrupts();
-    enable_aes_dma_clocks(false);
-    enable_hash_dma_clocks(false);
-    Ok(())
 }
 
 pub(crate) fn shutdown() -> Result<(), CryptoCellError> {

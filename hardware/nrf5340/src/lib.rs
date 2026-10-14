@@ -199,6 +199,9 @@ impl EngineGuard {
 
     fn finish(mut self) -> Result<(), CryptoCellError> {
         let result = raw::cleanup();
+        if result.is_err() {
+            ENGINE_SHUT_DOWN.store(true, Ordering::Release);
+        }
         self.release();
         result
     }
@@ -219,9 +222,9 @@ impl EngineGuard {
 pub fn shutdown() -> Result<(), CryptoCellError> {
     let mut guard = EngineGuard::acquire()?;
     let result = raw::shutdown();
-    if result.is_ok() {
-        ENGINE_SHUT_DOWN.store(true, Ordering::Release);
-    }
+    // A failed terminal cleanup force-disables the block as a fail-safe too;
+    // neither outcome permits this ownership period to resume.
+    ENGINE_SHUT_DOWN.store(true, Ordering::Release);
     guard.release();
     result
 }
@@ -229,7 +232,9 @@ pub fn shutdown() -> Result<(), CryptoCellError> {
 impl Drop for EngineGuard {
     fn drop(&mut self) {
         if !self.released {
-            let _ = raw::cleanup();
+            if raw::cleanup().is_err() {
+                ENGINE_SHUT_DOWN.store(true, Ordering::Release);
+            }
             CLEANUP_COUNT.fetch_add(1, Ordering::Relaxed);
             ENGINE_LOCKED.store(false, Ordering::Release);
         }
