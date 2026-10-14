@@ -98,10 +98,10 @@ name = "krabitls_chacha_mlkem_mldsa"
 required-features = ["chacha20", "mlkem", "mldsa", "canned-replay"]
 
 [dependencies]
-riscv-rt = "0.13"
+riscv-rt = "0.18"
 # Single-hart critical-section backend so `footprint_handshakes::with_buffers`
 # can take a critical section on QEMU's virt machine (single hart, no SMP).
-riscv = { version = "0.12", features = ["critical-section-single-hart"] }
+riscv = { version = "0.16", features = ["critical-section-single-hart"] }
 riscv-semihosting = "0.2"
 krabi-caliper = { version = "0.1.4", features = ["risc-v", "stack"] }
 
