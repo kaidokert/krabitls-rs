@@ -7,7 +7,7 @@ the adapter accesses the Secure CryptoCell register aliases.
 
 The implementation is synchronous and allocation-free. A process-global lock
 serializes calls made through this adapter, every hardware wait is bounded,
-and an operation powers the engine down and clears its AES key, GHASH subkey,
+and an operation gates the engine clocks and clears its AES key, GHASH subkey,
 and accumulator registers on both success and failure. Authentication failures
 and hardware failures erase the caller's output buffer. Rust key storage uses
 `Zeroizing` and is wiped by `Drop`.
@@ -20,6 +20,14 @@ driver, debugger, or Non-secure user of the peripheral. The application also
 owns interrupt policy and the security attribution that makes CryptoCell a
 Secure peripheral.
 
+The adapter leaves the CryptoCell subsystem enabled after first use while
+gating the AES, GHASH, and DMA clocks between calls. Nordic's full power-down
+handshake is terminal for a period of ownership; `AeadBackend` provides no
+peripheral-lifetime hook in which to perform it. The application must call
+`shutdown()` when it knows no later backend call can occur. A successful
+shutdown follows the documented idle, interrupt-clear, power-down-request, and
+disable sequence and makes later adapter calls fail without touching hardware.
+
 CryptoCell DMA reads 16-byte RAM blocks. The adapter therefore bounces every
 AES/GHASH input block through aligned stack storage. Callers may supply
 unaligned records and AAD in flash, but this constraint forces a copy for every
@@ -31,8 +39,8 @@ The current traits impose a few additional compromises:
 - `KeyInit` is infallible, so peripheral contention and hardware startup errors
   can only surface when the first record operation runs.
 - `AeadInOut` reduces all failures to `aead::Error`; `last_error()` retains the
-  most recent global `Busy`, `Timeout`, `Hardware`, or `Authentication`
-  diagnostic for bring-up and telemetry.
+  most recent global `Busy`, `PoweredDown`, `Timeout`, `Hardware`, or
+  `Authentication` diagnostic for bring-up and telemetry.
 - `AeadBackend` names types but carries no peripheral token or driver context,
   requiring a process-global peripheral and lock.
 - The synchronous AEAD contract requires bounded polling rather than an
@@ -47,10 +55,12 @@ from Astrum's nRF5340 bring-up; it has no Astrum dependency. It covers the NIST
 empty-message, single-block, and partial-block/AAD vectors, encryption and
 decryption, bad-tag rejection, injected timeout and recovery, output erasure,
 key wiping, and a KrabiTLS TLS 1.3 record encrypt/decrypt/bad-tag cycle. The
-image also reads back the GHASH accumulator and CryptoCell power state after
-cleanup; the AES key and GHASH subkey registers themselves are write-only.
+image also reads back the GHASH accumulator and CryptoCell host-idle state
+after cleanup; the AES key and GHASH subkey registers themselves are
+write-only. Its final step exercises terminal power-down and verifies that a
+later operation is rejected.
 
-On 2026-10-13 it passed on the attached nRF5340 DK application core (probe
+On 2026-10-14 it passed on the attached nRF5340 DK application core (probe
 `1366:1060:001050013763`):
 
 ```console
@@ -58,6 +68,8 @@ cd hardware/nrf5340
 cargo run --release --features qualification --example qualify
 # ...
 PASS: KrabiTLS TLS record encrypt/decrypt and bad-tag rejection
+PASS: terminal power-down handshake
+PASS: post-shutdown operation rejected
 CRYPTOCELL QUALIFICATION PASS
 ```
 

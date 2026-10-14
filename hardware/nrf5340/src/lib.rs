@@ -3,8 +3,8 @@
 //! AES-128-GCM using the nRF5340 application core's CryptoCell-312.
 //!
 //! The adapter owns no board initialization. It serializes the shared
-//! CryptoCell symmetric engines for each blocking record operation, powers the
-//! block only while it is in use, and bounds every hardware wait.
+//! CryptoCell symmetric engines for each blocking record operation, gates the
+//! engine clocks between calls, and bounds every hardware wait.
 
 use aead::array::Array;
 use aead::consts::{U12, U16};
@@ -129,6 +129,7 @@ fn constant_time_eq(left: &[u8; 16], right: &[u8; 16]) -> bool {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CryptoCellError {
     Busy,
+    PoweredDown,
     Timeout,
     Hardware,
     Authentication,
@@ -138,18 +139,20 @@ impl CryptoCellError {
     const fn code(self) -> u8 {
         match self {
             Self::Busy => 1,
-            Self::Timeout => 2,
-            Self::Hardware => 3,
-            Self::Authentication => 4,
+            Self::PoweredDown => 2,
+            Self::Timeout => 3,
+            Self::Hardware => 4,
+            Self::Authentication => 5,
         }
     }
 
     const fn from_code(code: u8) -> Option<Self> {
         match code {
             1 => Some(Self::Busy),
-            2 => Some(Self::Timeout),
-            3 => Some(Self::Hardware),
-            4 => Some(Self::Authentication),
+            2 => Some(Self::PoweredDown),
+            3 => Some(Self::Timeout),
+            4 => Some(Self::Hardware),
+            5 => Some(Self::Authentication),
             _ => None,
         }
     }
@@ -172,24 +175,64 @@ pub fn last_error() -> Option<CryptoCellError> {
 }
 
 static ENGINE_LOCKED: AtomicBool = AtomicBool::new(false);
+static ENGINE_SHUT_DOWN: AtomicBool = AtomicBool::new(false);
 static CLEANUP_COUNT: AtomicU32 = AtomicU32::new(0);
 
-struct EngineGuard;
+struct EngineGuard {
+    released: bool,
+}
 
 impl EngineGuard {
     fn acquire() -> Result<Self, CryptoCellError> {
+        if ENGINE_SHUT_DOWN.load(Ordering::Acquire) {
+            return Err(CryptoCellError::PoweredDown);
+        }
         ENGINE_LOCKED
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .map(|_| Self)
-            .map_err(|_| CryptoCellError::Busy)
+            .map_err(|_| CryptoCellError::Busy)?;
+        if ENGINE_SHUT_DOWN.load(Ordering::Acquire) {
+            ENGINE_LOCKED.store(false, Ordering::Release);
+            return Err(CryptoCellError::PoweredDown);
+        }
+        Ok(Self { released: false })
     }
+
+    fn finish(mut self) -> Result<(), CryptoCellError> {
+        let result = raw::cleanup();
+        self.release();
+        result
+    }
+
+    fn release(&mut self) {
+        CLEANUP_COUNT.fetch_add(1, Ordering::Relaxed);
+        ENGINE_LOCKED.store(false, Ordering::Release);
+        self.released = true;
+    }
+}
+
+/// Permanently releases CryptoCell ownership using Nordic's full power-down
+/// handshake.
+///
+/// No adapter operation is accepted after this call succeeds. Applications
+/// should invoke it only when they know TLS will not use the backend again,
+/// such as immediately before entering a terminal low-power state.
+pub fn shutdown() -> Result<(), CryptoCellError> {
+    let mut guard = EngineGuard::acquire()?;
+    let result = raw::shutdown();
+    if result.is_ok() {
+        ENGINE_SHUT_DOWN.store(true, Ordering::Release);
+    }
+    guard.release();
+    result
 }
 
 impl Drop for EngineGuard {
     fn drop(&mut self) {
-        raw::cleanup();
-        CLEANUP_COUNT.fetch_add(1, Ordering::Relaxed);
-        ENGINE_LOCKED.store(false, Ordering::Release);
+        if !self.released {
+            let _ = raw::cleanup();
+            CLEANUP_COUNT.fetch_add(1, Ordering::Relaxed);
+            ENGINE_LOCKED.store(false, Ordering::Release);
+        }
     }
 }
 
@@ -197,7 +240,7 @@ impl Drop for EngineGuard {
 pub mod qualification {
     use super::*;
 
-    /// Makes the next hardware wait traverse the production timeout path.
+    /// Makes the next started DMA transfer traverse the timeout recovery path.
     pub fn force_next_timeout() {
         raw::FORCE_TIMEOUT.store(true, Ordering::Release);
     }
@@ -217,8 +260,13 @@ pub mod qualification {
     ///
     /// CryptoCell's AES key and GHASH subkey registers are write-only, so the
     /// qualification image can directly read back only the accumulator and
-    /// subsystem power state.
+    /// subsystem idle state.
     pub fn peripheral_state_cleared() -> bool {
         raw::observable_state_cleared()
+    }
+
+    /// Reports whether terminal shutdown disabled the subsystem.
+    pub fn subsystem_disabled() -> bool {
+        raw::subsystem_disabled()
     }
 }

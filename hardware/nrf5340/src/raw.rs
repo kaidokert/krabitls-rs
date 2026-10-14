@@ -1,12 +1,15 @@
 use core::sync::atomic::{AtomicBool, Ordering, compiler_fence};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::{CryptoCellError, EngineGuard};
 use nrf_pac as pac;
 use pac::cc_aes::vals::{DecKey0, ModeKey0, NkKey0, Status};
 use pac::cc_ctl::vals::{CryptoBusyStatus, HashBusyStatus, Mode};
+use pac::cc_din::vals::DinDmaMemBusyStatus;
+use pac::cc_dout::vals::DoutDmaMemBusyStatus;
 use pac::cc_ghash::vals::Status as GhashStatus;
 use pac::cc_hash::vals::Engine;
+use pac::cc_host_rgf::vals::HostCcIsIdle;
 
 const BLOCK_LEN: usize = 16;
 const SPIN_LIMIT: u32 = 1_000_000;
@@ -30,16 +33,28 @@ pub(crate) fn gcm(
     data: &mut [u8],
     direction: Direction,
 ) -> Result<[u8; BLOCK_LEN], CryptoCellError> {
-    let _guard = EngineGuard::acquire()?;
+    let guard = EngineGuard::acquire()?;
     power(true);
 
-    let mut zero = [0u8; BLOCK_LEN];
-    let mut hash_key = aes_block(key, &zero)?;
+    let result = gcm_inner(key, iv, aad, data, direction);
+    guard.finish()?;
+    result
+}
 
-    let mut j0 = [0u8; BLOCK_LEN];
+fn gcm_inner(
+    key: &[u8; BLOCK_LEN],
+    iv: &[u8; 12],
+    aad: &[u8],
+    data: &mut [u8],
+    direction: Direction,
+) -> Result<[u8; BLOCK_LEN], CryptoCellError> {
+    let zero = Zeroizing::new([0u8; BLOCK_LEN]);
+    let hash_key = Zeroizing::new(aes_block(key, &zero)?);
+
+    let mut j0 = Zeroizing::new([0u8; BLOCK_LEN]);
     j0[..12].copy_from_slice(iv);
     j0[15] = 1;
-    let mut counter = j0;
+    let mut counter = Zeroizing::new(*j0);
 
     if direction == Direction::Encrypt {
         apply_ctr(key, &mut counter, data)?;
@@ -49,16 +64,11 @@ pub(crate) fn gcm(
         apply_ctr(key, &mut counter, data)?;
     }
 
-    let mut tag_mask = aes_block(key, &j0)?;
+    let tag_mask = Zeroizing::new(aes_block(key, &j0)?);
     for (tag, mask) in state.iter_mut().zip(tag_mask.iter()) {
         *tag ^= *mask;
     }
 
-    zero.zeroize();
-    hash_key.zeroize();
-    j0.zeroize();
-    counter.zeroize();
-    tag_mask.zeroize();
     Ok(state)
 }
 
@@ -165,7 +175,13 @@ fn aes_block(
     let mut output = [0u8; BLOCK_LEN];
     let result = transfer(input.as_ptr(), output.as_mut_ptr(), BLOCK_LEN);
     enable_aes_dma_clocks(false);
-    result.map(|()| output)
+    match result {
+        Ok(()) => Ok(output),
+        Err(error) => {
+            output.zeroize();
+            Err(error)
+        }
+    }
 }
 
 fn prepare(mode: Mode) -> Result<(), CryptoCellError> {
@@ -220,9 +236,8 @@ fn wait_idle() -> Result<(), CryptoCellError> {
 }
 
 fn wait_for(mut ready: impl FnMut() -> bool) -> Result<(), CryptoCellError> {
-    let force_timeout = FORCE_TIMEOUT.swap(false, Ordering::AcqRel);
     for _ in 0..SPIN_LIMIT {
-        if !force_timeout && ready() {
+        if ready() {
             return Ok(());
         }
         core::hint::spin_loop();
@@ -250,6 +265,13 @@ fn clear_interrupts() {
     pac::CC_HOST_RGF_S.icr().write(|w| w.0 = u32::MAX);
 }
 
+fn clear_all_interrupts() {
+    clear_interrupts();
+    pac::CC_RNG_S.rng_clk().write(|w| w.set_enable(true));
+    pac::CC_RNG_S.rng_icr().write(|w| w.0 = u32::MAX);
+    pac::CC_RNG_S.rng_clk().write(|w| w.set_enable(false));
+}
+
 fn enable_aes_dma_clocks(enable: bool) {
     pac::CC_MISC_S.aes_clk().write(|w| w.set_enable(enable));
     pac::CC_MISC_S.dma_clk().write(|w| w.set_enable(enable));
@@ -264,9 +286,36 @@ fn power(enable: bool) {
     pac::CRYPTOCELL_S.enable().write(|w| w.set_enable(enable));
 }
 
-pub(crate) fn cleanup() {
+pub(crate) fn cleanup() -> Result<(), CryptoCellError> {
     enable_aes_dma_clocks(true);
     enable_hash_dma_clocks(true);
+
+    pac::CC_DIN_S.din_sw_reset().write(|w| w.set_reset(true));
+    pac::CC_DOUT_S.dout_sw_reset().write(|w| w.set_reset(true));
+    pac::CC_DIN_S.din_fifo_reset().write(|w| w.set_reset(true));
+    for _ in 0..8 {
+        core::hint::spin_loop();
+    }
+    compiler_fence(Ordering::SeqCst);
+    pac::CC_CTL_S
+        .crypto_ctl()
+        .write(|w| w.set_mode(Mode::Bypass));
+
+    let idle = wait_for(|| {
+        pac::CC_DIN_S.din_dma_mem_busy().read().status() == DinDmaMemBusyStatus::Idle
+            && pac::CC_DOUT_S.dout_dma_mem_busy().read().status() == DoutDmaMemBusyStatus::Idle
+            && pac::CC_HOST_RGF_S
+                .host_cc_is_idle()
+                .read()
+                .host_cc_is_idle()
+                == HostCcIsIdle::Idle
+    });
+    if idle.is_err() {
+        clear_all_interrupts();
+        power(false);
+        return Err(CryptoCellError::Hardware);
+    }
+
     for index in 0..4 {
         pac::CC_AES_S.aes_key_0(index).write_value(0);
     }
@@ -275,14 +324,35 @@ pub(crate) fn cleanup() {
         pac::CC_GHASH_S.ghash_subkey(index).write_value(0);
         pac::CC_GHASH_S.ghash_iv(index).write_value(0);
     }
-    clear_interrupts();
+    clear_all_interrupts();
     enable_aes_dma_clocks(false);
     enable_hash_dma_clocks(false);
+    Ok(())
+}
+
+pub(crate) fn shutdown() -> Result<(), CryptoCellError> {
+    if !pac::CRYPTOCELL_S.enable().read().enable() {
+        return Ok(());
+    }
+    cleanup()?;
+    pac::CC_HOST_RGF_S
+        .host_powerdown()
+        .write(|w| w.set_host_powerdown(true));
     power(false);
+    Ok(())
 }
 
 #[cfg(feature = "qualification")]
 pub(crate) fn observable_state_cleared() -> bool {
+    (0..4).all(|index| pac::CC_GHASH_S.ghash_iv(index).read() == 0)
+        && pac::CC_HOST_RGF_S
+            .host_cc_is_idle()
+            .read()
+            .host_cc_is_idle()
+            == HostCcIsIdle::Idle
+}
+
+#[cfg(feature = "qualification")]
+pub(crate) fn subsystem_disabled() -> bool {
     !pac::CRYPTOCELL_S.enable().read().enable()
-        && (0..4).all(|index| pac::CC_GHASH_S.ghash_iv(index).read() == 0)
 }

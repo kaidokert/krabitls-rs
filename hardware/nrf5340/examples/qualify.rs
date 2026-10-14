@@ -4,7 +4,9 @@
 use aead::inout::InOutBuf;
 use aead::{AeadInOut, KeyInit, Nonce, Tag};
 use cortex_m_rt::entry;
-use krabitls_hw_nrf5340::{Aes128GcmHw, CryptoCellError, Nrf5340Aead, last_error, qualification};
+use krabitls_hw_nrf5340::{
+    Aes128GcmHw, CryptoCellError, Nrf5340Aead, last_error, qualification, shutdown,
+};
 use panic_halt as _;
 use rtt_target::{ChannelMode, rprintln, rtt_init_print};
 
@@ -117,7 +119,7 @@ fn main() -> ! {
     check(recovered_tag.as_slice() == BLOCK_TAG, "post-timeout tag");
     check(
         qualification::peripheral_state_cleared(),
-        "peripheral accumulator cleared and powered down",
+        "peripheral accumulator cleared and host idle",
     );
 
     let mut disposable = Aes128GcmHw::new(&[0xa5; 16].into());
@@ -129,6 +131,21 @@ fn main() -> ! {
     krabitls::client::qualify_aes_record_backend::<Nrf5340Aead>()
         .unwrap_or_else(|_| fail("KrabiTLS TLS record path"));
     rprintln!("PASS: KrabiTLS TLS record encrypt/decrypt and bad-tag rejection");
+
+    shutdown().unwrap_or_else(|_| fail("terminal power-down handshake"));
+    check(
+        qualification::subsystem_disabled(),
+        "terminal power-down handshake",
+    );
+    let mut after_shutdown = [0xa5; 16];
+    check(
+        encrypt(&cipher, &ZERO_IV, b"", &mut after_shutdown).is_err(),
+        "post-shutdown operation rejected",
+    );
+    check(
+        last_error() == Some(CryptoCellError::PoweredDown),
+        "post-shutdown diagnostic",
+    );
     rprintln!("CRYPTOCELL QUALIFICATION PASS");
     loop {
         cortex_m::asm::wfi();
