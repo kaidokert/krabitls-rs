@@ -14,6 +14,15 @@ use pac::cc_host_rgf::vals::HostCcIsIdle;
 const BLOCK_LEN: usize = 16;
 const SPIN_LIMIT: u32 = 1_000_000;
 
+#[repr(align(16))]
+struct AlignedBlock([u8; BLOCK_LEN]);
+
+impl Zeroize for AlignedBlock {
+    fn zeroize(&mut self) {
+        self.0.zeroize();
+    }
+}
+
 #[cfg(feature = "qualification")]
 pub(crate) static FORCE_TIMEOUT: AtomicBool = AtomicBool::new(false);
 
@@ -122,12 +131,11 @@ fn ghash_message(
     ghash_padded(aad)?;
     ghash_padded(ciphertext)?;
 
-    let mut lengths = [0u8; BLOCK_LEN];
-    lengths[..8].copy_from_slice(&bit_length(aad.len()).to_be_bytes());
-    lengths[8..].copy_from_slice(&bit_length(ciphertext.len()).to_be_bytes());
-    transfer(lengths.as_ptr(), core::ptr::null_mut(), BLOCK_LEN)?;
+    let mut lengths = Zeroizing::new(AlignedBlock([0u8; BLOCK_LEN]));
+    lengths.0[..8].copy_from_slice(&bit_length(aad.len()).to_be_bytes());
+    lengths.0[8..].copy_from_slice(&bit_length(ciphertext.len()).to_be_bytes());
+    transfer(lengths.0.as_ptr(), core::ptr::null_mut(), BLOCK_LEN)?;
     let state = read_ghash_state();
-    lengths.zeroize();
 
     pac::CC_HASH_S
         .hash_select()
@@ -138,10 +146,9 @@ fn ghash_message(
 
 fn ghash_padded(input: &[u8]) -> Result<(), CryptoCellError> {
     for chunk in input.chunks(BLOCK_LEN) {
-        let mut block = [0u8; BLOCK_LEN];
-        block[..chunk.len()].copy_from_slice(chunk);
-        transfer(block.as_ptr(), core::ptr::null_mut(), BLOCK_LEN)?;
-        block.zeroize();
+        let mut block = Zeroizing::new(AlignedBlock([0u8; BLOCK_LEN]));
+        block.0[..chunk.len()].copy_from_slice(chunk);
+        transfer(block.0.as_ptr(), core::ptr::null_mut(), BLOCK_LEN)?;
     }
     Ok(())
 }
@@ -172,15 +179,13 @@ fn aes_block(
             .write_value(u32::from_le_bytes(word.try_into().unwrap()));
     }
 
-    let mut output = [0u8; BLOCK_LEN];
-    let result = transfer(input.as_ptr(), output.as_mut_ptr(), BLOCK_LEN);
+    let input = Zeroizing::new(AlignedBlock(*input));
+    let mut output = Zeroizing::new(AlignedBlock([0u8; BLOCK_LEN]));
+    let result = transfer(input.0.as_ptr(), output.0.as_mut_ptr(), BLOCK_LEN);
     enable_aes_dma_clocks(false);
     match result {
-        Ok(()) => Ok(output),
-        Err(error) => {
-            output.zeroize();
-            Err(error)
-        }
+        Ok(()) => Ok(output.0),
+        Err(error) => Err(error),
     }
 }
 
