@@ -54,6 +54,6 @@ impl crate::traits::Sha256 for Hash {
     }
 
     fn snapshot(&self) -> Result<[u8; 32], HkdfBackendError> {
-        Ok(digest::Digest::finalize(self.clone()).into())
+        Ok(digest::Digest::finalize(*self).into())
     }
 }
