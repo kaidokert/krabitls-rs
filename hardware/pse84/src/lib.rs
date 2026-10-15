@@ -60,7 +60,6 @@ impl core::fmt::Display for Pse84CryptoError {
 impl core::error::Error for Pse84CryptoError {}
 
 static CLAIMED: AtomicBool = AtomicBool::new(false);
-#[cfg(target_arch = "arm")]
 static BUSY: AtomicBool = AtomicBool::new(false);
 static LAST_ERROR: AtomicU8 = AtomicU8::new(0);
 
@@ -75,9 +74,11 @@ impl Pse84Crypto {
     /// The caller must ensure that no firmware, interrupt handler, ROM service,
     /// or other core accesses CRYPTO for the returned token's lifetime.
     pub unsafe fn claim_after_board_init() -> Result<Self, Pse84CryptoError> {
-        CLAIMED
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+        BUSY.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .map_err(|_| Pse84CryptoError::Busy)?;
+        let claimed = CLAIMED.compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed);
+        BUSY.store(false, Ordering::Release);
+        claimed.map_err(|_| Pse84CryptoError::Busy)?;
         Ok(Self { _private: () })
     }
 
@@ -89,9 +90,17 @@ impl Pse84Crypto {
 
 impl Drop for Pse84Crypto {
     fn drop(&mut self) {
-        #[cfg(target_arch = "arm")]
-        raw::force_reset();
+        // Stop new callers first. If an operation owns BUSY, its mandatory
+        // finish path resets the engine; otherwise token destruction does it.
         CLAIMED.store(false, Ordering::Release);
+        if BUSY
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
+        {
+            #[cfg(target_arch = "arm")]
+            raw::force_reset();
+            BUSY.store(false, Ordering::Release);
+        }
     }
 }
 
@@ -277,6 +286,10 @@ fn with_engine<T>(
     }
     BUSY.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
         .map_err(|_| Pse84CryptoError::Busy)?;
+    if !CLAIMED.load(Ordering::Acquire) {
+        BUSY.store(false, Ordering::Release);
+        return Err(Pse84CryptoError::NotClaimed);
+    }
     let result = match raw::Hardware::start() {
         Ok(mut hardware) => {
             let result = f(&mut hardware);
@@ -437,6 +450,7 @@ mod tests {
     use aes::cipher::BlockCipherEncrypt;
 
     struct SoftwareEngine;
+    static STATE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     impl Engine for SoftwareEngine {
         fn encrypt_block(
@@ -530,6 +544,9 @@ mod tests {
 
     #[test]
     fn public_backend_rejects_use_without_claim() {
+        let _guard = STATE_TEST_LOCK.lock().unwrap();
+        CLAIMED.store(false, Ordering::Release);
+        BUSY.store(false, Ordering::Release);
         let cipher = Aes128GcmHw::new(&[0; 16].into());
         let mut block = [0xa5; 16];
         let result = cipher.encrypt_inout_detached(
@@ -540,5 +557,29 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(block, [0; 16]);
         assert_eq!(last_error(), Some(Pse84CryptoError::NotClaimed));
+    }
+
+    #[test]
+    fn token_drop_defers_to_an_active_operation() {
+        let _guard = STATE_TEST_LOCK.lock().unwrap();
+        CLAIMED.store(false, Ordering::Release);
+        BUSY.store(false, Ordering::Release);
+
+        let token = unsafe { Pse84Crypto::claim_after_board_init() }.unwrap();
+        BUSY.store(true, Ordering::Release);
+        drop(token);
+        assert!(!CLAIMED.load(Ordering::Acquire));
+        assert!(BUSY.load(Ordering::Acquire));
+        assert!(matches!(
+            unsafe { Pse84Crypto::claim_after_board_init() },
+            Err(Pse84CryptoError::Busy)
+        ));
+
+        // Model the active operation's mandatory finish/release path.
+        BUSY.store(false, Ordering::Release);
+        let replacement = unsafe { Pse84Crypto::claim_after_board_init() }.unwrap();
+        drop(replacement);
+        assert!(!CLAIMED.load(Ordering::Acquire));
+        assert!(!BUSY.load(Ordering::Acquire));
     }
 }

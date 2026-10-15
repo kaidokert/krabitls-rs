@@ -19,6 +19,12 @@ remain in zeroizing Rust storage for the lifetime of an AEAD value and are
 reloaded only for a serialized operation. The adapter does not provide key
 slots or protection from code executing in the same security domain.
 
+AES transfers use dedicated 32-byte-aligned staging lines. The adapter cleans
+inputs before DMA and invalidates output afterward when D-cache is enabled, so
+the same code is valid on the E84 M33 and M55. Dropping the ownership token
+either resets an idle engine or leaves reset to the active operation's cleanup;
+it never resets CRYPTO underneath an operation.
+
 The included E84 SRAM qualification image is board harness only. It is not an
 Astrum dependency and does not move clock/security initialization into this
 crate.

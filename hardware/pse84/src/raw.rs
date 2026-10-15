@@ -3,6 +3,7 @@ use crate::{Engine, Pse84CryptoError};
 use core::sync::atomic::AtomicBool;
 use core::sync::atomic::{Ordering, compiler_fence};
 use psoc_pac_pse8x4::{CRYPTO, RegisterValue};
+use zeroize::Zeroize;
 
 const WAIT_LIMIT: usize = 2_000_000;
 const ERROR_MASK: u32 = 0x003f_0000;
@@ -25,6 +26,27 @@ static FORCE_TIMEOUT: AtomicBool = AtomicBool::new(false);
 
 pub(crate) struct Hardware {
     trng_initialized: bool,
+}
+
+#[repr(C, align(32))]
+struct DmaBlock([u8; 32]);
+
+const _: () = assert!(core::mem::size_of::<DmaBlock>() == 32);
+const _: () = assert!(core::mem::align_of::<DmaBlock>() == 32);
+
+impl DmaBlock {
+    fn new(data: &[u8; 16]) -> Self {
+        let mut block = Self([0; 32]);
+        block.0[..16].copy_from_slice(data);
+        block
+    }
+}
+
+impl Drop for DmaBlock {
+    fn drop(&mut self) {
+        self.0.zeroize();
+        clean_cache(self);
+    }
 }
 
 impl Hardware {
@@ -153,23 +175,34 @@ impl Engine for Hardware {
         if FORCE_TIMEOUT.swap(false, Ordering::AcqRel) {
             return Err(Pse84CryptoError::Timeout);
         }
-        let mut output = [0u8; 16];
-        compiler_fence(Ordering::Release);
-        self.start_fifo(LOAD0, key.as_ptr() as u32, 16)?;
-        self.block_move(KEY0, LOAD0, 16)?;
-        unsafe { CRYPTO.aes_ctl().write_raw(0) };
-        self.wait_idle()?;
+        let key = DmaBlock::new(key);
+        let input = DmaBlock::new(block);
+        let mut output = DmaBlock([0; 32]);
+        clean_cache(&key);
+        clean_cache(&input);
+        clean_cache(&output);
+        let operation = (|| {
+            self.start_fifo(LOAD0, key.0.as_ptr() as u32, 16)?;
+            self.block_move(KEY0, LOAD0, 16)?;
+            unsafe { CRYPTO.aes_ctl().write_raw(0) };
+            self.wait_idle()?;
 
-        self.start_fifo(LOAD0, block.as_ptr() as u32, 16)?;
-        self.start_fifo(STORE, output.as_mut_ptr() as u32, 16)?;
-        self.block_move(BLOCK0, LOAD0, 16)?;
-        self.push(&[AES])?;
-        self.block_move(STORE, BLOCK1, 16)?;
-        self.wait_idle()?;
-        // The volatile store completed before wait_idle returned; acquire fence
-        // makes those bytes visible before returning the DMA buffer.
-        compiler_fence(Ordering::Acquire);
-        Ok(output)
+            self.start_fifo(LOAD0, input.0.as_ptr() as u32, 16)?;
+            self.start_fifo(STORE, output.0.as_mut_ptr() as u32, 16)?;
+            self.block_move(BLOCK0, LOAD0, 16)?;
+            self.push(&[AES])?;
+            self.block_move(STORE, BLOCK1, 16)?;
+            self.wait_idle()
+        })();
+        if let Err(error) = operation {
+            // Halt DMA while its aligned staging buffers are still live.
+            force_reset();
+            return Err(error);
+        }
+        invalidate_cache(&mut output);
+        let mut result = [0; 16];
+        result.copy_from_slice(&output.0[..16]);
+        Ok(result)
     }
 
     fn random_word(&mut self) -> Result<u32, Pse84CryptoError> {
@@ -213,6 +246,34 @@ fn clear_sensitive_registers() {
         CRYPTO.tr_result().write_raw(0);
         CRYPTO.aes_ctl().write_raw(0);
     }
+}
+
+fn clean_cache(block: &DmaBlock) {
+    compiler_fence(Ordering::Release);
+    cortex_m::asm::dsb();
+    if cortex_m::peripheral::SCB::dcache_enabled() {
+        // SAFETY: this temporary handle touches only stateless cache-maintenance
+        // registers, and the engine lock serializes all adapter maintenance.
+        let mut scb = unsafe { cortex_m::Peripherals::steal().SCB };
+        scb.clean_dcache_by_address(block as *const DmaBlock as usize, 32);
+    }
+    compiler_fence(Ordering::Release);
+}
+
+fn invalidate_cache(block: &mut DmaBlock) {
+    cortex_m::asm::dsb();
+    compiler_fence(Ordering::Acquire);
+    if cortex_m::peripheral::SCB::dcache_enabled() {
+        // SAFETY: see clean_cache; the engine lock excludes concurrent adapter
+        // cache maintenance while this temporary handle exists.
+        let mut scb = unsafe { cortex_m::Peripherals::steal().SCB };
+        // SAFETY: DmaBlock has one complete 32-byte cache line, initialized in
+        // main memory before DMA, and the engine lock excludes CPU writers.
+        unsafe {
+            scb.invalidate_dcache_by_address(block as *mut DmaBlock as usize, 32);
+        }
+    }
+    compiler_fence(Ordering::Acquire);
 }
 
 #[cfg(feature = "qualification")]
