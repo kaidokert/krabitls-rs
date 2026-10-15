@@ -756,11 +756,7 @@ impl Hardware {
                 tag.as_ptr(),
             )
         };
-        if status == FSP_FAIL {
-            Err(Sce9Error::Authentication)
-        } else {
-            decode_status(status)
-        }
+        decode_status(status)
     }
 
     fn p256_generate(

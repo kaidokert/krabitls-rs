@@ -3,7 +3,7 @@
 
 use cortex_m_rt::{entry, exception};
 use krabitls::client::{ClientAuth, HkdfSha256, Sha256};
-use krabitls_hw_ra6m5::{Sce9Crypto, Sce9Deadline, Sce9Hkdf};
+use krabitls_hw_ra6m5::{Sce9Crypto, Sce9Deadline, Sce9Error, Sce9Hkdf};
 use panic_halt as _;
 use rand_core::TryRng;
 use rtt_target::{rprintln, rtt_init_print};
@@ -183,11 +183,10 @@ fn main() -> ! {
         .unwrap_or_else(|error| fail("AES-GCM decrypt", error));
     assert_bytes("AES-GCM round trip", &opened, plaintext);
     tag[0] ^= 1;
-    if aes
-        .decrypt_gcm(&nonce, aad, &ciphertext, &mut opened, &*tag)
-        .is_ok()
-    {
-        fail_text("AES-GCM accepted invalid tag");
+    match aes.decrypt_gcm(&nonce, aad, &ciphertext, &mut opened, &*tag) {
+        Err(Sce9Error::Authentication) => {}
+        Err(error) => fail("AES-GCM invalid-tag status", error),
+        Ok(()) => fail_text("AES-GCM accepted invalid tag"),
     }
     if opened.iter().any(|byte| *byte != 0) {
         fail_text("AES-GCM failure retained plaintext");
