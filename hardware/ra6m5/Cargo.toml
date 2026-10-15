@@ -1,0 +1,44 @@
+[package]
+name = "krabitls-hw-ra6m5"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.87"
+publish = false
+license = "Apache-2.0"
+description = "Renesas RA6M5 SCE9 backend for KrabiTLS"
+build = "build.rs"
+
+[features]
+default = []
+qualification = [
+    "cortex-m/critical-section-single-core",
+    "dep:cortex-m-rt",
+    "dep:panic-halt",
+    "dep:rtt-target",
+]
+
+[dependencies]
+cortex-m = "0.7.8"
+cortex-m-rt = { version = "0.7.5", optional = true }
+krabitls = { path = "../../krabitls", default-features = false, features = ["cipher-aes", "p256-kx", "dev-utils"] }
+panic-halt = { version = "1", optional = true }
+rand_core = { version = "0.10", default-features = false }
+rtt-target = { version = "0.6", optional = true }
+zeroize = { version = "1.8", default-features = false }
+
+[build-dependencies]
+cc = "1.2"
+
+[[example]]
+name = "qualify"
+required-features = ["qualification"]
+
+[profile.dev]
+opt-level = 1
+panic = "abort"
+
+[profile.release]
+opt-level = "s"
+codegen-units = 1
+debug = 2
+panic = "abort"

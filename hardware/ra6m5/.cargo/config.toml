@@ -1,0 +1,3 @@
+[target.thumbv8m.main-none-eabihf]
+runner = "probe-rs run --probe 1366:0101:000831389070 --chip R7FA6M5BH"
+rustflags = ["-C", "link-arg=-Tlink.x"]

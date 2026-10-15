@@ -134,6 +134,11 @@ jobs:
             features: qualification
             target: thumbv8m.main-none-eabihf
             extra: --examples
+          - adapter: ra6m5
+            manifest: hardware/ra6m5/Cargo.toml
+            features: qualification
+            target: thumbv8m.main-none-eabihf
+            extra: --examples
           - adapter: samd51
             manifest: hardware/sam/Cargo.toml
             features: samd51j,aes,p256-kx
@@ -158,23 +163,36 @@ jobs:
       with:
         targets: ${{ matrix.target }}
         components: clippy
+    - uses: actions/checkout@v4
+      if: matrix.adapter == 'ra6m5'
+      with:
+        repository: renesas/fsp
+        ref: 6e2675336b37fbd805f0c01d5134adfdab4bf294
+        path: renesas-fsp
+        persist-credentials: false
+        sparse-checkout: ra/fsp/src/r_sce_protected/crypto_procedures_protected/src/sce9
+        sparse-checkout-cone-mode: false
     - uses: Swatinem/rust-cache@v2
       with:
         key: hardware-${{ matrix.adapter }}
     - name: Check
+      env:
+        RENESAS_FSP_PATH: ${{ github.workspace }}/renesas-fsp
       run: |
         FEATURES="${{ matrix.features }}"
         ARGS=""
         [ -n "$FEATURES" ] && ARGS="--features $FEATURES"
         cargo check --manifest-path="${{ matrix.manifest }}" --target "${{ matrix.target }}" $ARGS ${{ matrix.extra }}
     - name: Clippy
+      env:
+        RENESAS_FSP_PATH: ${{ github.workspace }}/renesas-fsp
       run: |
         FEATURES="${{ matrix.features }}"
         ARGS=""
         [ -n "$FEATURES" ] && ARGS="--features $FEATURES"
         cargo clippy --manifest-path="${{ matrix.manifest }}" --target "${{ matrix.target }}" $ARGS ${{ matrix.extra }} -- -D warnings
     - name: Host contract tests
-      if: matrix.adapter == 'pse84' || matrix.adapter == 'pg26'
+      if: matrix.adapter == 'pse84' || matrix.adapter == 'pg26' || matrix.adapter == 'ra6m5'
       run: cargo test --manifest-path="${{ matrix.manifest }}"
 
   krabitls-cli:
