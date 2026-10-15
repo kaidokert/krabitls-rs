@@ -200,8 +200,7 @@ impl rand_core::TryRng for Pse84Rng<'_> {
     type Error = Pse84CryptoError;
 
     fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
-        let word = with_engine(|engine| engine.random_word())?;
-        self.accept_entropy(word)
+        with_engine(|engine| self.accept_entropy(engine.random_word()?))
     }
 
     fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
@@ -225,8 +224,6 @@ impl Pse84Rng<'_> {
     fn accept_entropy(&self, word: u32) -> Result<u32, Pse84CryptoError> {
         let previous = self._owner.previous_entropy.swap(word, Ordering::AcqRel);
         if self._owner.entropy_seen.swap(true, Ordering::AcqRel) && previous == word {
-            self._owner.entropy_seen.store(false, Ordering::Release);
-            self._owner.previous_entropy.store(0, Ordering::Release);
             Err(Pse84CryptoError::EntropyHealth)
         } else {
             Ok(word)
@@ -627,6 +624,11 @@ mod tests {
             token.rng().accept_entropy(0x1234_5678),
             Err(Pse84CryptoError::EntropyHealth)
         );
+        assert_eq!(
+            token.rng().accept_entropy(0x1234_5678),
+            Err(Pse84CryptoError::EntropyHealth)
+        );
+        assert_eq!(token.rng().accept_entropy(0x8765_4321), Ok(0x8765_4321));
         drop(token);
     }
 }
