@@ -129,6 +129,11 @@ jobs:
             features: qualification
             target: thumbv8m.main-none-eabihf
             extra: --examples
+          - adapter: pg26
+            manifest: hardware/pg26/Cargo.toml
+            features: qualification
+            target: thumbv8m.main-none-eabihf
+            extra: --examples
           - adapter: samd51
             manifest: hardware/sam/Cargo.toml
             features: samd51j,aes,p256-kx
@@ -169,7 +174,7 @@ jobs:
         [ -n "$FEATURES" ] && ARGS="--features $FEATURES"
         cargo clippy --manifest-path="${{ matrix.manifest }}" --target "${{ matrix.target }}" $ARGS ${{ matrix.extra }} -- -D warnings
     - name: Host contract tests
-      if: matrix.adapter == 'pse84'
+      if: matrix.adapter == 'pse84' || matrix.adapter == 'pg26'
       run: cargo test --manifest-path="${{ matrix.manifest }}"
 
   krabitls-cli:

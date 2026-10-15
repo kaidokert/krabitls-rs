@@ -17,7 +17,7 @@ use crate::consts::{
 use crate::consts::{SIG_SCHEME_ECDSA_P256, SIG_SCHEME_ECDSA_P384};
 #[cfg(feature = "mldsa")]
 use crate::consts::{SIG_SCHEME_MLDSA44, SIG_SCHEME_MLDSA65, SIG_SCHEME_MLDSA87};
-use crate::hkdf::{HkdfLabelError, TranscriptHash, hkdf_expand_label};
+use crate::hkdf::{HkdfLabelError, TranscriptError, TranscriptHash, hkdf_expand_label};
 use crate::newtype::{Secret, TranscriptDigest, ZeroBuf};
 use crate::traits::verify_strategy::PreparedVerifier;
 use crate::traits::{CertParseError, CertView, HkdfSha256, VerifierBackend};
@@ -86,6 +86,9 @@ pub enum FlightError {
     /// Internal HKDF label encoding failed.
     #[error("HKDF label encoding failed")]
     HkdfLabel(#[from] HkdfLabelError),
+    /// The transcript hash backend failed.
+    #[error("transcript hash backend failed")]
+    Transcript(#[from] TranscriptError),
     /// Internal encoding buffer overflowed. Statically unreachable for the
     /// fixed `CertificateVerify` signed-data shape we build, but the variant
     /// exists so the encoding path can propagate via `?` instead of
@@ -454,7 +457,8 @@ pub(crate) fn verify_server_finished<H: HkdfSha256>(
         &mut finished_key[..],
     )
     .map_err(FlightError::HkdfLabel)?;
-    let expected = H::extract(&finished_key[..], transcript_hash_ch_through_cv.as_bytes());
+    let expected = H::extract(&finished_key[..], transcript_hash_ch_through_cv.as_bytes())
+        .map_err(HkdfLabelError::from)?;
     // `subtle::ct_eq` is the canonical CT primitive. A hand-rolled `diff |=`
     // loop is legal for LLVM to vectorize / lower to `memcmp`, which would
     // destroy the constant-time property.
@@ -498,11 +502,11 @@ pub(crate) fn verify_server_flight<'a, H: HkdfSha256, P: VerifierBackend>(
         transcript.update(creq);
     }
     transcript.update(flight.cert_full);
-    let th_after_cert = transcript.snapshot();
+    let th_after_cert = transcript.snapshot()?;
     verify_certificate_verify_with_prepared::<P>(prepared, &th_after_cert, flight.cv_body)?;
 
     transcript.update(flight.cv_full);
-    let th_after_cv = transcript.snapshot();
+    let th_after_cv = transcript.snapshot()?;
     verify_server_finished::<H>(s_hs_traffic_secret, &th_after_cv, flight.fin_body)?;
 
     transcript.update(flight.fin_full);

@@ -17,7 +17,7 @@
 
 use hmac_sha256::{HKDF, Hash};
 
-use crate::traits::{HkdfExpandError, HkdfSha256};
+use crate::traits::{HkdfBackendError, HkdfExpandError, HkdfSha256};
 
 pub struct JedisctCrypto;
 
@@ -28,8 +28,8 @@ impl HkdfSha256 for JedisctCrypto {
         digest::Digest::new()
     }
 
-    fn extract(salt: &[u8], ikm: &[u8]) -> zeroize::Zeroizing<[u8; 32]> {
-        zeroize::Zeroizing::new(HKDF::extract(salt, ikm))
+    fn extract(salt: &[u8], ikm: &[u8]) -> Result<zeroize::Zeroizing<[u8; 32]>, HkdfBackendError> {
+        Ok(zeroize::Zeroizing::new(HKDF::extract(salt, ikm)))
     }
 
     fn expand(prk: &[u8; 32], info: &[u8], out: &mut [u8]) -> Result<(), HkdfExpandError> {
@@ -45,5 +45,15 @@ impl HkdfSha256 for JedisctCrypto {
         }
         HKDF::expand(out, prk.as_slice(), info);
         Ok(())
+    }
+}
+
+impl crate::traits::Sha256 for Hash {
+    fn update(&mut self, data: &[u8]) {
+        digest::Digest::update(self, data);
+    }
+
+    fn snapshot(&self) -> Result<[u8; 32], HkdfBackendError> {
+        Ok(digest::Digest::finalize(*self).into())
     }
 }

@@ -1,0 +1,50 @@
+[package]
+name = "krabitls-hw-pg26"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.87"
+publish = false
+license = "Apache-2.0"
+description = "Silicon Labs EFM32PG26 Secure Engine backend for KrabiTLS"
+build = "build.rs"
+
+[features]
+default = []
+qualification = [
+    "cortex-m/critical-section-single-core",
+    "dep:cortex-m-rt",
+    "dep:cortex-m-semihosting",
+    "dep:panic-halt",
+    "dep:rtt-target",
+]
+
+[dependencies]
+aead = { version = "0.6", default-features = false }
+cortex-m = "0.7.8"
+cortex-m-rt = { version = "0.7.5", optional = true }
+cortex-m-semihosting = { version = "0.5", optional = true }
+krabitls = { path = "../../krabitls", default-features = false, features = ["cipher-aes", "p256-kx", "dev-utils"] }
+panic-halt = { version = "1", optional = true }
+rand_core = { version = "0.10", default-features = false }
+rtt-target = { version = "0.6", optional = true }
+zeroize = { version = "1.8", default-features = false }
+
+[dev-dependencies]
+aes-gcm = { version = "0.11", default-features = false, features = ["aes"] }
+hkdf = { version = "0.13", default-features = false }
+p256 = { version = "0.14.0-rc.4", default-features = false, features = ["ecdh"] }
+sha2 = { version = "0.11", default-features = false }
+
+[[example]]
+name = "qualify"
+required-features = ["qualification"]
+
+[profile.dev]
+opt-level = 1
+panic = "abort"
+
+[profile.release]
+opt-level = "s"
+codegen-units = 1
+debug = 2
+panic = "abort"
