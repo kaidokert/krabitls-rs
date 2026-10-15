@@ -401,23 +401,47 @@ impl rand_core::TryRng for Pg26Rng<'_> {
     }
 
     fn try_fill_bytes(&mut self, output: &mut [u8]) -> Result<(), Self::Error> {
-        if let Err(error) = with_hardware(|hardware| hardware.random(output)) {
+        let aligned = output.len() & !3;
+        let mut final_word = Zeroizing::new([0u8; 4]);
+        if let Err(error) = with_hardware(|hardware| {
+            hardware.random(&mut output[..aligned])?;
+            if aligned != output.len() {
+                hardware.random(&mut final_word[..])?;
+            }
+            Ok(())
+        }) {
             output.zeroize();
             return Err(error);
         }
-        for chunk in output.chunks_exact(4) {
+        for chunk in output[..aligned].chunks_exact(4) {
             let word = u32::from_le_bytes(chunk.try_into().expect("four-byte chunk"));
-            let previous = self.owner.previous_entropy.swap(word, Ordering::AcqRel);
-            if self.owner.entropy_seen.swap(true, Ordering::AcqRel) && previous == word {
+            if let Err(error) = accept_entropy_word(self.owner, word) {
                 output.zeroize();
-                return Err(Pg26Error::EntropyHealth);
+                return Err(error);
             }
+        }
+        if aligned != output.len() {
+            let remainder = output.len() - aligned;
+            if let Err(error) = accept_entropy_word(self.owner, u32::from_le_bytes(*final_word)) {
+                output.zeroize();
+                return Err(error);
+            }
+            output[aligned..].copy_from_slice(&final_word[..remainder]);
         }
         Ok(())
     }
 }
 
 impl rand_core::TryCryptoRng for Pg26Rng<'_> {}
+
+fn accept_entropy_word(owner: &Pg26Crypto, word: u32) -> Result<(), Pg26Error> {
+    let previous = owner.previous_entropy.swap(word, Ordering::AcqRel);
+    if owner.entropy_seen.swap(true, Ordering::AcqRel) && previous == word {
+        Err(Pg26Error::EntropyHealth)
+    } else {
+        Ok(())
+    }
+}
 
 fn extract(salt: &[u8], ikm: &[u8]) -> Result<Zeroizing<[u8; 32]>, Pg26Error> {
     let zero_salt = [0u8; 32];
@@ -502,8 +526,8 @@ pub mod qualification {
     pub fn entropy_continuous_test(owner: &Pg26Crypto) -> bool {
         owner.entropy_seen.store(false, Ordering::Release);
         owner.previous_entropy.store(0, Ordering::Release);
-        let first = accept_entropy(owner, 0x1234_5678).is_ok();
-        let repeated = accept_entropy(owner, 0x1234_5678) == Err(Pg26Error::EntropyHealth);
+        let first = accept_entropy_word(owner, 0x1234_5678).is_ok();
+        let repeated = accept_entropy_word(owner, 0x1234_5678) == Err(Pg26Error::EntropyHealth);
         owner.entropy_seen.store(false, Ordering::Release);
         owner.previous_entropy.store(0, Ordering::Release);
         first && repeated
@@ -523,15 +547,6 @@ pub mod qualification {
                     0xae, 0x22, 0x23, 0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c, 0xb4, 0x10,
                     0xff, 0x61, 0xf2, 0x00, 0x15, 0xad,
                 ])
-    }
-
-    fn accept_entropy(owner: &Pg26Crypto, word: u32) -> Result<(), Pg26Error> {
-        let previous = owner.previous_entropy.swap(word, Ordering::AcqRel);
-        if owner.entropy_seen.swap(true, Ordering::AcqRel) && previous == word {
-            Err(Pg26Error::EntropyHealth)
-        } else {
-            Ok(())
-        }
     }
 }
 
@@ -813,5 +828,19 @@ mod tests {
         hash.update(&[0xa5; 64]);
         assert_eq!(hash.snapshot(), Err(HkdfBackendError::Failed));
         assert_eq!(last_error(), Some(Pg26Error::NotClaimed));
+    }
+
+    #[test]
+    fn entropy_health_state_covers_every_generated_word() {
+        let owner = Pg26Crypto {
+            entropy_seen: AtomicBool::new(false),
+            previous_entropy: AtomicU32::new(0),
+        };
+        assert_eq!(accept_entropy_word(&owner, 0x1234_5678), Ok(()));
+        assert_eq!(
+            accept_entropy_word(&owner, 0x1234_5678),
+            Err(Pg26Error::EntropyHealth)
+        );
+        core::mem::forget(owner);
     }
 }

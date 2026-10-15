@@ -85,6 +85,13 @@ fn main() -> ! {
         entropy.iter().any(|byte| *byte != 0) && entropy[..32] != entropy[32..],
         "TRNG output",
     );
+    let mut partial_entropy = [0u8; 3];
+    rand_core::TryRng::try_fill_bytes(&mut rng, &mut partial_entropy)
+        .unwrap_or_else(|_| fail("sub-word TRNG request"));
+    check(
+        partial_entropy.iter().any(|byte| *byte != 0),
+        "sub-word TRNG request",
+    );
     check(
         qualification::entropy_continuous_test(&crypto),
         "continuous entropy rejection",
