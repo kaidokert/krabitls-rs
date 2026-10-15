@@ -490,14 +490,30 @@ fn extract(salt: &[u8], ikm: &[u8]) -> Result<Zeroizing<[u8; 32]>, Sce9Error> {
 }
 
 fn expand(prk: &[u8; 32], info: &[u8], output: &mut [u8]) -> Result<(), Sce9Error> {
+    expand_with(prk, info, output, hmac_parts)
+}
+
+fn expand_with(
+    prk: &[u8; 32],
+    info: &[u8],
+    output: &mut [u8],
+    mut hmac: impl FnMut(&[u8], &[&[u8]]) -> Result<[u8; 32], Sce9Error>,
+) -> Result<(), Sce9Error> {
     if output.len() > 255 * 32 {
+        output.zeroize();
         return Err(Sce9Error::InvalidLength);
     }
     let mut previous = Zeroizing::new([0; 32]);
     let mut previous_len = 0;
     for (index, chunk) in output.chunks_mut(32).enumerate() {
         let counter = [(index + 1) as u8];
-        *previous = hmac_parts(prk, &[&previous[..previous_len], info, &counter])?;
+        *previous = match hmac(prk, &[&previous[..previous_len], info, &counter]) {
+            Ok(block) => block,
+            Err(error) => {
+                output.zeroize();
+                return Err(error);
+            }
+        };
         chunk.copy_from_slice(&previous[..chunk.len()]);
         previous_len = 32;
     }
@@ -1136,10 +1152,28 @@ mod tests {
             Err(Sce9Error::InvalidLength)
         ));
 
-        let mut oversized = [0; 255 * 32 + 1];
+        let mut oversized = [0xa5; 255 * 32 + 1];
         assert!(matches!(
             Sce9Hkdf::expand(&[0; 32], &[], &mut oversized),
             Err(HkdfExpandError::OutputTooLong)
         ));
+        assert!(oversized.iter().all(|byte| *byte == 0));
+    }
+
+    #[test]
+    fn hkdf_failure_wipes_blocks_already_written() {
+        let mut calls = 0;
+        let mut output = [0xa5; 64];
+        let result = expand_with(&[0; 32], b"info", &mut output, |_, _| {
+            calls += 1;
+            if calls == 2 {
+                Err(Sce9Error::Internal)
+            } else {
+                Ok([0x42; 32])
+            }
+        });
+
+        assert_eq!(result, Err(Sce9Error::Internal));
+        assert!(output.iter().all(|byte| *byte == 0));
     }
 }
