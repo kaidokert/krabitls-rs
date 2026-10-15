@@ -88,6 +88,7 @@ static CLAIMED: AtomicBool = AtomicBool::new(false);
 static BUSY: AtomicBool = AtomicBool::new(false);
 static POISONED: AtomicBool = AtomicBool::new(false);
 static LAST_ERROR: AtomicU8 = AtomicU8::new(0);
+static LAST_UNKNOWN_RESPONSE: AtomicU32 = AtomicU32::new(0);
 
 impl Pg26Crypto {
     /// Claim SEMAILBOX after board code enabled its clock and established the
@@ -506,6 +507,9 @@ pub fn last_error() -> Option<Pg26Error> {
         15 => Some(Pg26Error::InvalidLength),
         16 => Some(Pg26Error::InvalidPeer),
         17 => Some(Pg26Error::EntropyHealth),
+        18 => Some(Pg26Error::UnknownResponse(
+            LAST_UNKNOWN_RESPONSE.load(Ordering::Acquire),
+        )),
         _ => None,
     }
 }
@@ -556,6 +560,9 @@ fn record_error(error: Pg26Error) -> Error {
 }
 
 fn record_pg26_error(error: Pg26Error) {
+    if let Pg26Error::UnknownResponse(response) = error {
+        LAST_UNKNOWN_RESPONSE.store(response, Ordering::Relaxed);
+    }
     let code = match error {
         Pg26Error::NotClaimed => 1,
         Pg26Error::Busy => 2,
@@ -793,8 +800,29 @@ fn with_hardware<T>(
 mod tests {
     use super::*;
 
+    static TEST_BUSY: AtomicBool = AtomicBool::new(false);
+
+    struct TestGuard;
+
+    impl Drop for TestGuard {
+        fn drop(&mut self) {
+            TEST_BUSY.store(false, Ordering::Release);
+        }
+    }
+
+    fn test_guard() -> TestGuard {
+        while TEST_BUSY
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            core::hint::spin_loop();
+        }
+        TestGuard
+    }
+
     #[test]
     fn host_refuses_unavailable_hardware() {
+        let _guard = test_guard();
         unsafe { Pg26Crypto::recover_after_board_reset() };
         assert_eq!(
             unsafe { Pg26Crypto::claim_after_board_init() }.err(),
@@ -823,11 +851,19 @@ mod tests {
     fn transcript_hash_retains_sticky_hardware_failure() {
         use krabitls::client::Sha256 as _;
 
+        let _guard = test_guard();
         unsafe { Pg26Crypto::recover_after_board_reset() };
         let mut hash = Pg26Sha256::default();
         hash.update(&[0xa5; 64]);
         assert_eq!(hash.snapshot(), Err(HkdfBackendError::Failed));
         assert_eq!(last_error(), Some(Pg26Error::NotClaimed));
+    }
+
+    #[test]
+    fn unknown_response_diagnostic_retains_raw_code() {
+        let _guard = test_guard();
+        record_pg26_error(Pg26Error::UnknownResponse(0x000d_0000));
+        assert_eq!(last_error(), Some(Pg26Error::UnknownResponse(0x000d_0000)));
     }
 
     #[test]

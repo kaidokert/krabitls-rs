@@ -52,4 +52,6 @@ PG26 QUALIFICATION COMPLETE
 ```
 
 The runner carries a local probe-rs target description because upstream
-probe-rs does not yet identify this exact PG26 part.
+probe-rs does not yet identify this exact PG26 part. On a multi-probe rig, add
+the desired `--probe VID:PID:SERIAL` with Cargo's `--config` runner override;
+the checked-in runner intentionally remains portable.
