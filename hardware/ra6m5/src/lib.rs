@@ -42,7 +42,7 @@ impl Sce9Deadline {
 /// Exclusive ownership token for the RA6M5 SCE9 peripheral.
 pub struct Sce9Crypto {
     entropy_seen: AtomicBool,
-    previous_entropy: AtomicU32,
+    previous_entropy: [AtomicU32; 4],
 }
 
 /// A device-bound SCE9 AES-128 key index. Plain key bytes never exist in RAM.
@@ -135,12 +135,11 @@ pub mod qualification {
 
     /// Exercise the cross-call continuous entropy test and restore its state.
     pub fn entropy_continuous_test(owner: &Sce9Crypto) -> bool {
-        owner.entropy_seen.store(false, Ordering::Release);
-        owner.previous_entropy.store(0, Ordering::Release);
-        let first = accept_entropy_word(owner, 0x1234_5678).is_ok();
-        let repeated = accept_entropy_word(owner, 0x1234_5678) == Err(Sce9Error::EntropyHealth);
-        owner.entropy_seen.store(false, Ordering::Release);
-        owner.previous_entropy.store(0, Ordering::Release);
+        let block = [1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, 4, 0, 0, 0];
+        clear_entropy_state(owner);
+        let first = accept_entropy_block(owner, &block).is_ok();
+        let repeated = accept_entropy_block(owner, &block) == Err(Sce9Error::EntropyHealth);
+        clear_entropy_state(owner);
         first && repeated
     }
 }
@@ -171,7 +170,7 @@ impl Sce9Crypto {
 
         Ok(Self {
             entropy_seen: AtomicBool::new(false),
-            previous_entropy: AtomicU32::new(0),
+            previous_entropy: core::array::from_fn(|_| AtomicU32::new(0)),
         })
     }
 
@@ -216,8 +215,7 @@ impl Sce9Crypto {
 
 impl Drop for Sce9Crypto {
     fn drop(&mut self) {
-        self.previous_entropy.store(0, Ordering::Release);
-        self.entropy_seen.store(false, Ordering::Release);
+        clear_entropy_state(self);
         #[cfg(target_arch = "arm")]
         let _ = with_hardware(|hardware| hardware.close());
         CLAIMED.store(false, Ordering::Release);
@@ -407,16 +405,13 @@ impl TryRng for Sce9Rng<'_> {
     fn try_fill_bytes(&mut self, destination: &mut [u8]) -> Result<(), Self::Error> {
         for destination_chunk in destination.chunks_mut(16) {
             let mut block = Zeroizing::new([0; 16]);
-            if let Err(error) = with_hardware(|hardware| hardware.random(&mut block[..])) {
+            let result = with_hardware(|hardware| {
+                hardware.random(&mut block[..])?;
+                accept_entropy_block(self.owner, &block)
+            });
+            if let Err(error) = result {
                 destination.zeroize();
                 return Err(error);
-            }
-            for word in block.chunks_exact(4) {
-                let word = u32::from_ne_bytes(word.try_into().expect("four-byte chunk"));
-                if let Err(error) = accept_entropy_word(self.owner, word) {
-                    destination.zeroize();
-                    return Err(error);
-                }
             }
             destination_chunk.copy_from_slice(&block[..destination_chunk.len()]);
         }
@@ -426,12 +421,35 @@ impl TryRng for Sce9Rng<'_> {
 
 impl TryCryptoRng for Sce9Rng<'_> {}
 
-fn accept_entropy_word(owner: &Sce9Crypto, word: u32) -> Result<(), Sce9Error> {
-    let previous = owner.previous_entropy.swap(word, Ordering::AcqRel);
-    if owner.entropy_seen.swap(true, Ordering::AcqRel) && previous == word {
+fn accept_entropy_block(owner: &Sce9Crypto, block: &[u8; 16]) -> Result<(), Sce9Error> {
+    let words: [u32; 4] = core::array::from_fn(|index| {
+        u32::from_ne_bytes(
+            block[index * 4..index * 4 + 4]
+                .try_into()
+                .expect("four-byte chunk"),
+        )
+    });
+    let repeated = owner.entropy_seen.load(Ordering::Acquire)
+        && owner
+            .previous_entropy
+            .iter()
+            .zip(words)
+            .all(|(previous, word)| previous.load(Ordering::Acquire) == word);
+    for (previous, word) in owner.previous_entropy.iter().zip(words) {
+        previous.store(word, Ordering::Release);
+    }
+    owner.entropy_seen.store(true, Ordering::Release);
+    if repeated {
         Err(Sce9Error::EntropyHealth)
     } else {
         Ok(())
+    }
+}
+
+fn clear_entropy_state(owner: &Sce9Crypto) {
+    owner.entropy_seen.store(false, Ordering::Release);
+    for previous in &owner.previous_entropy {
+        previous.store(0, Ordering::Release);
     }
 }
 
@@ -1199,14 +1217,15 @@ mod tests {
     }
 
     #[test]
-    fn entropy_health_test_spans_generated_words() {
+    fn entropy_health_test_compares_complete_blocks() {
         let owner = Sce9Crypto {
             entropy_seen: AtomicBool::new(false),
-            previous_entropy: AtomicU32::new(0),
+            previous_entropy: core::array::from_fn(|_| AtomicU32::new(0)),
         };
-        assert_eq!(accept_entropy_word(&owner, 7), Ok(()));
+        let block = [1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, 4, 0, 0, 0];
+        assert_eq!(accept_entropy_block(&owner, &block), Ok(()));
         assert_eq!(
-            accept_entropy_word(&owner, 7),
+            accept_entropy_block(&owner, &block),
             Err(Sce9Error::EntropyHealth)
         );
     }
