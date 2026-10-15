@@ -267,6 +267,11 @@ pub mod qualification {
         raw::peripheral_disabled()
     }
 
+    /// Returns the dedicated DMA staging address for board-map qualification.
+    pub fn dma_staging_address() -> usize {
+        raw::dma_staging_address()
+    }
+
     /// Exercises the cross-call repeated-word rejection and restores its state.
     pub fn exercise_entropy_continuous_test(owner: &Pse84Crypto) -> bool {
         owner.entropy_seen.store(false, Ordering::Release);

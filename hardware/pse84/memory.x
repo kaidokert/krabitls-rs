@@ -6,3 +6,11 @@ MEMORY
 }
 
 _stack_start = ORIGIN(RAM) + LENGTH(RAM);
+
+SECTIONS
+{
+  .pse84_crypto_dma (NOLOAD) : ALIGN(32)
+  {
+    KEEP(*(.pse84_crypto_dma));
+  } > RAM
+} INSERT AFTER .bss;

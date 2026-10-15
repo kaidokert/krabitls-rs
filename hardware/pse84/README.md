@@ -19,11 +19,13 @@ remain in zeroizing Rust storage for the lifetime of an AEAD value and are
 reloaded only for a serialized operation. The adapter does not provide key
 slots or protection from code executing in the same security domain.
 
-AES transfers use dedicated 32-byte-aligned staging lines. The adapter cleans
-inputs before DMA and invalidates output afterward when D-cache is enabled, so
-the same code is valid on the E84 M33 and M55. Dropping the ownership token
-either resets an idle engine or leaves reset to the active operation's cleanup;
-it never resets CRYPTO underneath an operation.
+AES transfers use dedicated 32-byte-aligned staging lines in the
+`.pse84_crypto_dma` linker section. Board linker scripts must place that section
+in system SRAM visible to the MXCRYPTO AHB master, never CM55 ITCM or DTCM. The
+adapter cleans inputs before DMA and invalidates output afterward when D-cache
+is enabled, so the same code is valid on the E84 M33 and M55. Dropping the
+ownership token either resets an idle engine or leaves reset to the active
+operation's cleanup; it never resets CRYPTO underneath an operation.
 
 Entropy is not released until the hardware repetition-count and adaptive-
 proportion monitors have observed a complete 512-bit startup window. The token

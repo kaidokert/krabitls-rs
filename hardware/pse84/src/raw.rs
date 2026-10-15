@@ -1,4 +1,5 @@
 use crate::{Engine, Pse84CryptoError};
+use core::cell::UnsafeCell;
 #[cfg(feature = "qualification")]
 use core::sync::atomic::AtomicBool;
 use core::sync::atomic::{Ordering, compiler_fence};
@@ -32,21 +33,50 @@ pub(crate) struct Hardware {
 #[repr(C, align(32))]
 struct DmaBlock([u8; 32]);
 
+#[repr(C, align(32))]
+struct DmaBuffers {
+    key: DmaBlock,
+    input: DmaBlock,
+    output: DmaBlock,
+}
+
+struct DmaStorage(UnsafeCell<DmaBuffers>);
+
+// SAFETY: every access is made while the adapter's global BUSY lock is held.
+unsafe impl Sync for DmaStorage {}
+
+#[unsafe(link_section = ".pse84_crypto_dma")]
+static DMA_STORAGE: DmaStorage = DmaStorage(UnsafeCell::new(DmaBuffers {
+    key: DmaBlock([0; 32]),
+    input: DmaBlock([0; 32]),
+    output: DmaBlock([0; 32]),
+}));
+
 const _: () = assert!(core::mem::size_of::<DmaBlock>() == 32);
 const _: () = assert!(core::mem::align_of::<DmaBlock>() == 32);
 
-impl DmaBlock {
-    fn new(data: &[u8; 16]) -> Self {
-        let mut block = Self([0; 32]);
-        block.0[..16].copy_from_slice(data);
-        block
+struct DmaGuard(&'static mut DmaBuffers);
+
+impl DmaGuard {
+    fn acquire(key: &[u8; 16], input: &[u8; 16]) -> Self {
+        // SAFETY: with_engine holds the global BUSY lock for the guard's entire
+        // lifetime, so no other adapter operation can alias this storage.
+        let buffers = unsafe { &mut *DMA_STORAGE.0.get() };
+        buffers.key.0.fill(0);
+        buffers.key.0[..16].copy_from_slice(key);
+        buffers.input.0.fill(0);
+        buffers.input.0[..16].copy_from_slice(input);
+        buffers.output.0.fill(0);
+        Self(buffers)
     }
 }
 
-impl Drop for DmaBlock {
+impl Drop for DmaGuard {
     fn drop(&mut self) {
-        self.0.zeroize();
-        clean_cache(self);
+        for block in [&mut self.0.key, &mut self.0.input, &mut self.0.output] {
+            block.0.zeroize();
+            clean_cache(block);
+        }
     }
 }
 
@@ -181,20 +211,18 @@ impl Engine for Hardware {
         if FORCE_TIMEOUT.swap(false, Ordering::AcqRel) {
             return Err(Pse84CryptoError::Timeout);
         }
-        let key = DmaBlock::new(key);
-        let input = DmaBlock::new(block);
-        let mut output = DmaBlock([0; 32]);
-        clean_cache(&key);
-        clean_cache(&input);
-        clean_cache(&output);
+        let dma = DmaGuard::acquire(key, block);
+        clean_cache(&dma.0.key);
+        clean_cache(&dma.0.input);
+        clean_cache(&dma.0.output);
         let operation = (|| {
-            self.start_fifo(LOAD0, key.0.as_ptr() as u32, 16)?;
+            self.start_fifo(LOAD0, dma.0.key.0.as_ptr() as u32, 16)?;
             self.block_move(KEY0, LOAD0, 16)?;
             unsafe { CRYPTO.aes_ctl().write_raw(0) };
             self.wait_idle()?;
 
-            self.start_fifo(LOAD0, input.0.as_ptr() as u32, 16)?;
-            self.start_fifo(STORE, output.0.as_mut_ptr() as u32, 16)?;
+            self.start_fifo(LOAD0, dma.0.input.0.as_ptr() as u32, 16)?;
+            self.start_fifo(STORE, dma.0.output.0.as_mut_ptr() as u32, 16)?;
             self.block_move(BLOCK0, LOAD0, 16)?;
             self.push(&[AES])?;
             self.block_move(STORE, BLOCK1, 16)?;
@@ -205,9 +233,9 @@ impl Engine for Hardware {
             force_reset();
             return Err(error);
         }
-        invalidate_cache(&mut output);
+        invalidate_cache(&mut dma.0.output);
         let mut result = [0; 16];
-        result.copy_from_slice(&output.0[..16]);
+        result.copy_from_slice(&dma.0.output.0[..16]);
         Ok(result)
     }
 
@@ -309,4 +337,9 @@ pub(crate) fn peripheral_disabled() -> bool {
         CRYPTO.ctl().read().get_raw() & (1 << 31) == 0
             && CRYPTO.ram_pwr_ctl().read().get_raw() & 3 == 0
     }
+}
+
+#[cfg(feature = "qualification")]
+pub(crate) fn dma_staging_address() -> usize {
+    DMA_STORAGE.0.get() as usize
 }

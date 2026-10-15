@@ -31,6 +31,11 @@ fn main() -> ! {
     let crypto = unsafe { Pse84Crypto::claim_after_board_init() }
         .unwrap_or_else(|_| fail("claim CRYPTO ownership"));
     defmt::info!("PSoC Edge E84 CRYPTO qualification");
+    let dma_address = qualification::dma_staging_address();
+    check(
+        (0x3402_8000..0x3405_8000).contains(&dma_address) && dma_address & 31 == 0,
+        "DMA staging in aligned system SRAM",
+    );
 
     let mut entropy = [0u8; 64];
     crypto
