@@ -81,12 +81,23 @@ fn main() -> ! {
         fail_text("entropy constant");
     }
     entropy.zeroize();
+    let mut short_entropy = [0; 1];
+    if let Err(error) = rng.try_fill_bytes(&mut short_entropy) {
+        fail("short entropy fill", error);
+    }
+    short_entropy.zeroize();
     if !krabitls_hw_ra6m5::qualification::wrapped_secret_wipes() {
         fail_text("wrapped secret zeroization");
     }
+    if !krabitls_hw_ra6m5::qualification::entropy_continuous_test(&sce) {
+        fail_text("entropy continuous test");
+    }
     rprintln!("PASS entropy");
 
-    let digest = match sce.sha256(b"abc") {
+    let mut sha_input = [0; 7];
+    let sha_offset = unaligned_offset(sha_input.as_ptr());
+    sha_input[sha_offset..sha_offset + 3].copy_from_slice(b"abc");
+    let digest = match sce.sha256(&sha_input[sha_offset..sha_offset + 3]) {
         Ok(digest) => digest,
         Err(error) => fail("sha256", error),
     };
@@ -160,16 +171,20 @@ fn main() -> ! {
     let aad = b"KrabiTLS SCE9 qualification AAD";
     let plaintext = b"SCE9 wrapped-key authenticated record";
     let mut ciphertext = [0; 37];
-    let mut tag = [0; 16];
-    aes.encrypt_gcm(&nonce, aad, plaintext, &mut ciphertext, &mut tag)
+    let mut tag_storage = [0; 19];
+    let tag_offset = unaligned_offset(tag_storage.as_ptr());
+    let tag: &mut [u8; 16] = (&mut tag_storage[tag_offset..tag_offset + 16])
+        .try_into()
+        .unwrap_or_else(|_| fail_text("unaligned tag view"));
+    aes.encrypt_gcm(&nonce, aad, plaintext, &mut ciphertext, tag)
         .unwrap_or_else(|error| fail("AES-GCM encrypt", error));
     let mut opened = [0; 37];
-    aes.decrypt_gcm(&nonce, aad, &ciphertext, &mut opened, &tag)
+    aes.decrypt_gcm(&nonce, aad, &ciphertext, &mut opened, &*tag)
         .unwrap_or_else(|error| fail("AES-GCM decrypt", error));
     assert_bytes("AES-GCM round trip", &opened, plaintext);
     tag[0] ^= 1;
     if aes
-        .decrypt_gcm(&nonce, aad, &ciphertext, &mut opened, &tag)
+        .decrypt_gcm(&nonce, aad, &ciphertext, &mut opened, &*tag)
         .is_ok()
     {
         fail_text("AES-GCM accepted invalid tag");
@@ -178,7 +193,7 @@ fn main() -> ! {
         fail_text("AES-GCM failure retained plaintext");
     }
     tag[0] ^= 1;
-    aes.decrypt_gcm(&nonce, aad, &ciphertext, &mut opened, &tag)
+    aes.decrypt_gcm(&nonce, aad, &ciphertext, &mut opened, &*tag)
         .unwrap_or_else(|error| fail("AES-GCM recovery", error));
     rprintln!("PASS wrapped AES-GCM reject/recovery");
 
@@ -291,6 +306,10 @@ fn assert_bytes(name: &str, actual: &[u8], expected: &[u8]) {
             cortex_m::asm::bkpt();
         }
     }
+}
+
+fn unaligned_offset(pointer: *const u8) -> usize {
+    usize::from(pointer.addr() & 3 == 0)
 }
 
 fn parse_p256_der(der: &[u8]) -> Option<[u8; 64]> {

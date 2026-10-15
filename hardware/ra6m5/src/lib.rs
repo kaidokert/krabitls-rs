@@ -132,6 +132,17 @@ pub mod qualification {
         secret.secret.zeroize();
         secret.handle.iter().all(|word| *word == 0) && secret.secret.iter().all(|word| *word == 0)
     }
+
+    /// Exercise the cross-call continuous entropy test and restore its state.
+    pub fn entropy_continuous_test(owner: &Sce9Crypto) -> bool {
+        owner.entropy_seen.store(false, Ordering::Release);
+        owner.previous_entropy.store(0, Ordering::Release);
+        let first = accept_entropy_word(owner, 0x1234_5678).is_ok();
+        let repeated = accept_entropy_word(owner, 0x1234_5678) == Err(Sce9Error::EntropyHealth);
+        owner.entropy_seen.store(false, Ordering::Release);
+        owner.previous_entropy.store(0, Ordering::Release);
+        first && repeated
+    }
 }
 
 static CLAIMED: AtomicBool = AtomicBool::new(false);
@@ -394,25 +405,35 @@ impl TryRng for Sce9Rng<'_> {
     }
 
     fn try_fill_bytes(&mut self, destination: &mut [u8]) -> Result<(), Self::Error> {
-        if let Err(error) = with_hardware(|hardware| hardware.random(destination)) {
-            destination.zeroize();
-            return Err(error);
-        }
-        for chunk in destination.chunks(4) {
-            if chunk.len() == 4 {
-                let word = u32::from_ne_bytes(chunk.try_into().expect("four-byte chunk"));
-                let previous = self.owner.previous_entropy.swap(word, Ordering::AcqRel);
-                if self.owner.entropy_seen.swap(true, Ordering::AcqRel) && previous == word {
+        for destination_chunk in destination.chunks_mut(16) {
+            let mut block = Zeroizing::new([0; 16]);
+            if let Err(error) = with_hardware(|hardware| hardware.random(&mut block[..])) {
+                destination.zeroize();
+                return Err(error);
+            }
+            for word in block.chunks_exact(4) {
+                let word = u32::from_ne_bytes(word.try_into().expect("four-byte chunk"));
+                if let Err(error) = accept_entropy_word(self.owner, word) {
                     destination.zeroize();
-                    return Err(Sce9Error::EntropyHealth);
+                    return Err(error);
                 }
             }
+            destination_chunk.copy_from_slice(&block[..destination_chunk.len()]);
         }
         Ok(())
     }
 }
 
 impl TryCryptoRng for Sce9Rng<'_> {}
+
+fn accept_entropy_word(owner: &Sce9Crypto, word: u32) -> Result<(), Sce9Error> {
+    let previous = owner.previous_entropy.swap(word, Ordering::AcqRel);
+    if owner.entropy_seen.swap(true, Ordering::AcqRel) && previous == word {
+        Err(Sce9Error::EntropyHealth)
+    } else {
+        Ok(())
+    }
+}
 
 impl Default for Sce9Sha256 {
     fn default() -> Self {
@@ -1175,5 +1196,18 @@ mod tests {
 
         assert_eq!(result, Err(Sce9Error::Internal));
         assert!(output.iter().all(|byte| *byte == 0));
+    }
+
+    #[test]
+    fn entropy_health_test_spans_generated_words() {
+        let owner = Sce9Crypto {
+            entropy_seen: AtomicBool::new(false),
+            previous_entropy: AtomicU32::new(0),
+        };
+        assert_eq!(accept_entropy_word(&owner, 7), Ok(()));
+        assert_eq!(
+            accept_entropy_word(&owner, 7),
+            Err(Sce9Error::EntropyHealth)
+        );
     }
 }

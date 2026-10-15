@@ -72,13 +72,17 @@ uint32_t krabitls_sce9_random(uint8_t * output, uint32_t length)
     return FSP_SUCCESS;
 }
 
+uint32_t krabitls_sce9_sha256_update(uint8_t state[176],
+                                     const uint8_t * message,
+                                     uint32_t length);
+
 uint32_t krabitls_sce9_sha256(const uint8_t * message, uint32_t length, uint8_t output[32])
 {
     sce_sha_md5_handle_t handle;
     uint32_t output_length = 0;
     fsp_err_t status = R_SCE_SHA256_Init(&handle);
     if (status == FSP_SUCCESS) {
-        status = R_SCE_SHA256_Update(&handle, (uint8_t *) message, length);
+        status = krabitls_sce9_sha256_update((uint8_t *) &handle, message, length);
     }
     if (status == FSP_SUCCESS) {
         status = R_SCE_SHA256_Final(&handle, output, &output_length);
@@ -148,6 +152,7 @@ static uint32_t gcm_encrypt_chunks(sce_gcm_handle_t * handle,
 {
     uint32_t in_words[4];
     uint32_t out_words[4];
+    uint32_t tag_words[4];
     uint32_t zero_words[4] = { 0 };
     fsp_err_t status = FSP_SUCCESS;
 
@@ -180,13 +185,17 @@ static uint32_t gcm_encrypt_chunks(sce_gcm_handle_t * handle,
         uint32_t final_length = 0;
         memset(out_words, 0, sizeof(out_words));
         status = R_SCE_AES128GCM_EncryptFinal(handle, (uint8_t *) out_words,
-                                              &final_length, tag);
+                                              &final_length, (uint8_t *) tag_words);
         if (status == FSP_SUCCESS && (final_length & 15U) != 0) {
             memcpy(output - (final_length & 15U), out_words, final_length & 15U);
+        }
+        if (status == FSP_SUCCESS) {
+            memcpy(tag, tag_words, sizeof(tag_words));
         }
     }
     wipe(in_words, sizeof(in_words));
     wipe(out_words, sizeof(out_words));
+    wipe(tag_words, sizeof(tag_words));
     return status;
 }
 
