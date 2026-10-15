@@ -1,0 +1,50 @@
+[package]
+name = "krabitls-hw-pse84"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.87"
+publish = false
+license = "Apache-2.0"
+description = "PSoC Edge E84 hardware cryptography backend for KrabiTLS"
+build = "build.rs"
+
+[features]
+default = []
+qualification = [
+    "cortex-m/critical-section-single-core",
+    "dep:cortex-m-rt",
+    "dep:defmt",
+    "dep:defmt-rtt",
+    "dep:panic-probe",
+    "krabitls/dev-utils",
+    "psoc-pac-pse8x4/rt",
+]
+
+[dependencies]
+aead = { version = "0.6", default-features = false }
+cortex-m = "0.7.8"
+cortex-m-rt = { version = "0.7.5", optional = true }
+defmt = { version = "1", optional = true }
+defmt-rtt = { version = "1", optional = true }
+krabitls = { path = "../../krabitls", default-features = false, features = ["cipher-aes", "x25519-kx"] }
+panic-probe = { version = "1", features = ["print-defmt"], optional = true }
+psoc-pac-pse8x4 = { version = "0.1.0", default-features = false, features = ["crypto"] }
+rand_core = { version = "0.10", default-features = false }
+zeroize = { version = "1.8", default-features = false }
+
+[dev-dependencies]
+aes = { version = "0.9", default-features = false }
+
+[[example]]
+name = "qualify"
+required-features = ["qualification"]
+
+[profile.dev]
+opt-level = 1
+panic = "abort"
+
+[profile.release]
+opt-level = "s"
+codegen-units = 1
+debug = 2
+panic = "abort"
