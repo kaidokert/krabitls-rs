@@ -87,7 +87,10 @@ fn execute(
     }
     let input = chain(inputs);
     let output = chain(outputs);
+    // The SE is a DMA observer across a Normal-memory/Device-memory boundary.
+    // Compiler fences preserve Rust ordering; DMB orders the actual bus access.
     compiler_fence(Ordering::Release);
+    cortex_m::asm::dmb();
 
     for _ in 0..WAIT_LIMIT {
         let status = unsafe { read_volatile(TX_STATUS as *const u32) };
@@ -111,6 +114,9 @@ fn execute(
                 }
                 if status & RX_READY != 0 {
                     let response = unsafe { read_volatile(RX_HEADER as *const u32) };
+                    // Do not consume DMA output before the completed Device
+                    // response is globally ordered against Normal SRAM writes.
+                    cortex_m::asm::dmb();
                     compiler_fence(Ordering::Acquire);
                     return decode_response(response & RESPONSE_MASK);
                 }
