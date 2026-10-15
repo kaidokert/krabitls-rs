@@ -79,19 +79,25 @@ uint32_t krabitls_sce9_sha256_update(uint8_t state[176],
 uint32_t krabitls_sce9_sha256(const uint8_t * message, uint32_t length, uint8_t output[32])
 {
     sce_sha_md5_handle_t handle;
+    uint32_t digest_words[8];
     uint32_t output_length = 0;
     fsp_err_t status = R_SCE_SHA256_Init(&handle);
     if (status == FSP_SUCCESS) {
         status = krabitls_sce9_sha256_update((uint8_t *) &handle, message, length);
     }
     if (status == FSP_SUCCESS) {
-        status = R_SCE_SHA256_Final(&handle, output, &output_length);
+        status = R_SCE_SHA256_Final(&handle, (uint8_t *) digest_words, &output_length);
     }
     wipe(&handle, sizeof(handle));
-    if (status == FSP_SUCCESS && output_length != 32) {
+    if (status == FSP_SUCCESS && output_length == 32) {
+        memcpy(output, digest_words, sizeof(digest_words));
+    } else {
         wipe(output, 32);
-        return FSP_ERR_CRYPTO_SCE_FAIL;
+        if (status == FSP_SUCCESS) {
+            status = FSP_ERR_CRYPTO_SCE_FAIL;
+        }
     }
+    wipe(digest_words, sizeof(digest_words));
     return status;
 }
 
@@ -124,16 +130,22 @@ uint32_t krabitls_sce9_sha256_update(uint8_t state[176], const uint8_t * message
 uint32_t krabitls_sce9_sha256_snapshot(const uint8_t state[176], uint8_t output[32])
 {
     sce_sha_md5_handle_t snapshot;
+    uint32_t digest_words[8];
     uint32_t output_length = 0;
     memcpy(&snapshot, state, sizeof(snapshot));
     /* See the cloned-handle synchronization in the update path above. */
     g_sha256_private_id = snapshot.id;
-    fsp_err_t status = R_SCE_SHA256_Final(&snapshot, output, &output_length);
+    fsp_err_t status = R_SCE_SHA256_Final(&snapshot, (uint8_t *) digest_words, &output_length);
     wipe(&snapshot, sizeof(snapshot));
-    if (status == FSP_SUCCESS && output_length != 32) {
+    if (status == FSP_SUCCESS && output_length == 32) {
+        memcpy(output, digest_words, sizeof(digest_words));
+    } else {
         wipe(output, 32);
-        return FSP_ERR_CRYPTO_SCE_FAIL;
+        if (status == FSP_SUCCESS) {
+            status = FSP_ERR_CRYPTO_SCE_FAIL;
+        }
     }
+    wipe(digest_words, sizeof(digest_words));
     return status;
 }
 
@@ -330,18 +342,21 @@ uint32_t krabitls_sce9_p256_ecdh_generate(const uint8_t signing_pair[192],
     const sce_ecc_wrapped_pair_key_t * signer =
         (const sce_ecc_wrapped_pair_key_t *) signing_pair;
     sce_ecdh_handle_t * handle = (sce_ecdh_handle_t *) ecdh_handle;
+    uint32_t public_words[16];
     uint32_t signature_words[16];
     sce_ecdsa_byte_data_t signature = { (uint8_t *) signature_words, 64, 0 };
     fsp_err_t status = R_SCE_ECDH_secp256r1_Init(handle, 0, 0);
     if (status == FSP_SUCCESS) {
         status = R_SCE_ECDH_secp256r1_PublicKeySign(handle, 0,
             (sce_ecc_private_wrapped_key_t *) &signer->priv_key,
-            public_key, &signature,
+            (uint8_t *) public_words, &signature,
             (sce_ecc_private_wrapped_key_t *) ephemeral_private);
     }
     if (status == FSP_SUCCESS) {
+        memcpy(public_key, public_words, 64);
         memcpy(public_signature, signature_words, 64);
     }
+    wipe(public_words, sizeof(public_words));
     wipe(signature_words, sizeof(signature_words));
     if (status != FSP_SUCCESS) {
         wipe(ecdh_handle, 20);
@@ -363,7 +378,9 @@ uint32_t krabitls_sce9_p256_ecdh_authenticated(uint8_t ecdh_handle[20],
         (const sce_ecc_wrapped_pair_key_t *) peer_signing_pair;
     sce_ecc_public_wrapped_key_t peer;
     sce_ecdh_handle_t * handle = (sce_ecdh_handle_t *) ecdh_handle;
-    sce_ecdsa_byte_data_t signature = { (uint8_t *) peer_signature, 64, 0 };
+    uint32_t signature_words[16];
+    memcpy(signature_words, peer_signature, sizeof(signature_words));
+    sce_ecdsa_byte_data_t signature = { (uint8_t *) signature_words, 64, 0 };
     fsp_err_t status = R_SCE_ECDH_secp256r1_PublicKeyVerify(handle,
         (sce_ecc_public_wrapped_key_t *) &signer->pub_key,
         (uint8_t *) peer_public, &signature, &peer);
@@ -373,6 +390,7 @@ uint32_t krabitls_sce9_p256_ecdh_authenticated(uint8_t ecdh_handle[20],
             (sce_ecdh_wrapped_key_t *) wrapped_secret);
     }
     wipe(&peer, sizeof(peer));
+    wipe(signature_words, sizeof(signature_words));
     if (status != FSP_SUCCESS) {
         wipe(ecdh_handle, 20);
         wipe(wrapped_secret, 56);
@@ -425,15 +443,24 @@ uint32_t krabitls_sce9_p256_sign_hash(const uint8_t pair[192],
                                       uint8_t signature[64])
 {
     const sce_ecc_wrapped_pair_key_t * key = (const sce_ecc_wrapped_pair_key_t *) pair;
-    sce_ecdsa_byte_data_t digest = { (uint8_t *) hash, 32, 1 };
-    sce_ecdsa_byte_data_t sig = { signature, 64, 0 };
+    uint32_t hash_words[8];
+    uint32_t signature_words[16];
+    memcpy(hash_words, hash, sizeof(hash_words));
+    sce_ecdsa_byte_data_t digest = { (uint8_t *) hash_words, 32, 1 };
+    sce_ecdsa_byte_data_t sig = { (uint8_t *) signature_words, 64, 0 };
     fsp_err_t status = R_SCE_ECDSA_secp256r1_SignatureGenerate(&digest, &sig,
         (sce_ecc_private_wrapped_key_t *) &key->priv_key);
-    if (status != FSP_SUCCESS || sig.data_length != 64) {
+    if (status == FSP_SUCCESS && sig.data_length == 64) {
+        memcpy(signature, signature_words, sizeof(signature_words));
+    } else {
         wipe(signature, 64);
-        return status == FSP_SUCCESS ? FSP_ERR_CRYPTO_SCE_FAIL : status;
+        if (status == FSP_SUCCESS) {
+            status = FSP_ERR_CRYPTO_SCE_FAIL;
+        }
     }
-    return FSP_SUCCESS;
+    wipe(hash_words, sizeof(hash_words));
+    wipe(signature_words, sizeof(signature_words));
+    return status;
 }
 
 uint32_t krabitls_sce9_p256_verify_hash(const uint8_t pair[192],
@@ -441,8 +468,15 @@ uint32_t krabitls_sce9_p256_verify_hash(const uint8_t pair[192],
                                         const uint8_t signature[64])
 {
     const sce_ecc_wrapped_pair_key_t * key = (const sce_ecc_wrapped_pair_key_t *) pair;
-    sce_ecdsa_byte_data_t digest = { (uint8_t *) hash, 32, 1 };
-    sce_ecdsa_byte_data_t sig = { (uint8_t *) signature, 64, 0 };
-    return R_SCE_ECDSA_secp256r1_SignatureVerify(&sig, &digest,
+    uint32_t hash_words[8];
+    uint32_t signature_words[16];
+    memcpy(hash_words, hash, sizeof(hash_words));
+    memcpy(signature_words, signature, sizeof(signature_words));
+    sce_ecdsa_byte_data_t digest = { (uint8_t *) hash_words, 32, 1 };
+    sce_ecdsa_byte_data_t sig = { (uint8_t *) signature_words, 64, 0 };
+    fsp_err_t status = R_SCE_ECDSA_secp256r1_SignatureVerify(&sig, &digest,
         (sce_ecc_public_wrapped_key_t *) &key->pub_key);
+    wipe(hash_words, sizeof(hash_words));
+    wipe(signature_words, sizeof(signature_words));
+    return status;
 }
