@@ -26,6 +26,7 @@ static FORCE_TIMEOUT: AtomicBool = AtomicBool::new(false);
 
 pub(crate) struct Hardware {
     trng_initialized: bool,
+    trng_health_qualified: bool,
 }
 
 #[repr(C, align(32))]
@@ -62,6 +63,7 @@ impl Hardware {
         }
         Ok(Self {
             trng_initialized: false,
+            trng_health_qualified: false,
         })
     }
 
@@ -146,9 +148,10 @@ impl Hardware {
             // Enable all six documented oscillator sources.
             CRYPTO.tr_ctl1().write_raw(0x3f);
             CRYPTO.tr_mon_ctl().write_raw(2);
-            CRYPTO.tr_mon_rc_ctl().write_raw(255);
-            CRYPTO.tr_mon_ap_ctl().write_raw(u32::MAX);
-            CRYPTO.tr_mon_cmd().write_raw(3);
+            // RCT rejects 32 equal bits. APT rejects 325 occurrences of one
+            // value in a complete 512-bit window (WINDOW_SIZE is minus one).
+            CRYPTO.tr_mon_rc_ctl().write_raw(32);
+            CRYPTO.tr_mon_ap_ctl().write_raw((511 << 16) | 325);
         }
         for _ in 0..WAIT_LIMIT {
             let interrupts = unsafe { CRYPTO.intr().read().get_raw() };
@@ -156,7 +159,10 @@ impl Hardware {
                 return Err(Pse84CryptoError::EntropyHealth);
             }
             if interrupts & TR_INITIALIZED != 0 {
-                unsafe { CRYPTO.intr().write_raw(TR_INITIALIZED) };
+                unsafe {
+                    CRYPTO.intr().write_raw(TR_INITIALIZED | TR_HEALTH_ERRORS);
+                    CRYPTO.tr_mon_cmd().write_raw(3);
+                }
                 self.trng_initialized = true;
                 return Ok(());
             }
@@ -207,6 +213,22 @@ impl Engine for Hardware {
 
     fn random_word(&mut self) -> Result<u32, Pse84CryptoError> {
         self.initialize_trng()?;
+        if !self.trng_health_qualified {
+            let mut word = 0;
+            // Complete one APT window before releasing any entropy. The
+            // monitor remains active for all later words in this operation.
+            for _ in 0..16 {
+                word = self.generate_random_word()?;
+            }
+            self.trng_health_qualified = true;
+            return Ok(word);
+        }
+        self.generate_random_word()
+    }
+}
+
+impl Hardware {
+    fn generate_random_word(&mut self) -> Result<u32, Pse84CryptoError> {
         unsafe {
             CRYPTO.intr().write_raw(TR_DATA_AVAILABLE);
             CRYPTO.tr_ctl2().write_raw(32);

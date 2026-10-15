@@ -41,6 +41,10 @@ fn main() -> ! {
         entropy.iter().any(|byte| *byte != 0) && entropy[..32] != entropy[32..],
         "TRNG repeated entropy",
     );
+    check(
+        qualification::exercise_entropy_continuous_test(&crypto),
+        "TRNG continuous-test rejection",
+    );
 
     let cipher = Aes128GcmHw::new(&ZERO_KEY.into());
     let mut empty = [];

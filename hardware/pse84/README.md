@@ -25,6 +25,12 @@ the same code is valid on the E84 M33 and M55. Dropping the ownership token
 either resets an idle engine or leaves reset to the active operation's cleanup;
 it never resets CRYPTO underneath an operation.
 
+Entropy is not released until the hardware repetition-count and adaptive-
+proportion monitors have observed a complete 512-bit startup window. The token
+also retains the previous accepted word and rejects identical consecutive
+words across separate RNG calls. These are online failure tests, not a claim of
+entropy-source certification.
+
 The included E84 SRAM qualification image is board harness only. It is not an
 Astrum dependency and does not move clock/security initialization into this
 crate.

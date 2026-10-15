@@ -11,7 +11,7 @@ use aead::array::Array;
 use aead::consts::{U12, U16};
 use aead::inout::InOutBuf;
 use aead::{AeadCore, AeadInOut, Error, Key, KeyInit, KeySizeUser, Nonce, Tag, TagPosition};
-use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 use zeroize::{Zeroize, Zeroizing};
 
 #[cfg(target_arch = "arm")]
@@ -19,7 +19,8 @@ mod raw;
 
 /// Exclusive lifetime token for the E84 CRYPTO peripheral.
 pub struct Pse84Crypto {
-    _private: (),
+    entropy_seen: AtomicBool,
+    previous_entropy: AtomicU32,
 }
 
 /// Hardware AES-128-GCM provider for PSoC Edge E84.
@@ -79,7 +80,10 @@ impl Pse84Crypto {
         let claimed = CLAIMED.compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed);
         BUSY.store(false, Ordering::Release);
         claimed.map_err(|_| Pse84CryptoError::Busy)?;
-        Ok(Self { _private: () })
+        Ok(Self {
+            entropy_seen: AtomicBool::new(false),
+            previous_entropy: AtomicU32::new(0),
+        })
     }
 
     /// Returns an RNG tied to this peripheral ownership period.
@@ -93,6 +97,8 @@ impl Drop for Pse84Crypto {
         // Stop new callers first. If an operation owns BUSY, its mandatory
         // finish path resets the engine; otherwise token destruction does it.
         CLAIMED.store(false, Ordering::Release);
+        self.previous_entropy.store(0, Ordering::Release);
+        self.entropy_seen.store(false, Ordering::Release);
         if BUSY
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_ok()
@@ -194,7 +200,8 @@ impl rand_core::TryRng for Pse84Rng<'_> {
     type Error = Pse84CryptoError;
 
     fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
-        with_engine(|engine| engine.random_word())
+        let word = with_engine(|engine| engine.random_word())?;
+        self.accept_entropy(word)
     }
 
     fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
@@ -206,11 +213,24 @@ impl rand_core::TryRng for Pse84Rng<'_> {
     fn try_fill_bytes(&mut self, destination: &mut [u8]) -> Result<(), Self::Error> {
         with_engine(|engine| {
             for chunk in destination.chunks_mut(4) {
-                let word = engine.random_word()?.to_le_bytes();
+                let word = self.accept_entropy(engine.random_word()?)?.to_le_bytes();
                 chunk.copy_from_slice(&word[..chunk.len()]);
             }
             Ok(())
         })
+    }
+}
+
+impl Pse84Rng<'_> {
+    fn accept_entropy(&self, word: u32) -> Result<u32, Pse84CryptoError> {
+        let previous = self._owner.previous_entropy.swap(word, Ordering::AcqRel);
+        if self._owner.entropy_seen.swap(true, Ordering::AcqRel) && previous == word {
+            self._owner.entropy_seen.store(false, Ordering::Release);
+            self._owner.previous_entropy.store(0, Ordering::Release);
+            Err(Pse84CryptoError::EntropyHealth)
+        } else {
+            Ok(word)
+        }
     }
 }
 
@@ -248,6 +268,18 @@ pub mod qualification {
     /// Checks the externally visible post-operation power state.
     pub fn peripheral_disabled() -> bool {
         raw::peripheral_disabled()
+    }
+
+    /// Exercises the cross-call repeated-word rejection and restores its state.
+    pub fn exercise_entropy_continuous_test(owner: &Pse84Crypto) -> bool {
+        owner.entropy_seen.store(false, Ordering::Release);
+        owner.previous_entropy.store(0, Ordering::Release);
+        let rng = owner.rng();
+        let first = rng.accept_entropy(0x1234_5678).is_ok();
+        let repeated = rng.accept_entropy(0x1234_5678) == Err(Pse84CryptoError::EntropyHealth);
+        owner.entropy_seen.store(false, Ordering::Release);
+        owner.previous_entropy.store(0, Ordering::Release);
+        first && repeated
     }
 }
 
@@ -581,5 +613,20 @@ mod tests {
         drop(replacement);
         assert!(!CLAIMED.load(Ordering::Acquire));
         assert!(!BUSY.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn entropy_continuous_test_spans_rng_instances() {
+        let _guard = STATE_TEST_LOCK.lock().unwrap();
+        CLAIMED.store(false, Ordering::Release);
+        BUSY.store(false, Ordering::Release);
+
+        let token = unsafe { Pse84Crypto::claim_after_board_init() }.unwrap();
+        assert_eq!(token.rng().accept_entropy(0x1234_5678), Ok(0x1234_5678));
+        assert_eq!(
+            token.rng().accept_entropy(0x1234_5678),
+            Err(Pse84CryptoError::EntropyHealth)
+        );
+        drop(token);
     }
 }
