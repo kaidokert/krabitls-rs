@@ -792,7 +792,7 @@ const FIXTURE_HANDSHAKE_SECRET_BYTES: [u8; 32] = [
 #[test]
 fn rfc8448_early_secret() {
     let zeros = [0u8; 32];
-    let prk = Secret::new(RustCrypto::extract(&zeros, &zeros));
+    let prk = Secret::new(RustCrypto::extract(&zeros, &zeros).unwrap());
     assert_eq!(prk.as_bytes(), &RFC8448_EARLY_SECRET_BYTES);
 }
 
@@ -837,7 +837,7 @@ fn fixture_handshake_secret() {
     let derived =
         derive_secret::<RustCrypto>(&make_rfc8448_early_secret(), b"derived", &EMPTY_SHA256)
             .unwrap();
-    let hs = Secret::new(RustCrypto::extract(derived.as_bytes(), &FIXTURE_DHE));
+    let hs = Secret::new(RustCrypto::extract(derived.as_bytes(), &FIXTURE_DHE).unwrap());
     assert_eq!(hs.as_bytes(), &FIXTURE_HANDSHAKE_SECRET_BYTES);
 }
 
@@ -941,7 +941,7 @@ fn fixture_transcript_hash_ch_sh() {
     let mut t = TranscriptHash::<RustCrypto>::new();
     t.update_record(&FIXTURE_CLIENT_HELLO).unwrap();
     t.update_record(&FIXTURE_SERVER_HELLO).unwrap();
-    assert_eq!(t.snapshot(), FIXTURE_TRANSCRIPT_HASH_CH_SH);
+    assert_eq!(t.snapshot().unwrap(), FIXTURE_TRANSCRIPT_HASH_CH_SH);
 }
 
 #[test]
@@ -969,7 +969,7 @@ fn fixture_s_hs_traffic_secret_full_chain() {
         let mut t = TranscriptHash::<RustCrypto>::new();
         t.update_record(&FIXTURE_CLIENT_HELLO).unwrap();
         t.update_record(&FIXTURE_SERVER_HELLO).unwrap();
-        t.snapshot()
+        t.snapshot().unwrap()
     };
     let (c_ts, s_ts) = handshake_traffic_secrets::<RustCrypto>(&hs, &th).unwrap();
     assert_eq!(c_ts.as_bytes(), &FIXTURE_C_HS_TRAFFIC_SECRET_BYTES);
@@ -1034,8 +1034,8 @@ fn jedisct_matches_rustcrypto() {
     // HKDF is fully spec-determined, so both backends must produce identical
     // outputs on the same inputs. Easy parity property-style test.
     for ikm in &[&[0u8; 32][..], b"abc"[..].as_ref(), &FIXTURE_DHE[..]] {
-        let rc = RustCrypto::extract(&[0u8; 32], ikm);
-        let jd = JedisctCrypto::extract(&[0u8; 32], ikm);
+        let rc = RustCrypto::extract(&[0u8; 32], ikm).unwrap();
+        let jd = JedisctCrypto::extract(&[0u8; 32], ikm).unwrap();
         assert_eq!(&*rc, &*jd, "extract diverged for ikm len={}", ikm.len());
     }
     // Mid-length expand.
@@ -1061,7 +1061,7 @@ fn jedisct_matches_rustcrypto() {
         let mut t = TranscriptHash::<RustCrypto>::new();
         t.update_record(&FIXTURE_CLIENT_HELLO).unwrap();
         t.update_record(&FIXTURE_SERVER_HELLO).unwrap();
-        t.snapshot()
+        t.snapshot().unwrap()
     };
     let rc_ts = handshake_traffic_secrets::<RustCrypto>(&rc_hs, &th).unwrap();
     let jd_ts = handshake_traffic_secrets::<JedisctCrypto>(&jd_hs, &th).unwrap();
@@ -1573,7 +1573,8 @@ mod cipher_aes {
         .unwrap();
         let ms = master_secret::<RustCrypto>(&make_fixture_handshake_secret()).unwrap();
         let (c_ap_ts, s_ap_ts) =
-            application_traffic_secrets::<RustCrypto>(&ms, &transcript.snapshot()).unwrap();
+            application_traffic_secrets::<RustCrypto>(&ms, &transcript.snapshot().unwrap())
+                .unwrap();
         let aes_keys = |secret: &Secret| {
             let (k, iv) = traffic_keys::<RustCrypto, 16>(secret).unwrap();
             (AeadKey::new(k), iv)
@@ -1626,7 +1627,7 @@ mod cipher_aes {
                 let mut t = TranscriptHash::<RustCrypto>::new();
                 t.update_record(&FIXTURE_CLIENT_HELLO).unwrap();
                 t.update_record(&FIXTURE_SERVER_HELLO).unwrap();
-                t.snapshot()
+                t.snapshot().unwrap()
             };
             let (_c_ts, s_ts) = handshake_traffic_secrets::<RustCrypto>(&hs, &th).unwrap();
             let (k, iv) = traffic_keys::<RustCrypto, 16>(&s_ts).unwrap();
@@ -1848,7 +1849,7 @@ mod cipher_aes {
             let mut out = [0u8; 64];
             let record = RecordKeys::<Aes128GcmSha256>::build_client_finished::<RustCrypto>(
                 &make_fixture_c_hs_traffic_secret(),
-                &transcript.snapshot(),
+                &transcript.snapshot().unwrap(),
                 0,
                 &mut out,
             )
@@ -1886,7 +1887,8 @@ mod cipher_aes {
             .unwrap();
 
             let (c_ap, s_ap) =
-                application_traffic_secrets::<RustCrypto>(&ms, &transcript.snapshot()).unwrap();
+                application_traffic_secrets::<RustCrypto>(&ms, &transcript.snapshot().unwrap())
+                    .unwrap();
 
             // From tls_fixture/state/client.json `c_ap_ts` / `s_ap_ts` at seed 0.
             const FIXTURE_C_AP_BYTES: [u8; 32] = [

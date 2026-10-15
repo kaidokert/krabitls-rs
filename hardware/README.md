@@ -12,6 +12,9 @@ seeding, linker configuration, and networking.
   qualification image for the nRF5340 application core.
 - `pse84` provides PSoC Edge E84 register-level AES-128-GCM and true entropy,
   with no vendor C or binary dependency.
+- `pg26` drives the EFM32PG26 Secure Engine mailbox directly for AES-128-GCM,
+  entropy, SHA-256/HMAC/HKDF, and PUF-wrapped P-256 ECDHE, with no vendor C or
+  PSA dependency.
 - `sam` groups Microchip SAM hardware by silicon family. Its first backend is
   SAM D5x/E5x AES plus the ROM-resident PUKCL/PUKCC P-256 key-exchange path.
   SAM4 and SAM E/S/V7x parts do not share that PUKCL facility; future support

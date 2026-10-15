@@ -36,7 +36,7 @@ pub use client_auth::{ClientAuth, ClientAuthError};
 #[allow(unused_imports)]
 #[cfg(feature = "rsa")]
 pub use cert::RsaCertSigAlg;
-pub use hkdf::{HkdfExpandError, HkdfSha256};
+pub use hkdf::{HkdfBackendError, HkdfExpandError, HkdfSha256, Sha256};
 pub use kx::{KxBackend, KxGroup};
 pub use time::TimeSource;
 pub use verify_provider::{

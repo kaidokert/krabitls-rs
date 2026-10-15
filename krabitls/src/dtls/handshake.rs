@@ -802,7 +802,7 @@ mod tests {
         let ch1_hash = {
             let mut t = TranscriptHash::<RustCrypto>::new();
             t.update(&transcript_msg(1, &ch1[..ch1_len]));
-            t.snapshot()
+            t.snapshot().unwrap()
         };
         let mut transcript = TranscriptHash::<RustCrypto>::new();
         transcript.update(&[0xFE, 0x00, 0x00, 0x20]);
@@ -810,7 +810,7 @@ mod tests {
         transcript.update(&transcript_msg(2, &hrr_body));
         transcript.update(&transcript_msg(1, &ch2[..ch2_len]));
         transcript.update(&transcript_msg(2, &sh_body));
-        let th = transcript.snapshot();
+        let th = transcript.snapshot().unwrap();
 
         let hk = derive_handshake_keys::<Suite, RustCrypto>(
             &x25519_shared(&priv_key, &server_share),
@@ -893,7 +893,7 @@ mod tests {
         let ch1_hash = {
             let mut t = TranscriptHash::<RustCrypto>::new();
             t.update(&transcript_msg(1, &ch1[..ch1_len]));
-            t.snapshot()
+            t.snapshot().unwrap()
         };
         let mut transcript = TranscriptHash::<RustCrypto>::new();
         transcript.update(&[0xFE, 0x00, 0x00, 0x20]);
@@ -903,7 +903,7 @@ mod tests {
         transcript.update(&transcript_msg(2, &sh_body));
         let hk = derive_handshake_keys::<Suite, RustCrypto>(
             &x25519_shared(&priv_key, &server_share),
-            &transcript.snapshot(),
+            &transcript.snapshot().unwrap(),
         )
         .unwrap();
 
@@ -1019,7 +1019,7 @@ mod tests {
         let ch1_hash = {
             let mut t = TranscriptHash::<RustCrypto>::new();
             t.update(&transcript_msg(1, &ch1[..ch1_len]));
-            t.snapshot()
+            t.snapshot().unwrap()
         };
         transcript.update(&[0xFE, 0x00, 0x00, 0x20]);
         transcript.update(ch1_hash.as_bytes());
@@ -1028,7 +1028,7 @@ mod tests {
         transcript.update(&transcript_msg(2, &sh_body));
         let hk = derive_handshake_keys::<Suite, RustCrypto>(
             &x25519_shared(&priv_key, &server_share),
-            &transcript.snapshot(),
+            &transcript.snapshot().unwrap(),
         )
         .unwrap();
 
@@ -1054,7 +1054,7 @@ mod tests {
         transcript.update(flight.cert_full);
         transcript.update(flight.cv_full);
         transcript.update(flight.fin_full);
-        let th_server_fin = transcript.snapshot();
+        let th_server_fin = transcript.snapshot().unwrap();
 
         // --- client Finished, epoch 2 (server runs with `-d`, no client auth,
         // so the client flight is a bare Finished; message_seq continues 0,1,2) ---

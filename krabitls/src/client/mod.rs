@@ -117,12 +117,12 @@ pub use crate::aead::Aes128GcmSha256;
 pub use crate::aead::ChaCha20Poly1305Sha256;
 pub use crate::aead::CipherSuite;
 pub use crate::traits::client_auth::{ClientSignature, MAX_CLIENT_SIG_LEN};
-pub use crate::traits::{CertParser, HkdfExpandError, HkdfSha256};
+pub use crate::traits::{CertParser, HkdfBackendError, HkdfExpandError, HkdfSha256, Sha256};
 
-#[cfg(all(feature = "dev-utils", feature = "cipher-aes", feature = "p256-kx"))]
-pub use qualification::qualify_p256_aes_backends;
 #[cfg(all(feature = "dev-utils", feature = "cipher-aes"))]
 pub use qualification::{AeadQualificationError, qualify_aes_record_backend};
+#[cfg(all(feature = "dev-utils", feature = "cipher-aes", feature = "p256-kx"))]
+pub use qualification::{qualify_p256_aes_backends, qualify_p256_aes_hkdf_backends};
 
 #[cfg(all(feature = "dev-utils", feature = "cipher-aes"))]
 mod qualification {
@@ -149,7 +149,7 @@ mod qualification {
     /// qualification images and is not part of the connection API.
     pub fn qualify_aes_record_backend<B: AeadBackend>() -> Result<(), AeadQualificationError> {
         let traffic_secret = Secret::from([0x5a; 32]);
-        qualify_record_with_traffic_secret::<B>(&traffic_secret)
+        qualify_record_with_traffic_secret::<B, RustCrypto>(&traffic_secret)
     }
 
     /// Cross-check a custom P-256 group against the bundled implementation,
@@ -160,6 +160,21 @@ mod qualification {
     where
         G: crate::traits::KxGroup,
         B: AeadBackend,
+        R: rand_core::TryCryptoRng + ?Sized,
+    {
+        qualify_p256_aes_hkdf_backends::<G, B, RustCrypto, R>(rng)
+    }
+
+    /// Combined qualification with an explicitly selected SHA-256/HKDF
+    /// backend, for devices whose TLS key schedule is hardware-accelerated.
+    #[cfg(feature = "p256-kx")]
+    pub fn qualify_p256_aes_hkdf_backends<G, B, H, R>(
+        rng: &mut R,
+    ) -> Result<(), AeadQualificationError>
+    where
+        G: crate::traits::KxGroup,
+        B: AeadBackend,
+        H: crate::traits::HkdfSha256,
         R: rand_core::TryCryptoRng + ?Sized,
     {
         use crate::traits::KxGroup;
@@ -177,23 +192,22 @@ mod qualification {
             return Err(AeadQualificationError::AgreementMismatch);
         }
 
-        let handshake_secret =
-            crate::hkdf::handshake_secret::<RustCrypto>(client_shared.as_slice())
-                .map_err(|_| AeadQualificationError::KeyDerivation)?;
+        let handshake_secret = crate::hkdf::handshake_secret::<H>(client_shared.as_slice())
+            .map_err(|_| AeadQualificationError::KeyDerivation)?;
         let transcript = crate::newtype::TranscriptDigest::from([0x42; 32]);
         let (client_traffic, _) =
-            crate::hkdf::handshake_traffic_secrets::<RustCrypto>(&handshake_secret, &transcript)
+            crate::hkdf::handshake_traffic_secrets::<H>(&handshake_secret, &transcript)
                 .map_err(|_| AeadQualificationError::KeyDerivation)?;
-        qualify_record_with_traffic_secret::<B>(&client_traffic)
+        qualify_record_with_traffic_secret::<B, H>(&client_traffic)
     }
 
-    fn qualify_record_with_traffic_secret<B: AeadBackend>(
+    fn qualify_record_with_traffic_secret<B: AeadBackend, H: crate::traits::HkdfSha256>(
         traffic_secret: &Secret,
     ) -> Result<(), AeadQualificationError> {
         const CONTENT: &[u8] = b"KrabiTLS AEAD record path";
         const SEQUENCE: u64 = 7;
 
-        let keys = RecordKeys::<B::Aes>::derive::<RustCrypto>(traffic_secret)
+        let keys = RecordKeys::<B::Aes>::derive::<H>(traffic_secret)
             .map_err(|_| AeadQualificationError::KeyDerivation)?;
         let mut record = [0u8; 128];
         let record_len = keys
