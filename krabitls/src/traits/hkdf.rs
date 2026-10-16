@@ -55,8 +55,11 @@ pub trait HkdfSha256 {
 /// substituting a synthetic digest and continuing with predictable keys.
 pub trait Sha256 {
     /// Feed bytes into the running hash.
-    /// Implementations retain a sticky failure if the underlying operation
-    /// fails; [`Sha256::snapshot`] then reports it before any digest is used.
+    ///
+    /// Infallible: a backend records a sticky failure, which the next
+    /// [`snapshot`](Sha256::snapshot) reports. A failure on an update that no
+    /// snapshot follows therefore goes unreported — the transcript is not read
+    /// again past that point.
     fn update(&mut self, data: &[u8]);
 
     /// Finalize a snapshot without consuming the live hash state.
