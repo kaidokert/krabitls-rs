@@ -15,6 +15,10 @@ seeding, linker configuration, and networking.
 - `pg26` drives the EFM32PG26 Secure Engine mailbox directly for AES-128-GCM,
   entropy, SHA-256/HMAC/HKDF, and PUF-wrapped P-256 ECDHE, with no vendor C or
   PSA dependency.
+- `ra6m5` compiles the pinned Renesas FSP SCE9 protected-mode sources for
+  entropy, SHA-256/HMAC/HKDF, wrapped AES-GCM, wrapped P-256 ECDHE/KDF, and
+  ECDSA. Its README documents why opaque SCE9 ECDHE and AES keys cannot form a
+  native TLS 1.3 backend and the supported software-KX/AEAD composition.
 - `sam` groups Microchip SAM hardware by silicon family. Its first backend is
   SAM D5x/E5x AES plus the ROM-resident PUKCL/PUKCC P-256 key-exchange path.
   SAM4 and SAM E/S/V7x parts do not share that PUKCL facility; future support
