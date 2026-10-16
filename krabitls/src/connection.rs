@@ -688,7 +688,7 @@ where
 
         // handshake_traffic_secrets needs H(CH‖SH).
         self.transcript.update_record(sh_record)?;
-        let th_ch_sh = self.transcript.snapshot();
+        let th_ch_sh = self.transcript.snapshot()?;
 
         let hs = handshake_secret::<H>(ikm.as_slice())?;
         let (c_hs_ts, s_hs_ts) = handshake_traffic_secrets::<H>(&hs, &th_ch_sh)?;
@@ -903,7 +903,7 @@ where
         self,
         out_buf: &'a mut [u8],
     ) -> Result<FinishHandshakeOk<'a, S, H>, ConnectionError> {
-        let th = self.transcript.snapshot();
+        let th = self.transcript.snapshot()?;
         let (record, c_ap_keys, s_ap_keys, c_ap_ts, s_ap_ts) = finish_handshake_inner::<S, H, _, _>(
             &self.state.hs,
             &self.state.c_hs_ts,
@@ -963,7 +963,7 @@ where
     ) -> Result<FinishHandshakeOk<'a, S, H>, ConnectionError> {
         // Application keys bind to the transcript through the *server*
         // Finished — snapshot before the client flight advances it.
-        let th_through_sfin = self.transcript.snapshot();
+        let th_through_sfin = self.transcript.snapshot()?;
 
         // `flight_scratch` is a caller-owned plaintext buffer (the engine
         // passes the idle recv buffer) — avoids a ~1.6 KB stack frame on

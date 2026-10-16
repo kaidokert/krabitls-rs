@@ -3,7 +3,7 @@
 
 use crate::aead::{CipherSuite, EncryptError, RecordKeys};
 use crate::consts::{CT_HANDSHAKE, HS_CERTIFICATE, HS_CERTIFICATE_VERIFY, HS_FINISHED};
-use crate::hkdf::{HkdfLabelError, TranscriptHash, finished_mac};
+use crate::hkdf::{HkdfLabelError, TranscriptError, TranscriptHash, finished_mac};
 use crate::newtype::{Secret, TranscriptDigest, ZeroBuf};
 use crate::traits::HkdfSha256;
 use crate::traits::client_auth::{ClientAuth, ClientAuthError, MAX_CLIENT_SIG_LEN};
@@ -63,6 +63,8 @@ pub enum ClientAuthFlightError {
     Sign(#[from] ClientAuthError),
     #[error("client Finished derivation failed")]
     Finished(#[from] ClientFinishedError),
+    #[error("transcript hash backend failed")]
+    Transcript(#[from] TranscriptError),
     #[error("server requested a client certificate but none is configured")]
     CertificateRequested,
     #[error("server's CertificateRequest does not offer the signer's signature scheme")]
@@ -405,7 +407,7 @@ impl<R: TryCryptoRng + ?Sized, A: ClientAuth<R> + ?Sized> ClientAuthSign<R>
         let cert_end =
             build_client_certificate(self.0.cert_der(), cert_request_context, out)?.len();
         transcript.update(&out[..cert_end]);
-        let th_through_cert = transcript.snapshot();
+        let th_through_cert = transcript.snapshot()?;
         let cv_end = cert_end
             + build_client_certificate_verify(self.0, &th_through_cert, rng, &mut out[cert_end..])?
                 .len();
@@ -422,7 +424,7 @@ fn append_finished<'a, H: HkdfSha256>(
     out: &'a mut [u8],
     head_end: usize,
 ) -> Result<&'a [u8], ClientAuthFlightError> {
-    let th = transcript.snapshot();
+    let th = transcript.snapshot()?;
     let finished = build_finished_plaintext::<H>(c_hs_traffic_secret, &th)?;
     let fin_end = head_end + finished.len();
     out.get_mut(head_end..fin_end)
