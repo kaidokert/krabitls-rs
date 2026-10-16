@@ -31,3 +31,6 @@ SECTIONS {
         *(.eh_frame_hdr)
     }
 }
+
+/* krabi-caliper's stack painter uses `_sheap`; alias the runtime marker. */
+PROVIDE(_sheap = __sheap);
