@@ -121,7 +121,7 @@ pub use crate::aead::Aes128GcmSha256;
 pub use crate::aead::ChaCha20Poly1305Sha256;
 pub use crate::aead::CipherSuite;
 pub use crate::traits::client_auth::{ClientSignature, MAX_CLIENT_SIG_LEN};
-pub use crate::traits::{CertParser, HkdfExpandError, HkdfSha256};
+pub use crate::traits::{CertParser, HkdfBackendError, HkdfExpandError, HkdfSha256, Sha256};
 
 // In-crate-only: alternate config impls (samples, callers write their own),
 // the WriteAppError plumbing type, the InternalError variant the engine

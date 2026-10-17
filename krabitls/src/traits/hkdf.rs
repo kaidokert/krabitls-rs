@@ -22,9 +22,9 @@
 /// `sha2::Sha256` would keep `sha2` linked even when the HKDF backend
 /// changes, defeating any swap.
 pub trait HkdfSha256 {
-    /// Incremental SHA-256 hasher (RustCrypto `Digest` shape). `Clone` is
-    /// required so the TLS 1.3 transcript hash can be snapshotted.
-    type Hasher: digest::Digest<OutputSize = digest::consts::U32> + Clone;
+    /// Incremental SHA-256 hasher. `Clone` is required so the TLS 1.3
+    /// transcript hash can be snapshotted without consuming the live state.
+    type Hasher: Sha256 + Clone;
 
     /// Spawn a fresh hasher.
     fn hasher() -> Self::Hasher;
@@ -38,7 +38,7 @@ pub trait HkdfSha256 {
     /// material. Wrapping at the trait level makes the hygiene
     /// contract explicit; the wrapper type comes from the canonical
     /// `zeroize` crate, no krabitls-internal types involved.
-    fn extract(salt: &[u8], ikm: &[u8]) -> zeroize::Zeroizing<[u8; 32]>;
+    fn extract(salt: &[u8], ikm: &[u8]) -> Result<zeroize::Zeroizing<[u8; 32]>, HkdfBackendError>;
 
     /// `HKDF-Expand(PRK, info, out.len())` → writes `out.len()` derived bytes
     /// into `out`. Returns [`HkdfExpandError::OutputTooLong`] if `out.len()`
@@ -46,6 +46,35 @@ pub trait HkdfSha256 {
     /// bytes; TLS 1.3 never asks for that much, but the trait shouldn't lie
     /// about what an implementation might reject).
     fn expand(prk: &[u8; 32], info: &[u8], out: &mut [u8]) -> Result<(), HkdfExpandError>;
+}
+
+/// Fallible incremental SHA-256 used by the TLS transcript.
+///
+/// Hardware engines can time out, reject a DMA buffer, or report a command
+/// failure. Keeping those failures in the contract prevents a backend from
+/// substituting a synthetic digest and continuing with predictable keys.
+pub trait Sha256 {
+    /// Feed bytes into the running hash.
+    ///
+    /// Infallible: a backend records a sticky failure, which the next
+    /// [`snapshot`](Sha256::snapshot) reports. A failure on an update that no
+    /// snapshot follows therefore goes unreported — the transcript is not read
+    /// again past that point.
+    fn update(&mut self, data: &[u8]);
+
+    /// Finalize a snapshot without consuming the live hash state.
+    fn snapshot(&self) -> Result<[u8; 32], HkdfBackendError>;
+}
+
+/// The portable error exposed when a SHA-256/HKDF engine fails.
+///
+/// Hardware adapters retain their device-specific diagnostic separately; the
+/// TLS core only needs to distinguish a backend failure from input sizing.
+#[derive(Debug, PartialEq, Eq, Clone, Copy, thiserror::Error)]
+pub enum HkdfBackendError {
+    /// The selected SHA-256/HKDF backend could not complete the operation.
+    #[error("SHA-256/HKDF backend failed")]
+    Failed,
 }
 
 /// Errors a [`HkdfSha256::expand`] implementation may return.
@@ -61,4 +90,7 @@ pub enum HkdfExpandError {
     /// to `.expect()` the underlying crate's fallible constructor.
     #[error("HKDF backend rejected the PRK")]
     InvalidPrk,
+    /// The backend could not complete the operation.
+    #[error(transparent)]
+    Backend(#[from] HkdfBackendError),
 }
