@@ -42,7 +42,12 @@ pub fn test_fixture(testable: fn() -> bool, name: &str) {
     #[cfg(feature = "jtrace-f407")]
     let frequency_hz = {
         let device = pac::Peripherals::take().expect("device peripherals already taken");
-        let clocks = device.RCC.constrain().cfgr.sysclk(30.MHz()).freeze();
+        // F407's rated maximum. HSI-sourced PLL (no external crystal assumed);
+        // the HAL sets the required flash wait states. `frequency_hz` below
+        // follows `hclk()`, so krabi-caliper's ns conversion tracks the real
+        // clock — absolute time carries HSI's ~±1%, but the server-only vs
+        // mTLS delta is clock-exact since both run here.
+        let clocks = device.RCC.constrain().cfgr.sysclk(168.MHz()).freeze();
         clocks.hclk().raw() as u64
     };
     let fields = [Field::token("architecture", target_arch_name())];
