@@ -1,0 +1,21 @@
+[package]
+name = "krabitls-hw-stm32"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.87"
+publish = false
+license = "Apache-2.0"
+description = "STM32 hardware cryptography backends for KrabiTLS"
+
+[features]
+default = []
+stm32h533 = ["stm32h5/stm32h533"]
+aes = ["dep:aead", "dep:krabitls", "krabitls/cipher-aes"]
+kx = ["dep:krabitls", "dep:rand_core", "krabitls/cipher-aes", "krabitls/x25519-kx", "krabitls/p256-kx"]
+
+[dependencies]
+aead = { version = "0.6", default-features = false, optional = true }
+krabitls = { path = "../../krabitls", default-features = false, optional = true }
+rand_core = { version = "0.10", default-features = false, optional = true }
+stm32h5 = { version = "0.16", default-features = false }
+zeroize = { version = "1.8", default-features = false }

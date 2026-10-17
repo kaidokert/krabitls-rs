@@ -108,6 +108,93 @@ jobs:
     - name: Test
       run: cargo test --manifest-path=krabitls/Cargo.toml --no-default-features --features "${{ matrix.features }}"
 
+  hardware-adapters:
+    name: hardware adapters [${{ matrix.adapter }}]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - adapter: nrf52833
+            manifest: hardware/nrf52833/Cargo.toml
+            features: ""
+            target: thumbv7em-none-eabihf
+          - adapter: nrf5340
+            manifest: hardware/nrf5340/Cargo.toml
+            features: qualification
+            target: thumbv8m.main-none-eabihf
+            extra: --examples
+          - adapter: pse84
+            manifest: hardware/pse84/Cargo.toml
+            features: qualification
+            target: thumbv8m.main-none-eabihf
+            extra: --examples
+          - adapter: pg26
+            manifest: hardware/pg26/Cargo.toml
+            features: qualification
+            target: thumbv8m.main-none-eabihf
+            extra: --examples
+          - adapter: ra6m5
+            manifest: hardware/ra6m5/Cargo.toml
+            features: qualification
+            target: thumbv8m.main-none-eabihf
+            extra: --examples
+          - adapter: samd51
+            manifest: hardware/sam/Cargo.toml
+            features: samd51j,aes,p256-kx
+            target: thumbv7em-none-eabihf
+          - adapter: same51
+            manifest: hardware/sam/Cargo.toml
+            features: same51j,aes,p256-kx
+            target: thumbv7em-none-eabihf
+          - adapter: same54
+            manifest: hardware/sam/Cargo.toml
+            features: same54p,aes,p256-kx
+            target: thumbv7em-none-eabihf
+          - adapter: stm32h533
+            manifest: hardware/stm32/Cargo.toml
+            features: stm32h533,aes,kx
+            target: thumbv8m.main-none-eabihf
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: ${{ matrix.target }}
+        components: clippy
+    - uses: actions/checkout@v4
+      if: matrix.adapter == 'ra6m5'
+      with:
+        repository: renesas/fsp
+        ref: 6e2675336b37fbd805f0c01d5134adfdab4bf294
+        path: renesas-fsp
+        persist-credentials: false
+        sparse-checkout: ra/fsp/src/r_sce_protected/crypto_procedures_protected/src/sce9
+        sparse-checkout-cone-mode: false
+    - uses: Swatinem/rust-cache@v2
+      with:
+        key: hardware-${{ matrix.adapter }}
+    - name: Check
+      env:
+        RENESAS_FSP_PATH: ${{ github.workspace }}/renesas-fsp
+      run: |
+        FEATURES="${{ matrix.features }}"
+        ARGS=""
+        [ -n "$FEATURES" ] && ARGS="--features $FEATURES"
+        cargo check --manifest-path="${{ matrix.manifest }}" --target "${{ matrix.target }}" $ARGS ${{ matrix.extra }}
+    - name: Clippy
+      env:
+        RENESAS_FSP_PATH: ${{ github.workspace }}/renesas-fsp
+      run: |
+        FEATURES="${{ matrix.features }}"
+        ARGS=""
+        [ -n "$FEATURES" ] && ARGS="--features $FEATURES"
+        cargo clippy --manifest-path="${{ matrix.manifest }}" --target "${{ matrix.target }}" $ARGS ${{ matrix.extra }} -- -D warnings
+    - name: Host contract tests
+      if: matrix.adapter == 'pse84' || matrix.adapter == 'pg26' || matrix.adapter == 'ra6m5'
+      run: cargo test --manifest-path="${{ matrix.manifest }}"
+
   krabitls-cli:
     name: krabitls_cli [${{ matrix.features || 'default' }}]
     runs-on: ubuntu-latest

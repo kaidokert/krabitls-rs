@@ -18,8 +18,8 @@ use zeroize::Zeroizing;
 use krabitls::backends::{DerCert, RustCrypto};
 use krabitls::client::{
     AeadBackend, Aes128GcmSha256, ClientAuth, ClientAuthError, ClientConfig, ClientShareBuf,
-    ClientSignature, ConfigSuitePolicy, HkdfExpandError, HkdfSha256, KxBackend, KxGroup,
-    SharedSecretBuf, X25519Group,
+    ClientSignature, ConfigSuitePolicy, HkdfBackendError, HkdfExpandError, HkdfSha256, KxBackend,
+    KxGroup, Sha256 as Sha256Backend, SharedSecretBuf, X25519Group,
 };
 
 // The types are `pub` so the impls (the actual export test) are reachable and
@@ -84,18 +84,32 @@ impl AeadBackend for ProbeAead {
 
 /// A custom HKDF/transcript backend — the shape a hardware SHA-256 slots into.
 pub struct ProbeHkdf;
-impl HkdfSha256 for ProbeHkdf {
-    type Hasher = Sha256;
-    fn hasher() -> Self::Hasher {
-        <Sha256 as sha2::Digest>::new()
+
+#[derive(Clone)]
+pub struct ProbeSha256(Sha256);
+
+impl Sha256Backend for ProbeSha256 {
+    fn update(&mut self, data: &[u8]) {
+        sha2::Digest::update(&mut self.0, data);
     }
-    fn extract(salt: &[u8], ikm: &[u8]) -> Zeroizing<[u8; 32]> {
+
+    fn snapshot(&self) -> Result<[u8; 32], HkdfBackendError> {
+        Ok(sha2::Digest::finalize(self.0.clone()).into())
+    }
+}
+
+impl HkdfSha256 for ProbeHkdf {
+    type Hasher = ProbeSha256;
+    fn hasher() -> Self::Hasher {
+        ProbeSha256(<Sha256 as sha2::Digest>::new())
+    }
+    fn extract(salt: &[u8], ikm: &[u8]) -> Result<Zeroizing<[u8; 32]>, HkdfBackendError> {
         // HMAC pads a short/empty key to the block with zeros, so an empty salt
         // already matches RFC 5869's zero-salt default.
         let (prk, _) = hkdf::Hkdf::<Sha256>::extract(Some(salt), ikm);
         let mut out = [0u8; 32];
         out.copy_from_slice(&prk);
-        Zeroizing::new(out)
+        Ok(Zeroizing::new(out))
     }
     fn expand(prk: &[u8; 32], info: &[u8], out: &mut [u8]) -> Result<(), HkdfExpandError> {
         let hk = hkdf::Hkdf::<Sha256>::from_prk(prk).map_err(|_| HkdfExpandError::InvalidPrk)?;

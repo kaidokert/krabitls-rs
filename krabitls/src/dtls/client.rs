@@ -262,7 +262,7 @@ impl<S: DtlsSuite> DtlsClient<S> {
                         let mut t = TranscriptHash::<H>::new();
                         t.update(&transcript_msg_header(CLIENT_HELLO_MSG_TYPE, ch1_len));
                         t.update(&ch1[..ch1_len]);
-                        t.snapshot()
+                        t.snapshot().map_err(|_| DtlsClientError::KeySchedule)?
                     };
                     transcript.update(&HRR_MESSAGE_HASH_HEADER);
                     transcript.update(ch1_hash.as_bytes());
@@ -352,7 +352,10 @@ impl<S: DtlsSuite> DtlsClient<S> {
                 .try_into()
                 .map_err(|_| DtlsClientError::KeySchedule)?,
         );
-        let hk = derive_handshake_keys::<S, H>(&shared_secret, &transcript.snapshot())
+        let transcript_ch_sh = transcript
+            .snapshot()
+            .map_err(|_| DtlsClientError::KeySchedule)?;
+        let hk = derive_handshake_keys::<S, H>(&shared_secret, &transcript_ch_sh)
             .map_err(|_| DtlsClientError::KeySchedule)?;
 
         // --- decrypt the epoch-2 server flight, reassembling fragmented and/or
@@ -463,7 +466,9 @@ impl<S: DtlsSuite> DtlsClient<S> {
             transcript.update(creq);
         }
         transcript.update(flight_view.cert_full);
-        let th_after_cert = transcript.snapshot();
+        let th_after_cert = transcript
+            .snapshot()
+            .map_err(|_| DtlsClientError::KeySchedule)?;
         verify_certificate_verify_with_prepared::<B>(
             trusted.prepared(),
             &th_after_cert,
@@ -471,7 +476,9 @@ impl<S: DtlsSuite> DtlsClient<S> {
         )
         .map_err(|_| DtlsClientError::CertVerify)?;
         transcript.update(flight_view.cv_full);
-        let th_after_cv = transcript.snapshot();
+        let th_after_cv = transcript
+            .snapshot()
+            .map_err(|_| DtlsClientError::KeySchedule)?;
 
         // Server Finished: recompute the verify-data with the DTLS schedule and
         // compare in constant time.
@@ -483,7 +490,9 @@ impl<S: DtlsSuite> DtlsClient<S> {
             return Err(DtlsClientError::CertVerify);
         }
         transcript.update(flight_view.fin_full);
-        let th_server_fin = transcript.snapshot();
+        let th_server_fin = transcript
+            .snapshot()
+            .map_err(|_| DtlsClientError::KeySchedule)?;
 
         // --- client Finished (epoch 2). The server accepts a bare Finished when
         // it does not require client auth; its message_seq continues the

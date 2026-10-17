@@ -9,8 +9,7 @@
 //! encoder, and the `HkdfLabelError` enum.
 
 use crate::newtype::{AeadIv, Secret, TranscriptDigest, ZeroBuf};
-use crate::traits::{HkdfExpandError, HkdfSha256};
-use digest::Digest;
+use crate::traits::{HkdfBackendError, HkdfExpandError, HkdfSha256, Sha256};
 
 /// Maximum size of the encoded `HkdfLabel` struct in TLS 1.3.
 ///
@@ -39,6 +38,9 @@ pub enum HkdfLabelError {
     /// The HKDF backend rejected the requested output length.
     #[error("HKDF backend rejected the requested output length")]
     Expand(#[from] HkdfExpandError),
+    /// The transcript hash or HKDF extract backend failed.
+    #[error(transparent)]
+    Backend(#[from] HkdfBackendError),
 }
 
 impl From<heapless::CapacityError> for HkdfLabelError {
@@ -186,8 +188,8 @@ impl<H: HkdfSha256> TranscriptHash<H> {
 
     /// Snapshot the transcript hash at the current point without consuming
     /// the hasher. Cheap (a clone of the SHA-256 state + a finalize call).
-    pub fn snapshot(&self) -> TranscriptDigest {
-        TranscriptDigest::new(self.hasher.clone().finalize().into())
+    pub fn snapshot(&self) -> Result<TranscriptDigest, TranscriptError> {
+        Ok(TranscriptDigest::new(self.hasher.snapshot()?))
     }
 }
 
@@ -204,12 +206,15 @@ pub enum TranscriptError {
     /// record header — almost always a caller bug (wrong slice end).
     #[error("record slice is shorter than the 5-byte TLS record header")]
     RecordTooShort,
+    /// The transcript hash backend failed.
+    #[error(transparent)]
+    Backend(#[from] HkdfBackendError),
 }
 
 /// `early_secret` for no-PSK: `HKDF-Extract(salt=00..00, IKM=00..00)`. RFC 8446 §7.1.
-pub(crate) fn early_secret<H: HkdfSha256>() -> Secret {
+pub(crate) fn early_secret<H: HkdfSha256>() -> Result<Secret, HkdfLabelError> {
     let zeros = [0u8; 32];
-    Secret::new(H::extract(&zeros, &zeros))
+    Ok(Secret::new(H::extract(&zeros, &zeros)?))
 }
 
 /// `handshake_secret = HKDF-Extract(Derive-Secret(early_secret, "derived", H("")), DHE)`.
@@ -229,8 +234,8 @@ pub(crate) fn handshake_secret<H: HkdfSha256>(dhe: &[u8]) -> Result<Secret, Hkdf
         dhe.len() == 32 || dhe.len() == 64,
         "dhe must be the 32-byte X25519 secret or the 64-byte ML-KEM||X25519 concatenation"
     );
-    let salt = derive_secret::<H>(&early_secret::<H>(), b"derived", &EMPTY_TRANSCRIPT_HASH)?;
-    Ok(Secret::new(H::extract(salt.as_bytes(), dhe)))
+    let salt = derive_secret::<H>(&early_secret::<H>()?, b"derived", &EMPTY_TRANSCRIPT_HASH)?;
+    Ok(Secret::new(H::extract(salt.as_bytes(), dhe)?))
 }
 
 /// `(client_handshake_traffic_secret, server_handshake_traffic_secret)` from
@@ -297,8 +302,8 @@ pub(crate) fn dtls_derive_secret<H: HkdfSha256>(
 /// HKDF-Extract), so only the `"derived"` step changes.
 #[cfg(feature = "dtls")]
 pub(crate) fn dtls_handshake_secret<H: HkdfSha256>(dhe: &[u8]) -> Result<Secret, HkdfLabelError> {
-    let salt = dtls_derive_secret::<H>(&early_secret::<H>(), b"derived", &EMPTY_TRANSCRIPT_HASH)?;
-    Ok(Secret::new(H::extract(salt.as_bytes(), dhe)))
+    let salt = dtls_derive_secret::<H>(&early_secret::<H>()?, b"derived", &EMPTY_TRANSCRIPT_HASH)?;
+    Ok(Secret::new(H::extract(salt.as_bytes(), dhe)?))
 }
 
 /// DTLS 1.3 handshake traffic secrets — the `"dtls13"`-prefixed counterpart of
@@ -341,7 +346,7 @@ pub(crate) fn dtls_finished_mac<H: HkdfSha256>(
         &[],
         &mut finished_key[..],
     )?;
-    Ok(H::extract(&finished_key[..], transcript_hash.as_bytes()))
+    Ok(H::extract(&finished_key[..], transcript_hash.as_bytes())?)
 }
 
 /// DTLS 1.3 master secret — the `"dtls13"`-prefixed counterpart of
@@ -351,7 +356,7 @@ pub(crate) fn dtls_master_secret<H: HkdfSha256>(
     handshake_secret: &Secret,
 ) -> Result<Secret, HkdfLabelError> {
     let salt = dtls_derive_secret::<H>(handshake_secret, b"derived", &EMPTY_TRANSCRIPT_HASH)?;
-    Ok(Secret::new(H::extract(salt.as_bytes(), &[0u8; 32])))
+    Ok(Secret::new(H::extract(salt.as_bytes(), &[0u8; 32])?))
 }
 
 /// DTLS 1.3 application traffic secrets — the `"dtls13"`-prefixed counterpart of
@@ -381,7 +386,7 @@ pub(crate) fn master_secret<H: HkdfSha256>(
     handshake_secret: &Secret,
 ) -> Result<Secret, HkdfLabelError> {
     let salt = derive_secret::<H>(handshake_secret, b"derived", &EMPTY_TRANSCRIPT_HASH)?;
-    Ok(Secret::new(H::extract(salt.as_bytes(), &[0u8; 32])))
+    Ok(Secret::new(H::extract(salt.as_bytes(), &[0u8; 32])?))
 }
 
 /// `(client_application_traffic_secret_0, server_application_traffic_secret_0)`
@@ -437,5 +442,5 @@ pub(crate) fn finished_mac<H: HkdfSha256>(
         &mut finished_key[..],
     )?;
     // HKDF-Extract(salt, IKM) == HMAC(salt, IKM) under SHA-256.
-    Ok(H::extract(&finished_key[..], transcript_hash.as_bytes()))
+    Ok(H::extract(&finished_key[..], transcript_hash.as_bytes())?)
 }

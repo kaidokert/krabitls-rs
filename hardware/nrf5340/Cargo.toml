@@ -1,0 +1,47 @@
+[package]
+name = "krabitls-hw-nrf5340"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.87"
+publish = false
+license = "Apache-2.0 AND LicenseRef-Nordic-5-Clause"
+description = "nRF5340 CryptoCell-312 hardware cryptography backend for KrabiTLS"
+build = "build.rs"
+
+[features]
+default = []
+qualification = [
+    "dep:cortex-m",
+    "dep:cortex-m-rt",
+    "dep:panic-halt",
+    "dep:rtt-target",
+    "krabitls/dev-utils",
+    "p256",
+    "nrf-pac/rt",
+]
+p256 = ["dep:rand_core", "krabitls/p256-kx"]
+
+[dependencies]
+aead = { version = "0.6", default-features = false }
+cortex-m = { version = "0.7.8", features = ["critical-section-single-core"], optional = true }
+cortex-m-rt = { version = "0.7.5", optional = true }
+krabitls = { path = "../../krabitls", default-features = false, features = ["cipher-aes", "x25519-kx"] }
+nrf-pac = { version = "0.4.0", default-features = false, features = ["nrf5340-app"] }
+panic-halt = { version = "1.0", optional = true }
+rand_core = { version = "0.10", default-features = false, optional = true }
+rtt-target = { version = "0.6", optional = true }
+zeroize = { version = "1.8", default-features = false }
+
+[[example]]
+name = "qualify"
+required-features = ["qualification"]
+
+[profile.dev]
+opt-level = 1
+panic = "abort"
+
+[profile.release]
+opt-level = "s"
+codegen-units = 1
+debug = 2
+panic = "abort"

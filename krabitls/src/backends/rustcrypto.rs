@@ -12,7 +12,7 @@ use zeroize::Zeroizing;
 
 use crate::bigint::Curve25519VerifyBn as Bn;
 use crate::traits::verify_provider::{Ed25519, SigVerifierProvider, VerifyProviderError};
-use crate::traits::{HkdfExpandError, HkdfSha256};
+use crate::traits::{HkdfBackendError, HkdfExpandError, HkdfSha256};
 use signature::Verifier;
 use subtle::ConstantTimeEq;
 
@@ -198,15 +198,25 @@ impl HkdfSha256 for RustCrypto {
         digest::Digest::new()
     }
 
-    fn extract(salt: &[u8], ikm: &[u8]) -> Zeroizing<[u8; 32]> {
+    fn extract(salt: &[u8], ikm: &[u8]) -> Result<Zeroizing<[u8; 32]>, HkdfBackendError> {
         let (prk, _) = Hkdf::<Sha256>::extract(Some(salt), ikm);
-        Zeroizing::new(prk.into())
+        Ok(Zeroizing::new(prk.into()))
     }
 
     fn expand(prk: &[u8; 32], info: &[u8], out: &mut [u8]) -> Result<(), HkdfExpandError> {
         let hk = Hkdf::<Sha256>::from_prk(prk).map_err(|_| HkdfExpandError::InvalidPrk)?;
         hk.expand(info, out)
             .map_err(|_| HkdfExpandError::OutputTooLong)
+    }
+}
+
+impl crate::traits::Sha256 for Sha256 {
+    fn update(&mut self, data: &[u8]) {
+        digest::Digest::update(self, data);
+    }
+
+    fn snapshot(&self) -> Result<[u8; 32], HkdfBackendError> {
+        Ok(digest::Digest::finalize(self.clone()).into())
     }
 }
 
