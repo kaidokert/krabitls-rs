@@ -19,3 +19,7 @@ jobs:
       campaigns-json: '["krabitls-ed25519-handshake-jtrace-f407"]'
       working-directory: footprint/cortex-m
       prepared: true
+      # Opt-in pin: 0.1.4's renderer adds the per-op Duration (seconds) column.
+      # Immutable tag, scoped to this repo — fleet default stays 0.1.3.
+      container-image: 127.0.0.1:5000/pi-hw-runner:caliper-0.1.4
+      caliper-version: 0.1.4

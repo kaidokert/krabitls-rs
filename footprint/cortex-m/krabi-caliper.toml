@@ -1,11 +1,13 @@
-[profiles.jtrace-f407-30mhz]
+[profiles.jtrace-f407-168mhz]
 runner = "command"
 target = "thumbv7em-none-eabihf"
 board = "jtrace-reference-board"
 mcu = "STM32F407VG"
 transport = "rtt"
 probe = "${KRABI_PROBE}"
-clock-frequency-hz = 30000000
+# F407 rated maximum; matches the sysclk configured in the harness so the
+# EM_MEASUREMENT ns conversion is real wall-clock.
+clock-frequency-hz = 168000000
 build-features = ["canned-replay", "cert-der", "cipher-aes", "jtrace-f407"]
 executable = "probe-rs"
 args = [
@@ -24,11 +26,18 @@ timeout-seconds = 300
 target-dir = "target"
 artifact-extension = ""
 
+# Server-cert-only: X25519 DH + Ed25519 server-cert verify.
 [[case-sets.ed25519-handshake]]
 name = "aes-ed25519-handshake"
 example = "krabitls"
 expected-benchmark = "krabitls"
 
+# Mutual TLS: adds the client Certificate + CertificateVerify (Ed25519 sign).
+[[case-sets.ed25519-handshake]]
+name = "aes-ed25519-mtls-handshake"
+example = "krabitls_mtls"
+expected-benchmark = "krabitls-mtls"
+
 [campaigns.krabitls-ed25519-handshake-jtrace-f407]
-profile = "jtrace-f407-30mhz"
+profile = "jtrace-f407-168mhz"
 case-set = "ed25519-handshake"
