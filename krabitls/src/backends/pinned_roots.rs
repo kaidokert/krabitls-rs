@@ -167,10 +167,10 @@ impl<C: CertParser, K, const CAP: usize> PinnedRoots<'_, C, K, CAP> {
         {
             let full = Sha256::digest(cert_der);
             for a in self.anchors {
-                if let Anchor::Fingerprint(fp) = a {
-                    if bool::from(full.as_slice().ct_eq(&fp[..])) {
-                        return Ok(true);
-                    }
+                if let Anchor::Fingerprint(fp) = a
+                    && bool::from(full.as_slice().ct_eq(&fp[..]))
+                {
+                    return Ok(true);
                 }
             }
         }
@@ -181,10 +181,10 @@ impl<C: CertParser, K, const CAP: usize> PinnedRoots<'_, C, K, CAP> {
         {
             let spki = Sha256::digest(C::spki_der(cert_der)?);
             for a in self.anchors {
-                if let Anchor::SpkiFingerprint(fp) = a {
-                    if bool::from(spki.as_slice().ct_eq(&fp[..])) {
-                        return Ok(true);
-                    }
+                if let Anchor::SpkiFingerprint(fp) = a
+                    && bool::from(spki.as_slice().ct_eq(&fp[..]))
+                {
+                    return Ok(true);
                 }
             }
         }
@@ -234,10 +234,10 @@ fn require_issuer_ca<C: CertParser>(
     if ca.key_cert_sign == Some(false) {
         return Err(PinnedRootsError::IssuerKeyUsageForbidsCertSign);
     }
-    if let Some(p) = ca.path_len {
-        if (p as usize) < intermediates_below {
-            return Err(PinnedRootsError::PathLenExceeded);
-        }
+    if let Some(p) = ca.path_len
+        && (p as usize) < intermediates_below
+    {
+        return Err(PinnedRootsError::PathLenExceeded);
     }
     Ok(())
 }

@@ -295,16 +295,16 @@ fn reconstruct_seq(wire_low: u64, bits: u32, expected: u64) -> u64 {
     let candidate = (expected & !mask) | (wire_low & mask);
     let mut best = candidate;
     let mut best_dist = candidate.abs_diff(expected);
-    if let Some(up) = candidate.checked_add(step) {
-        if up.abs_diff(expected) < best_dist {
-            best = up;
-            best_dist = up.abs_diff(expected);
-        }
+    if let Some(up) = candidate.checked_add(step)
+        && up.abs_diff(expected) < best_dist
+    {
+        best = up;
+        best_dist = up.abs_diff(expected);
     }
-    if let Some(down) = candidate.checked_sub(step) {
-        if down.abs_diff(expected) < best_dist {
-            best = down;
-        }
+    if let Some(down) = candidate.checked_sub(step)
+        && down.abs_diff(expected) < best_dist
+    {
+        best = down;
     }
     best
 }
