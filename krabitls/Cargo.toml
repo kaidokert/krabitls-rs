@@ -2,7 +2,7 @@
 name = "krabitls"
 version = "0.7.0"
 edition = "2024"
-rust-version = "1.87"
+rust-version = "1.88"
 readme = "../README.md"
 authors = ["kaidokert <kaidokert@gmail.com>"]
 license = "Apache-2.0"
@@ -151,7 +151,7 @@ x25519-kx = ["dep:kem"]
 [dependencies]
 embedded-io = { version = "0.7.1", default-features = false }
 hmac-sha256 = { version = "1", default-features = false, features = ["traits011"], optional = true }
-rsa_heapless = { version = "0.5.0", default-features = false, features = ["modmath"], optional = true }
+rsa_heapless = { version = "0.6.0", default-features = false, features = ["modmath", "pkcs1v15"], optional = true }
 
 # RustCrypto next line — all share hybrid-array / crypto-common 0.2.
 aes-gcm = { version = "0.11", default-features = false, features = ["aes", "zeroize"], optional = true }
@@ -171,7 +171,7 @@ digest = { version = "0.11", default-features = false }
 hmac = { version = "0.13", default-features = false }
 hkdf = { version = "0.13", default-features = false }
 ed25519_heapless = { version = "0.6.0", default-features = false, features = ["sha512-sha2"] }
-fixed-bigint = { version = "0.6", default-features = false, features = ["use-unsafe", "zeroize", "cios"] }
+fixed-bigint = { version = "0.6.2", default-features = false, features = ["use-unsafe", "zeroize", "cios"] }
 const-num-traits = { version = "0.2.1", default-features = false, features = ["ct"] }
 der = { version = "0.8.0", default-features = false, features = ["oid"], optional = true }
 zeroize = { version = "1.8", default-features = false, features = ["derive"] }
@@ -180,7 +180,7 @@ subtle = { version = "2.6", default-features = false }
 thiserror = { version = "2", default-features = false }
 signature = { version = "3", default-features = false }
 rand_core = { version = "0.10", default-features = false }
-krabipqc = { version = "0.1.4", default-features = false, optional = true }
+krabipqc = { version = "0.1.5", default-features = false, optional = true }
 krabiecdsa = { version = "0.7.0", default-features = false, optional = true }
 # ECDH-as-KEM types (Ciphertext/SharedKey/Array + traits) for the blinded P-256
 # key exchange; krabiecdsa exposes ECDH only through the `kem` traits.

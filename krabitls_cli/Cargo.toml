@@ -2,7 +2,7 @@
 name = "krabitls_cli"
 version = "0.2.0"
 edition = "2024"
-rust-version = "1.87"
+rust-version = "1.88"
 autobins = false
 
 [features]

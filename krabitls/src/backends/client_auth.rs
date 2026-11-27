@@ -13,7 +13,7 @@ use {
     crate::consts::SIG_SCHEME_RSA_PSS_RSAE_SHA256,
     crate::traits::client_auth::MAX_CLIENT_SIG_LEN,
     rsa::{
-        GenericRsaPrivateKey,
+        GenericPrivateKey,
         modmath_support::{ModMathParams, public_key_ct_from_be_bytes},
         pss::GenericSigningKey,
         traits::FixedWidthUnsignedInt,
@@ -173,7 +173,7 @@ impl<'a> RsaClientAuth<'a> {
         // bytes off INTEGERs); `try_from_be_bytes_vartime` zero-extends it.
         let d = <SignBn as FixedWidthUnsignedInt>::try_from_be_bytes_vartime(d)
             .map_err(|_| ClientAuthError)?;
-        let priv_key = GenericRsaPrivateKey::from_public_and_d(pubkey, d);
+        let priv_key = GenericPrivateKey::from_public_and_d(pubkey, d);
         Ok(Self {
             // TLS 1.3 §4.2.3: rsa_pss_rsae_sha256 requires saltLen == hashLen.
             signing_key: GenericSigningKey::new_with_salt_len(priv_key, 32),

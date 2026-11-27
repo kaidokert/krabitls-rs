@@ -589,10 +589,10 @@ impl<S: DtlsSuite> DtlsClient<S> {
     {
         // RFC 8449: never send a record whose TLSInnerPlaintext (payload + the
         // content-type byte) exceeds the peer's advertised record_size_limit.
-        if let Some(limit) = self.peer_record_limit {
-            if payload.len() + 1 > limit as usize {
-                return Err(DtlsClientError::RecordSizeLimit);
-            }
+        if let Some(limit) = self.peer_record_limit
+            && payload.len() + 1 > limit as usize
+        {
+            return Err(DtlsClientError::RecordSizeLimit);
         }
         let cid = (self.send_cid_len > 0).then_some(&self.send_cid[..self.send_cid_len]);
         let sealed = self
